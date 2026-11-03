@@ -413,6 +413,12 @@ export interface TerminalMultiplexer extends EventEmitter {
   /** Stop the pane-exit watcher. */
   stopPaneExitWatcher?(): void;
 
+  /** Replace the tracked sessions with what the persisted session list holds now. */
+  reloadFromDisk?(): void;
+
+  /** Write the persisted session list now; resolves once the write has landed. */
+  flushNow?(): Promise<void>;
+
   /** Respawn a dead pane with a fresh command. Returns the new PID or null on failure. */
   respawnPane(options: RespawnPaneOptions): Promise<number | null>;
 

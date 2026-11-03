@@ -1290,6 +1290,23 @@ export const HookEventSchema = z.object({
 });
 
 /**
+ * Body of POST /api/client-errors: one uncaught browser error. `nullish`, not
+ * `optional`, because a client that serializes a missing field as `null` would
+ * otherwise be refused (Zod's `.optional()` takes `undefined` only).
+ */
+export const ClientErrorSchema = z.object({
+  message: z.string().min(1).max(2000),
+  source: z.string().max(500).nullish(),
+  line: z.number().int().min(0).max(10_000_000).nullish(),
+  col: z.number().int().min(0).max(10_000_000).nullish(),
+  stack: z.string().max(8000).nullish(),
+  url: z.string().max(500).nullish(),
+});
+
+/** Body of POST /api/deploy/role. A process starts as a candidate; nothing moves one back to it. */
+export const DeployRoleChangeSchema = z.object({ role: z.enum(['live', 'retired']) }).strict();
+
+/**
  * Body of POST /api/approvals/:id/answer (Approvals Inbox).
  * `option` digits are additionally validated against the item's PARSED options
  * in the route; the schema alone must not authorize blind digit-poking.

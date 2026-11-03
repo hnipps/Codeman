@@ -120,13 +120,42 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') _crashDiagBeacon();
 });
 
+// Uncaught errors also go to the server's client-errors.jsonl. Deduped and capped per
+// page load so a render loop cannot flood it; fire-and-forget, because the reporter must
+// never raise an error of its own (that would re-enter these handlers).
+const _clientErrorReports = { seen: new Set(), max: 20 };
+function _reportClientError({ message, source, line, col, stack }) {
+  try {
+    const key = `${message}|${source}|${line}|${col}`;
+    if (_clientErrorReports.seen.has(key) || _clientErrorReports.seen.size >= _clientErrorReports.max) return;
+    _clientErrorReports.seen.add(key);
+    const cap = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : undefined);
+    const pos = (v) => (Number.isInteger(v) && v >= 0 ? v : undefined);
+    fetch(CodemanBase.url('/api/client-errors'), {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: cap(String(message ?? ''), 2000) || 'unknown error',
+        source: cap(source, 500),
+        line: pos(line),
+        col: pos(col),
+        stack: cap(stack, 8000),
+        url: cap(location.pathname, 500),
+      }),
+    }).catch(() => {});
+  } catch {}
+}
+
 window.addEventListener('error', (e) => {
   _crashDiag.log(`ERROR: ${e.message} at ${e.filename}:${e.lineno}`);
+  _reportClientError({ message: e.message, source: e.filename, line: e.lineno, col: e.colno, stack: e.error?.stack });
   console.error('[CRASH-DIAG] Uncaught error:', e.message, '\n  File:', e.filename, ':', e.lineno, ':', e.colno, '\n  Stack:', e.error?.stack);
 });
 
 window.addEventListener('unhandledrejection', (e) => {
   _crashDiag.log(`UNHANDLED: ${e.reason?.message || e.reason}`);
+  _reportClientError({ message: e.reason?.message || String(e.reason), stack: e.reason?.stack });
   console.error('[CRASH-DIAG] Unhandled promise rejection:', e.reason?.message || e.reason, '\n  Stack:', e.reason?.stack);
 });
 
@@ -791,6 +820,7 @@ class CodemanApp {
     this._detachOrphanStrikes = new Map(); // id -> consecutive unanswered roll-calls (redock at 2)
 
     this._initGeneration = 0;     // dedup concurrent handleInit calls
+    this._buildId = null;         // server build this page loaded from (first init sets it)
     this._initFallbackTimer = null; // fallback timer if SSE init doesn't arrive
     this._selectGeneration = 0;   // cancel stale selectSession loads
     // Non-shell sessions whose full tmux scrollback has already been replayed this
@@ -4982,7 +5012,26 @@ class CodemanApp {
     }
   }
 
+  /**
+   * Compare an init's `buildId` with the one this page loaded from. Returns true when a
+   * newer build is live and the page is reloading itself (decision: CodemanBuildWatch).
+   */
+  _checkBuildId(incoming) {
+    const key = 'codeman:build-reload-at';
+    let lastReloadAt = null;
+    try { lastReloadAt = Number(sessionStorage.getItem(key)) || null; } catch {}
+    const now = Date.now();
+    const action = window.CodemanBuildWatch.decide({ baseline: this._buildId, incoming, lastReloadAt, now });
+    if (action === 'baseline') this._buildId = incoming;
+    if (action !== 'reload') return false;
+    try { sessionStorage.setItem(key, String(now)); } catch {}
+    _crashDiag.log(`BUILD: ${this._buildId} -> ${incoming}, reloading`);
+    location.reload();
+    return true;
+  }
+
   handleInit(data) {
+    if (this._checkBuildId(data.buildId)) return;
     // Clear the init fallback timer since we got data
     this._clearTimer('_initFallbackTimer');
     const gen = ++this._initGeneration;

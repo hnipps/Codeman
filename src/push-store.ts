@@ -12,6 +12,7 @@ import webpush from 'web-push';
 import type { VapidKeys, PushSubscriptionRecord, UserRole } from './types.js';
 import { Debouncer } from './utils/index.js';
 import { getDataDir } from './config/instance.js';
+import { deployRole } from './deploy-role.js';
 
 /**
  * A push subscription plus the multi-user owner identity stamped at subscribe time.
@@ -170,6 +171,7 @@ export class PushSubscriptionStore {
 
   /** Immediately persist subscriptions to disk */
   private flushSave(): void {
+    if (!deployRole.allows('persist')) return;
     try {
       mkdirSync(DATA_DIR, { recursive: true });
       writeFileSync(SUBS_FILE, JSON.stringify(Array.from(this.subscriptions.values()), null, 2));

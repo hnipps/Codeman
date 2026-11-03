@@ -27,6 +27,12 @@ if (isWebMode) {
 }
 
 import { MAX_CONSECUTIVE_ERRORS, ERROR_RESET_MS } from './config/server-timing.js';
+import { createTelemetryFromEnv, installConsoleMirror } from './telemetry.js';
+
+if (isWebMode) {
+  const telemetry = createTelemetryFromEnv();
+  if (telemetry) installConsoleMirror(telemetry);
+}
 
 // Track consecutive unhandled errors in web mode — restart after too many
 let consecutiveErrors = 0;

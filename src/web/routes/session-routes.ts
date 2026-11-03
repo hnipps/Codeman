@@ -562,7 +562,7 @@ const PASTE_BUCKET_GC_THRESHOLD = 1000;
 const pasteRateBuckets = new Map<string, { tokens: number; lastRefill: number }>();
 const videoRateBuckets = new Map<string, { tokens: number; lastRefill: number }>();
 
-function takeToken(
+export function takeToken(
   buckets: Map<string, { tokens: number; lastRefill: number }>,
   key: string,
   capacity: number,

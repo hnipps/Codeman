@@ -19,6 +19,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { dataPath } from '../config/instance.js';
+import { deployRole } from '../deploy-role.js';
 import { agentInbox, type AgentInbox } from './agent-inbox.js';
 
 /** A burst of posts (a coordinator fanning out to five workers) becomes one write. */
@@ -107,7 +108,7 @@ export class AgentInboxPersistence {
   }
 
   private writeNow(): void {
-    if (!this.enabled) return;
+    if (!this.enabled || !deployRole.allows('persist')) return;
     const path = this.filePath();
     const tmpPath = `${path}.tmp`;
     try {

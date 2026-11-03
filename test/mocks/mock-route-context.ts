@@ -2,7 +2,7 @@
  * Mock context for route handler testing.
  *
  * Satisfies ALL port interfaces (SessionPort, EventPort, RespawnPort,
- * ConfigPort, InfraPort, AuthPort) so any route module can be tested.
+ * ConfigPort, InfraPort, AuthPort, TelemetryPort) so any route module can be tested.
  * Override specific methods in individual tests as needed.
  *
  * Uses app.inject() — no real HTTP ports needed.
@@ -178,6 +178,10 @@ export function createMockRouteContext(options?: {
     authSessions: null,
     qrAuthFailures: null,
     // https already declared above in ConfigPort (shared property)
+
+    // -- TelemetryPort --
+    buildId: 'test-build',
+    telemetry: null,
 
     // -- OrchestratorPort --
     orchestratorLoop: null,

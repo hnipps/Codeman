@@ -16,6 +16,7 @@ import fs from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { getDataDir } from '../config/instance.js';
+import { deployRole } from '../deploy-role.js';
 import { probePathKind, type PathProbeOptions } from '../utils/bounded-path-probe.js';
 import type { SessionPort } from './ports/index.js';
 
@@ -197,12 +198,11 @@ export function pasteImageDirInUseByOtherSession(input: {
 }
 
 export function startPasteImageGc(ctx: Pick<SessionPort, 'sessions'>): () => void {
-  const initial = setTimeout(() => {
-    void sweepPasteImagesOnce(ctx);
-  }, INITIAL_DELAY_MS);
-  const interval = setInterval(() => {
-    void sweepPasteImagesOnce(ctx);
-  }, SWEEP_INTERVAL_MS);
+  const sweep = () => {
+    if (deployRole.allows('automate')) void sweepPasteImagesOnce(ctx);
+  };
+  const initial = setTimeout(sweep, INITIAL_DELAY_MS);
+  const interval = setInterval(sweep, SWEEP_INTERVAL_MS);
   if (typeof initial.unref === 'function') initial.unref();
   if (typeof interval.unref === 'function') interval.unref();
   return (): void => {

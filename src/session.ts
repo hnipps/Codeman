@@ -161,6 +161,7 @@ import {
 import type { SessionAttachmentHistoryItem, DisplayModel } from './types/session.js';
 import { resolveConfigModel } from './model-config-resolvers.js';
 import { caseSessionSettled, isCasePathLocked, noteCaseSessionStarting } from './case-rename.js';
+import { deployRole, DeployRoleRefusal } from './deploy-role.js';
 import { legacyConfigForMode } from './session-cli-registry-bridge.js';
 import {
   launchModelFor,
@@ -1210,7 +1211,7 @@ export class Session extends EventEmitter {
 
     // Initialize auto-compact/auto-clear automation and forward events
     this._autoOps = new SessionAutoOps({
-      writeCommand: (cmd) => this.writeViaMux(cmd),
+      writeCommand: (cmd) => this.writeAutomated(cmd),
       isWorking: () => this._isWorking,
       isStopped: () => this._isStopped,
       getTotalTokens: () => this._totalInputTokens + this._totalOutputTokens,
@@ -3175,6 +3176,7 @@ export class Session extends EventEmitter {
           this._armPaneSettle(true);
         }
       } catch (err) {
+        if (err instanceof DeployRoleRefusal) throw err;
         console.error('[Session] Failed to create mux session, falling back to direct PTY:', err);
         this._useMux = false;
         this._muxSession = null;
@@ -3439,7 +3441,7 @@ export class Session extends EventEmitter {
     console.log(
       `[Session] Auto-accepting workspace trust dialog for: ${this.id} (attempt ${this._trustDialogAttempts}, ${step})`
     );
-    this.writeViaMux(key);
+    void this.writeAutomated(key);
 
     // ⚠️ Schedule the next read; do NOT wait for more PTY output. This scan only
     // ever ran from `onData`, which was enough while one Enter answered the
@@ -4184,6 +4186,7 @@ export class Session extends EventEmitter {
           }, 100);
         }
       } catch (err) {
+        if (err instanceof DeployRoleRefusal) throw err;
         console.error('[Session] Failed to create mux session, falling back to direct PTY:', err);
         this._useMux = false;
         this._muxSession = null;
@@ -5187,6 +5190,15 @@ export class Session extends EventEmitter {
   }
 
   /**
+   * A write Codeman makes to the pane on its own: auto-compact, auto-clear, auto-resume, the
+   * respawn cycle, the trust dialog. Only the live deploy colour makes one; the other colour
+   * attached to the same pane would otherwise type the same keys a second time.
+   */
+  writeAutomated(data: string): Promise<boolean> {
+    return deployRole.allows('automate') ? this.writeViaMux(data) : Promise.resolve(false);
+  }
+
+  /**
    * Sends input via the terminal multiplexer's direct input mechanism.
    *
    * More reliable than direct PTY write for programmatic input, especially
@@ -5582,6 +5594,15 @@ export class Session extends EventEmitter {
         } catch (err) {
           console.warn('[Session] Failed to send SIGKILL to process group (may not exist):', err);
         }
+      } else if (this._muxSession) {
+        // This PTY is the tmux attach client, not the agent: ending it detaches and leaves
+        // the pane alone. Left running it would keep feeding output to a Session nobody holds.
+        try {
+          this.ptyProcess.kill();
+        } catch {
+          /* already gone */
+        }
+        console.log('[Session] Detached from mux session — pane preserved');
       } else {
         // Server shutdown: just detach — the process lives on inside tmux
         console.log('[Session] Detaching from PTY (server shutdown) — mux session preserved');
