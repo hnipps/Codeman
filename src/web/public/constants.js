@@ -852,6 +852,29 @@ function computeSseStale(input) {
   return now - lastMessageAt >= timeoutMs;
 }
 
+// Reload when a new build goes live: what does this SSE init say about the page?
+//
+// Every init carries the server's `buildId`. The first one after a page load is
+// the baseline (the page was just served by that build). A later init, i.e. an
+// SSE reconnect after a deploy restarted or swapped the server, that carries a
+// different id means this page's JS is stale, so it reloads. A reload makes the
+// next first init the new baseline, which is what ends the sequence. The minimum
+// gap is the backstop for a proxy that alternates between two live builds: each
+// reload could land on the other one, and without it the page would reload forever.
+//
+// An init with no id (an older server) is ignored, never a reason to reload.
+// Pure: no DOM, no timers. `now` is passed in.
+const BUILD_RELOAD_MIN_GAP_MS = 30000;
+
+function decideBuildReload(input) {
+  const { baseline = null, incoming = null, lastReloadAt = null, now = 0 } = input || {};
+  if (typeof incoming !== 'string' || incoming === '') return 'ignore';
+  if (!baseline) return 'baseline';
+  if (incoming === baseline) return 'ignore';
+  if (typeof lastReloadAt === 'number' && now - lastReloadAt < BUILD_RELOAD_MIN_GAP_MS) return 'ignore';
+  return 'reload';
+}
+
 // Home-screen session order: one comparator for both overviews.
 //
 // The phone overview (mobile-overview.js) and the desktop tab rail
@@ -1555,6 +1578,10 @@ if (typeof window !== 'undefined') {
     compute: computeSseStale,
     TIMEOUT_MS: SSE_STALE_TIMEOUT_MS,
     CONNECT_TIMEOUT_MS: SSE_CONNECT_TIMEOUT_MS,
+  };
+  window.CodemanBuildWatch = {
+    decide: decideBuildReload,
+    MIN_GAP_MS: BUILD_RELOAD_MIN_GAP_MS,
   };
   window.CodemanPromptCache = {
     format: formatPromptCacheStatus,
