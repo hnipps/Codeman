@@ -13,6 +13,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { LifecycleEventType, LifecycleEntry } from './types.js';
 import { dataPath } from './config/instance.js';
+import { deployRole } from './deploy-role.js';
 
 const MAX_LINES = 10_000;
 const TRIM_TO = 8_000;
@@ -33,6 +34,7 @@ export class SessionLifecycleLog {
    * Append a lifecycle event. Fire-and-forget — errors are logged but never thrown.
    */
   log(entry: Omit<LifecycleEntry, 'ts'> & { ts?: number }): void {
+    if (!deployRole.allows('persist')) return;
     const line = JSON.stringify({ ts: Date.now(), ...entry }) + '\n';
     // Chain writes to prevent interleaving
     this.writeQueue = this.writeQueue
@@ -86,6 +88,7 @@ export class SessionLifecycleLog {
    * Trim the log file if it exceeds MAX_LINES. Called on server start.
    */
   async trimIfNeeded(): Promise<void> {
+    if (!deployRole.allows('persist')) return;
     let raw: string;
     try {
       raw = await readFile(this.filePath, 'utf-8');

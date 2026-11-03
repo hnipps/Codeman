@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { dataPath } from './config/instance.js';
+import { deployRole } from './deploy-role.js';
 import { KEEP_WARM_NUDGE } from './prompt-cache-keepwarm.js';
 import type { IntentProfile, IntentPromptEntry } from './types/index.js';
 
@@ -222,8 +223,13 @@ export class IntentStore {
     }
   }
 
+  /** Drop the cached profiles so the next read comes from disk (a deploy colour taking over). */
+  forget(): void {
+    this.profiles = null;
+  }
+
   private persist(): void {
-    if (!this.profiles) return;
+    if (!this.profiles || !deployRole.allows('persist')) return;
     const file: IntentStoreFile = { version: 1, profiles: [...this.profiles.values()] };
     const tmpPath = `${this.filePath}.tmp`;
     try {

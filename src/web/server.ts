@@ -97,6 +97,7 @@ import { RunSummaryTracker } from '../run-summary.js';
 import { PlanOrchestrator } from '../plan-orchestrator.js';
 import { OrchestratorLoop } from '../orchestrator-loop.js';
 import { getLifecycleLog } from '../session-lifecycle-log.js';
+import { deployRole, planRoleChange, type DeployRole, type DeployRoleOutcome } from '../deploy-role.js';
 import {
   applyWorkspaceHooks,
   pruneAgentSessionPreambles,
@@ -173,6 +174,7 @@ import {
   StaleExpirationMap,
   startEventLoopMonitor,
   isSafePushEndpoint,
+  assertNever,
 } from '../utils/index.js';
 import type { EventLoopMonitorHandle } from '../utils/index.js';
 import { MAX_CONCURRENT_SESSIONS, MAX_SSE_CLIENTS } from '../config/map-limits.js';
@@ -229,6 +231,7 @@ import {
   registerSearchRoutes,
   registerOrchestratorRoutes,
   registerCronRoutes,
+  registerDeployRoutes,
   registerMeRoutes,
   registerAdminRoutes,
   registerWsRoutes,
@@ -540,6 +543,7 @@ export class WebServer extends EventEmitter {
   ) {
     super();
     this.setMaxListeners(0);
+    deployRole.initFromEnv();
     this.host = host;
     this.port = port;
     this.https = https;
@@ -1318,6 +1322,7 @@ export class WebServer extends EventEmitter {
     if (!this.testMode) {
       this.cleanup.setInterval(
         () => {
+          if (!deployRole.allows('automate')) return;
           this.gitFetchScheduler.tick().catch((err) => {
             console.error('[git fetch] interval tick failed:', getErrorMessage(err));
           });
@@ -1362,6 +1367,7 @@ export class WebServer extends EventEmitter {
     // Only what CronPort declares: a spread of ctx would copy `port` by value (the
     // pre-listen 0 of an ephemeral bind) into an object nothing keeps in sync.
     registerCronRoutes(this.app, { cron: this.cronService });
+    registerDeployRoutes(this.app, { changeDeployRole: (role) => this.changeDeployRole(role) });
 
     registerWsRoutes(this.app, ctx, () => this.getHostPolicy());
     registerTelemetryRoutes(this.app, ctx, () => this.getHostPolicy());
@@ -2877,7 +2883,7 @@ export class WebServer extends EventEmitter {
 
   private closeCleanlyExitedSessions(): void {
     const readCount = this.mux.getPaneExitReadCount?.bind(this.mux);
-    if (!readCount) return;
+    if (!readCount || !deployRole.allows('automate')) return;
     // Forget attempts for sessions that are gone, so the set stays bounded.
     for (const key of this.cleanExitCloseAttempts) {
       if (!this.sessions.has(key.slice(0, key.lastIndexOf(':')))) this.cleanExitCloseAttempts.delete(key);
@@ -2936,7 +2942,8 @@ export class WebServer extends EventEmitter {
   // fire-and-forget (the EventPort signature stays `void`).
   private async sendPushNotifications(event: string, data: Record<string, unknown>): Promise<void> {
     const template = WebServer.PUSH_EVENT_MAP[event];
-    if (!template) return;
+    // The other colour sees the same panes and would notify a second time.
+    if (!template || !deployRole.allows('automate')) return;
 
     const sessionName = (data.sessionName as string) || '';
     const sessionId = (data.sessionId as string) || '';
@@ -3158,14 +3165,12 @@ export class WebServer extends EventEmitter {
 
     await this.setupRoutes();
 
-    const lifecycleLog = getLifecycleLog();
-    lifecycleLog.log({ event: 'server_started', sessionId: '*' });
-    await lifecycleLog.trimIfNeeded();
+    getLifecycleLog().log({ event: 'server_started', sessionId: '*' });
 
     // If a self-update restarted us into this process, finalize its status file
     // (flip the persisted "restarting" marker → completed/failed based on the
     // version we actually booted). No-op on a normal boot. See web/self-update.ts.
-    if (!this.testMode) {
+    if (!this.testMode && deployRole.allows('persist')) {
       reconcileUpdateOnBoot();
     }
 
@@ -3179,35 +3184,9 @@ export class WebServer extends EventEmitter {
       if (restoredMail > 0) console.log(`[AgentInbox] restored ${restoredMail} pending message(s)`);
       const restored = await this.restoreMuxSessions();
       await this.finalizeRestoredState(restored);
-
-      // Instance-scoped reaper: after restore, `docker rm -f` managed containers of
-      // THIS instance whose case is gone from docker-cases.json (best-effort, never
-      // touches another instance's containers). Runs after restore so containers
-      // still referenced by a restored session are preserved.
-      if (restored) {
-        void import('../docker-hosts.js')
-          .then(({ reapOrphanedDockerContainers }) => reapOrphanedDockerContainers(getDataDir(), CODEMAN_INSTANCE))
-          .then((reaped) => {
-            if (reaped.length > 0)
-              console.log(`[Docker] reaped ${reaped.length} orphaned container(s): ${reaped.join(', ')}`);
-          })
-          .catch(() => {
-            /* best-effort — daemon may be absent */
-          });
-      }
-    }
-
-    // Sweep agent preamble caches whose sessions are gone (see
-    // pruneAgentSessionPreambles). Once per boot, after restore, so every session this
-    // instance owns is in the keep set. Best-effort and off the startup critical path.
-    if (!this.testMode) {
-      void pruneAgentSessionPreambles(this.sessions.keys())
-        .then((removed) => {
-          if (removed > 0) console.log(`[agent-skill] pruned ${removed} stale preamble cache file(s)`);
-        })
-        .catch(() => {
-          /* best-effort */
-        });
+      if (deployRole.allows('automate')) await this.runLiveUpkeep(restored);
+    } else if (deployRole.allows('automate')) {
+      await this.runLiveUpkeep(false);
     }
 
     // Bound disk use under heavy paste-image traffic: delete `paste-*` files
@@ -3310,10 +3289,12 @@ export class WebServer extends EventEmitter {
 
     // Config backups: a snapshot at start (the state the process found) and then on change.
     if (!this.testMode) {
-      const backup = (reason: string) =>
+      const backup = (reason: string) => {
+        if (!deployRole.allows('automate')) return;
         void runConfigBackup(reason).catch((err) =>
           console.warn('[config-backup] snapshot failed:', err instanceof Error ? err.message : err)
         );
+      };
       backup('startup');
       this.cleanup.setInterval(() => backup('auto'), CONFIG_BACKUP_INTERVAL_MS, {
         description: 'Config backup',
@@ -3347,6 +3328,7 @@ export class WebServer extends EventEmitter {
           // readPlanUsageTelemetryEnabled() beside it: a live toggle takes effect
           // on the very next cycle, not just at server boot, and turning the
           // feature off actually stops the polling instead of only hiding the UI.
+          if (!deployRole.allows('automate')) return;
           void readCustomModelEndpointsEnabled()
             .then((enabled) => {
               if (!enabled) return;
@@ -3403,6 +3385,7 @@ export class WebServer extends EventEmitter {
     // Start the cron loop (fires due CronJobs).
     this.cleanup.setInterval(
       () => {
+        if (!deployRole.allows('automate')) return;
         this.cronService.tickDueJobs().catch((err) => {
           console.error('[cron] tick failed:', getErrorMessage(err));
         });
@@ -3455,7 +3438,7 @@ export class WebServer extends EventEmitter {
 
     // Tunnel only starts when user clicks the toggle in the UI — never on boot.
     // Reset persisted tunnelEnabled so the UI toggle reflects actual state.
-    if (await this.isTunnelEnabled()) {
+    if (deployRole.allows('persist') && (await this.isTunnelEnabled())) {
       try {
         await mutateSettingsFile((settings) => ({ ...settings, tunnelEnabled: false }));
         console.log('Cloudflare tunnel setting reset (tunnel only starts on explicit UI toggle)');
@@ -4101,13 +4084,6 @@ export class WebServer extends EventEmitter {
           }
         }
 
-        // Sessions recovered from a previous run predate the create-path hook
-        // install, and these are long-lived: by the time a server restart comes
-        // round a session may be days old and has been running hook-blind the
-        // whole time. Claude Code re-reads settings.local.json, so writing the
-        // block now arms the RUNNING CLI, no session restart needed.
-        await this.ensureHooksForRecoveredWorkspaces();
-
         // Start stats collection for mux sessions
         this.mux.startStatsCollection(STATS_COLLECTION_INTERVAL_MS);
       }
@@ -4168,6 +4144,134 @@ export class WebServer extends EventEmitter {
     ]);
     const pruned = agentInbox.pruneExcept(keep);
     if (pruned > 0) console.log(`[AgentInbox] dropped ${pruned} inbox(es) of sessions that did not come back`);
+  }
+
+  /**
+   * The once-per-life upkeep that edits shared files, workspaces or containers, run by the
+   * colour that writes: at boot when it starts live, or when it is promoted.
+   */
+  private async runLiveUpkeep(restored: boolean): Promise<void> {
+    await getLifecycleLog().trimIfNeeded();
+    if (this.testMode) return;
+
+    // Sessions recovered from a previous run predate the create-path hook
+    // install, and these are long-lived: by the time a server restart comes
+    // round a session may be days old and has been running hook-blind the
+    // whole time. Claude Code re-reads settings.local.json, so writing the
+    // block now arms the RUNNING CLI, no session restart needed.
+    await this.ensureHooksForRecoveredWorkspaces();
+
+    // Instance-scoped reaper: after restore, `docker rm -f` managed containers of
+    // THIS instance whose case is gone from docker-cases.json (best-effort, never
+    // touches another instance's containers). Runs after restore so containers
+    // still referenced by a restored session are preserved.
+    if (restored) {
+      void import('../docker-hosts.js')
+        .then(({ reapOrphanedDockerContainers }) => reapOrphanedDockerContainers(getDataDir(), CODEMAN_INSTANCE))
+        .then((reaped) => {
+          if (reaped.length > 0)
+            console.log(`[Docker] reaped ${reaped.length} orphaned container(s): ${reaped.join(', ')}`);
+        })
+        .catch(() => {
+          /* best-effort — daemon may be absent */
+        });
+    }
+
+    // Sweep agent preamble caches whose sessions are gone (see
+    // pruneAgentSessionPreambles). Once, after restore, so every session this
+    // instance owns is in the keep set. Best-effort and off the startup critical path.
+    void pruneAgentSessionPreambles(this.sessions.keys())
+      .then((removed) => {
+        if (removed > 0) console.log(`[agent-skill] pruned ${removed} stale preamble cache file(s)`);
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+  }
+
+  private roleChangeQueue: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Move this process to another deploy role (see deploy-role.ts), one change at a time:
+   * a retire asked for while a promotion is still running waits for it.
+   */
+  changeDeployRole(target: DeployRole): Promise<DeployRoleOutcome> {
+    const run = this.roleChangeQueue.catch(() => undefined).then(() => this.applyDeployRole(target));
+    this.roleChangeQueue = run;
+    return run;
+  }
+
+  private async applyDeployRole(target: DeployRole): Promise<DeployRoleOutcome> {
+    const previous = deployRole.current;
+    const change = planRoleChange(previous, target);
+    if (change.kind === 'refused') return { kind: 'refused', reason: change.reason, role: previous };
+    if (change.kind === 'transition') {
+      console.log(`[Deploy] ${change.transition}: ${previous} -> ${target}`);
+      switch (change.transition) {
+        case 'promote':
+          await this.promoteToLive();
+          break;
+        case 'retire':
+          await this.retireFromLive();
+          break;
+        case 'reinstate':
+          deployRole.enter('live');
+          await this.writeSharedState();
+          this.keepWarmService.rescheduleAll();
+          break;
+        default:
+          assertNever(change.transition);
+      }
+    }
+    return { kind: 'accepted', role: deployRole.current, previous };
+  }
+
+  /**
+   * Take over from the colour that was live. It flushed its view when it retired, and it
+   * served every request while this one stood by, so the disk wins: every session is let
+   * go of and rebuilt through the boot restore from the files as they are now, which also
+   * adopts the sessions created during the overlap under their real identity. Nothing is
+   * written until that rebuild has succeeded, so a failure in it leaves a candidate.
+   */
+  private async promoteToLive(): Promise<void> {
+    for (const id of [...this.sessions.keys()]) await this.cleanupSession(id, false, 'deploy_promotion');
+    this.store.reloadFromDisk();
+    this.mux.reloadFromDisk?.();
+    intentStore.forget();
+    agentInboxPersistence.load(await this.getAgentInboxPersistEnabled());
+    const restored = await this.restoreMuxSessions();
+    if (!restored) throw new Error('the sessions on disk could not be restored');
+    await this.finalizeRestoredState(restored);
+    deployRole.enter('live');
+    await this.writeSharedState();
+    this.keepWarmService.rescheduleAll();
+    await this.runLiveUpkeep(restored).catch((err) =>
+      console.warn(`[Deploy] upkeep after promotion: ${getErrorMessage(err)}`)
+    );
+  }
+
+  /**
+   * Hand over: write this colour's view once, then stop writing and acting. The writes
+   * happen before the role changes and in the same tick, so nothing queued later can land
+   * on top of them; the session list's write is the one awaited after.
+   */
+  private async retireFromLive(): Promise<void> {
+    await this.store.settle();
+    const listWritten = this.writeSharedState();
+    deployRole.enter('retired');
+    await listWritten;
+  }
+
+  /**
+   * Bring every session's record up to date and write the shared files. state.json and the
+   * inbox are on disk when this returns; the promise settles once mux-sessions.json is.
+   */
+  private writeSharedState(): Promise<void> {
+    this.persistDeb.dispose();
+    for (const session of this.sessions.values()) this._persistSessionStateNow(session);
+    if (!this.store.writeAllNow()) throw new Error('state.json could not be written');
+    agentInboxPersistence.flush();
+    return this.mux.flushNow?.() ?? Promise.resolve();
   }
 
   /**
@@ -4395,8 +4499,12 @@ export class WebServer extends EventEmitter {
       this._orchestratorLoop = null;
     }
 
-    // Stop all scheduled runs first (they have their own session cleanup)
-    await Promise.allSettled(Array.from(this.scheduledRuns.keys()).map((id) => this.stopScheduledRun(id)));
+    // Stop all scheduled runs first (they have their own session cleanup). Stopping one
+    // kills its tmux session, which a colour that is not live must never do: the panes
+    // belong to the colour taking over.
+    if (deployRole.allows('automate')) {
+      await Promise.allSettled(Array.from(this.scheduledRuns.keys()).map((id) => this.stopScheduledRun(id)));
+    }
 
     // On server shutdown, DO NOT call cleanupSession — it tears down session state,
     // removes listeners, kills PTY processes, and broadcasts session:deleted.
@@ -4454,8 +4562,10 @@ export class WebServer extends EventEmitter {
       watcher.removeAllListeners();
       watcher.stop();
     }
-    for (const orchestrator of this.activePlanOrchestrators.values()) {
-      orchestrator.cancel();
+    if (deployRole.allows('automate')) {
+      for (const orchestrator of this.activePlanOrchestrators.values()) {
+        orchestrator.cancel();
+      }
     }
 
     // Clear remaining Maps that accumulate session references

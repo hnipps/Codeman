@@ -1303,6 +1303,9 @@ export const ClientErrorSchema = z.object({
   url: z.string().max(500).nullish(),
 });
 
+/** Body of POST /api/deploy/role. A process starts as a candidate; nothing moves one back to it. */
+export const DeployRoleChangeSchema = z.object({ role: z.enum(['live', 'retired']) }).strict();
+
 /**
  * Body of POST /api/approvals/:id/answer (Approvals Inbox).
  * `option` digits are additionally validated against the item's PARSED options

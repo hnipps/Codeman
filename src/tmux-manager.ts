@@ -27,8 +27,8 @@ import { execSync, exec, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
-import { existsSync, readFileSync, mkdirSync, realpathSync } from 'node:fs';
-import { writeFile, rename } from 'node:fs/promises';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -141,6 +141,7 @@ const PROC_SNAPSHOT_TTL_MS = 2000;
  */
 const PROC_SNAPSHOT_WAIT_MS = 1500;
 import { DEFAULT_TMUX_HISTORY_LIMIT, DEFAULT_TERMINAL_BUFFER_MAX_BYTES } from './config/terminal-history.js';
+import { deployRole, DeployRoleRefusal } from './deploy-role.js';
 
 /**
  * Extra stdout headroom for the full-history `capture-pane` child process on
@@ -2050,6 +2051,9 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
    */
   private remoteAliveInFlight: Set<string> = new Set();
 
+  /** Writes of mux-sessions.json, one after another, so a later snapshot always lands last. */
+  private saveChain: Promise<void> = Promise.resolve();
+
   private trueColorConfigured = false;
   /** tmux 3.7+ can resize pane history after creation; older releases cannot. */
   private liveHistoryResizeSupported: boolean | null = null;
@@ -2091,10 +2095,8 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
     return this.liveHistoryResizeSupported;
   }
 
-  // Load saved sessions from disk (NEVER called in test mode)
+  // Load saved sessions from disk (never at construction in test mode)
   private loadSessions(): void {
-    if (IS_TEST_MODE) return;
-
     try {
       if (existsSync(MUX_SESSIONS_FILE)) {
         const content = readFileSync(MUX_SESSIONS_FILE, 'utf-8');
@@ -2143,29 +2145,41 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
   }
 
   /**
+   * Replace the tracked sessions with what mux-sessions.json holds now: what a deploy
+   * colour does when it takes over from the colour that was writing the file.
+   */
+  reloadFromDisk(): void {
+    this.sessions.clear();
+    this.loadSessions();
+  }
+
+  /** Write the session list now, behind any write already queued; resolves once it has landed. */
+  flushNow(): Promise<void> {
+    return this.queueSessionsWrite();
+  }
+
+  /**
    * Save sessions to disk asynchronously. (NEVER writes in test mode)
    * Uses atomic temp+rename to prevent corruption on crash.
    */
   private saveSessions(): void {
-    if (IS_TEST_MODE) return;
-
-    try {
-      const dir = dirname(MUX_SESSIONS_FILE);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      const data = Array.from(this.sessions.values());
-      const json = JSON.stringify(data, null, 2);
-
-      const tempPath = MUX_SESSIONS_FILE + '.tmp';
-      writeFile(tempPath, json, 'utf-8')
-        .then(() => rename(tempPath, MUX_SESSIONS_FILE))
-        .catch((err) => {
-          console.error('[TmuxManager] Failed to save sessions:', err);
-        });
-    } catch (err) {
+    this.queueSessionsWrite().catch((err) => {
       console.error('[TmuxManager] Failed to save sessions:', err);
-    }
+    });
+  }
+
+  private queueSessionsWrite(): Promise<void> {
+    if (IS_TEST_MODE || !deployRole.allows('persist')) return Promise.resolve();
+
+    const json = JSON.stringify(Array.from(this.sessions.values()), null, 2);
+    const tempPath = MUX_SESSIONS_FILE + '.tmp';
+    const write = this.saveChain.then(async () => {
+      await mkdir(dirname(MUX_SESSIONS_FILE), { recursive: true });
+      await writeFile(tempPath, json, 'utf-8');
+      await rename(tempPath, MUX_SESSIONS_FILE);
+    });
+    this.saveChain = write.catch(() => undefined);
+    return write;
   }
 
   /**
@@ -2454,6 +2468,9 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       docker,
       owner,
     } = options;
+
+    // A pane this colour cannot record would outlive every record of it.
+    if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'creates sessions');
     const muxName = `codeman-${sessionId.slice(0, 8)}`;
 
     if (!isValidMuxName(muxName)) {
@@ -3720,7 +3737,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
     }
 
     this.mouseSyncInterval = setInterval(async () => {
-      if (IS_TEST_MODE) return;
+      if (IS_TEST_MODE || !deployRole.allows('automate')) return;
 
       for (const session of this.sessions.values()) {
         const panes = await this.listPanes(session.muxName);
@@ -3771,7 +3788,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       clearInterval(this.remoteReconnectInterval);
     }
     this.remoteReconnectInterval = setInterval(() => {
-      if (IS_TEST_MODE) return;
+      if (IS_TEST_MODE || !deployRole.allows('automate')) return;
       try {
         this.runRemoteReconnectTick(Date.now(), isRemoteAutoReconnectEnabled());
       } catch (err) {

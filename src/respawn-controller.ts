@@ -67,6 +67,7 @@ import {
 import { RespawnAdaptiveTiming } from './respawn-adaptive-timing.js';
 import { RespawnCycleMetricsTracker } from './respawn-metrics.js';
 import { calculateHealthScore, shouldSkipClear, type HealthInputs } from './respawn-health.js';
+import { deployRole } from './deploy-role.js';
 import {
   AI_CHECK_MODEL,
   AI_IDLE_CHECK_MAX_CONTEXT,
@@ -751,6 +752,11 @@ export class RespawnController extends EventEmitter {
    * @param session - The Session instance to control
    * @param config - Partial configuration (merged with defaults)
    */
+  /** The cycle's keystrokes. Only the live deploy colour sends them (see deploy-role.ts). */
+  private writeToPane(data: string): Promise<boolean> {
+    return deployRole.allows('automate') ? this.session.writeViaMux(data) : Promise.resolve(false);
+  }
+
   constructor(session: Session, config: Partial<RespawnConfig> = {}) {
     super();
     this.session = session;
@@ -1629,7 +1635,7 @@ export class RespawnController extends EventEmitter {
         if (this._state === 'stopped') return;
         const prompt = toSingleLine(this.config.kickstartPrompt!);
         this.logAction('command', `Sending kickstart: "${prompt.substring(0, 40)}..."`);
-        await this.session.writeViaMux(prompt + '\r'); // \r triggers key.return in Ink/Claude CLI
+        await this.writeToPane(prompt + '\r'); // \r triggers key.return in Ink/Claude CLI
         // COD-51: stop() may have run during the await; re-check before reviving the
         // state machine. Reads the public getter, not `_state`: TypeScript narrows
         // `_state` across the await from the guard above and cannot see that stop()
@@ -2374,7 +2380,7 @@ export class RespawnController extends EventEmitter {
 
     this.logAction('command', 'Auto-accept: ↵ Enter (plan approved)');
     this.emit('stepSent', 'auto-accept', '↵');
-    void this.session.writeViaMux('\r');
+    void this.writeToPane('\r');
     this.emit('autoAcceptSent');
     // Reset so we don't keep spamming Enter if Claude doesn't respond
     this.hasReceivedOutput = false;
@@ -2844,7 +2850,7 @@ export class RespawnController extends EventEmitter {
 
         const input = updatePrompt + '\r'; // \r triggers Enter in Ink/Claude CLI
         this.logAction('command', `Sending: "${updatePrompt.substring(0, 50)}..."`);
-        await this.session.writeViaMux(input);
+        await this.writeToPane(input);
         // COD-51: stop() may have run during the await; re-check before reviving the
         // state machine. Reads the public getter, not `_state`: TypeScript narrows
         // `_state` across the await from the guard above and cannot see that stop()
@@ -2876,7 +2882,7 @@ export class RespawnController extends EventEmitter {
       async () => {
         if (this._state === 'stopped') return;
         this.logAction('command', 'Sending: /clear');
-        await this.session.writeViaMux('/clear\r'); // \r triggers Enter in Ink/Claude CLI
+        await this.writeToPane('/clear\r'); // \r triggers Enter in Ink/Claude CLI
         // COD-51: stop() may have run during the await; re-check before reviving the
         // state machine. Reads the public getter, not `_state`: TypeScript narrows
         // `_state` across the await from the guard above and cannot see that stop()
@@ -2923,7 +2929,7 @@ export class RespawnController extends EventEmitter {
       async () => {
         if (this._state === 'stopped') return;
         this.logAction('command', 'Sending: /init');
-        await this.session.writeViaMux('/init\r'); // \r triggers Enter in Ink/Claude CLI
+        await this.writeToPane('/init\r'); // \r triggers Enter in Ink/Claude CLI
         // COD-51: stop() may have run during the await; re-check before reviving the
         // state machine. Reads the public getter, not `_state`: TypeScript narrows
         // `_state` across the await from the guard above and cannot see that stop()

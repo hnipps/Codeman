@@ -42,6 +42,7 @@ import { Debouncer, MAX_SESSION_TOKENS } from './utils/index.js';
 import { dataPath, CODEMAN_INSTANCE } from './config/instance.js';
 import { normalizeSessionOrder } from './session-order.js';
 import { validateTabLayout, type TabLayout } from './tab-layout.js';
+import { deployRole } from './deploy-role.js';
 
 /** Debounce delay for batching state writes (ms) */
 const SAVE_DEBOUNCE_MS = 500;
@@ -317,7 +318,7 @@ export class StateStore {
 
   private async _doSaveAsync(): Promise<void> {
     this.saveDeb.cancel();
-    if (!this.dirty) {
+    if (!this.dirty || !deployRole.allows('persist')) {
       return;
     }
 
@@ -382,7 +383,7 @@ export class StateStore {
    */
   saveNow(): void {
     this.saveDeb.cancel();
-    if (!this.dirty) {
+    if (!this.dirty || !deployRole.allows('persist')) {
       return;
     }
 
@@ -464,6 +465,45 @@ export class StateStore {
   /** Flushes any pending main state save. Call before shutdown. */
   flush(): void {
     this.saveNow();
+  }
+
+  /** Resolves once a write already on its way to disk has landed. */
+  async settle(): Promise<void> {
+    while (this._saveInFlight) await this._saveInFlight.catch(() => undefined);
+  }
+
+  /**
+   * Write everything now, changed or not, if this process may persist: the one flush a
+   * deploy role change makes, so the files on disk are exactly this process's view.
+   * False when anything is left unwritten.
+   */
+  writeAllNow(): boolean {
+    this.dirty = true;
+    this.ralphStateDirty = true;
+    this.saveNow();
+    this.saveRalphStatesNow();
+    return !this.dirty && !this.ralphStateDirty;
+  }
+
+  /**
+   * Replace what this store holds with what is on disk now. A deploy colour taking over
+   * calls this: the colour that was live flushed its view before it retired, and nothing
+   * this process changed in memory before then was ever meant to reach disk.
+   */
+  reloadFromDisk(): void {
+    this.saveDeb.cancel();
+    this.ralphStateSaveDeb.cancel();
+    this.state = this.load();
+    this.state.config.stateFilePath = this.filePath;
+    this.dirty = false;
+    this.dirtySessions.clear();
+    this.cachedSessionJsons.clear();
+    for (const [id, session] of Object.entries(this.state.sessions)) {
+      this.cachedSessionJsons.set(id, JSON.stringify(session));
+    }
+    this.ralphStates.clear();
+    this.ralphStateDirty = false;
+    this.loadRalphStates();
   }
 
   /** Returns the full application state object. */
@@ -976,7 +1016,7 @@ export class StateStore {
    */
   private saveRalphStatesNow(): void {
     this.ralphStateSaveDeb.cancel();
-    if (!this.ralphStateDirty) {
+    if (!this.ralphStateDirty || !deployRole.allows('persist')) {
       return;
     }
     // Clear dirty flag only on success to enable retry on failure

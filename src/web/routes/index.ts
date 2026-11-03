@@ -9,6 +9,7 @@ export { registerFileRoutes } from './file-routes.js';
 export { registerHtmlViewRoutes } from './html-view-routes.js';
 export { registerScheduledRoutes } from './scheduled-routes.js';
 export { registerCronRoutes } from './cron-routes.js';
+export { registerDeployRoutes } from './deploy-routes.js';
 export { registerSystemRoutes } from './system-routes.js';
 export { registerHookEventRoutes } from './hook-event-routes.js';
 export { registerApprovalRoutes } from './approval-routes.js';

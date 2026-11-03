@@ -32,6 +32,7 @@
  */
 
 import type { KeepWarmStatus, PromptCacheStatus, StatusLineExporter } from './types/index.js';
+import { deployRole } from './deploy-role.js';
 
 /** The nudge. Under 100 chars on purpose: a longer burst reads as a paste to Claude Code. */
 export const KEEP_WARM_NUDGE = 'Codeman cache keep-alive: no action needed, reply with just "ok".';
@@ -324,7 +325,7 @@ export class PromptCacheKeepWarmService implements KeepWarmScheduler {
   }
 
   private async evaluate(id: string): Promise<void> {
-    if (this.stopped || this.inFlight.has(id)) return;
+    if (this.stopped || this.inFlight.has(id) || !deployRole.allows('automate')) return;
     const token = Symbol(id);
     this.inFlight.set(id, token);
     // A session removed (or the service stopped) during an await gets nothing after it: no

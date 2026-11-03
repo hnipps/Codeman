@@ -1,7 +1,7 @@
 /**
  * @fileoverview Build health and client-error telemetry routes.
  *
- * - `GET  /api/health`         liveness plus build identity, for a deploy supervisor
+ * - `GET  /api/health`         liveness plus build identity and deploy role, for a deploy supervisor
  * - `GET  /ws/health`          the same over a WebSocket: says `{ok, buildId}` and closes
  * - `POST /api/client-errors`  an uncaught browser error, appended to `client-errors.jsonl`
  *
@@ -17,6 +17,7 @@ import { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import { PACKAGE_VERSION } from '../../telemetry.js';
+import { deployRole } from '../../deploy-role.js';
 import { ClientErrorSchema } from '../schemas.js';
 import { canAccessOwned, getAuthUser, parseBody } from '../route-helpers.js';
 import { isAllowedRequestHost, isAllowedRequestOrigin, type HostPolicy } from '../network-auth-policy.js';
@@ -47,6 +48,7 @@ export function registerTelemetryRoutes(
       uptimeS: Math.round(process.uptime()),
       sessions,
       pid: process.pid,
+      deployRole: deployRole.current,
     };
   });
 

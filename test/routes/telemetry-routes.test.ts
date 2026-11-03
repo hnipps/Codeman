@@ -52,7 +52,7 @@ afterEach(async () => {
 });
 
 describe('GET /api/health', () => {
-  it('reports ok with the build identity, uptime, session count and pid', async () => {
+  it('reports ok with the build identity, uptime, session count, pid and deploy role', async () => {
     await setup();
     const res = await harness.app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
@@ -64,6 +64,7 @@ describe('GET /api/health', () => {
       uptimeS: expect.any(Number),
       sessions: 1,
       pid: process.pid,
+      deployRole: 'live',
     });
     expect(res.json().uptimeS).toBeGreaterThanOrEqual(0);
   });
