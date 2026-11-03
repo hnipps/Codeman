@@ -2,7 +2,7 @@
 # Pre-switch test gate. The supervisor runs this from the release root after build.sh
 # and switches only if it exits 0.
 #
-# The full `npm test` is ~18 minutes on the deploy host (measured), too slow to gate every
+# The full `npm test` took about 18 minutes when measured, too slow to gate every
 # deploy. This runs the type check, the frontend syntax check and the tests that cover what
 # a bad deploy cannot recover from: the server booting, /api/status and the SSE init,
 # auth, the route context, and the telemetry, health and reload pieces. `npm test` runs the rest.
