@@ -13,7 +13,7 @@ import {
 } from '../src/deploy-role.js';
 
 const ROLES: DeployRole[] = ['candidate', 'live', 'retired'];
-const CAPABILITIES: DeployCapability[] = ['persist', 'automate'];
+const CAPABILITIES: DeployCapability[] = ['persist', 'automate', 'requestDeploy'];
 
 afterEach(() => {
   deployRole.initFromEnv({});
@@ -45,7 +45,7 @@ describe('planRoleChange', () => {
 });
 
 describe('roleAllows', () => {
-  it('lets only the live colour persist or automate', () => {
+  it('lets only the live colour persist, automate or request a deploy', () => {
     for (const capability of CAPABILITIES) {
       expect(roleAllows('live', capability)).toBe(true);
       expect(roleAllows('candidate', capability)).toBe(false);

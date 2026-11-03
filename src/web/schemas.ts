@@ -1306,6 +1306,16 @@ export const ClientErrorSchema = z.object({
 /** Body of POST /api/deploy/role. A process starts as a candidate; nothing moves one back to it. */
 export const DeployRoleChangeSchema = z.object({ role: z.enum(['live', 'retired']) }).strict();
 
+/** Body of POST /api/deploy/rollback: the previous release, or a commit sha (7-40 lowercase hex). */
+export const DeployRollbackSchema = z
+  .object({
+    target: z.union([
+      z.literal('previous'),
+      z.string().regex(/^[0-9a-f]{7,40}$/, 'target must be "previous" or a 7-40 character lowercase hex sha'),
+    ]),
+  })
+  .strict();
+
 /**
  * Body of POST /api/approvals/:id/answer (Approvals Inbox).
  * `option` digits are additionally validated against the item's PARSED options

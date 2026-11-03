@@ -30,14 +30,16 @@ export type DeployCapability =
    */
   | 'persist'
   /** Run the timers and controllers that write the data dir or act on panes unasked. */
-  | 'automate';
+  | 'automate'
+  /** Ask the supervisor to roll back. A rollback stops the colour that asked, so only the colour users are on may. */
+  | 'requestDeploy';
 
 export type DeployTransition = 'promote' | 'retire' | 'reinstate';
 
 const POLICY: Readonly<Record<DeployRole, Readonly<Record<DeployCapability, boolean>>>> = {
-  candidate: { persist: false, automate: false },
-  live: { persist: true, automate: true },
-  retired: { persist: false, automate: false },
+  candidate: { persist: false, automate: false, requestDeploy: false },
+  live: { persist: true, automate: true, requestDeploy: true },
+  retired: { persist: false, automate: false, requestDeploy: false },
 };
 
 const TRANSITIONS: Readonly<Record<DeployRole, Partial<Record<DeployRole, DeployTransition>>>> = {

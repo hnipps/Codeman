@@ -233,6 +233,7 @@ import {
   registerOrchestratorRoutes,
   registerCronRoutes,
   registerDeployRoutes,
+  registerDeployControlRoutes,
   registerMeRoutes,
   registerAdminRoutes,
   registerWsRoutes,
@@ -1369,6 +1370,7 @@ export class WebServer extends EventEmitter {
     // pre-listen 0 of an ephemeral bind) into an object nothing keeps in sync.
     registerCronRoutes(this.app, { cron: this.cronService });
     registerDeployRoutes(this.app, { changeDeployRole: (role) => this.changeDeployRole(role) });
+    registerDeployControlRoutes(this.app);
 
     registerWsRoutes(this.app, ctx, () => this.getHostPolicy());
     registerTelemetryRoutes(this.app, ctx, () => this.getHostPolicy());

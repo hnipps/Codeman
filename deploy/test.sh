@@ -20,6 +20,8 @@ tests=(
   test/deploy-healthcheck.test.ts
   test/deploy-role.test.ts
   test/routes/deploy-routes.test.ts
+  test/deploy-control.test.ts
+  test/routes/deploy-control-routes.test.ts
   test/deploy-colours.test.ts
   test/deploy-handoff.test.ts
   test/deploy-env-switches.test.ts
