@@ -27,7 +27,7 @@ import { format } from 'node:util';
 const require = createRequire(import.meta.url);
 export const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
 
-export const BUILD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const BUILD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const FLUSH_DELAY_MS = 200;
@@ -36,17 +36,17 @@ const MAX_QUEUED_CHARS = 4 * 1024 * 1024;
 const MAX_MESSAGE_CHARS = 8 * 1024;
 const MAX_PATH_CHARS = 512;
 
-export type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug';
+type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug';
 const CONSOLE_LEVELS: readonly ConsoleLevel[] = ['log', 'info', 'warn', 'error', 'debug'];
 
-export interface ServerLogLine {
+interface ServerLogLine {
   level: ConsoleLevel;
   buildId: string;
   pid: number;
   msg: string;
 }
 
-export interface RequestLogLine {
+interface RequestLogLine {
   reqId: string;
   method: string;
   path: string;
@@ -54,7 +54,7 @@ export interface RequestLogLine {
   ms: number;
 }
 
-export interface ClientErrorLogLine {
+interface ClientErrorLogLine {
   buildId: string;
   ua: string;
   message: string;
@@ -71,7 +71,7 @@ interface StreamRecords {
   'client-errors': ClientErrorLogLine;
 }
 
-export type TelemetryStream = keyof StreamRecords;
+type TelemetryStream = keyof StreamRecords;
 
 /** The build id from `raw` when it is well formed, else `fallback`. */
 export function resolveBuildId(raw: string | undefined, fallback: string): string {
@@ -94,7 +94,7 @@ export function requestPath(url: string): string {
   return path.replace(/^\/(q|webview|html-view)\/[^/]+/, '/$1/:redacted').slice(0, MAX_PATH_CHARS);
 }
 
-export function formatConsoleArgs(args: readonly unknown[]): string {
+function formatConsoleArgs(args: readonly unknown[]): string {
   try {
     return format(...args).slice(0, MAX_MESSAGE_CHARS);
   } catch {
@@ -103,7 +103,7 @@ export function formatConsoleArgs(args: readonly unknown[]): string {
 }
 
 /** A file is rotated once it has passed the cap. A batch may overshoot it by its own size. */
-export function shouldRotate(sizeBytes: number, maxBytes: number): boolean {
+function shouldRotate(sizeBytes: number, maxBytes: number): boolean {
   return sizeBytes > maxBytes;
 }
 
