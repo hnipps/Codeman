@@ -5,7 +5,8 @@
 # The full `npm test` took about 18 minutes when measured, too slow to gate every
 # deploy. This runs the type check, the frontend syntax check and the tests that cover what
 # a bad deploy cannot recover from: the server booting, /api/status and the SSE init,
-# auth, the route context, and the telemetry, health and reload pieces. `npm test` runs the rest.
+# auth, the route context, the telemetry, health and reload pieces, and the deploy role
+# handoff the overlap of two colours depends on. `npm test` runs the rest.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,6 +18,11 @@ tests=(
   test/telemetry-server.test.ts
   test/build-reload.test.ts
   test/deploy-healthcheck.test.ts
+  test/deploy-role.test.ts
+  test/routes/deploy-routes.test.ts
+  test/deploy-colours.test.ts
+  test/deploy-handoff.test.ts
+  test/deploy-env-switches.test.ts
   test/http-contract.test.ts
   test/routes/system-routes.test.ts
   test/mocks/mock-route-context-completeness.test.ts
