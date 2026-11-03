@@ -3,12 +3,16 @@
  * Hand the live deploy role from one running Codeman to another, for a blue-green supervisor.
  *
  *   node deploy/handoff.mjs --new-port 3102 [--old-port 3101] [--host 127.0.0.1]
+ *   node deploy/handoff.mjs --undo --old-port 3101 [--new-port 3102]
  *
  * Retires the old colour (it writes its view of the shared files once, then stops writing
  * and acting on panes), then promotes the new one (it re-reads those files and takes over).
  * Without --old-port it only promotes. An old colour that answers 404 is an older release
  * without the role endpoint: it is left as it is, with a warning on stderr, and the handoff
  * continues.
+ *
+ * --undo reverses a handoff that succeeded but whose deploy was then abandoned (the proxy
+ * switch failed): it retires the new colour when given, then puts the old one back to live.
  *
  * Any failure puts the old colour back as it was before this ran and exits 1; a usage error
  * exits 2. Prints ONE JSON line `{ ok, steps: [{ name, ok, detail }] }`. Uses HTTP Basic auth
@@ -38,6 +42,7 @@ try {
     options: {
       'new-port': { type: 'string' },
       'old-port': { type: 'string' },
+      undo: { type: 'boolean', default: false },
       host: { type: 'string', default: '127.0.0.1' },
     },
     strict: true,
@@ -45,7 +50,9 @@ try {
 } catch (err) {
   usageError(err.message);
 }
-const newPort = parsePort(args['new-port'], '--new-port');
+const undo = args.undo;
+if (undo && args['old-port'] === undefined) usageError('--undo needs --old-port');
+const newPort = undo && args['new-port'] === undefined ? null : parsePort(args['new-port'], '--new-port');
 const oldPort = args['old-port'] === undefined ? null : parsePort(args['old-port'], '--old-port');
 if (oldPort === newPort) usageError('--old-port and --new-port must differ');
 
@@ -86,6 +93,15 @@ function finish(ok) {
 async function reinstateOld() {
   const result = await setRole(oldPort, 'live', RETIRE_TIMEOUT_MS);
   steps.push({ name: 'reinstate-old', ok: result.status === 200, detail: result.detail });
+}
+
+if (undo) {
+  if (newPort !== null) {
+    const demoted = await setRole(newPort, 'retired', RETIRE_TIMEOUT_MS);
+    steps.push({ name: 'retire-new', ok: [200, 409, 0].includes(demoted.status), detail: demoted.detail });
+  }
+  await reinstateOld();
+  finish(steps.at(-1).ok);
 }
 
 let oldRetired = false;

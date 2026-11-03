@@ -203,7 +203,35 @@ describe('deploy/handoff.mjs', () => {
     expect(old.role).toBe('live');
   });
 
+  it('--undo after a completed handoff retires the new colour and puts the old one back to live', async () => {
+    const old = await fakeColour('retired');
+    const next = await fakeColour('live');
+    const { code, report } = await handoff(['--undo', '--old-port', `${old.port}`, '--new-port', `${next.port}`]);
+
+    expect(code).toBe(0);
+    expect(stepNames(report)).toEqual([
+      ['retire-new', true],
+      ['reinstate-old', true],
+    ]);
+    expect([old.role, next.role]).toEqual(['live', 'retired']);
+  });
+
+  it('--undo still reinstates the old colour when the new one is already gone', async () => {
+    const old = await fakeColour('retired');
+    const { code, report } = await handoff([
+      '--undo',
+      '--old-port',
+      `${old.port}`,
+      '--new-port',
+      `${await closedPort()}`,
+    ]);
+    expect(code).toBe(0);
+    expect(old.role).toBe('live');
+    expect(report.steps.at(-1)).toMatchObject({ name: 'reinstate-old', ok: true });
+  });
+
   it.each([
+    [['--undo', '--new-port', '4000'], '--undo needs --old-port'],
     [[], '--new-port <1-65535> is required'],
     [['--new-port', '4000', '--old-port', '4000'], '--old-port and --new-port must differ'],
   ])('exits 2 with a JSON line on bad arguments %j', async (args, message) => {
