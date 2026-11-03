@@ -140,7 +140,7 @@ describe('telemetry files', () => {
     const raw = readFileSync(join(logDir, 'requests.jsonl'), 'utf8');
     for (const secret of ['hunter2', PASSWORD, 'Basic ', 'authorization']) expect(raw).not.toContain(secret);
     for (const line of logLines('requests.jsonl')) {
-      expect(Object.keys(line).sort()).toEqual(['method', 'ms', 'path', 'reqId', 'status', 'ts']);
+      expect(Object.keys(line).sort()).toEqual(['buildId', 'method', 'ms', 'path', 'pid', 'reqId', 'status', 'ts']);
       expect(line.ms).toEqual(expect.any(Number));
     }
   });

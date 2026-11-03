@@ -185,7 +185,8 @@ export class Telemetry {
 
   write<S extends TelemetryStream>(stream: S, record: StreamRecords[S]): void {
     try {
-      const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n';
+      const line =
+        JSON.stringify({ ts: new Date().toISOString(), buildId: this.buildId, pid: process.pid, ...record }) + '\n';
       let writer = this.writers.get(stream);
       if (!writer) {
         writer = new StreamWriter(join(this.dir, `${stream}.jsonl`), this.maxBytes);
