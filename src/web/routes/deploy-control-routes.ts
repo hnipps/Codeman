@@ -4,8 +4,9 @@
  * - `GET  /api/deploy/overview`  what is live, the releases kept on disk, the last deploys, whether one runs
  * - `POST /api/deploy/rollback`  `{ target }` queues a rollback and answers 202 `{ requestId }`
  *
- * Behind the normal auth hook only, since people reach these through the deploy's proxy. Both answer
- * "not configured" (404) unless `CODEMAN_SUPERVISOR_CLI` names the command. A rollback is refused
+ * Behind the normal auth hook only, since people reach these through the deploy's proxy. Unless
+ * `CODEMAN_SUPERVISOR_CLI` names the command, the overview answers `{ configured: false }` and a
+ * rollback answers "not configured" (404). A rollback is refused
  * from any colour but the live one, which is the colour the browser is talking to and the one
  * a successful rollback stops.
  */

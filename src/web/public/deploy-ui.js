@@ -41,11 +41,16 @@
   }
 
   async function postRollback(target) {
-    const res = await window.fetch('/api/deploy/rollback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target }),
-    });
+    let res;
+    try {
+      res = await window.fetch('/api/deploy/rollback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+    } catch {
+      return { ok: false, body: { error: 'The server could not be reached.' } };
+    }
     let body = null;
     try {
       body = await res.json();
