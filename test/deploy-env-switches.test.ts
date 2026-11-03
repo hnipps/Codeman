@@ -32,7 +32,7 @@ describe('resolvePaneApiUrl', () => {
     ['not a url', 'is not a URL'],
     ['ftp://127.0.0.1:21', 'is not an http(s) URL'],
     ['http://codeman.example.com:8090', 'does not name a loopback host'],
-    ['http://192.168.1.4:8090', 'does not name a loopback host'],
+    ['http://192.0.2.44:8090', 'does not name a loopback host'],
     ['http://user:pw@127.0.0.1:8090', 'carries credentials, a query or a fragment'],
   ])('falls back to this server for %j and says why', (stable, why) => {
     const result = resolvePaneApiUrl(OWN, stable);
