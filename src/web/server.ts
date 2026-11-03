@@ -98,6 +98,7 @@ import { PlanOrchestrator } from '../plan-orchestrator.js';
 import { OrchestratorLoop } from '../orchestrator-loop.js';
 import { getLifecycleLog } from '../session-lifecycle-log.js';
 import { deployRole, planRoleChange, type DeployRole, type DeployRoleOutcome } from '../deploy-role.js';
+import { resolvePaneApiUrl } from './pane-api-url.js';
 import {
   applyWorkspaceHooks,
   pruneAgentSessionPreambles,
@@ -3281,7 +3282,9 @@ export class WebServer extends EventEmitter {
     // Set API URL for child processes (MCP server, spawned sessions)
     const apiHost =
       this.host === '0.0.0.0' || this.host === 'localhost' || this.host === '::1' ? '127.0.0.1' : this.host;
-    process.env.CODEMAN_API_URL = `${protocol}://${apiHost}:${this.port}`;
+    const paneApiUrl = resolvePaneApiUrl(`${protocol}://${apiHost}:${this.port}`, process.env.CODEMAN_STABLE_API_URL);
+    if (paneApiUrl.warning) console.warn(`[Deploy] ${paneApiUrl.warning}`);
+    process.env.CODEMAN_API_URL = paneApiUrl.url;
 
     // Ensure the COD-54 hook secret exists on disk before any session exports
     // $CODEMAN_HOOK_SECRET_FILE — hook curls cat that path at execution time.

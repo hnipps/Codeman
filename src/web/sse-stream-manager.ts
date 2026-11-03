@@ -21,6 +21,7 @@ import type { SessionOrderProjectionChange } from '../tab-layout-service.js';
 import type { AuthUser } from '../types.js';
 import { CleanupManager, StaleExpirationMap } from '../utils/index.js';
 import { SseEvent } from './sse-events.js';
+import { isExplicitlyEnabled } from './network-auth-policy.js';
 import { sessionOrderPayloadFor } from './session-order-sse.js';
 import {
   TERMINAL_BATCH_INTERVAL,
@@ -88,6 +89,13 @@ export class SseStreamManager {
   // ─── Tunnel State ───────────────────────────────────────
   /** Cached tunnel active state — updated on TunnelStarted/TunnelStopped to avoid getUrl() on every broadcast */
   private _isTunnelActive: boolean = false;
+  /** `CODEMAN_SSE_PADDING=1`: a buffering proxy this process does not manage (an external cloudflared) sits in front. */
+  private readonly _paddingForced: boolean = isExplicitlyEnabled(process.env.CODEMAN_SSE_PADDING);
+
+  /** Whether frames carry the padding that makes a buffering proxy flush. */
+  private get _padsForProxy(): boolean {
+    return this._paddingForced || this._isTunnelActive;
+  }
 
   // ─── Terminal Batching ──────────────────────────────────
   private terminalBatches: Map<string, string[]> = new Map();
@@ -211,7 +219,7 @@ export class SseStreamManager {
 
   /** Send pre-formatted tunnel padding to a specific client. */
   sendPadding(reply: FastifyReply): void {
-    if (!this._isTunnelActive) return;
+    if (!this._padsForProxy) return;
     try {
       reply.raw.write(SSE_PADDING);
     } catch {
@@ -228,7 +236,7 @@ export class SseStreamManager {
     if (!this.sseClients.has(reply)) return;
     this.backpressuredClients.delete(reply);
     try {
-      const drainPadding = this._isTunnelActive ? SSE_PADDING : '';
+      const drainPadding = this._padsForProxy ? SSE_PADDING : '';
       const recovered = reply.raw.write(`event: ${SseEvent.SessionNeedsRefresh}\ndata: {}\n\n${drainPadding}`);
       if (!recovered) {
         this.markBackpressured(reply);
@@ -285,7 +293,7 @@ export class SseStreamManager {
     // Recovery events need immediate proxy flush; low-frequency metadata events
     // (session:created, ralph:*, respawn:*, etc.) don't need padding.
     // Note: session:terminal has its own padding in flushSessionTerminalBatch().
-    const needsPadding = this._isTunnelActive && event === SseEvent.SessionNeedsRefresh;
+    const needsPadding = this._padsForProxy && event === SseEvent.SessionNeedsRefresh;
     const padding = needsPadding ? SSE_PADDING : '';
     let message: string;
     try {
@@ -423,7 +431,7 @@ export class SseStreamManager {
       const escapedData = JSON.stringify(syncData);
       // Append tunnel padding for immediate Cloudflare proxy flush —
       // terminal data is high-frequency and latency-sensitive.
-      const padding = this._isTunnelActive ? SSE_PADDING : '';
+      const padding = this._padsForProxy ? SSE_PADDING : '';
       const message = `event: session:terminal\ndata: {"id":"${sessionId}","data":${escapedData}}\n\n` + padding;
       // Raw terminal bytes are the highest-value payload: resolve the session owner
       // ONCE and withhold the batch from any non-admin who is not the owner (fail
@@ -553,7 +561,7 @@ export class SseStreamManager {
         } else {
           // Only add padding when tunnel is active: it flushes Cloudflare
           // proxy buffers but wastes bandwidth for direct/Tailscale connections.
-          client.raw.write(this._isTunnelActive ? heartbeat + SSE_PADDING : heartbeat);
+          client.raw.write(this._padsForProxy ? heartbeat + SSE_PADDING : heartbeat);
         }
       } catch {
         // Error accessing socket means client is dead
