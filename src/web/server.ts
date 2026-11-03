@@ -140,6 +140,7 @@ import {
 } from './respawn-event-wiring.js';
 
 import { reconcileUpdateOnBoot } from './self-update.js';
+import { createTelemetryFromEnv, currentBuildId, requestPath, type Telemetry } from '../telemetry.js';
 
 // Load version from package.json
 const require = createRequire(import.meta.url);
@@ -238,6 +239,7 @@ import {
   registerConfigBackupRoutes,
   runConfigBackup,
   registerWebhookRoutes,
+  registerTelemetryRoutes,
   registerDoctorRoutes,
   registerCustomModelRoutes,
   refreshAllCustomModelHosts,
@@ -470,6 +472,8 @@ export class WebServer extends EventEmitter {
   private lastCopilotUsageSignature: string | null = null;
   // Server startup time for respawn grace period calculation
   private readonly serverStartTime: number = Date.now();
+  private readonly buildId: string = currentBuildId();
+  private readonly telemetry: Telemetry | null = createTelemetryFromEnv();
   // Pending respawn start timers (for cleanup on shutdown)
   private pendingRespawnStarts: Map<string, NodeJS.Timeout> = new Map();
   // Active plan orchestrators (for cancellation via API)
@@ -931,6 +935,9 @@ export class WebServer extends EventEmitter {
       // AuthPort
       authSessions: this.authSessions,
       qrAuthFailures: this.qrAuthFailures,
+      // TelemetryPort
+      buildId: this.buildId,
+      telemetry: this.telemetry,
       // OrchestratorPort — use getter so routes always see current value (not a null snapshot)
       get orchestratorLoop() {
         return self._orchestratorLoop;
@@ -948,6 +955,20 @@ export class WebServer extends EventEmitter {
   }
 
   private async setupRoutes(): Promise<void> {
+    const telemetry = this.telemetry;
+    if (telemetry) {
+      this.app.addHook('onResponse', (req, reply, done) => {
+        telemetry.write('requests', {
+          reqId: req.id,
+          method: req.method,
+          path: requestPath(req.url),
+          status: reply.statusCode,
+          ms: Math.round(reply.elapsedTime),
+        });
+        done();
+      });
+    }
+
     // multipart/form-data: parser is provided by @fastify/multipart (registered
     // below). Its parser is a no-op marker that leaves the body on req.raw, so
     // legacy routes that read the raw stream directly (e.g. /api/screenshots)
@@ -1343,6 +1364,7 @@ export class WebServer extends EventEmitter {
     registerCronRoutes(this.app, { cron: this.cronService });
 
     registerWsRoutes(this.app, ctx, () => this.getHostPolicy());
+    registerTelemetryRoutes(this.app, ctx, () => this.getHostPolicy());
     registerVoiceRoutes(this.app, ctx, () => this.getHostPolicy());
   }
 
@@ -2672,6 +2694,7 @@ export class WebServer extends EventEmitter {
 
     const result = {
       version: APP_VERSION,
+      buildId: this.buildId,
       sessions: this.getLightSessionsState(),
       sessionOrder: this.store.getSessionOrder(),
       scheduledRuns: Array.from(this.scheduledRuns.values()),
@@ -4482,6 +4505,7 @@ export class WebServer extends EventEmitter {
       // The routes answer until `app.close()` returns, so a post after the flush above
       // would otherwise sit in an unref'd debounce timer and never reach disk.
       agentInboxPersistence.flush();
+      await this.telemetry?.close();
     }
   }
 }

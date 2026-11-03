@@ -16,3 +16,4 @@ export type { OrchestratorPort } from './orchestrator-port.js';
 export type { CronPort } from './cron-port.js';
 export type { TabLayoutPort } from './tab-layout-port.js';
 export type { KeepWarmPort } from './keep-warm-port.js';
+export type { TelemetryPort } from './telemetry-port.js';

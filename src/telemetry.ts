@@ -1,0 +1,252 @@
+/**
+ * @fileoverview File telemetry for supervised (blue-green) deploys.
+ *
+ * With `CODEMAN_LOG_DIR` set, the server appends three JSONL streams there so an agent
+ * or a supervisor can read what the app did without a log shipper: `server.jsonl` (every
+ * console line), `requests.jsonl` (one line per HTTP request) and `client-errors.jsonl`
+ * (browser errors posted to `/api/client-errors`). With it unset nothing is written and
+ * nothing else changes.
+ *
+ * Writes never throw into a caller and never block: lines queue in memory (bounded) and
+ * one async append per stream flushes them. Rotation is by size, checked against the file
+ * itself before each append, so two processes sharing a directory (the two colours of a
+ * blue-green deploy) cannot rotate each other's fresh file away on a stale in-memory count.
+ *
+ * Also owns the build id (`CODEMAN_BUILD_ID`), which every line and the health endpoints
+ * carry so a reader can tell which build produced what.
+ *
+ * @module telemetry
+ */
+
+import { accessSync, appendFileSync, constants, mkdirSync } from 'node:fs';
+import { appendFile, rename, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
+import { format } from 'node:util';
+
+const require = createRequire(import.meta.url);
+export const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
+
+export const BUILD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
+const FLUSH_DELAY_MS = 200;
+/** Per-stream cap on lines waiting for a flush; a stuck disk drops lines instead of growing the heap. */
+const MAX_QUEUED_CHARS = 4 * 1024 * 1024;
+const MAX_MESSAGE_CHARS = 8 * 1024;
+const MAX_PATH_CHARS = 512;
+
+export type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug';
+const CONSOLE_LEVELS: readonly ConsoleLevel[] = ['log', 'info', 'warn', 'error', 'debug'];
+
+export interface ServerLogLine {
+  level: ConsoleLevel;
+  buildId: string;
+  pid: number;
+  msg: string;
+}
+
+export interface RequestLogLine {
+  reqId: string;
+  method: string;
+  path: string;
+  status: number;
+  ms: number;
+}
+
+export interface ClientErrorLogLine {
+  buildId: string;
+  ua: string;
+  message: string;
+  source?: string | null;
+  line?: number | null;
+  col?: number | null;
+  stack?: string | null;
+  url?: string | null;
+}
+
+interface StreamRecords {
+  server: ServerLogLine;
+  requests: RequestLogLine;
+  'client-errors': ClientErrorLogLine;
+}
+
+export type TelemetryStream = keyof StreamRecords;
+
+/** The build id from `raw` when it is well formed, else `fallback`. */
+export function resolveBuildId(raw: string | undefined, fallback: string): string {
+  return raw !== undefined && BUILD_ID_PATTERN.test(raw) ? raw : fallback;
+}
+
+export function currentBuildId(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveBuildId(env.CODEMAN_BUILD_ID, PACKAGE_VERSION);
+}
+
+export function resolveMaxBytes(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_MAX_BYTES;
+}
+
+/** A request path for the log: no query string, and no capability or QR token a URL carries as a path segment. */
+export function requestPath(url: string): string {
+  const q = url.indexOf('?');
+  const path = q === -1 ? url : url.slice(0, q);
+  return path.replace(/^\/(q|webview|html-view)\/[^/]+/, '/$1/:redacted').slice(0, MAX_PATH_CHARS);
+}
+
+export function formatConsoleArgs(args: readonly unknown[]): string {
+  try {
+    return format(...args).slice(0, MAX_MESSAGE_CHARS);
+  } catch {
+    return '[unformattable console arguments]';
+  }
+}
+
+/** A file is rotated once it has passed the cap. A batch may overshoot it by its own size. */
+export function shouldRotate(sizeBytes: number, maxBytes: number): boolean {
+  return sizeBytes > maxBytes;
+}
+
+class StreamWriter {
+  private queue: string[] = [];
+  private queuedChars = 0;
+  private timer: NodeJS.Timeout | null = null;
+  private tail: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly path: string,
+    private readonly maxBytes: number
+  ) {}
+
+  push(line: string): void {
+    if (this.queuedChars + line.length > MAX_QUEUED_CHARS) return;
+    this.queue.push(line);
+    this.queuedChars += line.length;
+    if (!this.timer) {
+      this.timer = setTimeout(() => void this.flush(), FLUSH_DELAY_MS);
+      this.timer.unref();
+    }
+  }
+
+  flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.tail = this.tail.then(() => this.drain());
+    return this.tail;
+  }
+
+  /** Last-gasp write at process exit. Skips rotation: the next async flush does it. */
+  flushSync(): void {
+    const batch = this.take();
+    if (!batch) return;
+    try {
+      appendFileSync(this.path, batch, { mode: 0o600 });
+    } catch {
+      /* telemetry must never break the process */
+    }
+  }
+
+  private take(): string {
+    const batch = this.queue.join('');
+    this.queue = [];
+    this.queuedChars = 0;
+    return batch;
+  }
+
+  private async drain(): Promise<void> {
+    const batch = this.take();
+    if (!batch) return;
+    try {
+      const size = await stat(this.path).then(
+        (s) => s.size,
+        () => 0
+      );
+      if (shouldRotate(size, this.maxBytes)) await rename(this.path, `${this.path}.1`);
+      await appendFile(this.path, batch, { mode: 0o600 });
+    } catch {
+      /* telemetry must never break the process */
+    }
+  }
+}
+
+export class Telemetry {
+  private readonly writers = new Map<TelemetryStream, StreamWriter>();
+  private readonly onExit = () => this.flushSync();
+
+  constructor(
+    readonly dir: string,
+    readonly buildId: string,
+    private readonly maxBytes: number
+  ) {
+    process.once('exit', this.onExit);
+  }
+
+  write<S extends TelemetryStream>(stream: S, record: StreamRecords[S]): void {
+    try {
+      const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n';
+      let writer = this.writers.get(stream);
+      if (!writer) {
+        writer = new StreamWriter(join(this.dir, `${stream}.jsonl`), this.maxBytes);
+        this.writers.set(stream, writer);
+      }
+      writer.push(line);
+    } catch {
+      /* telemetry must never break the caller */
+    }
+  }
+
+  async flush(): Promise<void> {
+    await Promise.all([...this.writers.values()].map((w) => w.flush()));
+  }
+
+  flushSync(): void {
+    for (const w of this.writers.values()) w.flushSync();
+  }
+
+  async close(): Promise<void> {
+    process.off('exit', this.onExit);
+    await this.flush();
+  }
+}
+
+/** The telemetry sink `CODEMAN_LOG_DIR` asks for, or null when it is unset or its directory is unusable. */
+export function createTelemetryFromEnv(env: NodeJS.ProcessEnv = process.env): Telemetry | null {
+  const raw = env.CODEMAN_LOG_DIR;
+  if (!raw) return null;
+  const dir = resolve(raw);
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    accessSync(dir, constants.W_OK);
+  } catch (err) {
+    console.warn(`[telemetry] CODEMAN_LOG_DIR is not usable, file telemetry is off: ${(err as Error).message}`);
+    return null;
+  }
+  return new Telemetry(dir, currentBuildId(env), resolveMaxBytes(env.CODEMAN_LOG_MAX_BYTES));
+}
+
+/**
+ * Mirror every console.log/info/warn/error/debug line into `server.jsonl`. The original
+ * console method runs first and unchanged, so stdout and stderr are what they were.
+ * @returns a function that puts the original console methods back
+ */
+export function installConsoleMirror(telemetry: Telemetry): () => void {
+  const originals = new Map<ConsoleLevel, (...args: unknown[]) => void>();
+  for (const level of CONSOLE_LEVELS) {
+    const original = console[level].bind(console) as (...args: unknown[]) => void;
+    originals.set(level, console[level]);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      telemetry.write('server', {
+        level,
+        buildId: telemetry.buildId,
+        pid: process.pid,
+        msg: formatConsoleArgs(args),
+      });
+    };
+  }
+  return () => {
+    for (const [level, method] of originals) console[level] = method;
+  };
+}
