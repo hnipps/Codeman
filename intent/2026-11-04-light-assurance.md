@@ -8,7 +8,7 @@ A change in this repository can land with code, a plan under `docs/`, and an upd
 
 ## Proposed outcome
 
-A non-trivial change starts as an intent file in `intent/`. The rules that already hold stay in `CLAUDE.md` and `docs/architecture-invariants.md`, edited in the same change as the code. A promise that is still moving can be a draft under `docs/invariants/` and can change with the code. Every Crosscheck skill can be run by asking for it. A commit is not blocked by a new assurance hook or a failing assurance job.
+A non-trivial change starts as an intent file in `intent/`. The rules that already hold stay in `CLAUDE.md` and `docs/architecture-invariants.md`, edited in the same change as the code. A promise that is still moving can be a draft under `docs/invariants/` and can change with the code. Every Crosscheck skill can be run by asking for it. A commit is not blocked by a new assurance hook or a failing assurance job. Claude Code, Grok, Codex, Antigravity, and Copilot each load those rules from the instruction file that agent reads.
 
 ## Affected users and systems
 

@@ -2,6 +2,18 @@
 
 This repo keeps Crosscheck's per-change intent files and its assurance skills, and it leaves new blocking gates off. The plugin that provides the skills is Crosscheck 2.9.0 from Nicholls. The reason for a change lives in `intent/`. The rules the product already keeps live in `CLAUDE.md` and `docs/architecture-invariants.md`.
 
+The same short rules are loaded by each agent from the file it actually reads:
+
+| Agent | File it loads |
+|---|---|
+| Claude Code | `CLAUDE.md`, section Assurance |
+| Grok | `AGENTS.md` and `CLAUDE.md` |
+| Codex | `AGENTS.md` |
+| Antigravity | `AGENTS.md` |
+| Copilot | `.github/copilot-instructions.md` |
+
+Edit all three when the short rules change. The longer menu below is the reference.
+
 Two different things are called intent:
 
 | Name | What it is |
