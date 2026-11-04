@@ -1,7 +1,7 @@
 /**
  * @fileoverview Build health and client-error telemetry routes.
  *
- * - `GET  /api/health`         liveness plus build identity and deploy role, for a deploy supervisor
+ * - `GET  /api/health`         liveness, uptime, build identity and deploy role, for a deploy supervisor
  * - `GET  /ws/health`          the same over a WebSocket: says `{ok, buildId}` and closes
  * - `POST /api/client-errors`  an uncaught browser error, appended to `client-errors.jsonl`
  *
@@ -46,6 +46,7 @@ export function registerTelemetryRoutes(
       version: PACKAGE_VERSION,
       buildId: ctx.buildId,
       uptimeS: Math.round(process.uptime()),
+      uptimeSeconds: Math.floor(process.uptime()),
       sessions,
       pid: process.pid,
       deployRole: deployRole.current,

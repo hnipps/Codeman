@@ -7,7 +7,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRouteTestHarness, type RouteTestHarness } from './_route-test-utils.js';
 import { registerTelemetryRoutes } from '../../src/web/routes/telemetry-routes.js';
 import { Telemetry } from '../../src/telemetry.js';
@@ -62,11 +62,23 @@ describe('GET /api/health', () => {
       version,
       buildId: 'route-build',
       uptimeS: expect.any(Number),
+      uptimeSeconds: expect.any(Number),
       sessions: 1,
       pid: process.pid,
       deployRole: 'live',
     });
     expect(res.json().uptimeS).toBeGreaterThanOrEqual(0);
+  });
+
+  it('reports uptimeSeconds as whole seconds since the process started, rounded down', async () => {
+    await setup();
+    const uptime = vi.spyOn(process, 'uptime').mockReturnValue(42.9);
+    try {
+      const res = await harness.app.inject({ method: 'GET', url: '/api/health' });
+      expect(res.json().uptimeSeconds).toBe(42);
+    } finally {
+      uptime.mockRestore();
+    }
   });
 });
 
