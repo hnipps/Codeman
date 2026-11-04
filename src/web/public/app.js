@@ -202,6 +202,7 @@ HTMLCanvasElement.prototype.getContext = function(type, ...args) {
 const _SSE_HANDLER_MAP = [
   // Core
   [SSE_EVENTS.INIT, '_onInit'],
+  [SSE_EVENTS.TRANSCRIPT_UPDATE, '_onTranscriptUpdate'],
 
   // Session lifecycle
   [SSE_EVENTS.SESSION_CREATED, '_onSessionCreated'],
@@ -2440,6 +2441,11 @@ class CodemanApp {
     // Start the remote-host reachability poller even if no session switch follows
     // (a page loaded with the remote tab already active) — see host-wake-ui.js.
     this._ensureHostWakePoller?.();
+    if (this._chatView) this.refreshChatView();
+  }
+
+  _onTranscriptUpdate(data) {
+    if (this._chatView?.sessionId === data.sessionId) this.refreshChatView();
   }
 
   _onSessionCreated(data) {
@@ -2476,6 +2482,7 @@ class CodemanApp {
     const oldSession = this.sessions.get(session.id);
     const claudeSessionIdJustSet = session.claudeSessionId && (!oldSession || !oldSession.claudeSessionId);
     this.sessions.set(session.id, session);
+    if (this._chatView?.sessionId === session.id && !this._canShowChatView(session.id)) this.closeChatView();
     this.renderSessionTabs();
     this.updateCost();
     // Update tokens display if this is the active session
@@ -2503,6 +2510,7 @@ class CodemanApp {
   }
 
   _onSessionDeleted(data) {
+    if (this._chatView?.sessionId === data.id) this.closeChatView();
     if (this._wsSessionId === data.id) this._disconnectWs();
     // Solo window whose session just ended → show the "unavailable" state.
     if (this.isSoloWindow && data.id === this.soloSessionId) {
@@ -3257,6 +3265,115 @@ class CodemanApp {
     } catch (err) {
       console.error('Failed to load response:', err);
     }
+  }
+
+  toggleChatView() {
+    if (this._chatView) {
+      this.closeChatView();
+      return;
+    }
+    const sessionId = this.activeSessionId;
+    if (!this._canShowChatView(sessionId)) return;
+    const view = document.getElementById('chatView');
+    const body = document.getElementById('chatViewBody');
+    if (!view || !body) return;
+    this._chatView = { sessionId, messages: [], dirty: false, refreshPromise: null, controller: new AbortController() };
+    body.replaceChildren();
+    body.scrollTop = 0;
+    this._bindResponseViewerInteractions(body);
+    view.hidden = false;
+    const toggle = document.getElementById('chatViewToggle');
+    toggle?.setAttribute('aria-expanded', 'true');
+    toggle?.setAttribute('aria-label', 'Return to terminal');
+    if (toggle) toggle.title = 'Return to terminal';
+    document.getElementById('chatViewStatus').textContent = 'Loading conversation…';
+    // Focus the native scroll area, never xterm (which would summon the keyboard).
+    body.focus({ preventScroll: true });
+    this.refreshChatView();
+  }
+
+  _canShowChatView(sessionId) {
+    const session = this.sessions.get(sessionId);
+    return session?.mode === 'claude' && !session.remote && !session.docker;
+  }
+
+  closeChatView() {
+    if (!this._chatView) return;
+    this._chatView.controller.abort();
+    this._chatView = null;
+    const view = document.getElementById('chatView');
+    if (view) view.hidden = true;
+    document.getElementById('chatViewBody')?.replaceChildren();
+    const toggle = document.getElementById('chatViewToggle');
+    toggle?.setAttribute('aria-expanded', 'false');
+    toggle?.setAttribute('aria-label', 'Open conversation');
+    if (toggle) toggle.title = 'Open conversation';
+    if (view?.contains(document.activeElement)) toggle?.focus({ preventScroll: true });
+  }
+
+  refreshChatView() {
+    const state = this._chatView;
+    if (!state) return;
+    if (state.sessionId !== this.activeSessionId || !this._canShowChatView(state.sessionId)) {
+      this.closeChatView();
+      return;
+    }
+    state.dirty = true;
+    // One in-flight snapshot and at most one pending refresh. State identity
+    // also fences responses from a closed/reopened view of the SAME session.
+    if (state.refreshPromise) return state.refreshPromise;
+    state.refreshPromise = (async () => {
+      try {
+        while (state.dirty && this._chatView === state) {
+          state.dirty = false;
+          const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/last-response?context=full`,
+            { signal: state.controller.signal });
+          if (!res.ok) throw new Error('Conversation request failed');
+          const data = (await res.json())?.data;
+          if (this._chatView !== state || this.activeSessionId !== state.sessionId) return;
+          if (!Array.isArray(data?.messages)) throw new Error('Invalid conversation snapshot');
+          this._reconcileChatView(data.messages, state);
+          document.getElementById('chatViewStatus').textContent =
+            state.messages.length ? '' : 'No conversation history available yet';
+        }
+      } catch (err) {
+        if (this._chatView === state && this.activeSessionId === state.sessionId) {
+          document.getElementById('chatViewStatus').textContent = 'Could not load conversation. Tap Refresh to retry.';
+        }
+      } finally {
+        state.refreshPromise = null;
+        if (state.dirty && this._chatView === state) this.refreshChatView();
+      }
+    })();
+    return state.refreshPromise;
+  }
+
+  _reconcileChatView(snapshot, state) {
+    const body = document.getElementById('chatViewBody');
+    if (!body || this._chatView !== state || this.activeSessionId !== state.sessionId) return;
+    // No stable IDs in the full-context parser: compare every rendered field,
+    // not lengths or text alone (turn/kind/queued change the card's appearance).
+    const messages = snapshot.map(({ role, text, turn, kind, queued }) => ({ role, text, turn, kind, queued }));
+    const signature = (msg) => JSON.stringify([msg.role, msg.text, msg.turn, msg.kind, !!msg.queued]);
+    const prefix = state.messages.length <= messages.length &&
+      state.messages.every((msg, i) => signature(msg) === signature(messages[i]));
+    const scrollTop = body.scrollTop;
+    const follow = body.scrollHeight - scrollTop - body.clientHeight <= 80;
+    const start = prefix ? state.messages.length : 0;
+    if (!prefix) body.replaceChildren();
+    let previous = messages[start - 1];
+    const agentLabel = this._getResponseViewerAgentLabel();
+    const fragment = document.createDocumentFragment();
+    for (let i = start; i < messages.length; i++) {
+      const msg = messages[i];
+      const continuation = !!previous && previous.role === msg.role &&
+        typeof msg.turn === 'number' && previous.turn === msg.turn;
+      fragment.appendChild(this._buildResponseViewerMessage(msg.text, msg.role, agentLabel, { ...msg, continuation }));
+      previous = msg;
+    }
+    body.appendChild(fragment);
+    state.messages = messages;
+    body.scrollTop = follow ? body.scrollHeight : scrollTop;
   }
 
   async loadFullContext() {
@@ -9931,6 +10048,7 @@ class CodemanApp {
       if (userInitiated) this.markIdleAlertSeen(sessionId);
       return;
     }
+    this.closeChatView();
     // Tile grid open (tile-grid.js): a tiled session is FOCUSED in its tile and
     // never loaded into the parked main terminal. Decision 1: only a USER-
     // initiated pick of a session that is not tiled (or an explicit

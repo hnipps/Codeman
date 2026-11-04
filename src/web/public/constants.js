@@ -1940,6 +1940,7 @@ const SSE_EVENTS = {
 
   // Transcript
   TRANSCRIPT_COMPLETE: 'transcript:complete',
+  TRANSCRIPT_UPDATE: 'transcript:update',
   TRANSCRIPT_PLAN_MODE: 'transcript:plan_mode',
   TRANSCRIPT_TOOL_START: 'transcript:tool_start',
   TRANSCRIPT_TOOL_END: 'transcript:tool_end',

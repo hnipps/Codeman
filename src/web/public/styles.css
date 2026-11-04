@@ -15420,6 +15420,49 @@ body.touch-device.cjk-input-visible .main {
   display: none;
 }
 
+/* A sibling overlay, not a layout replacement: xterm keeps its PTY geometry. */
+.chat-view {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  min-height: 0;
+}
+.chat-view[hidden] { display: none; }
+.chat-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.chat-view-header button,
+.composer-dock-chat {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.composer-dock-chat[hidden] { display: none; }
+.chat-view-status { padding: 0 12px; color: var(--text-muted); }
+.chat-view-status:not(:empty) { padding: 10px 12px; }
+.chat-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
 .touch-device #composerDock.composer-dock-visible {
   position: fixed;
   left: var(--safe-area-left);

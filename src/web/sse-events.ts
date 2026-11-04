@@ -5,7 +5,7 @@
  * and referenced by the frontend (`SSE_EVENTS` in `constants.js`).
  * Both files MUST be kept in sync.
  *
- * 163 event constants organized by category:
+ * 164 event constants organized by category:
  * - **Core** (1): init
  * - **Transport** (1): sse:heartbeat
  * - **Session lifecycle** (25): created, updated, deleted, terminal, idle, working, ...
@@ -21,7 +21,7 @@
  * - **Scheduled** (6): created, updated, completed, stopped, log, deleted
  * - **Cron jobs** (4): jobsChanged, jobDeleted, runCreated, runUpdated
  * - **Teams** (4): created, updated, removed, taskUpdated
- * - **Transcript** (4): complete, plan_mode, tool_start, tool_end
+ * - **Transcript** (5): update, complete, plan_mode, tool_start, tool_end
  * - **Plan orchestration** (5): started, progress, subagent, completed, cancelled
  * - **Tunnel** (7): started, stopped, progress, error, qrRotated, qrRegenerated, qrAuthUsed
  * - **Image / attachments** (2): image:detected, attachment:detected
@@ -320,6 +320,8 @@ export const TeamTaskUpdated = 'team:taskUpdated' as const;
 
 /** Transcript complete event detected. */
 export const TranscriptComplete = 'transcript:complete' as const;
+/** Transcript rows changed. Content-free payload: `{ sessionId, timestamp }`. */
+export const TranscriptUpdate = 'transcript:update' as const;
 /** Plan mode detected in transcript. */
 export const TranscriptPlanMode = 'transcript:plan_mode' as const;
 /** Tool invocation started in transcript. */
@@ -640,6 +642,7 @@ export const SseEvent = {
 
   // Transcript
   TranscriptComplete,
+  TranscriptUpdate,
   TranscriptPlanMode,
   TranscriptToolStart,
   TranscriptToolEnd,

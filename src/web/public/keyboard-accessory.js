@@ -1352,6 +1352,11 @@ const KeyboardAccessoryBar = {
   /** Show or hide the dock for the active session and load that session's draft. */
   syncDock() {
     if (!this._dock) return;
+    const chatToggle = this._dock.querySelector('#chatViewToggle');
+    const chatAvailable = typeof app !== 'undefined' && app._canShowChatView?.(app.activeSessionId) === true;
+    if (chatToggle) chatToggle.hidden = !chatAvailable;
+    if (typeof app !== 'undefined' && app._chatView &&
+        (!chatAvailable || app._chatView.sessionId !== app.activeSessionId)) app.closeChatView();
     const show = this._shouldShowDock();
     const wasShown = this._dock.classList.contains('composer-dock-visible');
     this._dock.classList.toggle('composer-dock-visible', show);

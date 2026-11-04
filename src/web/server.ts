@@ -1387,6 +1387,10 @@ export class WebServer extends EventEmitter {
     if (!watcher) {
       watcher = new TranscriptWatcher();
 
+      watcher.on('transcript:update', () => {
+        this.broadcast(SseEvent.TranscriptUpdate, { sessionId, timestamp: Date.now() });
+      });
+
       // Wire up transcript events to the respawn controller
       watcher.on('transcript:complete', () => {
         const controller = this.respawnControllers.get(sessionId);
