@@ -242,6 +242,8 @@ const KeyboardHandler = {
   // the top visible line to return to.
   _settleFollowing: true,
   _settleAnchorY: null,
+  // Invisible fixed element measured by _layoutViewportBottom().
+  _fixedProbe: null,
 
   /** Initialize keyboard handling */
   init() {
@@ -448,7 +450,7 @@ const KeyboardHandler = {
         const toolbar = document.querySelector('.toolbar');
         const main = document.querySelector('.main');
 
-        const layoutHeight = window.innerHeight;
+        const layoutHeight = this._layoutViewportBottom();
         const visualBottom = window.visualViewport.offsetTop + window.visualViewport.height;
         const keyboardOffset = Math.max(0, layoutHeight - visualBottom);
 
@@ -490,7 +492,7 @@ const KeyboardHandler = {
       if (cjkInput?.classList.contains('cjk-input-visible') && keyboardHeight > 0) {
         if (isSmallMedium) {
           // Phones: use translateY like toolbar/accessory bar.
-          const layoutHeight = window.innerHeight;
+          const layoutHeight = this._layoutViewportBottom();
           const visualBottom = window.visualViewport.offsetTop + window.visualViewport.height;
           const keyboardOffset = Math.max(0, layoutHeight - visualBottom);
           cjkInput.style.transform = keyboardOffset > 0 ? `translateY(${-keyboardOffset}px)` : '';
@@ -504,6 +506,34 @@ const KeyboardHandler = {
     } else {
       this.resetLayout();
     }
+  },
+
+  /**
+   * Where `position: fixed; bottom: 0` lands, in px from the top: the bottom of
+   * the layout viewport, which the toolbar, accessory bar and prompt box anchor to.
+   *
+   * ⚠️ Measured with an invisible fixed probe, never read off `window.innerHeight`.
+   * The lift above assumed innerHeight stays the keyboard-free height while the
+   * keyboard is up. On an iPhone (2026-11-04, home-screen app) it shrank with the
+   * keyboard instead, so the lift came out 0 and every fixed bar sat BEHIND the
+   * keyboard: an empty band where the bars should be, no accessory bar at all.
+   * The probe reports where the bars really are on every engine; innerHeight is
+   * only the fallback when the probe cannot be measured.
+   */
+  _layoutViewportBottom() {
+    try {
+      let probe = this._fixedProbe;
+      if (!probe || !probe.isConnected) {
+        probe = document.createElement('div');
+        probe.setAttribute('aria-hidden', 'true');
+        probe.style.cssText = 'position:fixed;left:0;bottom:0;width:0;height:0;visibility:hidden;pointer-events:none;';
+        document.body.appendChild(probe);
+        this._fixedProbe = probe;
+      }
+      const bottom = probe.getBoundingClientRect().top;
+      if (Number.isFinite(bottom) && bottom > 0) return bottom;
+    } catch {}
+    return window.innerHeight;
   },
 
   /** Reset layout to normal (no keyboard) */
