@@ -1,6 +1,6 @@
 /**
  * @fileoverview `codeman mcp` (src/mcp-server.ts): the dual-era MCP protocol core, the
- * seven tools against a recording fake transport, and one end-to-end run of the real
+ * ten tools against a recording fake transport, and one end-to-end run of the real
  * CLI over stdio against a local fake Codeman.
  *
  * Pinned invariants: no guessed URL (unconfigured = tools answer how to configure, list
@@ -165,7 +165,7 @@ describe('protocol: both eras', () => {
     expect(out[0]).toMatchObject({ id: 4, error: { code: RPC_ERROR.invalidParams } });
   });
 
-  it('lists the same seven tools in a fixed order, decorated for the era', async () => {
+  it('lists the same ten tools in a fixed order, decorated for the era', async () => {
     const { out, send } = server();
     await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: MODERN_META } });
@@ -179,6 +179,9 @@ describe('protocol: both eras', () => {
       'read_output',
       'interrupt_session',
       'delete_session',
+      'list_extensions',
+      'import_extension',
+      'remove_extension',
     ];
     expect(legacy.tools.map((t) => t.name)).toEqual(names);
     expect(modern.tools.map((t) => t.name)).toEqual(names);
@@ -267,13 +270,14 @@ describe('tool definitions', () => {
       expect(tool.inputSchema.type, tool.name).toBe('object');
       expect(tool.inputSchema.additionalProperties, tool.name).toBe(false);
       expect(tool.description.length, tool.name).toBeGreaterThan(80);
-      expect(tool.annotations.openWorldHint).toBe(false);
+      expect(tool.annotations.openWorldHint, tool.name).toBe(tool.name === 'import_extension');
     }
     const byName = Object.fromEntries(buildToolDefinitions(['claude']).map((t) => [t.name, t]));
-    for (const readOnly of ['list_sessions', 'wait_for_session', 'read_output']) {
+    for (const readOnly of ['list_sessions', 'wait_for_session', 'read_output', 'list_extensions']) {
       expect(byName[readOnly].annotations.readOnlyHint, readOnly).toBe(true);
     }
     expect(byName.delete_session.annotations.destructiveHint).toBe(true);
+    expect(byName.remove_extension.annotations.destructiveHint).toBe(true);
   });
 
   it('start_session offers the run modes it is given, defaulting to claude', () => {

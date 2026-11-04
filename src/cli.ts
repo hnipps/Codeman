@@ -29,6 +29,7 @@ import {
 import type { AgentSkillDir } from './config/cli-registry/types.js';
 import { getCli, listClis } from './config/cli-registry/registry.js';
 import { registerAgentCommands } from './cli-agent.js';
+import { registerExtensionCommands } from './cli-extensions.js';
 import { registerHistoryCommands } from './cli-history.js';
 import { resolveMcpConfig, runMcpStdio } from './mcp-server.js';
 import { getSessionManager } from './session-manager.js';
@@ -321,6 +322,10 @@ skillCmd
       process.exit(1);
     }
   });
+
+// ============ Plugins and skills for every agent CLI ============
+
+registerExtensionCommands(program, resolveCliCasePath);
 
 // ============ Agent Commands (session-to-session, any CLI mode) ============
 

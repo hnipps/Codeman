@@ -829,13 +829,14 @@ Those `DONE_<task>_<random>` strings are the skill's **split marker** trick, and
 | [`reference/endpoints.md`](skills/codeman/reference/endpoints.md)   | Full endpoint tables, error codes, per-mode signal table, capacity limits. On demand.        |
 | [`reference/messaging.md`](skills/codeman/reference/messaging.md)   | Talking to claude workers directly via Claude Code cross-session messaging. On demand.       |
 | [`reference/history.md`](skills/codeman/reference/history.md)       | Reading saved Codex conversations offline with `codeman history read`: selectors, filters, forks, budgets. On demand. |
+| [`reference/extensions.md`](skills/codeman/reference/extensions.md) | Importing and removing plugins and skills for every agent CLI with `codeman extension`. On demand. |
 | [`reference/inspection-and-staging.md`](skills/codeman/reference/inspection-and-staging.md) | Experimental and opt-in: bounded pane inspection and guarded submission with `codeman agent inspect`, `stage` and `submit`. On demand. |
 
 Every recipe in there was verified against a live server, and the comments record the failure modes that were measured rather than guessed.
 
 #### Two things worth knowing
 
-- **It self-gates.** It acts inside a Codeman-managed session. Outside one (`CODEMAN_MUX` unset) it only reads saved Codex conversations offline (`codeman history read`) and refuses everything else, and it never guesses an API URL, so a global install costs an unrelated Claude Code session nothing.
+- **It self-gates.** Live session control acts inside a Codeman-managed session. Outside one (`CODEMAN_MUX` unset) it reads saved Codex conversations (`codeman history read`) and, when you ask, imports or removes plugins and skills with `codeman extension`. It never guesses an API URL, so a global install costs an unrelated Claude Code session nothing.
 - **It is deliberately conservative.** Unprompted, it may only spawn sessions, prompt them, and delete ones **it created in that same conversation, by exact id**, through a fail-closed guard that refuses to delete the agent's own session. Deleting a case (which erases a real directory of your code), bulk kills, respawn/ralph/cron/orchestrator changes and settings writes all require you to ask, naming the target.
 
 ⚠️ Turning `agentSkillEnabled` back off **does not remove already-injected copies** (a create-time sweep would yank the skill out from under other live sessions sharing that workspace). Remove them per case with `codeman skill uninstall --case <name>`.
@@ -1017,6 +1018,19 @@ codeman history read --file /path/to/rollout.jsonl --format text
 
 Filters keep whole user/assistant turns (`--topic` is a literal, case-insensitive match; `--after`/`--before` are inclusive UTC dates). A forked or spawned thread's copy of its parent's history is dropped, so every record belongs to the thread that wrote it. Output is JSON by default and carries `complete: false` whenever the evidence is partial (a file that could not be attributed, a compressed `.jsonl.zst` rollout, a record a running Codex is still writing, an unknown ancestor). Every bound fails closed and is raisable: `--metadata-bytes` (attributing the store, default 1 GiB), `--max-entries` (default 65536), `--scan-bytes` (the selected transcripts, default 16 MiB) and `--max-bytes` (output, default 8192). The full reference is [`skills/codeman/reference/history.md`](skills/codeman/reference/history.md).
 
+### Plugins and skills for every agent CLI
+
+App Settings → Agents & CLIs → **Plugins & skills** imports a GitHub repository (`owner/repo` or a github.com link) or a file (a `SKILL.md`, zip, or tar.gz), and removes what Codeman imported. The same actions are a local command, so an agent can run them without the HTTP API:
+
+```bash
+codeman extension list
+codeman extension import owner/repo          # or a local directory, zip, tar.gz, or SKILL.md
+codeman extension import ./skill.md --case mycase
+codeman extension remove skill:review        # id from list; --json for the record
+```
+
+Skills are copied into each CLI's user skill directory. A plugin is also installed with that CLI's own installer when it is on the machine (`claude`, `grok`, `codex`, `agy`, `copilot`), which enables that plugin's hooks and MCP servers. One CLI failing leaves the others in place. Removing uninstalls through those CLIs and deletes only the copies Codeman made. The optional case also installs into that case, which is where Antigravity, DeepSeek Harness, and OMP look. The agent skill documents the same commands in [`skills/codeman/reference/extensions.md`](skills/codeman/reference/extensions.md). `list_extensions`, `import_extension`, and `remove_extension` on `codeman mcp` call the same routes.
+
 ### MCP server (`codeman mcp`): drive Codeman from any MCP client
 
 `codeman mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio, so any MCP client (Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, ...) can start Codeman sessions in any installed agent CLI, prompt them, wait for them, read their answers and clean up, from inside Codeman or from outside it. Like `codeman agent`, it is a client of the HTTP API. The MCP server adds no routes of its own, and auth and ownership are unchanged.
@@ -1059,6 +1073,9 @@ The JSON form is what Claude Desktop, Cursor and Gemini CLI take. Add `"CODEMAN_
 | `read_output` | The last answer, the whole conversation, or the last bytes of the terminal |
 | `interrupt_session` | One Escape: stops the current turn, keeps the conversation |
 | `delete_session` | Closes a worker (its case folder stays) |
+| `list_extensions` | Plugins and skills Codeman has imported, with the id `remove_extension` takes |
+| `import_extension` | Imports a GitHub repository or an absolute path (directory, zip, tar.gz, or SKILL.md) for every agent CLI |
+| `remove_extension` | Uninstalls one imported plugin or skill. Directories Codeman did not import stay |
 
 Rules the server enforces rather than documents:
 

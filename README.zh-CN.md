@@ -995,6 +995,10 @@ codeman agent rm "$SID"                                   # 除当前会话外�
 
 你发出的提示的回显也算输出：如果 `--match` 标记原样出现在提示里，它会立刻匹配，工作会话还什么都没做，所以提示要让它分两半输出。主机正在休眠的远程会话，对不等待结果的 `send` 会回答 `buffered`（Codeman 唤醒主机，等面板恢复后再敲入提示）或 `dropped`（超出唤醒缓冲区的上限，什么都不会敲入：退出码 `1`）。退出码：`0` 已送达/已匹配/收到信号，`1` 错误，`2` 超时，`3` 工作会话已退出或等待在没有回答的情况下结束（`delivered:false`、`ended:true`），`4` 被拒绝。`spawn` 在 stdout 上只打印 id（说明文字走 stderr），所以 `SID=$(…)` 恰好拿到 id。`--json` 让每个动词打印响应信封里的 `data`。在没有 hook 信号的模式上使用 `--until stop`，会原样透传服务端的 400：那里的答案是标记路径（`--match`），和技能完全一样。
 
+### 给每个智能体 CLI 导入插件和技能
+
+App Settings → Agents & CLIs → **Plugins & skills** 可以粘贴 GitHub 仓库，或上传 `SKILL.md`、zip、tar.gz，也可以移除 Codeman 导入的内容。同一个动作也是本地命令，智能体不用走 HTTP 就能执行：`codeman extension list`、`codeman extension import <GitHub 或本地路径>`、`codeman extension remove <id>`。技能会复制到每个 CLI 的用户技能目录；带安装器的 CLI 还会走它自己的插件安装（因此会启用该插件的 hooks 和 MCP）。移除时只卸载 Codeman 装上的，并且只删除 Codeman 复制的目录。可选的 case 会再写一份到那个 case，供只扫描项目目录的 CLI 使用。说明见 [`skills/codeman/reference/extensions.md`](skills/codeman/reference/extensions.md)。
+
 ### MCP 服务器（`codeman mcp`）：从任意 MCP 客户端驱动 Codeman
 
 `codeman mcp` 是一个走 stdio 的 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，因此任何 MCP 客户端（Claude Code、Claude Desktop、Codex、Gemini CLI、Cursor 等）都能在任意已安装的智能体 CLI 里启动 Codeman 会话、给它们发提示、等它们完成、读取回答并清理，无论是在 Codeman 内部还是外部。和 `codeman agent` 一样，它是 HTTP API 的客户端。MCP 服务器自己不新增任何路由，认证和归属规则不变。
@@ -1037,6 +1041,9 @@ JSON 形式适用于 Claude Desktop、Cursor 和 Gemini CLI。服务器设置了
 | `read_output` | 最后一条回答、整段对话，或终端的最后若干字节 |
 | `interrupt_session` | 一次 Escape：停止当前回合，保留对话 |
 | `delete_session` | 关闭一个工作会话（它的 case 文件夹会保留） |
+| `list_extensions` | Codeman 已导入的插件和技能，附带 `remove_extension` 要用的 id |
+| `import_extension` | 从一个 GitHub 仓库或本机绝对路径（目录、zip、tar.gz 或 SKILL.md）导入，装到每个智能体 CLI |
+| `remove_extension` | 卸载一个已导入的插件或技能。Codeman 没有导入的目录会留下 |
 
 这些规则由服务器强制执行，而不只是写在文档里：
 

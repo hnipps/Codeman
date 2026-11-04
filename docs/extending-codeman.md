@@ -169,8 +169,9 @@ skills). The skill carries the guard, the safety rules, and verified
 wait/orchestration recipes.
 
 If the caller speaks the Model Context Protocol (Claude Desktop, Cursor, Codex, any MCP
-client), point it at `codeman mcp` instead: seven tools over these same endpoints,
-configured with `CODEMAN_API_URL`. See the README section "MCP server".
+client), point it at `codeman mcp` instead: ten tools, seven over these same session
+endpoints and three for plugins and skills (`list_extensions`, `import_extension`,
+`remove_extension`), configured with `CODEMAN_API_URL`. See the README section "MCP server".
 
 The common ones:
 

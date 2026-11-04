@@ -2926,6 +2926,46 @@
                 </div>
               </div>
 
+              <div class="set-group" id="extensionGroup">
+                <div class="set-group-head"><h4>Plugins &amp; skills</h4><span class="set-scope">this server</span></div>
+                <div class="set-group-body">
+                  <div class="set-row" data-search="plugin skill import github remove extension">
+                    <div class="set-row-text">
+                      <span class="set-row-label">Imported</span>
+                      <span class="set-row-desc">Add a plugin or skill for every agent CLI. A plugin install runs that CLI's installer and enables its hooks and MCP servers. Removing deletes only what Codeman added.</span>
+                    </div>
+                  </div>
+                  <div id="extensionRows"></div>
+                  <form id="extensionImportForm" onsubmit="app.submitExtensionImport(event)">
+                    <div class="set-row has-field">
+                      <div class="set-row-text">
+                        <span class="set-row-label">GitHub</span>
+                        <span class="set-row-desc">owner/repo, or a github.com link.</span>
+                      </div>
+                      <input type="text" id="extensionGithub" class="set-input" placeholder="owner/repo" maxlength="500" autocomplete="off">
+                    </div>
+                    <div class="set-row has-field">
+                      <div class="set-row-text">
+                        <span class="set-row-label">File</span>
+                        <span class="set-row-desc">A SKILL.md, zip, or tar.gz.</span>
+                      </div>
+                      <input type="file" id="extensionFile" class="set-input" accept=".md,.zip,.tar,.gz,.tgz">
+                    </div>
+                    <div class="set-row has-field">
+                      <div class="set-row-text">
+                        <span class="set-row-label">Case</span>
+                        <span class="set-row-desc">Optional. Also installs into that case.</span>
+                      </div>
+                      <input type="text" id="extensionCase" class="set-input" placeholder="case name" maxlength="100" autocomplete="off">
+                    </div>
+                    <div class="set-row">
+                      <button type="submit" class="btn btn-xs" id="extensionImportBtn">Import</button>
+                    </div>
+                    <div id="extensionStatus" class="set-row-desc"></div>
+                  </form>
+                </div>
+              </div>
+
               <div class="set-group">
                 <div class="set-group-head"><h4>Claude</h4><span class="set-scope">synced</span></div>
                 <div class="set-group-body">

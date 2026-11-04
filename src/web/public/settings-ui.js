@@ -502,6 +502,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   openAppSettings() {
+    this.loadExtensionsForSettings?.();
     // Load current settings
     const settings = this.loadAppSettingsFromStorage();
     document.getElementById('appSettingsDisplayName').value = settings.displayName || 'Codeman';
@@ -3950,6 +3951,125 @@ Object.assign(CodemanApp.prototype, {
     group.style.display = blocked || !featureOn ? 'none' : '';
     const addRow = document.getElementById('cliCustomAddToggle');
     if (addRow) addRow.style.display = blocked ? 'none' : '';
+  },
+
+  /**
+   * Plugins and skills imported for every agent CLI. The form is hidden for a
+   * non-admin in multi-user mode; the list stays so they can see what is installed.
+   */
+  async loadExtensionsForSettings() {
+    const rows = document.getElementById('extensionRows');
+    const status = document.getElementById('extensionStatus');
+    if (!rows) return;
+    const readOnly = this._settingsReadOnly?.() === true;
+    const form = document.getElementById('extensionImportForm');
+    if (form) form.style.display = readOnly ? 'none' : '';
+    let data = null;
+    try {
+      const res = await fetch('/api/extensions');
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+    const items = data && data.success && data.data && Array.isArray(data.data.items) ? data.data.items : [];
+    if (!data || data.success === false) {
+      rows.innerHTML = '<p class="set-group-hint">Could not load plugins and skills.</p>';
+      return;
+    }
+    if (items.length === 0) {
+      rows.innerHTML = '<p class="set-group-hint">None imported yet.</p>';
+      return;
+    }
+    rows.innerHTML = items.map((item) => {
+      const id = escapeHtml(item.id || '');
+      const idArg = escapeHtml(JSON.stringify(item.id || ''));
+      const failed = Array.isArray(item.targets) && item.targets.some((target) => target.status === 'failed');
+      const remove = readOnly
+        ? ''
+        : `<button type="button" class="btn-toolbar btn-sm" onclick="app.removeExtension(${idArg})">Remove</button>`;
+      return `
+        <div class="set-row" data-extension-id="${id}">
+          <div class="set-row-text">
+            <span class="set-row-label">${escapeHtml(item.name || item.id || '')}</span>
+            <span class="set-row-desc">${escapeHtml(item.kind || '')}${failed ? ' · a CLI install failed' : ''}</span>
+          </div>
+          ${remove}
+        </div>`;
+    }).join('');
+    if (status && !status.textContent) status.textContent = '';
+  },
+
+  async submitExtensionImport(event) {
+    event.preventDefault();
+    const github = (document.getElementById('extensionGithub')?.value || '').trim();
+    const fileInput = document.getElementById('extensionFile');
+    const file = fileInput && fileInput.files && fileInput.files[0];
+    const caseName = (document.getElementById('extensionCase')?.value || '').trim();
+    const status = document.getElementById('extensionStatus');
+    const button = document.getElementById('extensionImportBtn');
+    if (Boolean(github) === Boolean(file)) {
+      if (status) {
+        status.textContent = github
+          ? 'Choose either the GitHub repository or the file.'
+          : 'Enter a GitHub repository or choose a file.';
+      }
+      return;
+    }
+    if (button) button.disabled = true;
+    if (status) status.textContent = 'Importing…';
+    try {
+      let res;
+      if (file) {
+        const body = new FormData();
+        body.append('file', file, file.name);
+        if (caseName) body.append('case', caseName);
+        res = await fetch('/api/extensions/import', { method: 'POST', body });
+      } else {
+        const payload = { github };
+        if (caseName) payload.case = caseName;
+        res = await fetch('/api/extensions/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+      const data = await res.json().catch(() => null);
+      if (!data || data.success === false) {
+        if (status) status.textContent = (data && data.error) || 'Import failed.';
+        return;
+      }
+      const notes = data.data && Array.isArray(data.data.notes) ? data.data.notes : [];
+      const count = data.data && Array.isArray(data.data.installed) ? data.data.installed.length : 0;
+      if (status) status.textContent = `Imported ${count}. ${notes.join(' ')}`.trim();
+      const githubInput = document.getElementById('extensionGithub');
+      if (githubInput) githubInput.value = '';
+      if (fileInput) fileInput.value = '';
+      await this.loadExtensionsForSettings();
+    } catch {
+      if (status) status.textContent = 'Import failed.';
+    } finally {
+      if (button) button.disabled = false;
+    }
+  },
+
+  async removeExtension(id) {
+    const name = typeof id === 'string' ? id : '';
+    if (!name) return;
+    if (!window.confirm('Remove ' + name + '? This uninstalls it from the agent CLIs Codeman installed it into.')) return;
+    const status = document.getElementById('extensionStatus');
+    if (status) status.textContent = 'Removing…';
+    try {
+      const res = await fetch('/api/extensions/' + encodeURIComponent(name), { method: 'DELETE' });
+      const data = await res.json().catch(() => null);
+      if (!data || data.success === false) {
+        if (status) status.textContent = (data && data.error) || 'Remove failed.';
+        return;
+      }
+      if (status) status.textContent = 'Removed ' + name + '.';
+      await this.loadExtensionsForSettings();
+    } catch {
+      if (status) status.textContent = 'Remove failed.';
+    }
   },
 
   async loadCliListForSettings() {

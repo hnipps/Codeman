@@ -254,6 +254,7 @@ import {
   pruneIdleLlamaSwapLogTails,
   tryWebviewRefererFallback,
   registerCliRegistryRoutes,
+  registerExtensionRoutes,
 } from './routes/index.js';
 import { isLostWebviewFrameNavigation } from './webview-proxy.js';
 import { CronService } from '../cron/cron-service.js';
@@ -1361,6 +1362,7 @@ export class WebServer extends EventEmitter {
     registerDoctorRoutes(this.app);
     registerCustomModelRoutes(this.app);
     registerCliRegistryRoutes(this.app);
+    registerExtensionRoutes(this.app);
 
     // Cron: build the service from the same context, recompute
     // due times for any persisted jobs, then expose it to its routes.

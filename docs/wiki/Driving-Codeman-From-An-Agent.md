@@ -135,8 +135,11 @@ The full reference ships with the skill as
 `codeman mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server, so any MCP
 client (Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor) can drive Codeman, from
 inside a Codeman session or from an assistant on your desktop. It is a client of the same
-HTTP API, with seven tools: `list_sessions`, `start_session`, `send_prompt`,
-`wait_for_session`, `read_output`, `interrupt_session` and `delete_session`.
+HTTP API, with ten tools: `list_sessions`, `start_session`, `send_prompt`,
+`wait_for_session`, `read_output`, `interrupt_session`, `delete_session`,
+`list_extensions`, `import_extension` and `remove_extension`. The last three import
+and remove plugins and skills for every agent CLI. `codeman extension` is the same
+service as a local command (`codeman extension --help`).
 
 ```bash
 # Claude Code

@@ -356,6 +356,75 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
+    {
+      name: 'list_extensions',
+      title: 'List imported plugins and skills',
+      description:
+        'List the plugins and skills Codeman has imported for the agent CLIs on this host. Each row has an id ' +
+        '(skill:<name> or plugin:<name>), the kind, the name, where it came from, and the per-CLI result. Use the ' +
+        'id with remove_extension. File contents are not returned.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    {
+      name: 'import_extension',
+      title: 'Import a plugin or skill',
+      description:
+        'Import a plugin or a skill onto this Codeman host for every agent CLI. Pass github (owner/repo, ' +
+        'owner/repo@ref, owner/repo#subdir, or a https://github.com URL, including a /tree/ or /blob/ link) or path ' +
+        '(an absolute directory, zip, tar.gz, or SKILL.md on the Codeman host). Skills are copied into each CLI ' +
+        "user skill directory. Plugins are installed with that CLI's own installer when it is on the host (claude, " +
+        'grok, codex, agy, copilot). An optional case name also copies skills into that case for CLIs that only ' +
+        'read the project. A directory Codeman did not import is left alone. Returns the new rows and any notes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          github: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 500,
+            description: 'A github.com repository, owner/repo, or a /tree/ or /blob/ link.',
+          },
+          path: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 4096,
+            description: 'Absolute path on the Codeman host: a directory, a zip, a tar.gz, or a SKILL.md file.',
+          },
+          case: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 100,
+            description: 'Optional case name. Also copies skills into that case.',
+          },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    {
+      name: 'remove_extension',
+      title: 'Remove an imported plugin or skill',
+      description:
+        'Remove a plugin or skill Codeman imported. id is skill:<name> or plugin:<name> from list_extensions. ' +
+        "Runs each CLI's own uninstall for a plugin Codeman installed, then deletes only the skill directories " +
+        'Codeman copied. A directory Codeman does not own is left in place. If an uninstall fails, the row stays ' +
+        'so the same call can be retried.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            minLength: 3,
+            maxLength: 80,
+            description: 'The id from list_extensions, for example skill:review or plugin:review.',
+          },
+        },
+        required: ['id'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
   ];
 }
 
@@ -834,6 +903,41 @@ export function createToolRunner(deps: ToolRunnerDeps) {
         outcome: 'deleted',
         note: 'Its case folder stays on disk.',
       });
+    },
+
+    async list_extensions(_args, signal) {
+      const res = await call({ method: 'GET', path: '/api/v1/extensions' }, signal);
+      ensureOk(res);
+      return structuredResult((res.json?.data as Record<string, unknown> | undefined) ?? { items: [] });
+    },
+
+    async import_extension(args, signal) {
+      const github = readString(args, 'github', { max: 500 });
+      const path = readString(args, 'path', { max: 4096 });
+      const caseName = readString(args, 'case', { max: 100 });
+      if (Boolean(github) === Boolean(path)) {
+        throw new ToolError('Provide github or path, and only one of them.');
+      }
+      if (caseName && !/^[a-zA-Z0-9_-]+$/.test(caseName)) {
+        throw new ToolError('case must be a case name: letters, numbers, "_" and "-".');
+      }
+      const body: Record<string, string> = {};
+      if (github) body.github = github;
+      if (path) body.path = path;
+      if (caseName) body.case = caseName;
+      const res = await call({ method: 'POST', path: '/api/v1/extensions/import', body, timeoutMs: 180_000 }, signal);
+      ensureOk(res);
+      return structuredResult((res.json?.data as Record<string, unknown> | undefined) ?? {});
+    },
+
+    async remove_extension(args, signal) {
+      const id = readString(args, 'id', { required: true, max: 80 })!;
+      if (!/^(skill|plugin):[a-z0-9][a-z0-9-]{0,70}$/.test(id)) {
+        throw new ToolError('id must look like skill:<name> or plugin:<name>.');
+      }
+      const res = await call({ method: 'DELETE', path: `/api/v1/extensions/${encodeURIComponent(id)}` }, signal);
+      ensureOk(res);
+      return structuredResult((res.json?.data as Record<string, unknown> | undefined) ?? { id });
     },
   };
 

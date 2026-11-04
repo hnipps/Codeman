@@ -8,10 +8,11 @@ description: >-
   read their output, and clean up; where available, message claude workers directly
   (Claude Code cross-session messaging). Use when asked to orchestrate or parallelize
   work across Codeman sessions, get a second opinion from another CLI or model, watch
-  another session, start and manage workers, or retrieve saved local Codex history
-  by file/native ID or root and descendants with topic/date filters. Live API
+  another session, start and manage workers, retrieve saved local Codex history
+  by file/native ID or root and descendants with topic/date filters, or import
+  and remove plugins and skills for every agent CLI on this host. Live API
   operations require a Codeman-managed session (CODEMAN_MUX=1). Offline history
-  reads do not require a server or managed session.
+  reads, and `codeman extension`, do not require a server or managed session.
 ---
 
 # Driving Codeman from inside a session
@@ -20,6 +21,11 @@ For **saved Codex conversation history**, use `codeman history read` and
 [reference/history.md](reference/history.md). This is a read-only local command:
 route to it **before §0**, including outside a managed session. It needs no API
 URL, credentials or running server. All live API operations below retain §0.
+
+To **import or remove a plugin or skill** for every agent CLI, use
+`codeman extension` and [reference/extensions.md](reference/extensions.md). That
+command writes on this machine and does not need §0. Run it only when the user
+asked for that import or removal.
 
 You are an agent running inside a Codeman-managed terminal session. Codeman is the
 server that spawned you; its HTTP API can start, prompt, watch, and delete other
@@ -35,8 +41,9 @@ credentials, which you only need when something 401s.
 Everything else loads on demand, and is meant to be opened at one section, not read
 through: the verbs in detail (the old §5) in [reference/verbs.md](reference/verbs.md),
 worked multi-worker flows in [reference/recipes.md](reference/recipes.md), endpoint
-tables and a symptom gallery in [reference/endpoints.md](reference/endpoints.md), and
-direct messaging to claude workers in [reference/messaging.md](reference/messaging.md).
+tables and a symptom gallery in [reference/endpoints.md](reference/endpoints.md),
+direct messaging to claude workers in [reference/messaging.md](reference/messaging.md),
+and plugin and skill import in [reference/extensions.md](reference/extensions.md).
 Experimental bounded inspection and guarded stage/submit load only when needed from
 [reference/inspection-and-staging.md](reference/inspection-and-staging.md).
 
@@ -624,6 +631,7 @@ One row per job. Acting on this table alone is correct; the §5 links are the de
 | talk to a claude worker directly | `ListAgents` / `SendMessage`, when the feature is on at both ends | [§5.13](reference/verbs.md#513-messaging-claude-workers) |
 | leave a message a session reads when it is ready, any mode, multi-line | `codeman agent post <id> "…"` (`POST .../inbox`). Nothing is typed into its pane and no turn starts; the receiver reads with `codeman agent inbox --wait` and removes with `codeman agent ack <id>`. An idle receiver never looks on its own: `codeman agent ls` shows unread mail, then `send` it one line | [§5.15](reference/verbs.md#515-agent-inbox) |
 | clean up | `delete_session "$SID"` per id you created. Case directories and git worktrees are **not** removed with it; `GET /api/v1/cases/agent-created` lists the scratch case dirs your spawns left behind, for you to report | [§5.14](reference/verbs.md#514-clean-up) |
+| import or remove a plugin or skill for every agent CLI | `codeman extension import <github-or-path>` and `codeman extension remove <id>` (`extension list` first). A local command, so no §0. Only when the user asked. A plugin install runs that CLI's installer | [extensions](reference/extensions.md) |
 
 ## 3. Rules digest
 
