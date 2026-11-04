@@ -52,7 +52,12 @@ describe('phone conversation workspace', () => {
         app = Object.create(CodemanApp.prototype);
         window.app = app;
         app.activeSessionId = 'claude-1';
-        app.sessions = new Map([['claude-1', { mode: 'claude' }], ['codex-1', { mode: 'codex' }]]);
+        app.sessions = new Map([
+          ['claude-1', { mode: 'claude' }],
+          ['codex-1', { mode: 'codex' }],
+          ['copilot-1', { mode: 'copilot' }],
+          ['shell-1', { mode: 'shell' }],
+        ]);
         app.loadAppSettingsFromStorage = () => ({});
         app.getDefaultSettings = () => ({});
         app.sent = [];
@@ -139,14 +144,19 @@ describe('phone conversation workspace', () => {
     expect(await page.locator('#chatViewToggle').getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('closes on session changes and hides the toggle for non-Claude sessions', async () => {
+  it('closes on session changes and keeps the toggle for other providers but not shell', async () => {
     await page.locator('#chatViewToggle').click();
     await page.waitForSelector('#chatViewBody .rv-message');
     await page.evaluate(() => {
-      (window as any).app.activeSessionId = 'codex-1';
+      (window as any).app.activeSessionId = 'copilot-1';
       (window as any).dock.syncDock();
     });
     expect(await page.locator('#chatView').isVisible()).toBe(false);
+    expect(await page.locator('#chatViewToggle').isVisible()).toBe(true);
+    await page.evaluate(() => {
+      (window as any).app.activeSessionId = 'shell-1';
+      (window as any).dock.syncDock();
+    });
     expect(await page.locator('#chatViewToggle').isVisible()).toBe(false);
     expect(errors).toEqual([]);
   });

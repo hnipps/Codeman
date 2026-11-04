@@ -13,6 +13,8 @@ function harness() {
   // Instantiate only the prototype under test, not the dashboard boot listener.
   dom.window.document.addEventListener = vi.fn();
   const fetch = vi.fn();
+  const setInterval = vi.fn(() => 'chat-refresh');
+  const clearInterval = vi.fn();
   const context = vm.createContext({
     console,
     performance,
@@ -22,8 +24,8 @@ function harness() {
     fetch,
     setTimeout,
     clearTimeout,
-    setInterval: vi.fn(),
-    clearInterval: vi.fn(),
+    setInterval,
+    clearInterval,
     requestAnimationFrame: vi.fn(),
     HTMLCanvasElement: class {},
     localStorage: { length: 0, getItem: vi.fn() },
@@ -36,6 +38,15 @@ function harness() {
   app.sessions = new Map([
     ['claude-1', { mode: 'claude' }],
     ['codex-1', { mode: 'codex' }],
+    ['gemini-1', { mode: 'gemini' }],
+    ['antigravity-1', { mode: 'antigravity' }],
+    ['pi-1', { mode: 'pi' }],
+    ['grok-1', { mode: 'grok' }],
+    ['deepseek-1', { mode: 'deepseek' }],
+    ['omp-1', { mode: 'omp' }],
+    ['copilot-1', { mode: 'copilot' }],
+    ['opencode-1', { mode: 'opencode' }],
+    ['shell-1', { mode: 'shell' }],
     ['remote-claude', { mode: 'claude', remote: {} }],
     ['docker-claude', { mode: 'claude', docker: {} }],
   ]);
@@ -44,22 +55,19 @@ function harness() {
     clientHeight: { value: 200, configurable: true },
     scrollHeight: { get: () => 1000 + body.children.length * 100, configurable: true },
   });
-  return { app, fetch, body, document: dom.window.document };
+  return { app, fetch, body, document: dom.window.document, setInterval, clearInterval };
 }
 
 const message = (text: string, extra = {}) => ({ role: 'assistant', text, turn: 1, kind: 'response', ...extra });
 const response = (messages: unknown[]) => ({ ok: true, json: async () => ({ data: { messages } }) });
 
-describe('Claude conversation overlay', () => {
+describe('provider conversation overlay', () => {
   let h: ReturnType<typeof harness>;
   beforeEach(() => {
     h = harness();
   });
 
-  it('opens only for Claude and reuses the rendered message and link pipeline', async () => {
-    h.app.activeSessionId = 'codex-1';
-    h.app.toggleChatView();
-    expect(h.fetch).not.toHaveBeenCalled();
+  it('opens for every supported provider and reuses the rendered message and link pipeline', async () => {
     h.app.activeSessionId = 'claude-1';
     h.fetch.mockResolvedValue(response([message('Read /home/work/report.md')]));
     h.app.toggleChatView();
@@ -70,13 +78,40 @@ describe('Claude conversation overlay', () => {
     expect(h.body.dataset.rvBound).toBe('1');
     expect(h.body.hasAttribute('data-i18n-skip')).toBe(true);
     expect(h.document.activeElement).toBe(h.body);
+    for (const sessionId of [
+      'codex-1',
+      'gemini-1',
+      'antigravity-1',
+      'pi-1',
+      'grok-1',
+      'deepseek-1',
+      'omp-1',
+      'copilot-1',
+      'opencode-1',
+    ]) {
+      expect(h.app._canShowChatView(sessionId), sessionId).toBe(true);
+    }
+    expect(h.app._canShowChatView('shell-1')).toBe(false);
   });
 
-  it.each(['remote-claude', 'docker-claude'])('does not open for %s sessions without a host transcript', (sessionId) => {
-    h.app.activeSessionId = sessionId;
+  it.each(['remote-claude', 'docker-claude'])(
+    'does not open for %s sessions without a host transcript',
+    (sessionId) => {
+      h.app.activeSessionId = sessionId;
+      h.app.toggleChatView();
+      expect(h.fetch).not.toHaveBeenCalled();
+      expect(h.document.getElementById('chatView')!.hidden).toBe(true);
+    }
+  );
+
+  it('polls other providers while open and clears the refresh timer on close', async () => {
+    h.app.activeSessionId = 'copilot-1';
+    h.fetch.mockResolvedValue(response([message('latest')]));
     h.app.toggleChatView();
-    expect(h.fetch).not.toHaveBeenCalled();
-    expect(h.document.getElementById('chatView')!.hidden).toBe(true);
+    await h.app._chatView.refreshPromise;
+    expect(h.setInterval).toHaveBeenCalledWith(expect.any(Function), 2000);
+    h.app.closeChatView();
+    expect(h.clearInterval).toHaveBeenCalledWith('chat-refresh');
   });
 
   it('appends an exact prefix without replacing cards or moving a reader away from older text', async () => {

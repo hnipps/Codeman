@@ -19,11 +19,15 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import { createMockRouteContext, createMockSession, type MockRouteContext } from '../mocks/index.js';
 import { ApiErrorCode, httpStatusForErrorCode } from '../../src/types.js';
 import { registerSessionRoutes } from '../../src/web/routes/session-routes.js';
+import { mangleOmpWorkingDir } from '../../src/utils/omp-session-resolver.js';
 
 interface LocalHarness {
   app: FastifyInstance;
@@ -141,6 +145,54 @@ describe('GET /api/sessions/:id/last-response — external CLI panes', () => {
     for (const block of body.data.messages as Array<{ kind: string; role: string }>) {
       expect(block.role).toBe(block.kind === 'prompt' ? 'user' : 'assistant');
     }
+  });
+
+  it('reads the pinned OMP conversation transcript for full context', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'codeman-omp-last-response-'));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      session.mode = 'omp';
+      session.workingDir = join(home, 'workspace');
+      const transcriptDir = join(home, '.omp', 'agent', 'sessions', mangleOmpWorkingDir(session.workingDir));
+      mkdirSync(transcriptDir, { recursive: true });
+      writeFileSync(
+        join(transcriptDir, `2026-11-04T00-00-00_${session.id}.jsonl`),
+        [
+          JSON.stringify({ type: 'session', id: session.id, cwd: session.workingDir }),
+          JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Question' }] } }),
+          JSON.stringify({
+            type: 'message',
+            message: { role: 'assistant', content: [{ type: 'text', text: 'Answer' }] },
+          }),
+        ].join('\n')
+      );
+
+      const { res, body } = await lastResponse(true);
+
+      expect(res.statusCode).toBe(200);
+      expect(body.data.text).toBe('Answer');
+      expect(body.data.messages).toEqual([
+        { role: 'user', text: 'Question', turn: 1, kind: 'prompt' },
+        { role: 'assistant', text: 'Answer', turn: 1, kind: 'response' },
+      ]);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the OMP pane transcript when its session file is on another host', async () => {
+    session.mode = 'omp';
+    session.docker = {};
+    session.terminalBuffer = PANE;
+
+    const { res, body } = await lastResponse(true);
+
+    expect(res.statusCode).toBe(200);
+    expect(body.data.text).toContain('Documented the helper in docs/retry.md');
+    expect(body.data.messages.some((message: { role: string }) => message.role === 'user')).toBe(true);
   });
 
   it('reports hasContext false for a pane that has produced no output', async () => {

@@ -11,7 +11,17 @@ export interface ResponseViewerTranscriptBlock {
 // Keep in lockstep with isExternalCliMode() in src/session.ts. Importing it here
 // would drag node-pty and the whole session layer into this pure module, so the
 // list is duplicated and test/response-viewer-transcript.test.ts pins the parity.
-const EXTERNAL_CLI_MODES = new Set(['codex', 'gemini', 'opencode', 'antigravity', 'pi', 'grok', 'deepseek', 'copilot']);
+const EXTERNAL_CLI_MODES = new Set([
+  'codex',
+  'gemini',
+  'opencode',
+  'antigravity',
+  'pi',
+  'grok',
+  'deepseek',
+  'copilot',
+  'omp',
+]);
 
 /**
  * A pane that is not Codex-shaped (`›` prompt, `•` bullets) describes its own dialect as data, so

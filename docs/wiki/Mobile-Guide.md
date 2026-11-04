@@ -62,17 +62,19 @@ On by default; it can be turned off in settings.
 
 ## The prompt box
 
-For local Claude sessions, tap **Chat** in the prompt box to read the conversation in a
+For an agent session, tap **Chat** in the prompt box to read the conversation in a
 full-screen view with native scrolling and selectable text. The same prompt box stays
-available for typing and sending. Chat refreshes when Claude adds transcript entries,
-and follows the latest message only when you are already near the bottom. Markdown,
-code-copy buttons, and file links work as in the Response Viewer.
+available for typing and sending. Chat refreshes when Claude adds transcript entries;
+other providers refresh automatically while Chat is open. It follows the latest message
+only when you are already near the bottom. Markdown, code-copy buttons, and file links
+work as in the Response Viewer.
 
 Tap **← Terminal** to return to the live terminal (for tool approvals or other terminal
 controls). Switching sessions closes Chat. **Refresh** retries a failed load. Chat uses
 Claude's saved transcript, so a session without one shows an empty-history notice.
-Remote and Docker Claude sessions do not expose Chat because their transcript files
-are not on this host. Other CLI modes keep their existing terminal and Response Viewer.
+Remote and Docker Claude sessions do not expose Chat because their transcript files are
+not on this host. Other provider transcripts are read from their local conversation files
+or parsed from the session pane when no host-side transcript is available.
 
 Agent sessions show a text box docked under the terminal. Tap it to type: it is an ordinary
 phone text field, so autocorrect, dictation, text selection and dragging the cursor all work,

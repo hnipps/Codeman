@@ -204,7 +204,7 @@ import { resolveCaseRepository, resolveManagedWorktree } from '../../git-worktre
 import { LRUMap } from '../../utils/lru-map.js';
 import { describeUnknownPath, probePathKind } from '../../utils/index.js';
 import { findLatestOmpSessionId } from '../../utils/omp-session-resolver.js';
-import { scanOmpSessionsHistory } from '../../omp-transcript.js';
+import { readOmpConversation, scanOmpSessionsHistory } from '../../omp-transcript.js';
 import { scanCodexSessionsHistory, codexThreadBySessionId } from '../../codex-transcript.js';
 import {
   transcriptNeedsScreenCapture,
@@ -2882,9 +2882,22 @@ export function registerSessionRoutes(
     // Codex sessions don't write to ~/.claude/projects — their transcripts
     // live in ~/.codex/sessions/**. Branch to a Codex-specific reader so the
     // response-viewer works for Codex panes too.
-    if (getCli(session.mode)?.capabilities.transcript === 'codex-rollout') {
+    if (getCli(session.mode)?.capabilities.transcript === 'codex-rollout' && !session.docker && !session.remote) {
       const codexQuery = req.query as { context?: string };
       return await readCodexLastResponse(session, codexQuery.context === 'full');
+    }
+
+    if (getCli(session.mode)?.capabilities.transcript === 'omp-jsonl' && !session.docker && !session.remote) {
+      const ompSessionId = session.claudeSessionId || session.id;
+      const messages = readOmpConversation(ompSessionId, session.workingDir);
+      const lastMessage = [...messages].reverse().find((message) => message.role === 'assistant');
+      const ompQuery = req.query as { context?: string };
+      return {
+        text: lastMessage?.text ?? '',
+        timestamp: '',
+        hasContext: messages.length > 0,
+        messages: ompQuery.context === 'full' ? messages : undefined,
+      };
     }
 
     // DeepSeek Harness writes a real structured transcript under

@@ -29,7 +29,8 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { mangleOmpWorkingDir, stripTrailingSlash } from './utils/omp-session-resolver.js';
 
 function ompSessionsRoot(): string {
   return join(homedir(), '.omp', 'agent', 'sessions');
@@ -53,6 +54,93 @@ export interface OmpHistorySession {
   lastPrompt?: string;
 }
 
+export interface OmpConversationMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  turn: number;
+  kind: 'prompt' | 'response';
+}
+
+function extractMessageText(message: unknown): string {
+  if (!message || typeof message !== 'object') return '';
+  const m = message as { role?: unknown; content?: unknown };
+  if (m.role !== 'user' && m.role !== 'assistant') return '';
+  if (!Array.isArray(m.content)) return '';
+  return m.content
+    .filter(
+      (block): block is { type: 'text'; text: string } =>
+        !!block &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string'
+    )
+    .map((block) => block.text)
+    .join('')
+    .trim();
+}
+
+/** Parse the user and assistant text blocks from an omp conversation file. */
+export function parseOmpConversation(raw: string): OmpConversationMessage[] {
+  const messages: OmpConversationMessage[] = [];
+  let turn = 0;
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!entry || typeof entry !== 'object' || (entry as { type?: unknown }).type !== 'message') continue;
+    const message = (entry as { message?: unknown }).message;
+    if (!message || typeof message !== 'object') continue;
+    const role = (message as { role?: unknown }).role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    const text = extractMessageText(message);
+    if (!text) continue;
+    if (role === 'user') turn += 1;
+    messages.push({ role, text, turn: turn || 1, kind: role === 'user' ? 'prompt' : 'response' });
+  }
+  return messages;
+}
+
+/**
+ * Read the pinned local omp conversation for a working directory. Remote and Docker
+ * sessions keep their omp files on the other host and must use pane parsing instead.
+ */
+export function readOmpConversation(sessionId: string, workingDir: string): OmpConversationMessage[] {
+  if (!sessionId || !isAbsolute(workingDir)) return [];
+  const dirPath = join(ompSessionsRoot(), mangleOmpWorkingDir(workingDir));
+  let files: string[];
+  try {
+    files = readdirSync(dirPath);
+  } catch {
+    return [];
+  }
+  const suffix = `_${sessionId}.jsonl`;
+  for (const file of files) {
+    if (!file.endsWith(suffix)) continue;
+    const filePath = join(dirPath, file);
+    let stat: ReturnType<typeof statSync>;
+    try {
+      stat = statSync(filePath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_OMP_SESSION_FILE_BYTES) continue;
+    let raw: string;
+    try {
+      raw = readFileSync(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const metadata = parseOmpSessionFile(filePath, raw);
+    if (metadata?.sessionId !== sessionId || metadata.workingDir !== stripTrailingSlash(workingDir)) continue;
+    return parseOmpConversation(raw);
+  }
+  return [];
+}
+
 function extractUserPromptText(message: unknown): string | undefined {
   if (!message || typeof message !== 'object') return undefined;
   const m = message as { role?: unknown; content?: unknown };
@@ -69,7 +157,7 @@ function extractUserPromptText(message: unknown): string | undefined {
 }
 
 /** Parse one omp session `.jsonl` file, or null when it's unreadable, empty, or has no session header. */
-function parseOmpSessionFile(filePath: string): OmpHistorySession | null {
+function parseOmpSessionFile(filePath: string, content?: string): OmpHistorySession | null {
   let stat: ReturnType<typeof statSync>;
   try {
     stat = statSync(filePath);
@@ -78,11 +166,13 @@ function parseOmpSessionFile(filePath: string): OmpHistorySession | null {
   }
   if (stat.size === 0 || stat.size > MAX_OMP_SESSION_FILE_BYTES) return null;
 
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
+  let raw = content;
+  if (raw === undefined) {
+    try {
+      raw = readFileSync(filePath, 'utf-8');
+    } catch {
+      return null;
+    }
   }
 
   let sessionId: string | undefined;

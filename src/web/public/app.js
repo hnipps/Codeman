@@ -358,6 +358,19 @@ const _SSE_HANDLER_MAP = [
   [SSE_EVENTS.WEBVIEW_CHANGED, '_onWebviewChanged'],
 ];
 
+const CHAT_VIEW_MODES = new Set([
+  'claude',
+  'codex',
+  'gemini',
+  'antigravity',
+  'pi',
+  'grok',
+  'deepseek',
+  'omp',
+  'copilot',
+  'opencode',
+]);
+
 
 // ═══════════════════════════════════════════════════════════════
 // Session Name Prefix Parser
@@ -3294,12 +3307,14 @@ class CodemanApp {
 
   _canShowChatView(sessionId) {
     const session = this.sessions.get(sessionId);
-    return session?.mode === 'claude' && !session.remote && !session.docker;
+    return !!session && CHAT_VIEW_MODES.has(session.mode) &&
+      (session.mode !== 'claude' || (!session.remote && !session.docker));
   }
 
   closeChatView() {
     if (!this._chatView) return;
     this._chatView.controller.abort();
+    if (this._chatView.refreshTimer) clearInterval(this._chatView.refreshTimer);
     this._chatView = null;
     const view = document.getElementById('chatView');
     if (view) view.hidden = true;
@@ -3317,6 +3332,9 @@ class CodemanApp {
     if (state.sessionId !== this.activeSessionId || !this._canShowChatView(state.sessionId)) {
       this.closeChatView();
       return;
+    }
+    if (!state.refreshTimer && this.sessions.get(state.sessionId)?.mode !== 'claude') {
+      state.refreshTimer = setInterval(() => this.refreshChatView(), 2000);
     }
     state.dirty = true;
     // One in-flight snapshot and at most one pending refresh. State identity
