@@ -71,10 +71,11 @@ export function registerRebootRestoreRoutes(app: FastifyInstance, ctx: RebootRes
 
   app.get('/api/reboot-restore', async (req) => {
     const entries = rebootRestoreRegistry.list(accessorFor(req));
-    // The Cloudflare edge location (the three-letter code in `cf-ray`), so a banner
-    // report can say which edge the browser came through.
+    // The Cloudflare edge location, so a banner report can say which edge the
+    // browser came through. `cf-ray` is `<ray id>-<IATA colo>`, so the code is the
+    // suffix. A header in any other shape yields no edge rather than a 500.
     const ray = req.headers['cf-ray'];
-    const edge = typeof ray === 'string' ? (ray.match(/^([A-Z]{3})-/) as RegExpMatchArray)[1] : undefined;
+    const edge = typeof ray === 'string' ? /-([A-Z]{3})$/.exec(ray)?.[1] : undefined;
     return {
       sessions: entries.map(toBannerItem),
       // Said plainly here so the banner never implies a full restore: the pane is

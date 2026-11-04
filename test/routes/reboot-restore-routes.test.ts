@@ -113,6 +113,31 @@ describe('GET /api/reboot-restore', () => {
     expect(body.sessions[0].state).toBeUndefined();
     await app.close();
   });
+
+  // Cloudflare's `cf-ray` is `<16 hex>-<IATA colo>`: the edge code comes LAST. Every
+  // request through the tunnel carries it, so a parse that throws breaks the banner
+  // for every real browser while header-less tests stay green.
+  it('reads the edge from a real cf-ray header', async () => {
+    const app = await createHarness();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/reboot-restore',
+      headers: { 'cf-ray': '8f1a2b3c4d5e6f70-LHR' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.edge).toBe('LHR');
+    await app.close();
+  });
+
+  it('answers without an edge when cf-ray is not in the shape it expects', async () => {
+    const app = await createHarness();
+    for (const ray of ['garbage', '', 'LHR-8f1a2b3c4d5e6f70']) {
+      const res = await app.inject({ method: 'GET', url: '/api/reboot-restore', headers: { 'cf-ray': ray } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.edge).toBeUndefined();
+    }
+    await app.close();
+  });
 });
 
 describe('POST /api/reboot-restore/restore', () => {
