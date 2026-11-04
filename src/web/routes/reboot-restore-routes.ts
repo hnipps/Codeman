@@ -71,11 +71,16 @@ export function registerRebootRestoreRoutes(app: FastifyInstance, ctx: RebootRes
 
   app.get('/api/reboot-restore', async (req) => {
     const entries = rebootRestoreRegistry.list(accessorFor(req));
+    // The Cloudflare edge location (the three-letter code in `cf-ray`), so a banner
+    // report can say which edge the browser came through.
+    const ray = req.headers['cf-ray'];
+    const edge = typeof ray === 'string' ? (ray.match(/^([A-Z]{3})-/) as RegExpMatchArray)[1] : undefined;
     return {
       sessions: entries.map(toBannerItem),
       // Said plainly here so the banner never implies a full restore: the pane is
       // new, so the conversation continues and the terminal history does not.
       scrollbackRestored: false,
+      ...(edge ? { edge } : {}),
     };
   });
 
