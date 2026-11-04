@@ -56,7 +56,8 @@ const StatusSchema = z.object({
   deploys: z.array(
     z.object({
       id: z.string(),
-      action: z.enum(['deploy', 'rollback']),
+      // The supervisor records other actions too (such as `start-live` at boot); those are skipped, not fatal.
+      action: z.string(),
       sha: z.string().nullable().optional(),
       outcome: z.string(),
       failedStep: z.string().nullable().optional(),
@@ -77,7 +78,8 @@ export function supervisorCli(env: NodeJS.ProcessEnv = process.env): string | nu
 export function parseStatus(json: unknown): DeployOverviewConfigured {
   const status = StatusSchema.parse(json);
   const liveSha = status.live?.sha ?? null;
-  const recent = [...status.deploys]
+  const recent = status.deploys
+    .filter((d): d is typeof d & { action: DeployRecord['action'] } => d.action === 'deploy' || d.action === 'rollback')
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(0, MAX_RECENT)
     .map((d) => ({

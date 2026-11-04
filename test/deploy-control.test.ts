@@ -77,6 +77,20 @@ describe('parseStatus', () => {
     expect(overview.releases.every((r) => !r.live)).toBe(true);
   });
 
+  it('skips deploy records with an action it does not show, such as start-live', () => {
+    const startLive = {
+      id: 'boot',
+      action: 'start-live',
+      sha: SHA_A,
+      outcome: 'success',
+      failedStep: null,
+      startedAt: '2026-01-03T00:00:00.000Z',
+      finishedAt: '2026-01-03T00:00:01.000Z',
+    };
+    const overview = parseStatus({ ...status, deploys: [...status.deploys, startLive] });
+    expect(overview.recent.map((d) => d.id)).toEqual(['new', 'old']);
+  });
+
   it('rejects a shape it does not know', () => {
     expect(() => parseStatus({ releases: 'x' })).toThrow();
   });
