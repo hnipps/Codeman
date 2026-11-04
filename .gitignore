@@ -118,7 +118,11 @@ packages/gesture-control/.vite/
 # Claude Code plan tracking
 plan.json
 
-.claude/
+# Local Claude Code state. The rules file is the one tracked exception:
+# assurance-status looks for it, and the path list inside it is empty.
+.claude/*
+!.claude/rules/
+!.claude/rules/protected-surfaces.md
 media-assets/
 commands
 todo.md

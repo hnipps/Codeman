@@ -12,6 +12,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read [`docs/self-building.md`](docs/self-building.md) before you deploy, roll back, or change anything under `deploy/`. Deploy a commit only with `codeman-deploy "$(git rev-parse HEAD)"`. The rules in that file override the release and production steps below, including `COM`, `systemctl --user restart codeman-web` and pushing to `master`. Never restart a Codeman server or the tmux server by hand, and start a server from this clone only under a throwaway `CODEMAN_INSTANCE`.
 
+## Assurance
+
+Per-change intent (why a change is being made) is `intent/<yyyy-mm-dd>-<slug>.md`, from `intent/TEMPLATE.md`. Revise that file in place while the change is still moving. That directory is not Read My Mind. The product feature is `src/intent-store.ts`, `~/.codeman/intents.json`, and `docs/readmymind.md`.
+
+Rules that already hold live in this file and in [`docs/architecture-invariants.md`](docs/architecture-invariants.md). Update them in the same change as the code they describe. A promise that is still moving can be a `Status: Draft` note under `docs/invariants/`. A draft does not override an architecture invariant, and it does not block a commit. Do not add a commit hook, a failing CI job, or a protected-surface block unless an intent file asks for that gate.
+
+Crosscheck skills from the Nicholls plugin can be run by name. A layer 5 or layer 6 result is a search, and it is not proof. The menu is [`docs/assurance/README.md`](docs/assurance/README.md). Read [`docs/JOURNAL.md`](docs/JOURNAL.md) before a non-trivial change.
+
 ## Quick Reference
 
 | Task        | Command                                                                                                                                                             |
