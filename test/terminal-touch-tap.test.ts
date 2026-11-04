@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 
-function loadTerminalUiHarness() {
+function loadTerminalUiHarness(extraGlobals: Record<string, unknown> = {}) {
   const CodemanApp = function CodemanApp(this: any) {};
   let now = 1_000;
   let keyboardVisible = false;
@@ -46,6 +46,7 @@ function loadTerminalUiHarness() {
     DEC_SYNC_STRIP_RE: /\x1b\[\?2026[hl]/g,
     OSC52_STRIP_RE: /\x1b\]52;[^\x07\x1b]*(?:\x07|\x1b\\)/g,
     TERMINAL_CHUNK_SIZE: 32 * 1024,
+    ...extraGlobals,
   });
 
   // constants.js first: the link provider calls absoluteFilePathPattern() and
@@ -1251,6 +1252,18 @@ describe('terminal touch selection', () => {
     expect(app._showTouchSelectionBar).not.toHaveBeenCalled();
   });
 
+  it('offers Paste where a blank-space long press lands', () => {
+    // The platform Paste callout is withheld on the terminal (touch-callout CSS,
+    // contextmenu suppression), so blank space is where a phone user long-presses
+    // to paste and finds nothing. The bar's Paste-only mode stands in for it.
+    const { app } = selectionHarness();
+    app._showTouchPasteBar = vi.fn();
+
+    const point = at(LINE.length + 10);
+    expect(press(app, LINE.length + 10)).toBe(false);
+    expect(app._showTouchPasteBar).toHaveBeenCalledWith(point.clientX, point.clientY);
+  });
+
   it('grows the selection as the finger drags past the anchor word', () => {
     const { app, select } = selectionHarness();
     press(app, PATH_AT + 4);
@@ -1478,5 +1491,70 @@ describe('terminal wrapped-line handling', () => {
     app._selectTouchSelectionLine();
 
     expect(app.terminal.select).toHaveBeenCalledWith(0, 0, 'short output'.length);
+  });
+});
+
+describe('long-press bar Paste', () => {
+  // iOS gives a web page no Paste callout on the terminal (the long-press is the
+  // selection gesture), so the bar's Paste button reads the clipboard itself.
+  function pasteHarness({
+    secure = true,
+    readText,
+  }: {
+    secure?: boolean;
+    readText?: () => Promise<string>;
+  } = {}) {
+    const composePrompt = vi.fn();
+    const { app, windowRef } = loadTerminalUiHarness({
+      navigator: readText ? { clipboard: { readText: vi.fn(readText) } } : {},
+      KeyboardAccessoryBar: { composePrompt },
+    });
+    windowRef.isSecureContext = secure;
+    app.activeSessionId = 'sess-1';
+    app.terminal = { clearSelection: vi.fn() };
+    app._inputPastedText = vi.fn();
+    return { app, composePrompt };
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it('pastes clipboard text into the terminal as one bracketed paste', async () => {
+    const { app, composePrompt } = pasteHarness({ readText: async () => 'line one\nline two' });
+    app._pasteFromTouchBar();
+    await settle();
+    expect(app._inputPastedText).toHaveBeenCalledWith(app.terminal, 'line one\nline two');
+    expect(composePrompt).not.toHaveBeenCalled();
+  });
+
+  it('opens the paste dialog when the page is not a secure context', () => {
+    // Plain-HTTP installs have no navigator.clipboard; the dialog's native
+    // textarea still takes the platform's own long-press Paste.
+    const { app, composePrompt } = pasteHarness({ secure: false, readText: async () => 'x' });
+    app._pasteFromTouchBar();
+    expect(composePrompt).toHaveBeenCalledOnce();
+    expect(app._inputPastedText).not.toHaveBeenCalled();
+  });
+
+  it('opens the paste dialog when the clipboard read is refused or holds no text', async () => {
+    const refused = pasteHarness({ readText: async () => Promise.reject(new Error('NotAllowedError')) });
+    refused.app._pasteFromTouchBar();
+    await settle();
+    expect(refused.composePrompt).toHaveBeenCalledOnce();
+
+    const empty = pasteHarness({ readText: async () => '' });
+    empty.app._pasteFromTouchBar();
+    await settle();
+    expect(empty.composePrompt).toHaveBeenCalledOnce();
+    expect(empty.app._inputPastedText).not.toHaveBeenCalled();
+  });
+
+  it('drops the text when the user switched sessions while iOS asked to paste', async () => {
+    let resolve!: (text: string) => void;
+    const { app, composePrompt } = pasteHarness({ readText: () => new Promise((r) => (resolve = r)) });
+    app._pasteFromTouchBar();
+    app.activeSessionId = 'sess-2';
+    resolve('secret');
+    await settle();
+    expect(app._inputPastedText).not.toHaveBeenCalled();
+    expect(composePrompt).not.toHaveBeenCalled();
   });
 });

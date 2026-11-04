@@ -145,8 +145,14 @@ already writing in the editor.
   because on a phone it is the only interaction that matters.
 - **Long-press to select text**, then drag, or tap the other end to extend the selection — no
   hairline handles to grab. A small bar offers **Copy**, **Line** (the whole logical line,
-  wrapped rows included) and dismiss. Copy works on plain-HTTP installs too, where the browser
-  clipboard API is unavailable.
+  wrapped rows included), **Paste** and dismiss. Copy works on plain-HTTP installs too, where the
+  browser clipboard API is unavailable.
+- **Long-press blank space to paste.** The terminal cannot show the phone's own Paste callout
+  (the long-press is the selection gesture), so a long-press where there is no text shows a
+  **Paste** button instead. On iPhone, tapping it brings up iOS's small "Paste" confirmation;
+  tap that and the clipboard goes in as one paste (a copied newline does not submit). On a
+  plain-HTTP install, or if the clipboard read is refused, it opens the Compose (agent) or
+  Paste (shell) dialog, where a long-press in the text box gives the native Paste callout.
 - A swipe is never mistaken for a long-press, and the keyboard stays down while you select.
 
 ## Scrolling and the keyboard

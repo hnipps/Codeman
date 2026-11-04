@@ -248,25 +248,32 @@ Object.assign(CodemanApp.prototype, {
       if (imageFiles.length > 0) {
         self._uploadAndInsertImages(imageFiles, { sessionId: sessionId });
       } else if (text && terminal) {
-        // No image. xterm's paste() emits CSI 200~/201~ only while its DECSET
-        // 2004 mirror is on, and a terminal replay clears that mirror, so the
-        // markers never arrive and a copied newline submits (#716). Build the
-        // frame here and hand it to this terminal through input(). That fires
-        // onData as user input (scroll to the bottom, clear the selection).
-        // The main pane's bracketed-paste branch and a tile's _onTerminalData
-        // deliver it, including the local-echo flush (#219). Do not also write
-        // the frame from here. Markers are stripped until none is left: one pass over
-        // `ESC[20` + `ESC[201~` + `1~` leaves an `ESC[201~` that would end the frame early.
-        let body = text;
-        while (/\x1b\[20[01]~/.test(body)) body = body.replace(/\x1b\[20[01]~/g, '');
-        body = body.replace(/\r?\n/g, '\r');
-        terminal.input(`\x1b[200~${body}\x1b[201~`);
+        self._inputPastedText(terminal, text);
       }
     });
 
     // Trigger the browser's native paste via execCommand
     // (this fires the paste event on our focused trap element)
     document.execCommand('paste');
+  },
+
+  // Hand clipboard text to `terminal` as one Codeman-built bracketed paste.
+  // xterm's paste() emits CSI 200~/201~ only while its DECSET 2004 mirror is
+  // on, and a terminal replay clears that mirror, so the markers never arrive
+  // and a copied newline submits (#716). Build the frame here and hand it to
+  // the terminal through input(). That fires onData as user input (scroll to
+  // the bottom, clear the selection). The main pane's bracketed-paste branch
+  // and a tile's _onTerminalData deliver it, including the local-echo flush
+  // (#219). Do not also write the frame elsewhere. Markers are stripped until
+  // none is left: one pass over `ESC[20` + `ESC[201~` + `1~` leaves an
+  // `ESC[201~` that would end the frame early. Shared by the Ctrl+V trap and
+  // the phone long-press bar's Paste button (terminal-ui.js).
+  _inputPastedText(terminal, text) {
+    if (!terminal || !text) return;
+    let body = text;
+    while (/\x1b\[20[01]~/.test(body)) body = body.replace(/\x1b\[20[01]~/g, '');
+    body = body.replace(/\r?\n/g, '\r');
+    terminal.input(`\x1b[200~${body}\x1b[201~`);
   },
 
   /** What a pick or a paste may upload: 'image', 'video' for the camera roll's

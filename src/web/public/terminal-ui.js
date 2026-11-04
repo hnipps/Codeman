@@ -1340,6 +1340,9 @@ Object.assign(CodemanApp.prototype, {
           // The selection bar is a child of this container: its buttons own their
           // own taps and must not arm a gesture on the terminal underneath.
           if (ev.target?.closest?.('.term-select-bar')) return;
+          // A Paste-only bar (long-press on blank space) has no selection to keep
+          // it honest, so any other touch on the terminal puts it away.
+          if (this._isTouchPasteBarVisible()) this._hideTouchSelectionBar();
           if (ev.touches.length !== 1) {
             clearTimeout(longPressTimer);
             longPressTimer = null;
@@ -2733,9 +2736,14 @@ Object.assign(CodemanApp.prototype, {
     this._armTouchSelectionFocusGuard();
     this._touchSelecting = true;
     const cell = this._touchSelectionCellAt(clientX, clientY);
-    if (!cell) return false;
-    const word = this._touchSelectionWordAt(cell);
-    if (!word) return false;
+    const word = cell ? this._touchSelectionWordAt(cell) : null;
+    if (!word) {
+      // Blank space: nothing to copy, but this is where a phone user long-presses
+      // expecting the platform's Paste callout, which the guards above (and the
+      // touch-callout CSS) deliberately withhold. Offer Paste in its place.
+      this._showTouchPasteBar(clientX, clientY);
+      return false;
+    }
     this._touchSelectionAnchor = word;
     this._touchSelectionActive = true;
     this._applyTouchSelection(word.index, word.length);
@@ -2854,6 +2862,7 @@ Object.assign(CodemanApp.prototype, {
     bar.innerHTML =
       '<button type="button" class="term-select-btn" data-act="copy">Copy</button>' +
       '<button type="button" class="term-select-btn" data-act="line">Line</button>' +
+      '<button type="button" class="term-select-btn" data-act="paste">Paste</button>' +
       '<button type="button" class="term-select-btn term-select-btn--close" data-act="close" aria-label="Clear selection">✕</button>';
     // Pointer events only: the container's touch handlers are what own gestures in
     // this subtree, and they skip anything inside the bar (see initTerminal).
@@ -2864,6 +2873,7 @@ Object.assign(CodemanApp.prototype, {
       ev.stopPropagation();
       if (act === 'copy') void this._copyTouchSelection();
       else if (act === 'line') this._selectTouchSelectionLine();
+      else if (act === 'paste') this._pasteFromTouchBar();
       else this._clearTouchSelection();
     });
     container.appendChild(bar);
@@ -2874,12 +2884,96 @@ Object.assign(CodemanApp.prototype, {
   _showTouchSelectionBar() {
     const bar = this._ensureTouchSelectionBar();
     if (!bar) return;
+    bar.classList.remove('term-select-bar--paste-only');
     bar.classList.add('visible');
     this._positionTouchSelectionBar();
   },
 
+  /**
+   * Long-press on blank space: the same bar with Paste alone, parked at the
+   * finger. There is no selection behind it, so the hasSelection() rule that
+   * hides the full bar never fires; the next touch on the terminal hides it
+   * instead (touchstart in initTerminal), as does ✕.
+   */
+  _showTouchPasteBar(clientX, clientY) {
+    const bar = this._ensureTouchSelectionBar();
+    const container = document.getElementById('terminalContainer');
+    if (!bar || !container) return;
+    bar.classList.add('term-select-bar--paste-only', 'visible');
+    const rect = container.getBoundingClientRect();
+    const barHeight = bar.offsetHeight || 36;
+    const barWidth = bar.offsetWidth || 90;
+    const gap = 12;
+    let top = clientY - rect.top - barHeight - gap;
+    if (top < 0) top = clientY - rect.top + gap;
+    top = Math.max(0, Math.min(top, rect.height - barHeight));
+    const left = Math.max(0, Math.min(clientX - rect.left - barWidth / 2, rect.width - barWidth));
+    bar.style.top = `${Math.round(top)}px`;
+    bar.style.left = `${Math.round(left)}px`;
+  },
+
+  _isTouchPasteBarVisible() {
+    const cls = this._touchSelectionBar?.classList;
+    return !!cls?.contains('visible') && cls.contains('term-select-bar--paste-only');
+  },
+
+  /**
+   * The bar's Paste button: the terminal's stand-in for the iOS/Android Paste
+   * callout, which the long-press guards withhold on purpose.
+   *
+   * navigator.clipboard.readText() must be called synchronously inside this
+   * click, which carries the user activation it needs. On iOS Safari the call
+   * raises the platform's own small "Paste" confirmation at the finger; a tap on
+   * it resolves the promise with the text. Android Chrome asks for clipboard
+   * permission once. The text then goes in as one bracketed paste through the
+   * same frame the Ctrl+V trap builds (_inputPastedText, image-input.js), so a
+   * copied newline never submits and the local-echo overlay is flushed first.
+   *
+   * No Clipboard API (a plain-HTTP install is not a secure context), a refusal,
+   * or a clipboard with no text falls back to the accessory bar's dialog, whose
+   * native textarea takes the platform's own long-press Paste: Compose on an
+   * agent session, Paste on a shell (composePrompt() picks).
+   */
+  _pasteFromTouchBar() {
+    const terminal = this.terminal;
+    const sessionId = this.activeSessionId;
+    this._clearTouchSelection();
+    const openDialog = () => {
+      if (this.activeSessionId !== sessionId) return;
+      if (typeof KeyboardAccessoryBar === 'undefined') return;
+      KeyboardAccessoryBar.composePrompt?.();
+    };
+    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null;
+    if (!sessionId || !terminal) return;
+    if (!window.isSecureContext || typeof clipboard?.readText !== 'function') {
+      openDialog();
+      return;
+    }
+    let pending;
+    try {
+      pending = clipboard.readText();
+    } catch {
+      openDialog();
+      return;
+    }
+    Promise.resolve(pending).then(
+      (text) => {
+        // A tab switch while the platform prompt was up must not deliver the
+        // text to the session the user moved to.
+        if (this.activeSessionId !== sessionId || this.terminal !== terminal) return;
+        if (!text) {
+          // Images and files are not text; the dialog's Attach handles those.
+          openDialog();
+          return;
+        }
+        this._inputPastedText(terminal, text);
+      },
+      () => openDialog()
+    );
+  },
+
   _hideTouchSelectionBar() {
-    this._touchSelectionBar?.classList.remove('visible');
+    this._touchSelectionBar?.classList.remove('visible', 'term-select-bar--paste-only');
   },
 
   /**

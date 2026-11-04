@@ -4641,6 +4641,12 @@ body.touch-device .terminal-container .xterm .xterm-helper-textarea {
   color: var(--text-muted);
 }
 
+/* Long-press on blank space: nothing is selected, so only Paste (and ✕) apply. */
+.term-select-bar--paste-only [data-act='copy'],
+.term-select-bar--paste-only [data-act='line'] {
+  display: none;
+}
+
 /* Welcome Overlay */
 .welcome-overlay {
   position: absolute;
