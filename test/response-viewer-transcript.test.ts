@@ -3,6 +3,7 @@ import {
   getLastTranscriptResponse,
   isExternalCliTranscriptMode,
   parseExternalCliTranscript,
+  transcriptNeedsScreenCapture,
 } from '../src/web/response-viewer-transcript.js';
 import { isExternalCliMode } from '../src/session.js';
 import type { SessionMode } from '../src/types.js';
@@ -461,6 +462,68 @@ Here is the assistant answer at column zero.
   });
 });
 
+describe('Grok rendered screen', () => {
+  const composer = [
+    '  ╭────────────────────────────────────────────────────────╮',
+    '  │ ❯ unsent draft                                         │',
+    '  │   still typing                                         │',
+    '  ╰────────────────── Grok 4.7 (high) · always-approve ─────╯',
+    '  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts',
+  ];
+  const screen = [
+    '  main /workspace/project     116K / 256K │ [Dashboard]',
+    '     ❯ explain the parser                           7:21 PM',
+    '       and its limits',
+    '',
+    '     ◆ Thought for 1.5s',
+    '',
+    '     The parser reads local headers.                7:36 PM',
+    '     It preserves archive offsets.                           █',
+    '',
+    '     ◈ Explored 4 files',
+    '',
+    '     Here is the result.                            7:37 PM',
+    '',
+    '     ```ts',
+    '     const offset = 42;',
+    '     ```',
+    '  ┃  ◆ Thinking…                                             █',
+    '  ┃  Checking the next step.                                 █',
+    '   ⠹ Thinking… 1m6s                      19m17s ⇣116k [stop]',
+    ...composer,
+  ].join('\n');
+
+  it('uses the screen and separates clean prompts, answers, tools, and thinking', () => {
+    expect(transcriptNeedsScreenCapture('grok')).toBe(true);
+    const blocks = parseExternalCliTranscript(screen, 'grok');
+    expect(blocks.find((block) => block.kind === 'prompt')?.text).toBe('explain the parser and its limits');
+    expect(blocks.filter((block) => block.kind === 'response').map((block) => block.text)).toEqual([
+      'The parser reads local headers.\nIt preserves archive offsets.',
+      'Here is the result.\n\n```ts\nconst offset = 42;\n```',
+    ]);
+    expect(blocks.some((block) => block.kind === 'tool' && block.text === '◈ Explored 4 files')).toBe(true);
+    expect(blocks.some((block) => block.kind === 'status' && block.text.includes('Checking the next step.'))).toBe(
+      true
+    );
+    expect(JSON.stringify(blocks)).not.toMatch(/Dashboard|unsent draft|still typing|Shift\+Tab|7:36 PM|█|┃/);
+  });
+
+  it('reads the visible answer when its prompt is offscreen', () => {
+    const blocks = parseExternalCliTranscript(['     The answer is still visible.', ...composer].join('\n'), 'grok');
+    expect(getLastTranscriptResponse(blocks)).toBe('The answer is still visible.');
+    expect(blocks.filter((block) => block.kind === 'prompt')).toEqual([]);
+  });
+
+  it('returns no conversation for an idle screen containing only chrome and a draft', () => {
+    expect(
+      parseExternalCliTranscript(
+        ['  main /workspace/project     0 / 256K │ [Dashboard]', ...composer].join('\n'),
+        'grok'
+      )
+    ).toEqual([]);
+  });
+});
+
 describe('GitHub Copilot pane dialect', () => {
   // Captured from a real Copilot 1.0.95 pane inside tmux (a throwaway COPILOT_HOME, a local
   // OpenAI-compatible endpoint): banner, two turns, status rows, composer between rules, footer.
@@ -494,6 +557,36 @@ describe('GitHub Copilot pane dialect', () => {
 
   it('is a transcript mode', () => {
     expect(isExternalCliTranscriptMode('copilot')).toBe(true);
+  });
+
+  it('classifies thinking summaries and working indicators as status, never user prompts', () => {
+    const screen = [
+      '[Current]  Sessions   Issues   Pull requests   Gists',
+      ' ❯ explain the parser   11:30',
+      ' ❯ Thought for 2s',
+      ' $ Shell Inspect parser metadata',
+      '   example command',
+      ' ● The parser reads the rendered screen.',
+      ' ❯ Thought for 1m 18s',
+      ' /tmp/work  Session: 3.89 AIC used',
+      rule,
+      '❯',
+      rule,
+      ' ● Working · 16.3 KiB esc esc interrupt',
+    ].join('\n');
+    const blocks = parseExternalCliTranscript(screen, 'copilot');
+    expect(blocks.filter((block) => block.kind === 'prompt').map((block) => block.text)).toEqual([
+      'explain the parser',
+    ]);
+    expect(getLastTranscriptResponse(blocks)).toBe('The parser reads the rendered screen.');
+    expect(blocks.filter((block) => block.kind === 'status').every((block) => block.role === 'assistant')).toBe(true);
+    expect(blocks.some((block) => block.kind === 'status' && block.text.includes('Thought for 2s'))).toBe(true);
+    expect(blocks.some((block) => block.kind === 'status' && block.text.includes('Working'))).toBe(true);
+  });
+
+  it('keeps a timestamped user prompt about thinking as a user message', () => {
+    const blocks = parseExternalCliTranscript(' ❯ Thought for 2s   11:30\n ● Understood.', 'copilot');
+    expect(blocks[0]).toMatchObject({ role: 'user', text: 'Thought for 2s' });
   });
 
   it('returns the last answer, with no banner, status rows, composer or footer in it', () => {

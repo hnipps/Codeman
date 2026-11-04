@@ -2936,14 +2936,17 @@ export function registerSessionRoutes(
     // where a real rollout file is the better source.
     if (isExternalCliTranscriptMode(session.mode)) {
       const externalQuery = req.query as { context?: string };
-      // A repainting full-screen TUI (copilot) streams absolute cursor moves, not lines, so the
+      // Repainting full-screen TUIs stream absolute cursor moves, not lines, so the
       // buffer cannot be segmented; read the pane's visible screen instead, and fall back to the
       // buffer when there is no tmux pane to ask (direct PTY, tests).
       const screen =
         transcriptNeedsScreenCapture(session.mode) && session.muxName
           ? (ctx.mux.capturePaneText?.(session.muxName) ?? null)
           : null;
-      const blocks = parseExternalCliTranscript(screen ?? session.terminalBuffer, session.mode);
+      // Grok's raw redraw stream is not a transcript. If capture is unavailable,
+      // return no context rather than displaying concatenated repaints.
+      const source = screen ?? (session.mode === 'grok' ? '' : session.terminalBuffer);
+      const blocks = parseExternalCliTranscript(source, session.mode);
       return {
         text: getLastTranscriptResponse(blocks),
         timestamp: '',

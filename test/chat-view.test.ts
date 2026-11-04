@@ -114,6 +114,29 @@ describe('provider conversation overlay', () => {
     expect(h.clearInterval).toHaveBeenCalledWith('chat-refresh');
   });
 
+  it('omits provider status cards and preserves message identity when only status changes', async () => {
+    h.app.activeSessionId = 'copilot-1';
+    const messages = [
+      message('Question', { role: 'user', kind: 'prompt' }),
+      message('Thought for 2s', { kind: 'status' }),
+      message('Answer'),
+      message('Session: 3.89 AIC used', { kind: 'status' }),
+      message('Working', { kind: 'status' }),
+    ];
+    h.fetch.mockResolvedValueOnce(response(messages));
+    h.app.toggleChatView();
+    await h.app._chatView.refreshPromise;
+    expect(h.body.children).toHaveLength(2);
+    expect(h.body.textContent).toContain('Question');
+    expect(h.body.textContent).toContain('Answer');
+    expect(h.body.textContent).not.toMatch(/Thought|Session:|Working/);
+    const first = h.body.firstChild;
+    h.fetch.mockResolvedValueOnce(response([...messages, message('Still working', { kind: 'status' })]));
+    await h.app.refreshChatView();
+    expect(h.body.firstChild).toBe(first);
+    expect(h.body.children).toHaveLength(2);
+  });
+
   it('appends an exact prefix without replacing cards or moving a reader away from older text', async () => {
     h.fetch.mockResolvedValueOnce(response([message('first')]));
     h.app.toggleChatView();

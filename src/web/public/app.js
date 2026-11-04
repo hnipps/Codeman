@@ -3371,7 +3371,8 @@ class CodemanApp {
     if (!body || this._chatView !== state || this.activeSessionId !== state.sessionId) return;
     // No stable IDs in the full-context parser: compare every rendered field,
     // not lengths or text alone (turn/kind/queued change the card's appearance).
-    const messages = snapshot.map(({ role, text, turn, kind, queued }) => ({ role, text, turn, kind, queued }));
+    const messages = snapshot.filter((msg) => msg.kind !== 'status')
+      .map(({ role, text, turn, kind, queued }) => ({ role, text, turn, kind, queued }));
     const signature = (msg) => JSON.stringify([msg.role, msg.text, msg.turn, msg.kind, !!msg.queued]);
     const prefix = state.messages.length <= messages.length &&
       state.messages.every((msg, i) => signature(msg) === signature(messages[i]));

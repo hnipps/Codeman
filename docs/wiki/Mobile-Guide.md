@@ -68,6 +68,8 @@ available for typing and sending. Chat refreshes when Claude adds transcript ent
 other providers refresh automatically while Chat is open. It follows the latest message
 only when you are already near the bottom. Markdown, code-copy buttons, and file links
 work as in the Response Viewer.
+Provider status rows, including thinking timers and session usage, are not shown as
+conversation messages.
 
 Tap **← Terminal** to return to the live terminal (for tool approvals or other terminal
 controls). Switching sessions closes Chat. **Refresh** retries a failed load. Chat uses
@@ -75,6 +77,9 @@ Claude's saved transcript, so a session without one shows an empty-history notic
 Remote and Docker Claude sessions do not expose Chat because their transcript files are
 not on this host. Other provider transcripts are read from their local conversation files
 or parsed from the session pane when no host-side transcript is available.
+Grok uses the currently visible pane, not its raw terminal redraw stream, so messages
+that have scrolled off that pane are not included. Unsent drafts and terminal controls
+are excluded; if the pane cannot be captured, Chat shows no history.
 
 Agent sessions show a text box docked under the terminal. Tap it to type: it is an ordinary
 phone text field, so autocorrect, dictation, text selection and dragging the cursor all work,

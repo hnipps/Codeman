@@ -267,6 +267,41 @@ describe('GET /api/sessions/:id/last-response — external CLI panes', () => {
     });
   });
 
+  it('reads Grok from its screen instead of concatenating terminal repaints', async () => {
+    session.mode = 'grok';
+    session.terminalBuffer = 'BROKEN redraws repeated repeated ┃◆┃';
+    const capture = vi.fn(() =>
+      [
+        '     ❯ explain the change                           7:21 PM',
+        '     The screen answer.                             7:22 PM',
+        '  ╭────────────────────────────────────────────────────────╮',
+        '  │ ❯ draft                                                │',
+        '  ╰────────────────── Grok 4.7 (high) · always-approve ─────╯',
+      ].join('\n')
+    );
+    (harness.ctx.mux as unknown as { capturePaneText: typeof capture }).capturePaneText = capture;
+
+    const { body } = await lastResponse(true);
+
+    expect(capture).toHaveBeenCalledWith(session.muxName);
+    expect(body.data.text).toBe('The screen answer.');
+    expect(body.data.messages.map((message: { role: string }) => message.role)).toEqual(['user', 'assistant']);
+    expect(JSON.stringify(body)).not.toMatch(/BROKEN|draft|7:22 PM/);
+  });
+
+  it.each([null, ''])('never serves raw Grok redraws when screen capture returns %s', async (screen) => {
+    session.mode = 'grok';
+    session.terminalBuffer = 'BROKEN redraws repeated repeated ┃◆┃';
+    const capture = vi.fn(() => screen);
+    (harness.ctx.mux as unknown as { capturePaneText: typeof capture }).capturePaneText = capture;
+
+    const { body } = await lastResponse(true);
+
+    expect(body.data.text).toBe('');
+    expect(body.data.hasContext).toBe(false);
+    expect(body.data.messages).toEqual([]);
+  });
+
   it('leaves Claude mode on the Claude transcript path', async () => {
     // Regression guard: a claude pane must NOT be segmented off its terminal
     // buffer, or a real transcript would be shadowed by scraped pane text.

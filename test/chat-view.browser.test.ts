@@ -4,12 +4,16 @@ import { chromium, type Browser, type Page } from 'playwright';
 
 const html = readFileSync('src/web/public/index.html', 'utf8');
 const wrap = html.slice(html.indexOf('<div class="terminal-wrap"'), html.indexOf('<!-- Tile grid'));
-const messages = Array.from({ length: 35 }, (_, turn) => ({
-  role: turn % 2 ? 'assistant' : 'user',
-  text: `Message ${turn}\n\nNative scrolling paragraph.\n\n\`\`\`js\nconst turn = ${turn};\n\`\`\``,
-  turn,
-  kind: 'response',
-}));
+const messages = [
+  ...Array.from({ length: 35 }, (_, turn) => ({
+    role: turn % 2 ? 'assistant' : 'user',
+    text: `Message ${turn}\n\nNative scrolling paragraph.\n\n\`\`\`js\nconst turn = ${turn};\n\`\`\``,
+    turn,
+    kind: 'response',
+  })),
+  { role: 'assistant', text: 'Thought for 2s', turn: 35, kind: 'status' },
+  { role: 'assistant', text: 'Session: 3.89 AIC used', turn: 35, kind: 'status' },
+];
 
 describe('phone conversation workspace', () => {
   let browser: Browser;
@@ -142,6 +146,17 @@ describe('phone conversation workspace', () => {
     await page.locator('#chatView .chat-view-header button').first().click();
     expect(await page.locator('#chatView').isVisible()).toBe(false);
     expect(await page.locator('#chatViewToggle').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('does not render Copilot thinking timers or session status as conversation cards', async () => {
+    await page.evaluate(() => {
+      (window as any).app.activeSessionId = 'copilot-1';
+      (window as any).dock.syncDock();
+    });
+    await page.locator('#chatViewToggle').click();
+    await page.waitForSelector('#chatViewBody .rv-message:nth-child(35)');
+    expect(await page.locator('#chatViewBody .rv-message').count()).toBe(35);
+    expect(await page.locator('#chatViewBody').textContent()).not.toMatch(/Thought for|AIC used/);
   });
 
   it('closes on session changes and keeps the toggle for other providers but not shell', async () => {

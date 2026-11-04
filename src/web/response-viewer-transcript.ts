@@ -71,7 +71,9 @@ const PANE_DIALECTS: Record<string, PaneDialect> = {
       /\bSession: .*(?:AIC used|credits unavailable)/,
       /^\s*←\s+open sidebar/,
       /\/ commands · \? help/,
-      /^\s*[◉◎]\s+Working\b/,
+      /^\s*[◉◎●⠁-⣿]\s+Working\b/,
+      /^ ?❯\s+Thought for (?:\d+(?:\.\d+)?[hms]\s*)+$/,
+      /^\[Current\]\s+Sessions\b/,
     ],
     ignore: [/^ ?❯\s*$/],
     composer: /^ ?❯/,
@@ -339,7 +341,62 @@ export function isExternalCliTranscriptMode(mode: string | null | undefined): bo
  * stripping the escapes from the stream concatenates every row into one run of text.
  */
 export function transcriptNeedsScreenCapture(mode: string | null | undefined): boolean {
-  return Object.prototype.hasOwnProperty.call(PANE_DIALECTS, String(mode || ''));
+  return mode === 'grok' || Object.prototype.hasOwnProperty.call(PANE_DIALECTS, String(mode || ''));
+}
+
+function parseGrokScreen(cleaned: string): ResponseViewerTranscriptBlock[] {
+  const rows = cleaned.split('\n');
+  // Grok's unsent composer is boxed, unlike its submitted prompts. Discard the
+  // whole box (including multiline drafts) and the keyboard hints below it.
+  let end = rows.length;
+  for (let i = rows.length - 2; i >= 0; i -= 1) {
+    if (/^\s*╭─+╮\s*$/.test(rows[i]) && /^\s*│\s*❯/.test(rows[i + 1])) {
+      end = i;
+      break;
+    }
+  }
+
+  const blocks: ResponseViewerTranscriptBlock[] = [];
+  let kind: ResponseViewerTranscriptKind | null = null;
+  let current: string[] = [];
+  const flush = () => {
+    pushBlock(blocks, kind, current);
+    kind = null;
+    current = [];
+  };
+
+  for (const raw of rows.slice(0, end)) {
+    const thinking = /^\s*┃/.test(raw);
+    const line = raw
+      .replace(/\s*█\s*$/, '')
+      .replace(/^ {0,2}┃ {0,2}/, '')
+      .replace(/^ {1,5}/, '')
+      .replace(/\s{2,}\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$/i, '')
+      .trimEnd();
+    if (/\[Dashboard\]\s*$/.test(line) || /^Shift\+Tab:mode\b/.test(line)) {
+      flush();
+      continue;
+    }
+    if (!line.trim()) {
+      if (kind) current.push('');
+      continue;
+    }
+    const prompt = /^❯\s+(\S.*)$/.exec(line);
+    const nextKind: ResponseViewerTranscriptKind = prompt
+      ? 'prompt'
+      : thinking || /^◆\s/.test(line) || /[⠁-⣿]\s+(?:Thinking|Working)/.test(line)
+        ? 'status'
+        : /^◈\s/.test(line)
+          ? 'tool'
+          : kind === 'prompt' && /^ {7}\S/.test(raw)
+            ? 'prompt'
+            : 'response';
+    if (prompt || nextKind !== kind) flush();
+    kind = nextKind;
+    current.push(prompt ? prompt[1] : line);
+  }
+  flush();
+  return blocks;
 }
 
 /**
@@ -371,7 +428,9 @@ function parseDialectTranscript(cleaned: string, dialect: PaneDialect): Response
   }
   const isComposerRow = (i: number) => i === composerIndex;
   const isComposerRule = (i: number) => composerIndex !== -1 && (i === composerIndex - 1 || i === composerIndex + 1);
-  const hasPrompt = rows.some((row, i) => dialect.prompt.test(row) && !isComposerRow(i));
+  const hasPrompt = rows.some(
+    (row, i) => dialect.prompt.test(row) && !isComposerRow(i) && !dialect.status.some((re) => re.test(row))
+  );
   const startupVisible = rows.some((row) => dialect.startup.some((re) => re.test(row)));
   let sawPrompt = !hasPrompt && !startupVisible;
   // A rule drawn INSIDE an answer (a markdown `---`, a quoted passage between two rules) is part
@@ -396,7 +455,8 @@ function parseDialectTranscript(cleaned: string, dialect: PaneDialect): Response
       flush();
       continue;
     }
-    const prompt = dialect.prompt.exec(line);
+    const status = dialect.status.some((re) => re.test(line));
+    const prompt = status ? null : dialect.prompt.exec(line);
     if (prompt) {
       flush();
       sawPrompt = true;
@@ -405,7 +465,7 @@ function parseDialectTranscript(cleaned: string, dialect: PaneDialect): Response
       continue;
     }
     if (!sawPrompt) continue;
-    if (dialect.status.some((re) => re.test(line))) {
+    if (status) {
       if (kind !== 'status') flush();
       kind = 'status';
       current.push(line.trim());
@@ -447,6 +507,8 @@ export function parseExternalCliTranscript(
 
   const cleaned = cleanTerminalTranscript(buffer);
   if (!cleaned) return [];
+
+  if (resolvedMode === 'grok') return parseGrokScreen(cleaned);
 
   const dialect = PANE_DIALECTS[resolvedMode];
   if (dialect) return parseDialectTranscript(cleaned, dialect);
