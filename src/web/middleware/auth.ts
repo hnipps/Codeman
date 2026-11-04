@@ -11,7 +11,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { StaleExpirationMap } from '../../utils/index.js';
-import type { AuthSessionRecord } from '../ports/auth-port.js';
+import { AuthSessionStore, authSessionKey, passwordStamp } from '../auth-session-store.js';
 import { isAllowedRequestHost, isAllowedRequestOrigin, type HostPolicy } from '../network-auth-policy.js';
 import {
   AUTH_SESSION_TTL_MS,
@@ -48,7 +48,7 @@ export const AUTH_COOKIE_NAME = 'codeman_session';
 
 /** State returned from registerAuthMiddleware for cleanup in server stop() */
 interface AuthState {
-  authSessions: StaleExpirationMap<string, AuthSessionRecord> | null;
+  authSessions: AuthSessionStore | null;
   authFailures: StaleExpirationMap<string, number> | null;
   qrAuthFailures: StaleExpirationMap<string, number> | null;
   hookSecretFailures: StaleExpirationMap<string, number> | null;
@@ -337,11 +337,15 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean, bas
   // without CODEMAN_PASSWORD.
   if (!multiUser && !authPassword) return state;
 
-  // Session token store — active sessions extend TTL on access
-  state.authSessions = new StaleExpirationMap<string, AuthSessionRecord>({
+  // Session token store — active sessions extend TTL on access. Saved in the data dir
+  // (only the live colour writes) so a deploy, rollback or restart keeps people logged in.
+  state.authSessions = new AuthSessionStore({
     ttlMs: AUTH_SESSION_TTL_MS,
-    refreshOnGet: true,
+    maxSessions: MAX_AUTH_SESSIONS,
+    credential: multiUser ? null : `${process.env.CODEMAN_USERNAME || 'admin'}:${authPassword}`,
   });
+  const restoredLogins = state.authSessions.load();
+  if (restoredLogins > 0) console.log(`[Auth] Restored ${restoredLogins} saved login session(s)`);
 
   // Failure counter per IP — decay naturally after 15 minutes
   state.authFailures = new StaleExpirationMap<string, number>({
@@ -436,7 +440,7 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean, bas
     // Check session cookie first (avoids re-sending credentials on every request)
     // Use get() instead of has() so refreshOnGet extends the TTL on active sessions
     const sessionToken = req.cookies[AUTH_COOKIE_NAME];
-    if (sessionToken && authSessions.get(sessionToken) !== undefined) {
+    if (sessionToken && authSessions.get(authSessionKey(sessionToken)) !== undefined) {
       // Sliding cookie: re-issue on every authenticated request so the browser
       // cookie lifetime tracks the server-side sliding TTL (refreshOnGet above).
       reply.setCookie(AUTH_COOKIE_NAME, sessionToken, {
@@ -464,7 +468,7 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean, bas
         if (oldestKey !== undefined) authSessions.delete(oldestKey);
       }
 
-      authSessions.set(token, {
+      authSessions.set(authSessionKey(token), {
         ip: clientIp,
         ua: req.headers['user-agent'] ?? '',
         createdAt: Date.now(),
@@ -512,7 +516,7 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean, bas
 function registerMultiUserAuthHook(
   app: FastifyInstance,
   https: boolean,
-  authSessions: StaleExpirationMap<string, AuthSessionRecord>,
+  authSessions: AuthSessionStore,
   authFailures: StaleExpirationMap<string, number>,
   hookSecretFailures: StaleExpirationMap<string, number>,
   userFailures: StaleExpirationMap<string, number>,
@@ -604,7 +608,7 @@ function registerMultiUserAuthHook(
       const { user } = outcome;
       const token = randomBytes(32).toString('hex');
       if (authSessions.size >= MAX_AUTH_SESSIONS) evictForCapacity(user.username);
-      authSessions.set(token, {
+      authSessions.set(authSessionKey(token), {
         ip: req.ip,
         ua: req.headers['user-agent'] ?? '',
         createdAt: Date.now(),
@@ -612,6 +616,7 @@ function registerMultiUserAuthHook(
         username: user.username,
         role: user.role,
         mustChangePassword: !!user.mustChangePassword,
+        passwordStamp: passwordStamp(user.password),
       });
       req.authUser = { username: user.username, role: user.role };
       setSessionCookie(reply, token);
@@ -647,7 +652,8 @@ function registerMultiUserAuthHook(
 
     // 1. Cookie session (carries identity + mustChangePassword snapshot).
     const sessionToken = req.cookies[AUTH_COOKIE_NAME];
-    const record = sessionToken ? authSessions.get(sessionToken) : undefined;
+    const sessionKey = sessionToken ? authSessionKey(sessionToken) : undefined;
+    const record = sessionKey ? authSessions.get(sessionKey) : undefined;
     if (record && record.username) {
       // Security: re-validate the cookie identity against the store on every request so
       // an out-of-band mutation the in-memory map can't see (the `codeman users` CLI,
@@ -666,8 +672,12 @@ function registerMultiUserAuthHook(
         enforcePasswordChange(req, reply, !!record.mustChangePassword);
         return;
       }
-      if (!live || live.disabled) {
-        authSessions.delete(sessionToken!);
+      // A session minted before the user's password last changed is over: the password
+      // change revoked it, perhaps from the CLI or while a release that keeps no stamp
+      // was live, and a saved session must not outlive that.
+      const passwordChanged = !!live && !!record.passwordStamp && record.passwordStamp !== passwordStamp(live.password);
+      if (!live || live.disabled || passwordChanged) {
+        authSessions.delete(sessionKey!);
         reply.clearCookie(AUTH_COOKIE_NAME, { path: '/' });
         reply.code(401).send('Unauthorized');
         return;

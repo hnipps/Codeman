@@ -20,6 +20,7 @@ import { createRouteTestHarness, type RouteTestHarness } from './_route-test-uti
 import { registerSystemRoutes } from '../../src/web/routes/system-routes.js';
 import { StaleExpirationMap } from '../../src/utils/stale-expiration-map.js';
 import type { AuthSessionRecord } from '../../src/web/ports/auth-port.js';
+import { authSessionKey } from '../../src/web/auth-session-store.js';
 
 const { startUpdate } = vi.hoisted(() => ({
   startUpdate: vi.fn(async () => ({ ok: true, updateId: 'u1', toTag: 'v9.9.9', toVersion: '9.9.9' })),
@@ -65,10 +66,11 @@ describe('server-wide system operations are admin-only in multi-user mode', () =
     harness = await createRouteTestHarness(registerSystemRoutes, user ? { authUser: user } : undefined);
     tunnel = makeTunnelManager();
     sessions = new StaleExpirationMap<string, AuthSessionRecord>({ ttlMs: 60_000 });
-    // Two logins of the non-admin, one of an admin, one single-user (no identity).
-    sessions.set('bob-laptop', record('bob', '10.0.0.2'));
-    sessions.set('bob-phone', record('bob', '10.0.0.3'));
-    sessions.set('root-desk', record('root', '10.0.0.1'));
+    // Two logins of the non-admin, one of an admin, one single-user (no identity). The map is
+    // keyed by the cookie's hash; the requests below name the cookie itself.
+    sessions.set(authSessionKey('bob-laptop'), record('bob', '10.0.0.2'));
+    sessions.set(authSessionKey('bob-phone'), record('bob', '10.0.0.3'));
+    sessions.set(authSessionKey('root-desk'), record('root', '10.0.0.1'));
     Object.assign(harness.ctx as unknown as Record<string, unknown>, { tunnelManager: tunnel, authSessions: sessions });
     return harness;
   }
@@ -163,7 +165,8 @@ describe('server-wide system operations are admin-only in multi-user mode', () =
   });
 
   describe('POST /api/auth/revoke', () => {
-    const tokens = () => [...sessions.keys()].sort();
+    const NAMES = ['bob-laptop', 'bob-phone', 'root-desk'];
+    const tokens = () => NAMES.filter((n) => sessions.has(authSessionKey(n)));
 
     it('the bare form signs a non-admin out of their own sessions only, never anyone else', async () => {
       const { app } = await as(NON_ADMIN);

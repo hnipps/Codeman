@@ -18,6 +18,7 @@ import { isMultiUserMode } from '../../config/multiuser.js';
 import { findUser, setPassword, verifyPassword } from '../../user-store.js';
 import { getAuthUser, revokeUserSessions } from '../route-helpers.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
+import { authSessionKey, passwordStamp } from '../auth-session-store.js';
 import type { AuthPort } from '../ports/auth-port.js';
 
 const PasswordChangeSchema = z.object({
@@ -66,15 +67,24 @@ export function registerMeRoutes(app: FastifyInstance, ctx: AuthPort): void {
       reply.code(403);
       return createErrorResponse(ApiErrorCode.FORBIDDEN, 'Current password is incorrect');
     }
-    await setPassword(username, parsed.data.newPassword, { mustChangePassword: false });
+    const updated = await setPassword(username, parsed.data.newPassword, { mustChangePassword: false });
 
     // Revoke this user's OTHER cookie sessions; keep the caller's own session alive
     // and clear its mustChangePassword snapshot so they aren't re-locked immediately.
     const currentToken = req.cookies[AUTH_COOKIE_NAME];
     revokeUserSessions(ctx.authSessions, username, currentToken);
     if (currentToken) {
-      const rec = ctx.authSessions?.get(currentToken);
-      if (rec) rec.mustChangePassword = false;
+      const key = authSessionKey(currentToken);
+      const rec = ctx.authSessions?.peek(key);
+      if (rec) {
+        // Replaced, not mutated, so the saved copy is rewritten. The new stamp keeps the
+        // caller's own session valid under the password they just set.
+        ctx.authSessions?.set(key, {
+          ...rec,
+          mustChangePassword: false,
+          passwordStamp: passwordStamp(updated.password),
+        });
+      }
     }
     return { success: true };
   });

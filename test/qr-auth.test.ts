@@ -19,6 +19,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { TunnelManager } from '../src/tunnel-manager.js';
 import { WebServer } from '../src/web/server.js';
+import { authSessionKey } from '../src/web/auth-session-store.js';
+import { AUTH_SESSION_TTL_MS } from '../src/config/auth-config.js';
 
 const TEST_PASS = 'qr-test-pass-xyz';
 const TEST_USER = 'admin';
@@ -502,7 +504,7 @@ describe('QR Auth Integration', () => {
       expect(setCookie).toContain('HttpOnly');
       expect(setCookie).toContain('SameSite=Lax');
       expect(setCookie).toContain('Path=/');
-      expect(setCookie).toContain('Max-Age=86400');
+      expect(setCookie).toContain(`Max-Age=${AUTH_SESSION_TTL_MS / 1000}`);
     } finally {
       tm.stopTokenRotation();
     }
@@ -588,7 +590,8 @@ describe('QR Auth Integration', () => {
           authSessions: { get(k: string): { method: string } | undefined } | null;
         }
       ).authSessions;
-      const record = authSessions?.get(token);
+      const record = authSessions?.get(authSessionKey(token));
+      expect(authSessions?.get(token)).toBeUndefined();
       expect(record).toBeDefined();
       expect(record!.method).toBe('qr');
     } finally {

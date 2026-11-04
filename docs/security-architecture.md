@@ -145,9 +145,26 @@ loopback bind matters. The auth pipeline (`src/web/middleware/auth.ts`,
 ### Session cookies
 
 On successful Basic auth the server issues `codeman_session`, an opaque
-server‑side token (`randomBytes(32)`), valid 24h with auto‑extend and device
+server‑side token (`randomBytes(32)`), valid 30 days with auto‑extend and device
 context for the audit log. Tokens are **not** client‑signed — they're validated
 by presence in a server‑side map, so they cannot be forged offline.
+
+The map is saved to `auth-sessions.json` in the data dir (`src/web/auth-session-store.ts`),
+so a restart, deploy or rollback keeps people logged in:
+
+- The map and the file are keyed by the SHA‑256 of the cookie, never the cookie, so a
+  copy of the file (a backup) holds no working cookies. The file is 0600, written
+  through tmp + rename, and on the File Viewer's sensitive‑path blocklist.
+- Single‑user mode stores a salted scrypt digest of `CODEMAN_USERNAME:CODEMAN_PASSWORD`;
+  a boot with a different password, or in the other auth mode, starts with no saved
+  logins, as a restart did before. Multi‑user sessions carry a stamp of the user's
+  password salt, and the cookie path refuses a session once the password has changed,
+  including a change made with the CLI.
+- Only the live deploy colour writes it (`deployRole.allows('persist')`). The retire
+  flushes it and the promotion reloads it.
+- Readers accept any `version` >= 1 and ignore unknown fields, so changes to the file
+  must be additive. A release from before the file ignores it: a rollback past it logs
+  people out once, and logins or revocations made on such a release never reach the file.
 
 ### Rate limiting / lockout recovery
 

@@ -185,6 +185,52 @@ describe('Auth Security', () => {
     });
   });
 
+  describe('Saved login sessions', () => {
+    // Each server here is started and stopped in the test; the shared one above is not touched.
+    const extra: WebServer[] = [];
+    afterEach(async () => {
+      for (const s of extra.splice(0)) await s.stop().catch(() => {});
+      process.env.CODEMAN_PASSWORD = TEST_PASS;
+      process.env.CODEMAN_USERNAME = TEST_USER;
+    });
+
+    async function restartable(): Promise<{ s: WebServer; url: string }> {
+      const s = new WebServer(0, false, true);
+      await s.start();
+      extra.push(s);
+      return { s, url: `http://localhost:${s.boundPort}` };
+    }
+
+    it('issues a 30-day sliding cookie', async () => {
+      const res = await fetch(`${baseUrl}/api/status`, {
+        headers: { Authorization: basicAuthHeader(TEST_USER, TEST_PASS) },
+      });
+      expect(res.headers.get('set-cookie')).toMatch(/Max-Age=2592000/);
+    });
+
+    it('a cookie keeps working after a restart, and a logout before it stays logged out', async () => {
+      const first = await restartable();
+      const kept = await getSessionCookie(first.url);
+      const loggedOut = await getSessionCookie(first.url);
+      await fetch(`${first.url}/api/logout`, { method: 'POST', headers: { Cookie: loggedOut } });
+      await first.s.stop();
+
+      const second = await restartable();
+      expect((await fetch(`${second.url}/api/status`, { headers: { Cookie: kept } })).status).toBe(200);
+      expect((await fetch(`${second.url}/api/status`, { headers: { Cookie: loggedOut } })).status).toBe(401);
+    });
+
+    it('a cookie minted under the old password does not survive a password change', async () => {
+      const first = await restartable();
+      const cookie = await getSessionCookie(first.url);
+      await first.s.stop();
+
+      process.env.CODEMAN_PASSWORD = 'a-brand-new-password';
+      const second = await restartable();
+      expect((await fetch(`${second.url}/api/status`, { headers: { Cookie: cookie } })).status).toBe(401);
+    });
+  });
+
   describe('Rate Limiting', () => {
     let rateServer: WebServer;
     let rateBaseUrl: string;

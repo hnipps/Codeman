@@ -578,7 +578,7 @@ loginctl enable-linger $USER
 <summary><strong>Authentication</strong></summary>
 
 1. First request → browser shows Basic Auth prompt (username: `admin` or `CODEMAN_USERNAME`)
-2. On success → server issues a `codeman_session` cookie (24h TTL, auto-extends on activity)
+2. On success → server issues a `codeman_session` cookie (30-day TTL, auto-extends on activity). Login sessions are saved, hashed, in the data dir, so a restart or upgrade keeps you logged in; changing `CODEMAN_PASSWORD` logs everyone out
 3. Subsequent requests authenticate silently via cookie
 4. 10 failed attempts per IP → 429 rate limit (15-minute decay). In multi-user mode the per-IP cap is 50, and each account allows 10 failed guesses per IP; past either, even a correct password from that IP waits for the decay, while the account still logs in from another IP
 
@@ -650,7 +650,7 @@ When someone authenticates via QR, the desktop shows a notification toast with t
 | **Brute force**          | 56.8 billion combinations, ~2 valid at any time, dual-layer rate limiting blocks well before statistical feasibility.                      |
 | **QRLjacking**           | 60s rotation forces real-time relay. Desktop toast provides instant detection. Self-hosted single-user context makes phishing implausible. |
 | **Timing attack**        | Hash-based Map lookup — no string comparison timing leak.                                                                                  |
-| **Session cookie theft** | HttpOnly + Secure + SameSite=lax + 24h TTL. Manual revocation at `POST /api/auth/revoke`.                                                  |
+| **Session cookie theft** | HttpOnly + Secure + SameSite=lax + 30-day sliding TTL. Stored hashed on disk. Manual revocation at `POST /api/auth/revoke`.                  |
 
 #### How It Compares
 
@@ -671,7 +671,7 @@ By default Codeman launches sessions with `--dangerously-skip-permissions`, so t
 ### Network & access
 
 - **Loopback by default** — the server binary binds `127.0.0.1`, reachable only from the same machine, so the no-password default is safe out of the box (the guided installer asks about network access and configures the binding + password for you). Binding a non-loopback host without `CODEMAN_PASSWORD` _starts but prints a loud warning_ with three concrete fixes (set a password, loopback + an authenticated tunnel, or explicitly acknowledge with `--allow-unauthenticated-network`)
-- **Optional auth, real sessions** — HTTP Basic via `CODEMAN_USERNAME` (default `admin`) / `CODEMAN_PASSWORD`. Success issues an opaque 256-bit `codeman_session` cookie (`randomBytes(32)`) — validated server-side, not client-signed, so it can't be forged offline (24h TTL, auto-extend, device-context audit log)
+- **Optional auth, real sessions** — HTTP Basic via `CODEMAN_USERNAME` (default `admin`) / `CODEMAN_PASSWORD`. Success issues an opaque 256-bit `codeman_session` cookie (`randomBytes(32)`) — validated server-side, not client-signed, so it can't be forged offline (30-day TTL, auto-extend, device-context audit log; saved hashed in the data dir so restarts keep you logged in)
 - **Per-IP rate limiting** — 10 failed attempts → `429` with `Retry-After` (15-min decay). A valid cookie or correct password recovers _immediately_ even while an attacker hammers the same IP — important because all tunnel traffic shares one loopback IP. Multi-user mode allows 50 failures per IP instead, plus 10 failed guesses per account from one IP; both are checked before the password, so past either a correct password from that IP also waits for the decay, while the account still logs in from another IP. QR auth has its own separate limiter
 - **Configurable permission mode** - `--dangerously-skip-permissions` is only the default. **App Settings → Agents & CLIs → Claude → Startup Mode** can switch new sessions to Anthropic's classifier-guarded `auto` mode (low-prompt, needs Claude Code 2.1.207+), `normal` prompting, or an explicit allowed-tools list. In multi-user mode, non-granted users are forced to `auto`, and shell sessions / skip-permissions require an explicit per-user grant
 

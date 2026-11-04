@@ -4,6 +4,7 @@
  */
 
 import type { StaleExpirationMap } from '../../utils/index.js';
+import type { AuthSessionStore } from '../auth-session-store.js';
 
 /** Enhanced session record with device context for audit logging */
 export interface AuthSessionRecord {
@@ -24,10 +25,17 @@ export interface AuthSessionRecord {
   role?: 'admin' | 'user';
   /** Whether this user must change their password before other actions are allowed. */
   mustChangePassword?: boolean;
+  /**
+   * Multi-user: `passwordStamp()` of the user's password when the cookie was minted. The
+   * cookie path refuses the session once the user's password has changed, which also
+   * covers a change made by the CLI or while a release without this check was live.
+   */
+  passwordStamp?: string;
 }
 
 export interface AuthPort {
-  readonly authSessions: StaleExpirationMap<string, AuthSessionRecord> | null;
+  /** Keyed by `authSessionKey(cookie)`, never by the raw cookie value. */
+  readonly authSessions: AuthSessionStore | null;
   readonly qrAuthFailures: StaleExpirationMap<string, number> | null;
   readonly https: boolean;
 }

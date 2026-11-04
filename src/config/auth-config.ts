@@ -11,8 +11,12 @@
 // Session Cookies
 // ============================================================================
 
-/** Auth session cookie TTL — matches autonomous run length (ms) */
-export const AUTH_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * Auth session cookie TTL (ms): 30 days, sliding (each authenticated request restarts it).
+ * Sessions are saved in the data dir (web/auth-session-store.ts), so a deploy, a rollback
+ * or a restart does not end them.
+ */
+export const AUTH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Max concurrent auth sessions per server */
 export const MAX_AUTH_SESSIONS = 100;

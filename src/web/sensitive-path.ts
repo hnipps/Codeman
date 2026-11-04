@@ -102,6 +102,8 @@ const SENSITIVE_PATTERNS: RegExp[] = [
   /\/\.codeman[^/]*\/intents\.json$/,
   // Pending agent-inbox messages (opt-in snapshot): same text as prompts, same 0600.
   /\/\.codeman[^/]*\/agent-inbox\.json$/,
+  // Saved login sessions: hashed cookies and a credential digest, still nobody's business.
+  /\/\.codeman[^/]*\/auth-sessions\.json$/,
 ];
 
 /**

@@ -132,6 +132,7 @@ import { applyLaunchDefaults } from '../launch-defaults.js';
 import { legacyConfigForMode } from '../../session-cli-registry-bridge.js';
 import { isMultiUserMode } from '../../config/multiuser.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
+import { authSessionKey } from '../auth-session-store.js';
 import {
   writeHooksConfig,
   updateCaseModel,
@@ -1078,7 +1079,7 @@ export function registerSessionRoutes(
     // Invalidate server-side session token (not just the browser cookie)
     const sessionToken = req.cookies[AUTH_COOKIE_NAME];
     if (sessionToken) {
-      ctx.authSessions?.delete(sessionToken);
+      ctx.authSessions?.delete(authSessionKey(sessionToken));
     }
     // The web-tab proxy authenticates on capabilities, not on this cookie, so a
     // logout has to retire them too or every dashboard URL opened during this

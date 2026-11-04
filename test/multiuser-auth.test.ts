@@ -16,7 +16,7 @@ import path from 'node:path';
 import { WebServer } from '../src/web/server.js';
 import { TmuxManager } from '../src/tmux-manager.js';
 import { TunnelManager } from '../src/tunnel-manager.js';
-import { createUser, invalidateUsersCache, verifyPassword } from '../src/user-store.js';
+import { createUser, invalidateUsersCache, setPassword, verifyPassword } from '../src/user-store.js';
 import type { FastifyInstance } from 'fastify';
 import { AUTH_FAILURE_MAX, AUTH_IP_FAILURE_MAX } from '../src/config/auth-config.js';
 import type { StaleExpirationMap } from '../src/utils/stale-expiration-map.js';
@@ -187,6 +187,37 @@ describe('multi-user auth', () => {
     // Same cookie now reaches a non-exempt route.
     const after = await fetch(url('/api/status'), { headers: { Cookie: cookie! } });
     expect(after.status).toBe(200);
+  });
+
+  it('a cookie survives a restart on the same data dir', async () => {
+    const first = await startIpServer();
+    const login = await first.login('10.9.0.1', 'alice', 'alicepass1');
+    const cookie = login.headers['set-cookie']!.toString().match(/codeman_session=([^;]+)/)![1];
+    const firstServer = ipServers[ipServers.length - 1]!;
+    await firstServer.stop();
+
+    const second = new WebServer(0, false, true);
+    await second.start();
+    ipServers.push(second);
+    const me = await fetch(`http://localhost:${second.boundPort}/api/me`, {
+      headers: { Cookie: `codeman_session=${cookie}` },
+    });
+    expect(me.status).toBe(200);
+    expect((await me.json()).data).toMatchObject({ username: 'alice' });
+  });
+
+  it('a password changed outside the server (the CLI) ends the sessions minted before it', async () => {
+    await createUser({ username: 'erin', role: 'user', password: 'erinpass12' });
+    const res = await fetch(url('/api/status'), { headers: { Authorization: basic('erin', 'erinpass12') } });
+    const cookie = cookieFrom(res)!;
+    expect((await fetch(url('/api/status'), { headers: { Cookie: cookie } })).status).toBe(200);
+
+    await setPassword('erin', 'erin-changed-1');
+    invalidateUsersCache();
+    expect((await fetch(url('/api/status'), { headers: { Cookie: cookie } })).status).toBe(401);
+    // The new password logs in as usual.
+    const again = await fetch(url('/api/status'), { headers: { Authorization: basic('erin', 'erin-changed-1') } });
+    expect(again.status).toBe(200);
   });
 
   it('verify-first: the per-username bucket never denies a correct password and self-heals failures (#17)', async () => {

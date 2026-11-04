@@ -29,6 +29,8 @@ tests=(
   test/routes/system-routes.test.ts
   test/mocks/mock-route-context-completeness.test.ts
   test/auth-security.test.ts
+  test/auth-session-store.test.ts
+  test/deploy-colours-auth.test.ts
   test/sse-registry-parity.test.ts
   test/server-index-title.test.ts
 )

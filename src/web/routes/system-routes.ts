@@ -63,6 +63,7 @@ import type {
   KeepWarmPort,
 } from '../ports/index.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
+import { authSessionKey, passwordStamp } from '../auth-session-store.js';
 import { QR_AUTH_FAILURE_MAX } from '../../config/tunnel-config.js';
 import { AUTH_SESSION_TTL_MS } from '../../config/auth-config.js';
 import { resolveTerminalHistoryConfig } from '../../config/terminal-history.js';
@@ -327,20 +328,27 @@ export function registerSystemRoutes(
     // Resolve the role for the bound user (disabled/deleted users fail closed).
     // Carry the bound user's real mustChangePassword flag out of this block so the
     // minted cookie enforces the lockbox instead of hardcoding false.
-    let identity: { username: string; role: 'admin' | 'user'; mustChangePassword: boolean } | undefined;
+    let identity:
+      | { username: string; role: 'admin' | 'user'; mustChangePassword: boolean; passwordStamp: string }
+      | undefined;
     if (multiUser && consumed.username) {
       const user = await findUser(consumed.username);
       if (!user || user.disabled) {
         ctx.qrAuthFailures?.set(clientIp, qrFailures + 1);
         return reply.code(401).send('Invalid or expired QR code');
       }
-      identity = { username: user.username, role: user.role, mustChangePassword: !!user.mustChangePassword };
+      identity = {
+        username: user.username,
+        role: user.role,
+        mustChangePassword: !!user.mustChangePassword,
+        passwordStamp: passwordStamp(user.password),
+      };
     }
 
     // Issue session cookie (same pattern as Basic Auth success path)
     const sessionToken = randomBytes(32).toString('hex');
     const clientUA = req.headers['user-agent'] ?? '';
-    ctx.authSessions?.set(sessionToken, {
+    ctx.authSessions?.set(authSessionKey(sessionToken), {
       ip: clientIp,
       ua: clientUA,
       createdAt: Date.now(),
@@ -348,6 +356,7 @@ export function registerSystemRoutes(
       username: identity?.username,
       role: identity?.role,
       mustChangePassword: !!identity?.mustChangePassword,
+      passwordStamp: identity?.passwordStamp,
     });
     ctx.qrAuthFailures?.delete(clientIp);
 
@@ -402,14 +411,15 @@ export function registerSystemRoutes(
       const username = getAuthUser(req).username;
       const token = result.success ? result.data.sessionToken : undefined;
       if (token) {
-        if (ctx.authSessions?.peek(token)?.username === username) ctx.authSessions?.delete(token);
+        const key = authSessionKey(token);
+        if (ctx.authSessions?.peek(key)?.username === username) ctx.authSessions?.delete(key);
       } else {
         revokeUserSessions(ctx.authSessions, username);
       }
       return {};
     }
     if (result.success && result.data.sessionToken) {
-      ctx.authSessions?.delete(result.data.sessionToken);
+      ctx.authSessions?.delete(authSessionKey(result.data.sessionToken));
     } else {
       // Revoke all sessions (nuclear option)
       ctx.authSessions?.clear();

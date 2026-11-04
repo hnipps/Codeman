@@ -28,6 +28,7 @@ import type { EventPort } from './ports/event-port.js';
  */
 export const MAX_ROUTE_PARAM_LENGTH = 4096;
 import type { AuthSessionRecord } from './ports/auth-port.js';
+import { authSessionKey } from './auth-session-store.js';
 import type { StaleExpirationMap } from '../utils/index.js';
 import { dataPath } from '../config/instance.js';
 import { getCasesDir } from '../config/cases-dir.js';
@@ -299,10 +300,12 @@ export function revokeUserSessions(
 ): number {
   if (!authSessions) return 0;
   const norm = username.trim().toLowerCase();
+  // The map is keyed by the cookie's hash (auth-session-store.ts), never the cookie.
+  const exceptKey = exceptToken ? authSessionKey(exceptToken) : undefined;
   let removed = 0;
-  for (const [token, record] of authSessions) {
-    if (record.username === norm && token !== exceptToken) {
-      authSessions.delete(token);
+  for (const [key, record] of authSessions) {
+    if (record.username === norm && key !== exceptKey) {
+      authSessions.delete(key);
       removed++;
     }
   }

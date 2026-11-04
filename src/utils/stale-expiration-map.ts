@@ -105,8 +105,41 @@ export class StaleExpirationMap<K, V> implements Disposable {
       lastAccessedAt: now,
       createdAt: now,
     });
+    this.onChange('entries');
     return this;
   }
+
+  /**
+   * Put back an entry saved earlier with its original timestamps, as read from
+   * {@link timedEntries}. An entry already past its TTL is not added.
+   *
+   * @returns True if the entry was added
+   */
+  restore(key: K, value: V, createdAt: number, lastAccessedAt: number): boolean {
+    if (this._isDisposed) return false;
+    const entry: TimedEntry<V> = { value, createdAt, lastAccessedAt };
+    if (this.isExpired(entry)) return false;
+    this.entries.set(key, entry);
+    return true;
+  }
+
+  /**
+   * Every non-expired entry with its timestamps, oldest insertion first, so a
+   * subclass or owner can save the map and {@link restore} it later.
+   */
+  *timedEntries(): IterableIterator<{ key: K; value: V; createdAt: number; lastAccessedAt: number }> {
+    for (const [key, entry] of this.entries) {
+      if (!this.isExpired(entry)) {
+        yield { key, value: entry.value, createdAt: entry.createdAt, lastAccessedAt: entry.lastAccessedAt };
+      }
+    }
+  }
+
+  /**
+   * Called after the map changes. `entries` means an entry was added or removed;
+   * `access` means only an access time moved. The base class does nothing.
+   */
+  protected onChange(_kind: 'entries' | 'access'): void {}
 
   /**
    * Get a value, optionally refreshing its TTL.
@@ -127,6 +160,7 @@ export class StaleExpirationMap<K, V> implements Disposable {
     // Refresh access time if configured
     if (this.refreshOnGet) {
       entry.lastAccessedAt = Date.now();
+      this.onChange('access');
     }
 
     return entry.value;
@@ -179,6 +213,7 @@ export class StaleExpirationMap<K, V> implements Disposable {
     if (!entry) return false;
 
     this.entries.delete(key);
+    this.onChange('entries');
     // Don't call onExpire for manual deletes
     return true;
   }
@@ -187,7 +222,9 @@ export class StaleExpirationMap<K, V> implements Disposable {
    * Clear all entries.
    */
   clear(): void {
+    const had = this.entries.size > 0;
     this.entries.clear();
+    if (had) this.onChange('entries');
   }
 
   /**
@@ -201,6 +238,7 @@ export class StaleExpirationMap<K, V> implements Disposable {
     if (!entry || this.isExpired(entry)) return false;
 
     entry.lastAccessedAt = Date.now();
+    this.onChange('access');
     return true;
   }
 
@@ -281,6 +319,7 @@ export class StaleExpirationMap<K, V> implements Disposable {
       }
     }
 
+    if (removed > 0) this.onChange('entries');
     return removed;
   }
 

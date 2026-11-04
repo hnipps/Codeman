@@ -506,7 +506,7 @@ export class WebServer extends EventEmitter {
     removed: (data: { runId: string }) => void;
   } | null = null;
   private tunnelManager: TunnelManager = new TunnelManager();
-  private authSessions: StaleExpirationMap<string, import('./ports/auth-port.js').AuthSessionRecord> | null = null;
+  private authSessions: import('./auth-session-store.js').AuthSessionStore | null = null;
   private authFailures: StaleExpirationMap<string, number> | null = null;
   private qrAuthFailures: StaleExpirationMap<string, number> | null = null;
   private hookSecretFailures: StaleExpirationMap<string, number> | null = null;
@@ -4244,6 +4244,8 @@ export class WebServer extends EventEmitter {
     this.mux.reloadFromDisk?.();
     intentStore.forget();
     agentInboxPersistence.load(await this.getAgentInboxPersistEnabled());
+    // The retiring colour flushed its logins; take them over, including any made since boot.
+    this.authSessions?.load();
     const restored = await this.restoreMuxSessions();
     if (!restored) throw new Error('the sessions on disk could not be restored');
     await this.finalizeRestoredState(restored);
@@ -4276,6 +4278,7 @@ export class WebServer extends EventEmitter {
     for (const session of this.sessions.values()) this._persistSessionStateNow(session);
     if (!this.store.writeAllNow()) throw new Error('state.json could not be written');
     agentInboxPersistence.flush();
+    this.authSessions?.flush();
     return this.mux.flushNow?.() ?? Promise.resolve();
   }
 

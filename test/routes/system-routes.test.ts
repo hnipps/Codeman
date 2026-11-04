@@ -116,6 +116,7 @@ import { isGeminiAvailable, resolveGeminiDir } from '../../src/utils/gemini-cli-
 import { isAntigravityAvailable, resolveAntigravityDir } from '../../src/utils/antigravity-cli-resolver.js';
 import { isPiAvailable, resolvePiDir, getPiCliVersion } from '../../src/utils/pi-cli-resolver.js';
 import { isGrokAvailable, resolveGrokDir, getGrokCliVersion } from '../../src/utils/grok-cli-resolver.js';
+import { authSessionKey } from '../../src/web/auth-session-store.js';
 
 const mockedReadFile = vi.mocked(fs.readFile);
 const mockedWriteFile = vi.mocked(fs.writeFile);
@@ -456,8 +457,9 @@ describe('system-routes', () => {
     });
 
     it('revokes a specific session token', async () => {
+      // The map is keyed by the cookie's hash, never the cookie itself.
       const authSessions = new Map();
-      authSessions.set('tok-123', { ip: '1.2.3.4', ua: 'test', createdAt: Date.now(), method: 'basic' });
+      authSessions.set(authSessionKey('tok-123'), { ip: '1.2.3.4', ua: 'test', createdAt: Date.now(), method: 'basic' });
       harness.ctx.authSessions = authSessions;
 
       const res = await harness.app.inject({
@@ -466,7 +468,7 @@ describe('system-routes', () => {
         payload: { sessionToken: 'tok-123' },
       });
       expect(res.statusCode).toBe(200);
-      expect(authSessions.has('tok-123')).toBe(false);
+      expect(authSessions.size).toBe(0);
     });
 
     it('clears all sessions when no token specified', async () => {
