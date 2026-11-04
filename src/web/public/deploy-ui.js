@@ -61,6 +61,14 @@
   }
 
   const section = () => document.getElementById('settings-deploys');
+
+  // The poll re-renders every POLL_MS. Rewriting innerHTML replaces the buttons, so a tap that
+  // lands mid-rewrite hits a detached node and its click is lost. Only write when markup changed.
+  function setHtml(node, html) {
+    if (node.__deployHtml === html) return;
+    node.__deployHtml = html;
+    node.innerHTML = html;
+  }
   const modalOpen = () => {
     const modal = document.getElementById('appSettingsModal');
     return !!modal && modal.classList.contains('active');
@@ -106,7 +114,9 @@
       ? `<div class="set-note" role="status" data-i18n-skip${messageIsError ? ' style="color:var(--red,#e5534b)"' : ''}>${esc(message)}</div>`
       : '';
 
-    el.querySelector('#deployDynamic').innerHTML = `
+    setHtml(
+      el.querySelector('#deployDynamic'),
+      `
       <div class="set-group"><div class="set-group-head"><h4>Live build</h4></div>
         <div class="set-group-body"><div class="set-row"><div class="set-row-text">${live}</div>
           <div class="set-row-actions">${rollbackButton('previous', 'Roll back to previous', busy)}</div></div></div></div>
@@ -114,7 +124,8 @@
         <div class="set-group-body">${releases || '<p class="set-row-desc">No releases kept.</p>'}</div></div>
       ${status}${note}
       <div class="set-group"><div class="set-group-head"><h4>Recent deploys</h4></div>
-        <div class="set-group-body">${recent || '<p class="set-row-desc">No deploys yet.</p>'}</div></div>`;
+        <div class="set-group-body">${recent || '<p class="set-row-desc">No deploys yet.</p>'}</div></div>`
+    );
 
     const input = el.querySelector('#deployShaInput');
     const shaBtn = el.querySelector('[data-act="ask-sha"]');
@@ -124,12 +135,15 @@
     const box = el.querySelector('#deployConfirm');
     box.hidden = confirming === null;
     if (confirming) {
-      box.innerHTML = `<div class="set-note" role="alertdialog" aria-label="Confirm rollback">
+      setHtml(
+        box,
+        `<div class="set-note" role="alertdialog" aria-label="Confirm rollback">
         <p>Roll back to <b class="mono" data-i18n-skip>${esc(confirming.label)}</b>? The app restarts on that build.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button type="button" class="btn-toolbar btn-sm btn-primary" data-act="confirm"${inFlight ? ' disabled' : ''}>Confirm</button>
           <button type="button" class="btn-toolbar btn-sm" data-act="cancel"${inFlight ? ' disabled' : ''}>Cancel</button>
-        </div></div>`;
+        </div></div>`
+      );
     }
   }
 
