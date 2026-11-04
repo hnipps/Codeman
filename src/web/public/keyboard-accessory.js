@@ -804,6 +804,7 @@ const KeyboardAccessoryBar = {
     // session's mode instead of a setting.
     this.syncCodexKeys();
     this._syncComposerDraftIndicator();
+    this.initDock();
 
     // A key that keeps the keyboard up must not take focus on press at all.
     // Letting the tap blur the terminal and refocusing it in the click handler
@@ -830,9 +831,11 @@ const KeyboardAccessoryBar = {
       const action = btn.dataset.action;
       this.handleAction(action, btn);
 
-      // Refocus terminal so keyboard stays open (tap blurs terminal → keyboard dismisses → toolbar shifts)
-      if (ACCESSORY_REFOCUS_ACTIONS.has(action) ||
-          ((action === 'clear' || action === 'compact') && this._confirmAction)) {
+      // Refocus terminal so keyboard stays open (tap blurs terminal → keyboard dismisses → toolbar shifts).
+      // Typing in the docked prompt box: the cancelled mousedown already kept
+      // focus there, and moving it to the terminal would strand the draft.
+      if ((ACCESSORY_REFOCUS_ACTIONS.has(action) ||
+          ((action === 'clear' || action === 'compact') && this._confirmAction)) && !this.isDockFocused()) {
         if (typeof app !== 'undefined' && app.terminal) {
           app.terminal.focus();
         }
@@ -867,6 +870,7 @@ const KeyboardAccessoryBar = {
     this._applyLayout(this._resolveMode());
     this.syncCodexKeys();
     this._syncComposerDraftIndicator();
+    this.syncDock();
   },
 
   /** Which layout the current state calls for. */
@@ -1183,6 +1187,7 @@ const KeyboardAccessoryBar = {
       initialPath: session?.workingDir || '',
       directoriesOnly: false,
       onSelect: (path) => {
+        if (this.insertIntoDock(app.activeSessionId, path, { focus: true })) return;
         app.insertTerminalText?.(path);
         setTimeout(() => app.terminal?.focus(), 100);
       },
@@ -1267,6 +1272,196 @@ const KeyboardAccessoryBar = {
     if (this._composerOverlay?.dataset.sessionId === sessionId) {
       this._composerOverlay._closeComposer?.({ preserveDraft: false });
     }
+    if (this._dockSessionId === sessionId) this._reloadDockFromDraft();
+  },
+
+  // ── Docked prompt box (#composerDock) ──────────────────────────────────
+  // A permanent native textarea under the terminal on touch devices, for agent
+  // sessions: iOS autocorrect, text selection and cursor drag all work, because
+  // nothing reaches the PTY until Send. Delivery is the Compose dialog's
+  // (_sendComposedPrompt) and the draft lives in the same per-session map, so
+  // the dock and the dialog never disagree about a draft. KeyboardHandler
+  // reserves ONE row of layout for it; a longer prompt grows the box upward
+  // OVER the terminal instead, because resizing the terminal on every newline
+  // would make the CLI repaint its whole screen each time.
+  _dock: null,
+  _dockTextarea: null,
+  _dockSendButton: null,
+  _dockSessionId: null,
+  // About six lines at the dock's 16px/1.35 text; past that the box scrolls.
+  _dockMaxHeight: 144,
+
+  /** Wire #composerDock (index.html). Safe to call when it is absent. */
+  initDock() {
+    if (this._dock || typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
+    const dock = document.getElementById('composerDock');
+    const textarea = dock?.querySelector('.composer-dock-textarea');
+    const sendButton = dock?.querySelector('.composer-dock-send');
+    if (!dock || !textarea || !sendButton) return;
+    this._dock = dock;
+    this._dockTextarea = textarea;
+    this._dockSendButton = sendButton;
+    // i18n.js skips <textarea> subtrees, so the placeholder is translated here.
+    const i18n = typeof window !== 'undefined' ? window.CodemanI18n : undefined;
+    if (typeof i18n?.t === 'function') {
+      textarea.placeholder = i18n.t('Write your prompt…');
+      textarea.setAttribute('aria-label', i18n.t('Prompt'));
+    }
+    textarea.addEventListener('input', () => {
+      this._saveDockDraft();
+      this._resizeDock();
+      this._syncDockSendButton();
+    });
+    textarea.addEventListener('focus', () => this._adoptLocalEchoIntoDock());
+    // Return stays a newline (as in the Compose dialog): on a phone keyboard
+    // there is no Shift+Return. A hardware keyboard sends with Cmd/Ctrl+Enter.
+    textarea.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing) {
+        event.preventDefault();
+        this.sendDock();
+      }
+    });
+    // Cancelling mousedown keeps focus (and so the keyboard) on the textarea.
+    sendButton.addEventListener('mousedown', (event) => event.preventDefault());
+    sendButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.sendDock();
+    });
+  },
+
+  /** The per-device setting (composerDockEnabled, default on). */
+  isDockEnabled() {
+    if (typeof app === 'undefined') return false;
+    const settings = app.loadAppSettingsFromStorage?.() || {};
+    const defaults = app.getDefaultSettings?.() || {};
+    return (settings.composerDockEnabled ?? defaults.composerDockEnabled ?? true) !== false;
+  },
+
+  /** Touch device, an agent session on screen, the setting on, and no CJK
+   *  field (which already is a native text box in the same spot). */
+  _shouldShowDock() {
+    if (!this._dock || typeof app === 'undefined' || !app.activeSessionId) return false;
+    if (typeof MobileDetection === 'undefined' || !MobileDetection.isTouchDevice()) return false;
+    if (!this.isDockEnabled()) return false;
+    const session = app.sessions?.get(app.activeSessionId);
+    if (!session || session.mode === 'shell') return false;
+    if (document.body?.classList.contains('cjk-input-visible')) return false;
+    return true;
+  },
+
+  /** Show or hide the dock for the active session and load that session's draft. */
+  syncDock() {
+    if (!this._dock) return;
+    const show = this._shouldShowDock();
+    const wasShown = this._dock.classList.contains('composer-dock-visible');
+    this._dock.classList.toggle('composer-dock-visible', show);
+    document.body?.classList.toggle('composer-dock-visible', show);
+    this._dock.setAttribute('aria-hidden', show ? 'false' : 'true');
+    if (!show && document.activeElement === this._dockTextarea) this._dockTextarea.blur();
+    const sessionId = show ? app.activeSessionId : null;
+    if (sessionId !== this._dockSessionId) {
+      // The old session's text is already in the draft map (saved on every input).
+      this._dockSessionId = sessionId;
+      this._reloadDockFromDraft();
+    } else if (show && !wasShown) {
+      this._resizeDock();
+    }
+    if (wasShown !== show && typeof KeyboardHandler !== 'undefined') KeyboardHandler.updateLayoutForKeyboard?.();
+  },
+
+  /** Is the dock's textarea the focused element? */
+  isDockFocused() {
+    return !!this._dockTextarea && typeof document !== 'undefined' && document.activeElement === this._dockTextarea;
+  },
+
+  /** Put the dock's session draft back in the textarea (after the Compose
+   *  dialog closed, or the draft was discarded). */
+  _reloadDockFromDraft() {
+    if (!this._dockTextarea) return;
+    this._dockTextarea.value = this._dockSessionId ? this._composerDrafts.get(this._dockSessionId) || '' : '';
+    this._resizeDock();
+    this._syncDockSendButton();
+  },
+
+  _saveDockDraft() {
+    const sessionId = this._dockSessionId;
+    if (!sessionId || !this._dockTextarea) return;
+    const text = this._dockTextarea.value;
+    if (text) this._composerDrafts.set(sessionId, text);
+    else this._composerDrafts.delete(sessionId);
+    this._syncComposerDraftIndicator();
+  },
+
+  /** Fit the textarea to its text, up to _dockMaxHeight, then scroll. */
+  _resizeDock() {
+    const textarea = this._dockTextarea;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const contentHeight = textarea.scrollHeight;
+    // 0 while hidden (display:none): leave the CSS height alone, or the box
+    // would reappear zero pixels tall.
+    if (!contentHeight) {
+      textarea.style.height = '';
+      return;
+    }
+    textarea.style.height = `${Math.min(contentHeight, this._dockMaxHeight)}px`;
+    textarea.style.overflowY = contentHeight > this._dockMaxHeight ? 'auto' : 'hidden';
+  },
+
+  _syncDockSendButton() {
+    if (!this._dockSendButton || !this._dockTextarea) return;
+    const uploading = !!(this._dockSessionId && this._composerUploads.get(this._dockSessionId));
+    this._dockSendButton.disabled = uploading || !this._dockTextarea.value.trim();
+  },
+
+  /** Text typed on the terminal prompt moves into the dock when it is focused,
+   *  as it does into the Compose dialog, so one prompt never sits half in each. */
+  _adoptLocalEchoIntoDock() {
+    const sessionId = this._dockSessionId;
+    const overlay = typeof app !== 'undefined' ? app._localEchoOverlay : null;
+    if (!sessionId || !app._localEchoEnabled || !overlay) return;
+    const hasTerminalText =
+      !!overlay.pendingText || !!overlay.getFlushed?.()?.text || !!app._flushedTexts?.get(sessionId);
+    if (!hasTerminalText) return;
+    const adopted = this._takePendingLocalEcho(sessionId);
+    if (!adopted) return;
+    const textarea = this._dockTextarea;
+    const current = textarea.value;
+    const gap = current && !/\s$/.test(current) && !/^\s/.test(adopted) ? ' ' : '';
+    textarea.value = `${current}${gap}${adopted}`;
+    textarea.setSelectionRange?.(textarea.value.length, textarea.value.length);
+    this._saveDockDraft();
+    this._resizeDock();
+    this._syncDockSendButton();
+  },
+
+  /** Insert text (an attachment or picked path) at the dock's cursor when the
+   *  dock is showing for `sessionId`; false leaves the caller's terminal path. */
+  insertIntoDock(sessionId, text, { focus = false } = {}) {
+    if (!text || !sessionId || sessionId !== this._dockSessionId) return false;
+    if (!this._dock?.classList.contains('composer-dock-visible')) return false;
+    this._insertComposerText(this._dockTextarea, text);
+    if (focus) setTimeout(() => this._dockTextarea?.focus(), 100);
+    return true;
+  },
+
+  /** Send the dock's text as one prompt. Focus stays in the dock, so the
+   *  keyboard stays up for the next message. */
+  sendDock() {
+    const sessionId = this._dockSessionId;
+    const textarea = this._dockTextarea;
+    if (!sessionId || !textarea) return false;
+    if (this._composerUploads.get(sessionId)) return false;
+    const text = textarea.value;
+    // Whitespace-only is empty; the text itself goes out untrimmed.
+    if (!text.trim() || !this._sendComposedPrompt(sessionId, text)) return false;
+    app._echoPassthroughSessions?.delete(sessionId);
+    this._composerDrafts.delete(sessionId);
+    textarea.value = '';
+    this._resizeDock();
+    this._syncDockSendButton();
+    this._syncComposerDraftIndicator();
+    return true;
   },
 
   /** Open the manual agent prompt composer. Enter remains a newline; only the
@@ -1347,6 +1542,8 @@ const KeyboardAccessoryBar = {
       focusTrap.deactivate({ restoreFocus });
       overlay.remove();
       if (this._composerOverlay === overlay) this._composerOverlay = null;
+      // The dock shows the same draft: pick up what the dialog changed or sent.
+      if (this._dockSessionId === sessionId) this._reloadDockFromDraft();
       if (focusTerminal) app.terminal?.focus();
     };
     overlay._closeComposer = close;

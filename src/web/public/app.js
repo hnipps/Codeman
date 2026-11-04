@@ -4891,6 +4891,9 @@ class CodemanApp {
     cjkEl.style.display = showCjk ? 'block' : 'none';
     cjkEl.setAttribute('aria-hidden', showCjk ? 'false' : 'true');
     if (!showCjk) window.cjkActive = false;
+    // The docked prompt box shares every trigger (home screen, session enter,
+    // settings save) and yields its spot to a visible CJK field.
+    if (typeof KeyboardAccessoryBar !== 'undefined') KeyboardAccessoryBar.syncDock?.();
     if (typeof KeyboardHandler !== 'undefined') KeyboardHandler.updateLayoutForKeyboard();
   }
 

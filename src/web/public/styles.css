@@ -15408,6 +15408,107 @@ body.touch-device.cjk-input-visible .main {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   Docked prompt box (#composerDock, keyboard-accessory.js syncDock)
+   Touch devices only. Mirrors the CJK field's placement: fixed above the
+   toolbar, above the accessory bar while the keyboard is up (JS lifts it).
+   Layout reserves one line (48px = COMPOSER_DOCK_RESERVE_PX in
+   mobile-handlers.js); a longer prompt grows the box upward over the
+   terminal instead of resizing it.
+   ═══════════════════════════════════════════════════════════════ */
+
+#composerDock {
+  display: none;
+}
+
+.touch-device #composerDock.composer-dock-visible {
+  position: fixed;
+  left: var(--safe-area-left);
+  right: var(--safe-area-right);
+  bottom: calc(var(--safe-area-bottom) + 40px);
+  z-index: 52;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  box-sizing: border-box;
+  min-height: 48px;
+  /* 1px border + 5 + 36px textarea + 6 = exactly the 48px reserve. */
+  padding: 5px 8px 6px;
+  background: var(--floating-bg);
+  border-top: 1px solid var(--control-border-hover);
+  box-shadow: var(--subtle-shadow);
+  transition: transform 0.15s ease-out;
+  will-change: transform;
+}
+
+.ios-device.safari-browser #composerDock.composer-dock-visible {
+  bottom: calc(var(--safe-area-bottom) + 40px + var(--chrome-overlap, 0px));
+}
+
+.touch-device.keyboard-visible #composerDock.composer-dock-visible {
+  bottom: calc(var(--safe-area-bottom) + 84px);
+}
+
+.composer-dock-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  padding: 7px 12px;
+  /* 16px: iOS zooms the page into any smaller focused field. */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  outline: none;
+  resize: none;
+  overflow-y: hidden;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.composer-dock-textarea:focus {
+  border-color: var(--accent);
+}
+
+.composer-dock-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.composer-dock-send {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.composer-dock-send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+body.touch-device.composer-dock-visible .main {
+  padding-bottom: calc(88px + var(--safe-area-bottom));
+}
+
+.ios-device.safari-browser.composer-dock-visible .main {
+  padding-bottom: calc(88px + var(--safe-area-bottom) + var(--chrome-overlap, 0px));
+}
+
+/* ═══════════════════════════════════════════════════════════════
    Keyboard Accessory Bar
    Base styles in styles.css (always loaded) so iPad landscape (≥1024px,
    where mobile.css doesn't load) still gets dark styling. Phone overrides

@@ -25,6 +25,11 @@
 // Codeman — Mobile detection, keyboard handling, and swipe navigation
 // Loaded after constants.js, before app.js
 
+// Layout height reserved for the docked prompt box (#composerDock): its
+// one-line height, matching `min-height` in styles.css. A longer prompt grows
+// the box upward over the terminal rather than shrinking the terminal.
+const COMPOSER_DOCK_RESERVE_PX = 48;
+
 // ═══════════════════════════════════════════════════════════════
 // Mobile Detection
 // ═══════════════════════════════════════════════════════════════
@@ -428,6 +433,8 @@ const KeyboardHandler = {
     if (this.keyboardVisible) {
       const keyboardHeight = this.initialViewportHeight - (window.visualViewport.height || window.innerHeight);
       const accessoryBar = document.querySelector('.keyboard-accessory-bar');
+      // The docked prompt box (keyboard-accessory.js syncDock), when showing.
+      const composerDock = document.querySelector('#composerDock.composer-dock-visible');
 
       // The mobile case picker is a third position:fixed bottom-anchored
       // surface, and since it gained a search field the keyboard can open over
@@ -454,9 +461,14 @@ const KeyboardHandler = {
         if (caseSheet) {
           caseSheet.style.transform = keyboardOffset > 0 ? `translateY(${-keyboardOffset}px)` : '';
         }
+        if (composerDock) {
+          composerDock.style.transform = keyboardOffset > 0 ? `translateY(${-keyboardOffset}px)` : '';
+          composerDock.style.bottom = '';
+        }
         if (main && keyboardHeight > 0) {
           const cjkInputHeight = cjkInput?.classList.contains('cjk-input-visible') ? 44 : 0;
-          main.style.paddingBottom = `${84 + cjkInputHeight}px`;
+          const dockHeight = composerDock ? COMPOSER_DOCK_RESERVE_PX : 0;
+          main.style.paddingBottom = `${84 + cjkInputHeight + dockHeight}px`;
         }
       } else if (keyboardHeight > 0) {
         // iPad: use direct bottom positioning (translateY unreliable —
@@ -466,6 +478,11 @@ const KeyboardHandler = {
         }
         if (caseSheet) {
           caseSheet.style.bottom = `${keyboardHeight}px`;
+        }
+        // iPad: direct bottom = keyboard + accessory bar height, as for CJK.
+        if (composerDock) {
+          composerDock.style.bottom = `${keyboardHeight + 44}px`;
+          composerDock.style.transform = '';
         }
       }
 
@@ -514,6 +531,13 @@ const KeyboardHandler = {
     if (caseSheet) {
       caseSheet.style.transform = '';
       caseSheet.style.bottom = '';
+    }
+    // Not scoped to `.composer-dock-visible`: a dock hidden while the keyboard
+    // was up must not come back displaced.
+    const composerDock = document.getElementById('composerDock');
+    if (composerDock) {
+      composerDock.style.transform = '';
+      composerDock.style.bottom = '';
     }
     if (main) {
       main.style.paddingBottom = '';
@@ -677,7 +701,12 @@ const KeyboardHandler = {
    */
   _fixedBottomBarsHeight() {
     let px = 0;
-    for (const selector of ['.toolbar', '.keyboard-accessory-bar', '#cjkInput.cjk-input-visible']) {
+    for (const selector of [
+      '.toolbar',
+      '.keyboard-accessory-bar',
+      '#cjkInput.cjk-input-visible',
+      '#composerDock.composer-dock-visible',
+    ]) {
       const el = document.querySelector(selector);
       if (!el) continue;
       const style = window.getComputedStyle?.(el);
@@ -725,8 +754,10 @@ const KeyboardHandler = {
   isInputElement(el) {
     if (!el) return false;
 
-    // Exclude xterm.js terminal inputs (they handle their own scroll)
-    if (el.closest('.xterm') || el.closest('.terminal-container')) {
+    // Exclude xterm.js terminal inputs (they handle their own scroll), and the
+    // docked prompt box: it is position:fixed above the keyboard already, and
+    // scrollIntoView would scroll the page under the app instead.
+    if (el.closest('.xterm') || el.closest('.terminal-container') || el.closest('#composerDock')) {
       return false;
     }
 

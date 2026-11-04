@@ -141,6 +141,8 @@ Object.assign(CodemanApp.prototype, {
       KeyboardAccessoryBar._insertComposerText(composerTextarea, text);
       return;
     }
+    // The docked prompt box is where a phone composes; the path joins that text.
+    if (KeyboardAccessoryBar.insertIntoDock?.(sessionId, text)) return;
 
     const stillActive = this.activeSessionId === sessionId;
     // The overlay holds the prompt only while local echo actually owns it. A

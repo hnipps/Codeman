@@ -474,6 +474,19 @@
         <textarea id="cjkInput" rows="1" placeholder="CJK input (Enter = send, Esc = clear)"
           maxlength="65536" aria-label="CJK IME input field"
           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+        <!-- Docked prompt box (touch devices, agent sessions): a native textarea
+             with autocorrect, sent as one prompt. Wired by KeyboardAccessoryBar
+             (keyboard-accessory.js initDock/syncDock); hidden until syncDock()
+             adds .composer-dock-visible. -->
+        <div id="composerDock" class="composer-dock" aria-hidden="true">
+          <textarea class="composer-dock-textarea" rows="1" aria-label="Prompt" placeholder="Write your prompt…"
+            enterkeyhint="enter" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
+          <button type="button" class="composer-dock-send" aria-label="Send prompt" title="Send prompt" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+              <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <!-- Tile grid (tile-grid.js): 1 to 6 sessions side by side, each a
@@ -2013,6 +2026,13 @@
                       <span class="set-row-desc">Dedicated IME field for Chinese, Japanese and Korean composition.</span>
                     </div>
                     <label class="switch switch-sm"><input type="checkbox" id="appSettingsCjkInput"><span class="slider"></span></label>
+                  </div>
+                  <div class="set-row" data-search="prompt box composer dock autocorrect typing phone touch">
+                    <div class="set-row-text">
+                      <span class="set-row-label">Docked Prompt Box <span class="set-tag">touch</span></span>
+                      <span class="set-row-desc">Type prompts in a native text box under the terminal, with autocorrect and text selection. Hidden while CJK Input is on.</span>
+                    </div>
+                    <label class="switch switch-sm"><input type="checkbox" id="appSettingsComposerDock"><span class="slider"></span></label>
                   </div>
                   <div class="set-row" data-search="extended keyboard bar tab esc arrows phone">
                     <div class="set-row-text">

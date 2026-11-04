@@ -27,6 +27,7 @@ require a secure context.
 | Header               | Fixed at the top, deliberately minimal. Desktop-only controls never appear. |
 | Tab strip            | Scrolls horizontally. The active tab is always scrolled into view.      |
 | Terminal             | The rest of the screen.                                                |
+| Prompt box           | Agent sessions: a text box with a Send button just above the toolbar.  |
 | Toolbar              | Bottom: Run, Stop, **Enter**, case picker, voice, settings.             |
 | Keyboard bar         | Above the on-screen keyboard when it is open.                           |
 
@@ -58,6 +59,23 @@ The split Run button carries the same per-backend colours as the desktop toolbar
 picker mirrors the desktop run-mode menu.
 
 On by default; it can be turned off in settings.
+
+## The prompt box
+
+Agent sessions show a text box docked under the terminal. Tap it to type: it is an ordinary
+phone text field, so autocorrect, dictation, text selection and dragging the cursor all work,
+and nothing reaches the agent until you tap the Send arrow. Return adds a new line (with a
+hardware keyboard, Cmd+Enter or Ctrl+Enter sends). After Send the box empties and keeps the
+keyboard up for your next message. A long prompt grows the box upward over the terminal,
+which keeps its size, so the agent's screen is not redrawn as you type.
+
+The box holds the same per-session draft as the Compose editor, so you can switch between
+them. The accessory bar's keys still go to the terminal while you type in the box (`Esc`
+interrupts the agent), and a photo from the Attach button or a path from the path picker
+lands in the box. Tapping the terminal still opens the terminal keyboard, which is what you
+want for answering a numbered dialog. Shell sessions have no box. It also steps aside when
+CJK Input is on, since that field sits in the same place. Turn it off in **Settings → Terminal &
+Input → Docked Prompt Box**; the setting is per device.
 
 ## The keyboard accessory bar
 

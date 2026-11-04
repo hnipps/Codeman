@@ -212,6 +212,7 @@ The most responsive AI coding agent experience on any phone. Full xterm.js termi
 </table>
 
 - **Keyboard accessory bar** — `/init`, `/clear`, `/compact` quick-action buttons above the virtual keyboard; destructive commands require a double-press to confirm, so you never fire one by accident; on Codex sessions the bar also shows `⇧←` / `⇧→` (Shift+Left / Shift+Right: edit the last queued message / return through the prompt stack)
+- **Docked prompt box** — agent sessions get a native text box under the terminal, with autocorrect, dictation and normal text selection; nothing is sent until you tap Send, then the whole prompt goes in as one paste. Per device, on by default (Settings → Terminal & Input → Docked Prompt Box)
 - **Dedicated Enter button** — replays the keypress through the terminal, so text buffered by local echo is flushed first rather than stranded
 - **Attach button**: the picture icon beside the mic opens the system photo and file sheet without raising the keyboard. Photos and camera-roll videos (mp4, mov, webm, up to 1 GB) upload into the session's folder and their path lands on your prompt, unsent
 - **Paste in a shell**: a multi-line paste goes in as one block and waits for your Enter, instead of running line by line as it arrives
