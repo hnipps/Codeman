@@ -39,7 +39,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### PR mechanics, for every PR
 
-- [ ] Resolve the forge once. This host has neither `gh` nor `origin` (checked 2026-11-05). Push the branch to `origin` (`git@github.com:hnipps/Codeman.git`) and hand the operator the compare URL `https://github.com/hnipps/Codeman/compare/<base>...<branch>` in place of a PR. Record that fallback in the decision trail.
+- [ ] Resolve the forge once. Use `~/.local/bin/gh` once `gh auth status` succeeds. Until then, push the branch to `origin` (`git@github.com:hnipps/Codeman.git`) and hand the operator the compare URL `https://github.com/hnipps/Codeman/compare/<base>...<branch>` in place of a PR. Record which one ran in the decision trail.
 - [ ] Open the PR ready, never draft, per **Opening a PR**, once a forge tool exists. Until then the compare URL plus the PR body in chat stands in for it. A stack child targets its parent branch.
 - [ ] Run `npm run typecheck`, `npm run lint` and `npm run format:check` once before the PR-facing push. Push with hooks on.
 - [ ] Run `/deslop` before each commit and `/no-comments` before review. Stage explicit paths only and run `git branch --show-current` before each commit, per `CLAUDE.md`.
@@ -57,6 +57,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 Each live lane runs as a Codeman worker on this host, in its own worktree at the PR head, against an isolated Codeman instance. Browser lanes drive Playwright through `control-ui`. CLI lanes drive the terminal through `control-cli`.
 
 - [ ] `git fetch origin <head-branch> && git worktree add /tmp/swarm-<pr-id>/worker-<n>/tree <head SHA>`.
+- [ ] Run `. ~/.local/lib/pw-deps/env.sh` before any Playwright launch.
 - [ ] Start an isolated server with `CODEMAN_INSTANCE=lane<n> CODEMAN_PORT=41<nn> npx tsx src/index.ts web` from the worktree. Wait until `curl -s http://127.0.0.1:41<nn>/api/v1/sessions` returns JSON.
 - [ ] Deliver input only through the control skill's commands and `codeman agent` pointed at that port. Read-only diagnostics are `GET /api/v1/sessions`, `GET /api/v1/webviews`, `GET /api/v1/previews`, `ps -o pid,pgid,etime,cmd -g <pgid>` and `ss -ltnp`.
 - [ ] Save every screenshot to `/tmp/swarm-<pr-id>/worker-<n>/<slug>.png` and return the paths with the report.
@@ -140,7 +141,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 - [ ] Define `PreviewProcess` in `src/types/preview.ts` as a record of `webviewId`, `sessionId`, `name`, `cmd`, `cwd`, `port`, `pid`, `pgid`, `startTicks` (field 22 of `/proc/<pid>/stat`), `logPath`, `state` and `lastViewedAt`, where `state` is `'running' | 'stopped' | 'exited'`. Persist the list to `previews.json` in the data dir with a temp-file rename.
 - [ ] In `src/preview-supervisor.ts`, `start` binds port 0 to pick a free port, substitutes `{port}` in `cmd` and sets `PORT`, spawns `/bin/sh -c cmd` detached in a new process group with the session's `workingDir` as `cwd`, sends output to `logPath`, and writes the record before returning.
-- [ ] `stop` sends `SIGTERM` to the process group, waits up to 5 seconds, then sends `SIGKILL`. It treats a group that is already gone as success.
+- [ ] `start` also sets `CODEMAN_PREVIEW_ID=<webviewId>` in the server's environment.
+- [ ] `stop` sends `SIGTERM` to the recorded process group and to every process of Codeman's uid whose `/proc/<pid>/environ` carries that `CODEMAN_PREVIEW_ID`, and to the process listening on the preview's port when it carries the same marker. It waits up to 5 seconds, then sends `SIGKILL` to whatever is left. It treats a group that is already gone as success. The group alone misses a server started with `setsid`, which the 2026-11-05 experiment in Appendix A measured.
 - [ ] `reconcile` runs at boot and every minute. A record whose `pid` is alive with matching `startTicks` and whose web tab exists keeps running. A live group whose web tab is gone is stopped. A dead process is marked `exited`. A running preview whose `lastViewedAt` is older than `PREVIEW_IDLE_STOP_MS` (default 4 hours, env `CODEMAN_PREVIEW_IDLE_STOP_MS`) is stopped and marked `stopped`.
 - [ ] Mark `lastViewedAt` from the web tab proxy when a request arrives for a preview's capability.
 - [ ] Add `PUT /api/v1/sessions/:id/previews/:name` with `{ cmd }`. It creates or replaces the preview keyed by session and name, so a repeat stops the old process and starts one new one. Add `GET` and `DELETE` on the same path, `GET /api/v1/sessions/:id/previews`, `GET /api/v1/previews` and `GET /api/v1/sessions/:id/previews/:name/log?tail=`.
@@ -166,7 +168,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 - [ ] Lane 5. Delete the owning session from the UI. Save `session-deleted.png`. Pass when its previews, web tabs and process groups are all gone.
 - [ ] Lane 6. Kill the Codeman server with `SIGKILL`, delete the preview's row from `webviews.json`, and boot again. Save `orphan-reaped.png`. Pass when reconcile stops the orphaned group within one minute of boot.
 - [ ] Lane 7. Set `CODEMAN_PREVIEW_IDLE_STOP_MS=60000`, create a preview and leave it unopened. Save `idle-stopped.png`. Pass when its state becomes `stopped` and its port is free within 2 minutes.
-- [ ] Lane 8. Use a command that daemonizes itself with `setsid sh -c 'python3 -m http.server {port}' &`. Save `daemonized.png`. Pass when deleting the preview still frees the port, or the lane records that it does not and files a blocking finding.
+- [ ] Lane 8. Use a command that daemonizes itself with `(setsid nohup python3 -m http.server {port} >/dev/null 2>&1 &)`. Save `daemonized.png`. Pass when deleting the preview frees the port within 6 seconds and no process carrying the preview's marker survives.
 - [ ] Lane 9. Use a command that exits at once. Save `exited.png`. Pass when the preview shows state `exited` and `GET .../log` returns its output.
 - [ ] Lane 10. Create a preview for a session marked remote in the lane's data dir. Save `remote-refused.png`. Pass when the API returns 400 naming the session type and nothing is spawned.
 
@@ -368,7 +370,22 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 The placement question was settled by a clickable mockup at `/home/codeman/codeman-cases/testcase/previews/placement-mockup/index.html`, served through `POST /api/sessions/:id/html-view`. It shows option A (inside the session tab), option B (own tab in the strip) and option C (drawer). The operator chose A with C on 2026-11-05. A jsdom click-through passed for the badge, opening, deleting, the B tab and the C drawer. It was not screenshotted, because headless Chromium on this host fails to load `libatk-1.0.so.0`.
 
-Still unproven. Whether `SIGTERM` to the recorded process group reaches a server that daemonizes itself with `setsid`. P2 lane 8 settles it. Whether Vite hot reload works through the proxy for a preview was inferred from the single-page app fix in `CHANGELOG.md` (#402) and is settled by P2 lane 2.
+Process escape was measured on 2026-11-05 by a Grok worker with `/home/codeman/codeman-cases/prev-escape/escape-test.mjs`, and the root reran it with identical results. Four launch shapes ran against four stop strategies, each on a fresh `python3 -m http.server`.
+
+| Launch shape              | Process group | Descendant walk | Environment marker | Port listener |
+| ------------------------- | ------------- | --------------- | ------------------ | ------------- |
+| `exec` server             | freed         | not freed       | freed              | freed         |
+| `server & exit 0`         | freed         | not freed       | freed              | freed         |
+| `setsid server & exit 0`  | not freed     | not freed       | freed              | freed         |
+| `(setsid nohup server &)` | not freed     | not freed       | freed              | freed         |
+
+A child cgroup was refused with `EACCES` under `/sys/fs/cgroup/system.slice/codeman-tmux.service`, and the host has no systemd user bus, so cgroups are not available to Codeman here. P2 therefore stops by process group plus the environment marker, with the port listener as a third check. The rerun left no stray server.
+
+The browser blocker was cleared without root. Libraries extracted from Ubuntu packages live in `~/.local/lib/pw-deps`, and `. ~/.local/lib/pw-deps/env.sh` before a Playwright launch makes Chromium 148 start. The root screenshotted the placement mockup with it and saw the text render. The permanent fix is `sudo /home/codeman/codeman/node_modules/.bin/playwright install-deps chromium`.
+
+`gh` 2.103.3 is installed at `~/.local/bin/gh` from the checksum-verified official release. It is not logged in.
+
+Still unproven. Whether Vite hot reload works through the proxy for a preview was inferred from the single-page app fix in `CHANGELOG.md` (#402) and is settled by P2 lane 2.
 
 ## Appendix B. Alternatives rejected
 
@@ -380,10 +397,10 @@ Still unproven. Whether `SIGTERM` to the recorded process group reaches a server
 
 ## Appendix C. Risks
 
-- A server that forks out of its process group survives `stop`. P2 lane 8 tests it. If it fails, P2 adds a cgroup or a descendant walk with `src/proc-tree.ts` before merge.
+- A server that clears its environment with `env -i` and also forks out of its process group escapes the marker sweep. The port listener check still stops it while it holds the preview's port. P2 lane 8 covers the `setsid` case.
 - Pid reuse after a reboot could make reconcile stop an unrelated process. P2 matches `startTicks` before signalling and never signals a pid whose start time differs.
-- Headless Chromium cannot start on this host until `libatk1.0-0` and its siblings are installed. Every browser lane in P1, P4 and P5 depends on it. The root asks the operator to install them before arming, or runs those lanes on a host that has them.
-- The host has no `gh` or `origin` CLI, so PRs are compare URLs until one is installed.
+- Browser lanes must source `~/.local/lib/pw-deps/env.sh` before launching Playwright until the operator runs the `playwright install-deps` command in Appendix A.
+- `gh` is installed but not logged in. PRs stay compare URLs until the operator runs `gh auth login`.
 - Agents may ignore the skill and start servers directly. P3 lanes 6 and 7 measure it. A later change can warn when a session's process tree holds a listening port that no preview owns.
 
 ## Appendix D. Links and reading list
