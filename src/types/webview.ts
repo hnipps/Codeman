@@ -31,7 +31,6 @@
  */
 export type WebviewEmbedMode = 'proxy' | 'direct';
 
-/** A saved dashboard, persisted to `~/.codeman/webviews.json`. */
 /**
  * Dashboards Codeman creates and maintains on the user's behalf.
  *
@@ -42,6 +41,22 @@ export type WebviewEmbedMode = 'proxy' | 'direct';
  */
 export type WebviewManagedKind = 'deepseek-web';
 
+/**
+ * Who a web tab belongs to.
+ *
+ * - `user`: a dashboard the user saved.
+ * - `managed`: a record a Codeman shortcut maintains (see `WebviewManagedKind`),
+ *   including repointing its URL when the port changes.
+ * - `session`: a record owned by one agent session. It is deleted with that
+ *   session and can never be `trusted`, since the session's agent controls the
+ *   page it points at.
+ */
+export type WebviewOrigin =
+  | { kind: 'user' }
+  | { kind: 'managed'; managed: WebviewManagedKind }
+  | { kind: 'session'; sessionId: string; name: string };
+
+/** A saved dashboard, persisted to `~/.codeman/webviews.json`. */
 export interface Webview {
   id: string;
   /** Display name shown on the tab. */
@@ -59,12 +74,7 @@ export interface Webview {
    * cookies/localStorage, only for dashboards the user fully trusts.
    */
   trusted: boolean;
-  /**
-   * Set when Codeman owns this record rather than the user (see
-   * `WebviewManagedKind`). Managed rows are maintained by the shortcut that
-   * created them, including repointing the URL when the port changes.
-   */
-  managed?: WebviewManagedKind;
+  origin: WebviewOrigin;
   /** Multi-user owner (username). Undefined in single-user mode. */
   owner?: string;
   createdAt: number;

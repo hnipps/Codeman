@@ -2362,19 +2362,54 @@ const WebviewBaseSchema = z.object({
    * and call the API that spawns agents.
    */
   trusted: z.boolean().optional(),
-  /**
-   * Marks a record Codeman maintains itself. Declared here because a plain
-   * `z.object` STRIPS undeclared keys, so an undeclared marker would be dropped
-   * on the way in and the dedup it drives would never fire.
-   */
+});
+
+/**
+ * Who owns a new record. A session origin names only the session: the route
+ * checks the caller can see it and takes the name from the session itself.
+ */
+const WebviewOriginInputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('user') }),
+  z.object({ kind: z.literal('managed'), managed: z.enum(['deepseek-web']) }),
+  z.object({ kind: z.literal('session'), sessionId: z.string().min(1).max(200) }),
+]);
+
+const SESSION_ORIGIN_TRUSTED_MESSAGE = 'A web tab owned by a session cannot be trusted';
+
+/** POST /api/webviews. `origin` is fixed at creation; PATCH cannot change it. */
+export const WebviewCreateSchema = WebviewBaseSchema.extend({
+  origin: WebviewOriginInputSchema.optional(),
+  /** Deprecated `/api/v1` spelling of `origin: {kind:"managed", managed}`. */
+  managed: z.enum(['deepseek-web']).optional(),
+})
+  .refine(
+    (input) =>
+      input.managed === undefined ||
+      input.origin === undefined ||
+      (input.origin.kind === 'managed' && input.origin.managed === input.managed),
+    { message: '`managed` disagrees with `origin`', path: ['managed'] }
+  )
+  .refine((input) => !(input.origin?.kind === 'session' && input.trusted === true), {
+    message: SESSION_ORIGIN_TRUSTED_MESSAGE,
+    path: ['trusted'],
+  });
+
+/** PATCH /api/webviews/:id, partial update. */
+export const WebviewUpdateSchema = WebviewBaseSchema.partial().extend({
+  /** Deprecated `/api/v1` field: sets `origin {kind:"managed", managed}` on a non-session row. */
   managed: z.enum(['deepseek-web']).optional(),
 });
 
-/** POST /api/webviews */
-export const WebviewCreateSchema = WebviewBaseSchema;
-
-/** PATCH /api/webviews/:id, partial update. */
-export const WebviewUpdateSchema = WebviewBaseSchema.partial();
+/** The PATCH-side half of the rules above: the route applies it once it has read the stored origin. */
+export function webviewUpdateRefusal(
+  origin: { kind: string },
+  input: z.infer<typeof WebviewUpdateSchema>
+): string | null {
+  if (origin.kind !== 'session') return null;
+  if (input.trusted === true) return SESSION_ORIGIN_TRUSTED_MESSAGE;
+  if (input.managed !== undefined) return 'The origin of a web tab owned by a session cannot change';
+  return null;
+}
 
 /** POST /api/webviews/probe: reachability + framing check for the editor's Test button. */
 export const WebviewProbeSchema = z.object({ url: webviewUrlSchema });

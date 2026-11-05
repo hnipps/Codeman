@@ -83,6 +83,20 @@ Only loopback is routed this way. A LAN or tailnet address (`192.168.…`, `100.
 direct open is the cheaper, richer path, so those links still open in a new browser tab.
 On the box itself (a browser on `localhost`) every link opens directly.
 
+## Who owns a web tab
+
+Every saved web tab has an `origin`: `user` for a dashboard you saved, `managed` for
+one a Codeman shortcut keeps up to date (the DeepSeek web UI), and `session` for one
+an agent session owns. The Run dropdown lists only your own (`user`) dashboards.
+
+A session-owned web tab goes away with its session: deleting the session deletes
+the record, and its proxy URL stops working. It can never be trusted (the sandbox
+below always applies), because the session's agent controls the page it shows.
+
+Records saved by an older Codeman have no `origin`. They read as `user`, or as
+`managed` if they carried the old `managed` marker, and the file is rewritten in the
+new shape only on the next save.
+
 ## The sandbox, and when to turn it off
 
 Because a proxied dashboard is served from Codeman's own address, it is

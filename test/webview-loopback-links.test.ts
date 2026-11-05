@@ -27,7 +27,7 @@ const WEBVIEW_TABS = readFileSync(new URL('../src/web/public/webview-tabs.js', i
 const TERMINAL_UI = readFileSync(new URL('../src/web/public/terminal-ui.js', import.meta.url), 'utf-8');
 const APP_JS = readFileSync(new URL('../src/web/public/app.js', import.meta.url), 'utf-8');
 
-type Webview = { id: string; name: string; url: string; embedMode?: string; managed?: string };
+type Webview = { id: string; name: string; url: string; embedMode?: string; origin?: { kind: string } };
 
 interface AppLike {
   webviews: Map<string, Webview>;

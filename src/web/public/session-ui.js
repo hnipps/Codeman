@@ -1688,7 +1688,9 @@ Object.assign(CodemanApp.prototype, {
       // One managed record, repointed rather than duplicated: the port is chosen
       // per launch, so creating a fresh row each time would stack a dashboard
       // per restart, each pointing at a port nothing serves any more.
-      let webview = [...(this.webviews?.values() || [])].find((w) => w.managed === 'deepseek-web');
+      let webview = [...(this.webviews?.values() || [])].find(
+        (w) => w.origin?.kind === 'managed' && w.origin.managed === 'deepseek-web'
+      );
       if (webview) {
         const patchRes = await fetch(`/api/webviews/${webview.id}`, {
           method: 'PATCH',
@@ -1706,7 +1708,7 @@ Object.assign(CodemanApp.prototype, {
             name: 'DeepSeek Harness',
             url,
             icon: '\u{1F433}',
-            managed: 'deepseek-web',
+            origin: { kind: 'managed', managed: 'deepseek-web' },
             trusted: true,
           }),
         });
