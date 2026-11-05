@@ -98,7 +98,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 - [ ] Lane 1. Regression lane against trunk. Save a user web tab to a local static server, open it, and screenshot it at trunk and at head. Save `user-tab.png`. Pass when both render the page and head's `GET /api/v1/webviews` shows `origin.kind` `user`.
 - [ ] Lane 2. Copy a trunk `webviews.json` with one user row and one `deepseek-web` row into the lane's data dir, then boot head. Save `migrated-list.png`. Pass when the list shows both rows with the right origins and the file on disk is byte-identical until the first write.
-- [ ] Lane 3. Create a session-origin record through the store test hook, then delete its session from the UI. Save `cascade.png`. Pass when the record is gone from `GET /api/v1/webviews` and its old capability URL returns 404.
+- [ ] Lane 3. Create a session-origin record with `POST /api/v1/webviews` and `origin {kind:"session", sessionId}` (there is no store test hook), open it, then delete its session from the UI. Save `cascade.png`. Pass when the record is gone from `GET /api/v1/webviews` and its old capability URL returns `403`, or the auth hook's `401` when a password is set and the request carries no credentials.
 - [ ] Lane 4. Two sessions each own a record. Delete one session. Save `cascade-scoped.png`. Pass when only the deleted session's record is gone.
 - [ ] Lane 5. `PATCH` a session-origin record with `trusted: true`. Save `trusted-refused.png`. Pass when the response is 400 with `INVALID_INPUT` and the record is unchanged.
 - [ ] Lane 6. `PATCH` a user record with `trusted: true`. Save `trusted-user.png`. Pass when it succeeds, as on trunk.
@@ -112,7 +112,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 - [ ] Metric. Median latency of `GET /api/v1/webviews` with 50 records, and of `DELETE /api/v1/sessions/:id` for a session that owns 5 records.
 - [ ] Probe. Run 200 requests of each against trunk and head, interleaved in blocks of 20, with `autocannon` or a `curl` loop timing each call.
 - [ ] Baseline. Record the trunk medians first.
-- [ ] Rule. Head fails if either median exceeds trunk by more than 10 percent, or if session delete exceeds trunk by more than 20 milliseconds.
+- [ ] Rule. Head fails if the `GET` median exceeds trunk by more than 10 percent, or if the session delete median exceeds trunk by more than 20 milliseconds. The delete has no ratio rule, because trunk runs no cascade, so a ratio against it measures the new work rather than a regression.
 
 **Review gate.** None. P1 is not review-gated.
 
@@ -148,6 +148,10 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 - [ ] Add `PUT /api/v1/sessions/:id/previews/:name` with `{ cmd }`. It creates or replaces the preview keyed by session and name, so a repeat stops the old process and starts one new one. Add `GET` and `DELETE` on the same path, `GET /api/v1/sessions/:id/previews`, `GET /api/v1/previews` and `GET /api/v1/sessions/:id/previews/:name/log?tail=`.
 - [ ] Refuse remote and Docker sessions with `INVALID_INPUT` and a message that names the session type.
 - [ ] Deleting the web tab, the preview, or the session stops the process in the same call.
+- [ ] The server stamps `origin {kind:"session"}` on every preview web tab it creates, and never trusts a client-supplied origin for a row an agent creates.
+- [ ] `reconcile` also deletes session-origin web tabs whose session no longer exists. That covers the stale-session sweep and the rows a reboot orphans, which P1's cascade does not reach.
+- [ ] Revoking a preview's capability closes its open proxied WebSockets.
+- [ ] Deleting a pinned session cascades to its previews, which is the decided behaviour: the preview's server dies with the session, so a restored session starts its previews again.
 
 **You see.**
 
