@@ -91,6 +91,16 @@ export function createMockRouteContext(options?: {
 
     // -- KeepWarmPort --
     keepWarm: { schedule: vi.fn(), rescheduleAll: vi.fn(), remove: vi.fn() },
+    previews: {
+      list: vi.fn(() => []),
+      get: vi.fn(),
+      forWebview: vi.fn(),
+      start: vi.fn(),
+      remove: vi.fn(async () => null),
+      removeSession: vi.fn(async () => []),
+      markViewed: vi.fn(),
+      readLog: vi.fn(async () => null),
+    },
 
     // -- ConfigPort --
     store: {
