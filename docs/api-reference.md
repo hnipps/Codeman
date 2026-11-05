@@ -944,6 +944,20 @@ request is answered with `206` + `Content-Range` (`416` past the end), like
 `file-raw`. Every refusal is a plain-text `404 Not found`; with a password set, an
 unknown or revoked capability is the auth hook's `401` instead.
 
+## Web tabs (`/api/v1/webviews`)
+
+A web tab is a saved URL shown as a tab and served through `/webview/<capability>/` (`docs/web-tabs.md`). Endpoints: `GET /api/v1/webviews`, `POST /api/v1/webviews`, `PATCH /api/v1/webviews/:id`, `DELETE /api/v1/webviews/:id`, `POST /api/v1/webviews/probe`, `POST /api/v1/webviews/:id/open`. Every change emits `webview:changed` with `action` (`created`, `updated`, `deleted`), `id` and `owner`.
+
+Every record carries an `origin` saying who owns it:
+
+| `origin` | Meaning |
+| --- | --- |
+| `{"kind":"user"}` | A dashboard the user saved. The default on create. |
+| `{"kind":"managed","managed":"deepseek-web"}` | A record a Codeman shortcut maintains (the DeepSeek web UI). |
+| `{"kind":"session","sessionId":"<id>","name":"<session name>"}` | Owned by one session and deleted with it. |
+
+`origin` is set on `POST` and cannot be changed by `PATCH` (an `origin` field there is ignored). A session origin is sent as `{"kind":"session","sessionId":"<id>"}`; the server answers `404 NOT_FOUND` for a session the caller cannot see and fills `name` from the session. A session-origin record can never be `trusted`: `trusted: true` on its `POST` or `PATCH` is `400 INVALID_INPUT` and changes nothing. Deleting a session deletes its session-origin records, revokes their capabilities (the old proxy URL answers `403`) and emits one `webview:changed` `deleted` per record. Records saved before `origin` existed read as `user`, or `managed` when they carried the old `managed` field, and are rewritten in the new shape on the next write.
+
 ## Session lineage (`parentSessionId`)
 
 A create request may name the session that spawned it, which the web UI draws as a

@@ -239,6 +239,7 @@ import {
   registerWsRoutes,
   registerVoiceRoutes,
   registerWebviewRoutes,
+  removeSessionWebviews,
   registerTabLayoutRoutes,
   registerMcpSyncRoutes,
   registerConfigBackupRoutes,
@@ -1605,9 +1606,11 @@ export class WebServer extends EventEmitter {
     this.gitFetchScheduler.remove(sessionId);
     const pinned = session?.pinned === true || this.store.getSession(sessionId)?.pinned === true;
     if (coordinateLayout && session && killMux && !pinned) {
-      return this.tabLayouts.runSessionDeletion([{ id: sessionId, owner: session.owner }], () =>
+      await this.tabLayouts.runSessionDeletion([{ id: sessionId, owner: session.owner }], () =>
         this._doCleanupSession(sessionId, killMux, reason, false)
       );
+      await this._removeSessionWebviews(sessionId);
+      return;
     }
     const lifecycleLog = getLifecycleLog();
     lifecycleLog.log({
@@ -1815,6 +1818,15 @@ export class WebServer extends EventEmitter {
     this.remoteWake?.drop(sessionId);
 
     this.broadcast(SseEvent.SessionDeleted, { id: sessionId });
+    if (killMux && coordinateLayout) await this._removeSessionWebviews(sessionId);
+  }
+
+  private async _removeSessionWebviews(sessionId: string): Promise<void> {
+    try {
+      await removeSessionWebviews({ broadcast: this.broadcast.bind(this), tabLayouts: this.tabLayouts }, sessionId);
+    } catch (err) {
+      console.error(`[Server] Failed to remove web tabs of session ${sessionId}:`, err);
+    }
   }
 
   private async renderIndexHtml(soloSessionId?: string): Promise<string> {
