@@ -243,6 +243,30 @@ describe('a session-origin web tab is never trusted', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.origin).toEqual({ kind: 'session', sessionId, name: 'origin-fixed' });
   });
+
+  it('accepts the deprecated managed field on a user web tab', async () => {
+    const { body } = await call('POST', '/api/v1/webviews', { name: 'DeepSeek', url: 'http://127.0.0.1:4003/' });
+    const res = await call('PATCH', `/api/v1/webviews/${body.data.id}`, { managed: 'deepseek-web' });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      managed: 'deepseek-web',
+      origin: { kind: 'managed', managed: 'deepseek-web' },
+    });
+    const stored = JSON.parse(await fs.readFile(webviewsPath(dataDir), 'utf-8')).find(
+      (w: { id: string }) => w.id === body.data.id
+    );
+    expect(stored.origin).toEqual({ kind: 'managed', managed: 'deepseek-web' });
+  });
+
+  it('refuses the deprecated managed field on a session web tab and leaves the file unchanged', async () => {
+    const sessionId = await createSession('managed-refused');
+    const { body } = await createSessionTab(sessionId, 'Preview');
+    const before = await fs.readFile(webviewsPath(dataDir), 'utf-8');
+    const res = await call('PATCH', `/api/v1/webviews/${body.data.id}`, { managed: 'deepseek-web', name: 'X' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ success: false, errorCode: 'INVALID_INPUT' });
+    expect(await fs.readFile(webviewsPath(dataDir), 'utf-8')).toBe(before);
+  });
 });
 
 describe('deleting a session', () => {

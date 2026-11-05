@@ -236,7 +236,9 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
       const refusal = webviewUpdateRefusal(list[index].origin, input);
       if (refusal) return { refusal };
 
-      const next: Webview = { ...list[index], ...input };
+      const { managed, ...fields } = input;
+      const next: Webview = { ...list[index], ...fields };
+      if (managed) next.origin = { kind: 'managed', managed };
       list[index] = next;
       await writeWebviews(configDir(), list);
       return next;

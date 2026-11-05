@@ -2395,14 +2395,20 @@ export const WebviewCreateSchema = WebviewBaseSchema.extend({
   });
 
 /** PATCH /api/webviews/:id, partial update. */
-export const WebviewUpdateSchema = WebviewBaseSchema.partial();
+export const WebviewUpdateSchema = WebviewBaseSchema.partial().extend({
+  /** Deprecated `/api/v1` field: sets `origin {kind:"managed", managed}` on a non-session row. */
+  managed: z.enum(['deepseek-web']).optional(),
+});
 
-/** The PATCH-side half of the rule above: the route applies it once it has read the stored origin. */
+/** The PATCH-side half of the rules above: the route applies it once it has read the stored origin. */
 export function webviewUpdateRefusal(
   origin: { kind: string },
   input: z.infer<typeof WebviewUpdateSchema>
 ): string | null {
-  return origin.kind === 'session' && input.trusted === true ? SESSION_ORIGIN_TRUSTED_MESSAGE : null;
+  if (origin.kind !== 'session') return null;
+  if (input.trusted === true) return SESSION_ORIGIN_TRUSTED_MESSAGE;
+  if (input.managed !== undefined) return 'The origin of a web tab owned by a session cannot change';
+  return null;
 }
 
 /** POST /api/webviews/probe: reachability + framing check for the editor's Test button. */
