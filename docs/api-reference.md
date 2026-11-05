@@ -960,6 +960,25 @@ Every record carries an `origin` saying who owns it:
 
 **Deprecated: `managed`.** Before `origin`, a managed record was marked by a top-level `"managed":"deepseek-web"`. Use `origin` instead. For compatibility, `POST` still accepts `managed` and stores it as `{"kind":"managed","managed":"deepseek-web"}` (sent together with an `origin` that disagrees, it is `400 INVALID_INPUT`), `PATCH` still accepts it too and sets that origin on a `user` or `managed` record (on a session-origin record it is `400 INVALID_INPUT` and changes nothing, since a session record's origin never changes), and every web tab response (`GET`, `POST`, `PATCH`, `/open`) still carries a top-level `managed` on managed-origin rows next to `origin`. It is not stored on disk.
 
+## Previews (`/api/v1/sessions/:id/previews`)
+
+A preview is a dev server Codeman starts for a session and shows through a session-origin web tab (`docs/web-tabs.md`). Codeman runs every preview process itself and stops it when the preview, its web tab or its session is deleted, after 4 hours unopened, and at the next reconcile if its record is gone.
+
+| Endpoint | Does |
+| --- | --- |
+| `PUT /api/v1/sessions/:id/previews/:name` `{ "cmd": "..." }` | Create or replace the preview `name` of the session. A repeat stops the old process, then starts one new one on the same web tab (and the same port when it is still free). |
+| `GET /api/v1/sessions/:id/previews/:name` | One preview, with a fresh `url`. |
+| `DELETE /api/v1/sessions/:id/previews/:name` | Stop the process, delete the record and its web tab. |
+| `GET /api/v1/sessions/:id/previews` | The session's previews. |
+| `GET /api/v1/previews` | Every preview the caller can see. |
+| `GET /api/v1/sessions/:id/previews/:name/log?tail=<bytes>` | `{ text, size, state }`: the last `tail` bytes (default 65536, at most 1048576) of the server's combined stdout and stderr. |
+
+`name` is 1-64 letters, digits, `.`, `_` or `-`, starting with a letter or digit. `cmd` (at most 4096 characters, no other body field) runs as `/bin/sh -c` in the session's `workingDir`, in a new process group, with every `{port}` replaced by a free port that is also in `PORT`, and with `CODEMAN_PREVIEW_ID=<webviewId>` and `CODEMAN_PREVIEW_OWNER=<data dir>` in its environment. `PUT` answers once the port accepts a connection, the process has exited, or 20 s have passed, with the preview below plus `url` (the same-origin `/webview/<capability>/` path that serves it) and `ready` (whether the port answered).
+
+A preview: `webviewId`, `sessionId`, `name`, `cmd`, `cwd`, `port`, `pid` and `pgid` (the `/bin/sh` that ran `cmd`), `startTicks` (field 22 of `/proc/<pid>/stat`), `logPath`, `state`, `lastViewedAt` (epoch ms, moved by requests through its proxy URL), and `targetUrl` (where the proxy reaches it). `state` is `running`, `stopped` (stopped for being unopened, record and web tab kept) or `exited` (every process ended on its own); a `PUT` restarts any of them.
+
+The web tab's `origin` is always `{"kind":"session"}` for the session in the path, stamped by the server. Errors: `400 INVALID_INPUT` for a bad name, a bad body, more than 8 previews in one session, or a remote (SSH) or Docker session (the message names the type, since the server would run on this host); `404 NOT_FOUND` for an unknown session or preview; `409 CONFLICT` on a deploy colour that does not write; `500 OPERATION_FAILED` when the command could not be started. Revoking a web tab's capability (an edit, a delete, a logout) also closes the WebSockets proxied through it, with code `4003`.
+
 ## Session lineage (`parentSessionId`)
 
 A create request may name the session that spawned it, which the web UI draws as a

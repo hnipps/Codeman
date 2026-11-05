@@ -90,12 +90,36 @@ one a Codeman shortcut keeps up to date (the DeepSeek web UI), and `session` for
 an agent session owns. The Run dropdown lists only your own (`user`) dashboards.
 
 A session-owned web tab goes away with its session: deleting the session deletes
-the record, and its proxy URL stops working. It can never be trusted (the sandbox
+the record, and its proxy URL stops working. One whose session no longer exists
+at all (after a reboot, or a session swept as stale) is deleted by the next
+preview check. It can never be trusted (the sandbox
 below always applies), because the session's agent controls the page it shows.
 
 Records saved by an older Codeman have no `origin`. They read as `user`, or as
 `managed` if they carried the old `managed` marker, and the file is rewritten in the
 new shape only on the next save.
+
+## Previews
+
+A preview is a session-owned web tab whose server Codeman runs itself. An agent
+sends `PUT /api/v1/sessions/<id>/previews/<name>` with a command such as
+`python3 -m http.server {port}`; Codeman picks a free port, starts the command in
+the session's folder, creates the web tab and returns its proxy URL. Asking again
+with the same name replaces the server instead of adding a second one.
+
+Codeman stops the server when you delete the preview, its web tab or its session
+(a pinned session too: a restored session starts its previews again), when nobody
+has opened it for 4 hours (`CODEMAN_PREVIEW_IDLE_STOP_MS`), and when a check finds
+a server whose record is gone. That check runs every minute, and the search for servers with no record runs at boot. It finds a
+server by an environment variable Codeman sets on it, so a command that detaches
+itself (`setsid`, `nohup ... &`) is still found and stopped. Previews keep running
+across a Codeman restart.
+
+Remote (SSH) and Docker sessions cannot have previews: the server would run on
+this machine, where their files are not. A server that binds `0.0.0.0` (as
+`python3 -m http.server` does) is reachable from your network too; pass a
+`--bind 127.0.0.1` style option when that matters. The API is in
+[`docs/api-reference.md`](api-reference.md#previews-apiv1sessionsidpreviews).
 
 ## The sandbox, and when to turn it off
 
