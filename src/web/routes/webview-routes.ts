@@ -51,7 +51,7 @@ import { webviewCapabilities } from '../../webview-capabilities.js';
 import { egressBlockedReason, webviewEgressLookup, webviewFetch, type EgressLookup } from '../webview-egress.js';
 import { blockedWebviewHostReason } from '../webview-egress-policy.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
-import type { Webview, WebviewOpenData, WebviewOrigin, WebviewProbe } from '../../types.js';
+import type { Webview, WebviewManagedKind, WebviewOpenData, WebviewOrigin, WebviewProbe } from '../../types.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
 import { canAccessOwned, findSessionOrFail, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
 import { WebviewCreateSchema, WebviewProbeSchema, WebviewUpdateSchema, webviewUpdateRefusal } from '../schemas.js';
@@ -142,13 +142,22 @@ export async function removeSessionWebviews(
   }
 }
 
+/**
+ * `/api/v1` shipped a top-level `managed` field before `origin` existed, and the
+ * stable API only grows, so managed rows keep it on the wire. Deprecated.
+ */
+type WebviewResponse = Webview & { managed?: WebviewManagedKind };
+function toResponse(webview: Webview): WebviewResponse {
+  return webview.origin.kind === 'managed' ? { ...webview, managed: webview.origin.managed } : webview;
+}
+
 // ───────────────────────────── CRUD ─────────────────────────────
 
 function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, basePath: string): void {
   app.get('/api/webviews', async (req) => {
     const user = getAuthUser(req);
     const all = await readWebviews(configDir());
-    const webviews = all.filter((w) => canAccessOwned(user, w.owner));
+    const webviews = all.filter((w) => canAccessOwned(user, w.owner)).map(toResponse);
     return { success: true, data: { webviews, maxLiveFrames: MAX_LIVE_WEBVIEW_FRAMES } };
   });
 
@@ -156,7 +165,9 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
     const input = parseBody(WebviewCreateSchema, req.body);
     const owner = ownerFor(req);
     const user = getAuthUser(req);
-    let origin: WebviewOrigin = input.origin?.kind === 'managed' ? input.origin : { kind: 'user' };
+    let origin: WebviewOrigin = { kind: 'user' };
+    if (input.origin?.kind === 'managed') origin = input.origin;
+    else if (input.managed) origin = { kind: 'managed', managed: input.managed };
     if (input.origin?.kind === 'session') {
       const session = findSessionOrFail(ctx, input.origin.sessionId, req);
       origin = { kind: 'session', sessionId: session.id, name: session.name };
@@ -210,7 +221,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
       id: created.id,
       owner: ownerLayoutKey(created.owner),
     });
-    return { success: true, data: created };
+    return { success: true, data: toResponse(created) };
   });
 
   app.patch<{ Params: { id: string } }>('/api/webviews/:id', async (req, reply) => {
@@ -249,7 +260,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
       id,
       owner: ownerLayoutKey(updated.owner),
     });
-    return { success: true, data: updated };
+    return { success: true, data: toResponse(updated) };
   });
 
   app.delete<{ Params: { id: string } }>('/api/webviews/:id', async (req, reply) => {
@@ -331,12 +342,12 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
 
     // Direct mode has no capability to mint: the iframe loads the real URL.
     if (webview.embedMode === 'direct') {
-      const data: WebviewOpenData = { webview };
+      const data: WebviewOpenData = { webview: toResponse(webview) };
       return { success: true, data };
     }
 
     const capability = webviewCapabilities.mint(webview.id, webview.owner);
-    const data: WebviewOpenData = { webview, embedUrl: proxyPrefixFor(capability, basePath) };
+    const data: WebviewOpenData = { webview: toResponse(webview), embedUrl: proxyPrefixFor(capability, basePath) };
     return { success: true, data };
   });
 }

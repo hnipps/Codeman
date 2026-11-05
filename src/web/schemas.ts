@@ -2379,10 +2379,20 @@ const SESSION_ORIGIN_TRUSTED_MESSAGE = 'A web tab owned by a session cannot be t
 /** POST /api/webviews. `origin` is fixed at creation; PATCH cannot change it. */
 export const WebviewCreateSchema = WebviewBaseSchema.extend({
   origin: WebviewOriginInputSchema.optional(),
-}).refine((input) => !(input.origin?.kind === 'session' && input.trusted === true), {
-  message: SESSION_ORIGIN_TRUSTED_MESSAGE,
-  path: ['trusted'],
-});
+  /** Deprecated `/api/v1` spelling of `origin: {kind:"managed", managed}`. */
+  managed: z.enum(['deepseek-web']).optional(),
+})
+  .refine(
+    (input) =>
+      input.managed === undefined ||
+      input.origin === undefined ||
+      (input.origin.kind === 'managed' && input.origin.managed === input.managed),
+    { message: '`managed` disagrees with `origin`', path: ['managed'] }
+  )
+  .refine((input) => !(input.origin?.kind === 'session' && input.trusted === true), {
+    message: SESSION_ORIGIN_TRUSTED_MESSAGE,
+    path: ['trusted'],
+  });
 
 /** PATCH /api/webviews/:id, partial update. */
 export const WebviewUpdateSchema = WebviewBaseSchema.partial();

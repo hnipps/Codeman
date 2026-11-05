@@ -7,7 +7,7 @@
  * on demand by the route handlers.
  *
  * Records written before `origin` existed are given one as they are read (see
- * `withOrigin`). Nothing is written back here, so the file on disk keeps its old
+ * `withOrigin`), and a session-origin record always reads as untrusted. Nothing is written back here, so the file on disk keeps its old
  * shape until the next ordinary write.
  *
  * The file lives under the instance data dir, so a beta instance started with a
@@ -29,7 +29,17 @@ export async function readWebviews(configDir: string): Promise<Webview[]> {
   try {
     const raw = await fs.readFile(webviewsPath(configDir), 'utf-8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map(withOrigin) : [];
+    if (!Array.isArray(parsed)) return [];
+    const webviews: Webview[] = [];
+    parsed.forEach((row: unknown, index) => {
+      // One bad row must not empty the list: the next write would persist that.
+      if (!row || typeof row !== 'object' || Array.isArray(row) || typeof (row as Webview).id !== 'string') {
+        console.warn(`[Webviews] Skipping malformed row ${index} in ${WEBVIEWS_FILE}`);
+        return;
+      }
+      webviews.push(withOrigin(row as Webview & { managed?: unknown }));
+    });
+    return webviews;
   } catch {
     return [];
   }
@@ -43,8 +53,6 @@ function isOrigin(value: unknown): value is WebviewOrigin {
       return true;
     case 'managed':
       return origin.managed === 'deepseek-web';
-    case 'session':
-      return typeof origin.sessionId === 'string' && typeof origin.name === 'string';
     default:
       return false;
   }
@@ -52,6 +60,11 @@ function isOrigin(value: unknown): value is WebviewOrigin {
 
 function withOrigin(record: Webview & { managed?: unknown }): Webview {
   const { managed, ...rest } = record;
+  const origin = rest.origin as unknown as Record<string, unknown> | undefined;
+  if (origin?.kind === 'session' && typeof origin.sessionId === 'string' && origin.sessionId) {
+    const name = typeof origin.name === 'string' ? origin.name : origin.sessionId;
+    return { ...rest, trusted: false, origin: { kind: 'session', sessionId: origin.sessionId, name } };
+  }
   if (isOrigin(rest.origin)) return rest;
   if (managed === 'deepseek-web') return { ...rest, origin: { kind: 'managed', managed } };
   return { ...rest, origin: { kind: 'user' } };
