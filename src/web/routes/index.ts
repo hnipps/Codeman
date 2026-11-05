@@ -32,7 +32,14 @@ export { registerMeRoutes } from './me-routes.js';
 export { registerAdminRoutes } from './admin-routes.js';
 export { registerWsRoutes } from './ws-routes.js';
 export { registerVoiceRoutes } from './voice-routes.js';
-export { registerWebviewRoutes, removeSessionWebviews, tryWebviewRefererFallback } from './webview-routes.js';
+export {
+  registerWebviewRoutes,
+  removeOrphanSessionWebviews,
+  removeSessionWebviews,
+  sessionWebviewIds,
+  tryWebviewRefererFallback,
+} from './webview-routes.js';
+export { registerPreviewRoutes } from './preview-routes.js';
 export { registerTabLayoutRoutes } from './tab-layout-routes.js';
 export { registerMcpSyncRoutes } from './mcp-sync-routes.js';
 export { registerConfigBackupRoutes, runConfigBackup } from './config-backup-routes.js';
