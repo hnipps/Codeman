@@ -55,6 +55,7 @@ codeman agent post "$SID" 'context for later, not a prompt'   # stored in its in
 codeman agent inbox --wait --timeout 300000               # your own inbox: blocks while nothing is new
 codeman agent ack <msg-id>                                # remove what you handled (read never removes)
 codeman agent rm "$SID"                                   # any session except this one
+codeman agent preview add web --cmd "npm run dev -- --port {port} --strictPort"   # a dev server Codeman runs and stops
 ```
 
 - **`spawn [case]`** uses the current directory when no case is supplied. Use
@@ -86,6 +87,15 @@ codeman agent rm "$SID"                                   # any session except t
   `ls` shows each session's mail in an INBOX column. Mail lives in memory unless
   **Keep agent inbox across restarts** is on (see [Settings Reference](Settings-Reference)),
   and goes when its session is deleted.
+- **`preview add|ls|rm|logs`** serve a web UI the agent built as a preview of its own session:
+  Codeman starts the server with `{port}` replaced by a free port, shows it in a web tab and
+  stops it when the preview or the session is deleted. `add` prints
+  `web  running  :<port>  /webview/<cap>/`. The server must stay in the foreground. Codeman
+  stops it through its process group and an environment marker the server inherits, so a
+  plain `&`, `nohup` or `setsid` is usually still stopped. A server that also loses the marker
+  (`env -i`) or hands its work to another service (`tmux`, `screen`, `docker run -d`,
+  `systemd-run`) may survive `rm`, which then says the port still listens and exits `1`. The
+  skill tells agents to start servers only this way. Routes and exit codes: [API reference](https://github.com/Ark0N/Codeman/blob/master/docs/api-reference.md#previews-apiv1sessionsidpreviews).
 - **`inspect`, `stage`, `submit`** are experimental and opt-in: they answer `403 FORBIDDEN`
   naming the setting until **Experimental agent coordination** is on (see
   [Settings Reference](Settings-Reference); `agentCoordinationEnabled`, synced, off by

@@ -6,7 +6,8 @@
  * case, `POST sessions` + `sessions/:id/interactive|shell` for a worker in an
  * existing directory, `input`, `wait`, `wait-output`, `last-response`, `terminal`,
  * `DELETE sessions/:id`, the agent inbox: `inbox`, `inbox/ack`,
- * `agent-inbox/summary`, and the experimental, opt-in
+ * `agent-inbox/summary`, the caller's own `sessions/:id/previews` (`preview add|ls|rm|logs`), and
+ * the experimental, opt-in
  * `inspect`/`stage`/`submit` of `web/routes/agent-session-routes.ts`, which answer 403
  * until `agentCoordinationEnabled` is on; that refusal is printed verbatim). It uses no
  * transport of its own: everything goes through `CODEMAN_API_URL`, so auth, ownership
@@ -58,6 +59,7 @@ import {
 import { getCli } from './config/cli-registry/registry.js';
 import { GLYPH, palette, table } from './cli-style.js';
 import { getErrorMessage } from './types.js';
+import type { PreviewLeftRunning, PreviewView } from './types/preview.js';
 import { stripAnsi as stripAnsiSequences } from './utils/regex-patterns.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,7 +284,7 @@ export interface WaitResult {
 }
 
 export interface RequestOptions {
-  method: 'GET' | 'POST' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
   query?: Record<string, string | number | boolean | undefined>;
   body?: Record<string, unknown>;
@@ -1228,6 +1230,175 @@ export async function agentAck(deps: AgentDeps, options: { ids: string[] }): Pro
   return EXIT.ok;
 }
 
+interface PreviewLeftRunningRow extends PreviewLeftRunning {
+  sessionId: string;
+  name: string;
+  since: number;
+}
+
+interface PreviewList {
+  previews: Omit<PreviewView, 'url'>[];
+  leftRunning: PreviewLeftRunningRow[];
+}
+
+function previewPath(sessionId: string, name?: string): string {
+  const base = `/api/v1/sessions/${encodeURIComponent(sessionId)}/previews`;
+  return name === undefined ? base : `${base}/${encodeURIComponent(name)}`;
+}
+
+function previewRow(p: Pick<PreviewView, 'name' | 'state' | 'port' | 'url'>): string[] {
+  return [p.name, p.state, `:${p.port}`, p.url ?? ''];
+}
+
+function listenerText(l: PreviewLeftRunning): string {
+  return `:${l.port}${l.pids.length ? ` (pids ${l.pids.join(' ')})` : " (another user's process)"}`;
+}
+
+const LEFT_RUNNING_HINT =
+  'Codeman could not stop it: the command handed the server to something outside the preview (tmux, screen, docker, systemd-run, env -i). Run the server itself in the foreground.';
+
+const PREVIEW_CONFLICT_TAIL =
+  'If the stop had begun, some of the old processes may already be stopped; the live deploy colour owns the rest of the cleanup.';
+const PREVIEW_ADD_CONFLICT = `The start was refused or abandoned: no new server was started, and an existing preview record and its tab are kept. ${PREVIEW_CONFLICT_TAIL}`;
+const PREVIEW_RM_CONFLICT = `The stop was refused or abandoned: the preview record and its tab are kept. ${PREVIEW_CONFLICT_TAIL}`;
+
+function previewFailure(deps: AgentDeps, res: ApiResponse, kept: string): number {
+  const conflict = res.status === 409 ? ` ${kept}` : '';
+  return fail(deps, `${describeFailure(res)}${conflict}`);
+}
+
+/**
+ * Why `preview add` refuses its positional words, or `undefined` for just `<name>`.
+ * An unquoted `--cmd node server.js` gives commander `--cmd node` plus a stray
+ * `server.js`; sending only `node` would replace a working preview with the wrong server.
+ */
+export function previewAddExcessArgs(words: readonly string[]): string | undefined {
+  if (words.length <= 1) return undefined;
+  const stray = words.slice(1).join(' ');
+  return `refusing: unexpected argument(s) after <name>: ${stray}. Quote the whole server command as ONE --cmd argument, e.g. --cmd "node server.js {port}"`;
+}
+
+/**
+ * `agent preview add` — start or replace this session's preview `name` (PUT). Exit 0
+ * once its port answers, 2 when it did not answer in the server's 20 s, 3 when the
+ * command exited.
+ */
+export async function agentPreviewAdd(deps: AgentDeps, options: { name: string; cmd: string }): Promise<number> {
+  if (!options.cmd.trim()) return fail(deps, 'refusing: empty --cmd', EXIT.refused);
+  const self = await resolveSessionId(deps, deps.ctx.selfId);
+  if ('error' in self) return fail(deps, self.error, self.code);
+  const res = await deps.request(deps.ctx, {
+    method: 'PUT',
+    path: previewPath(self.id, options.name),
+    body: { cmd: options.cmd },
+    timeoutMs: 60_000,
+  });
+  if (!res.json?.success) return previewFailure(deps, res, PREVIEW_ADD_CONFLICT);
+  const data = res.json.data as PreviewView & { leftRunning?: PreviewLeftRunning };
+  const code = data.state === 'exited' ? EXIT.dead : data.ready ? EXIT.ok : EXIT.timeout;
+  if (deps.json) {
+    emitJson(deps, data);
+    return code;
+  }
+  deps.io.out(previewRow(data).join('  '));
+  if (data.leftRunning) {
+    deps.io.err(
+      palette.err(
+        `${GLYPH.fail} the old server still listens on ${listenerText(data.leftRunning)}. ${LEFT_RUNNING_HINT}`
+      )
+    );
+  }
+  if (data.stillListening) {
+    deps.io.err(
+      palette.err(
+        `${GLYPH.fail} the command exited but a server still listens on ${listenerText(data.stillListening)}. ${LEFT_RUNNING_HINT}`
+      )
+    );
+  } else if (code === EXIT.dead) {
+    deps.io.err(palette.err(`${GLYPH.fail} the command exited; see \`codeman agent preview logs ${data.name}\``));
+  } else if (code === EXIT.timeout) {
+    deps.io.err(
+      palette.muted(`(nothing answered on :${data.port} yet; see \`codeman agent preview logs ${data.name}\`)`)
+    );
+  }
+  return code;
+}
+
+/** `agent preview ls` — this session's previews, plus servers Codeman could not stop. */
+export async function agentPreviewLs(deps: AgentDeps): Promise<number> {
+  const self = await resolveSessionId(deps, deps.ctx.selfId);
+  if ('error' in self) return fail(deps, self.error, self.code);
+  const res = await deps.request(deps.ctx, { method: 'GET', path: previewPath(self.id) });
+  if (!res.json?.success) return fail(deps, describeFailure(res));
+  const list = res.json.data as PreviewList;
+  const previews = await Promise.all(
+    list.previews.map(async (p) => {
+      const one = await deps.request(deps.ctx, { method: 'GET', path: previewPath(self.id, p.name) });
+      return one.json?.success ? (one.json.data as PreviewView) : p;
+    })
+  );
+  if (deps.json) {
+    emitJson(deps, { previews, leftRunning: list.leftRunning });
+    return EXIT.ok;
+  }
+  if (previews.length === 0) deps.io.out(palette.muted('(no previews)'));
+  else deps.io.out(table([['NAME', 'STATE', 'PORT', 'URL'], ...previews.map(previewRow)], { gap: 2 }));
+  for (const l of list.leftRunning) {
+    deps.io.err(
+      palette.err(`${GLYPH.fail} ${l.name}: a server still listens on ${listenerText(l)}. ${LEFT_RUNNING_HINT}`)
+    );
+  }
+  return EXIT.ok;
+}
+
+/**
+ * `agent preview rm` — stop the server and delete the preview and its tab. Exit 1 when
+ * a server is still listening on the port afterwards, since that is the server the
+ * command was meant to stop.
+ */
+export async function agentPreviewRm(deps: AgentDeps, options: { name: string }): Promise<number> {
+  const self = await resolveSessionId(deps, deps.ctx.selfId);
+  if ('error' in self) return fail(deps, self.error, self.code);
+  const res = await deps.request(deps.ctx, { method: 'DELETE', path: previewPath(self.id, options.name) });
+  if (!res.json?.success) return previewFailure(deps, res, PREVIEW_RM_CONFLICT);
+  const data = res.json.data as { name: string; webviewId: string; leftRunning?: PreviewLeftRunning };
+  const code = data.leftRunning ? EXIT.error : EXIT.ok;
+  if (deps.json) {
+    emitJson(deps, data);
+    return code;
+  }
+  if (data.leftRunning) {
+    deps.io.err(
+      palette.err(
+        `${GLYPH.fail} removed ${data.name}, but a server still listens on ${listenerText(data.leftRunning)}. ${LEFT_RUNNING_HINT}`
+      )
+    );
+  } else {
+    deps.io.out(palette.ok(`${GLYPH.ok} removed ${data.name}`));
+  }
+  return code;
+}
+
+/** `agent preview logs` — the tail of the server's combined stdout and stderr. */
+export async function agentPreviewLogs(deps: AgentDeps, options: { name: string; tail?: number }): Promise<number> {
+  const self = await resolveSessionId(deps, deps.ctx.selfId);
+  if ('error' in self) return fail(deps, self.error, self.code);
+  const res = await deps.request(deps.ctx, {
+    method: 'GET',
+    path: `${previewPath(self.id, options.name)}/log`,
+    query: { tail: options.tail },
+  });
+  if (!res.json?.success) return fail(deps, describeFailure(res));
+  const data = res.json.data as { text: string; size: number; state: string };
+  if (deps.json) {
+    emitJson(deps, data);
+    return EXIT.ok;
+  }
+  if (data.text) deps.io.out(terminalSafeText(data.text).replace(/\n$/, ''));
+  deps.io.err(palette.muted(`(${options.name} is ${data.state}; log is ${data.size} bytes)`));
+  return EXIT.ok;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Commander wiring
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1235,7 +1406,7 @@ export async function agentAck(deps: AgentDeps, options: { ids: string[] }): Pro
 const DEFAULT_WAIT_MS = 60_000;
 
 /** Build deps from the live environment; the guard's message is the only thing a non-session caller sees. */
-function liveDeps(json: boolean): AgentDeps | undefined {
+function liveDeps(json: boolean, guardHint?: string): AgentDeps | undefined {
   try {
     return {
       ctx: resolveAgentContext(),
@@ -1245,7 +1416,7 @@ function liveDeps(json: boolean): AgentDeps | undefined {
     };
   } catch (err) {
     if (err instanceof AgentGuardError) {
-      console.error(palette.err(`${GLYPH.fail} ${err.message}`));
+      console.error(palette.err(`${GLYPH.fail} ${err.message}${guardHint ? ` ${guardHint}` : ''}`));
       return undefined;
     }
     throw err;
@@ -1253,8 +1424,8 @@ function liveDeps(json: boolean): AgentDeps | undefined {
 }
 
 /** Run a verb with the live transport and turn its exit code into the process exit. */
-async function run(json: boolean, verb: (deps: AgentDeps) => Promise<number>): Promise<void> {
-  const deps = liveDeps(json);
+async function run(json: boolean, verb: (deps: AgentDeps) => Promise<number>, guardHint?: string): Promise<void> {
+  const deps = liveDeps(json, guardHint);
   if (!deps) {
     process.exitCode = EXIT.refused;
     return;
@@ -1272,7 +1443,7 @@ export function registerAgentCommands(program: Command): Command {
   const agent = program
     .command('agent')
     .description(
-      'Talk to other sessions from inside one (any CLI mode): list, spawn, send, wait, read, interrupt, rm, the inbox: post, inbox, ack, and the experimental, opt-in inspect, stage, submit'
+      'Talk to other sessions from inside one (any CLI mode): list, spawn, send, wait, read, interrupt, rm, the inbox: post, inbox, ack, previews: preview add|ls|rm|logs, and the experimental, opt-in inspect, stage, submit'
     );
 
   agent
@@ -1514,6 +1685,64 @@ export function registerAgentCommands(program: Command): Command {
     .description('Delete any session except this one (refuses your own id)')
     .option('--json', 'Machine-readable output')
     .action((id: string, options: { json?: boolean }) => run(Boolean(options.json), (deps) => agentRm(deps, { id })));
+
+  const preview = agent
+    .command('preview')
+    .description(
+      "Serve this session's web UI as a preview Codeman runs, shows and stops: add, ls, rm, logs. Start dev servers only this way"
+    );
+  const previewGuard = 'A preview belongs to the session in CODEMAN_SESSION_ID, so run this from inside that session.';
+  const runPreview = (json: boolean | undefined, verb: (deps: AgentDeps) => Promise<number>) =>
+    run(Boolean(json), verb, previewGuard);
+
+  preview
+    .command('add <name>')
+    .description(
+      "Start or replace the preview <name>: Codeman runs --cmd in this session's directory, in the foreground, with {port} replaced by a free port (also in $PORT). Exit 2 when nothing answered in 20 s, 3 when the command exited"
+    )
+    .requiredOption(
+      '--cmd <cmd>',
+      'Server command, ONE quoted argument, e.g. "npm run dev -- --port {port} --strictPort". It must stay in the foreground: never daemonize it (&, nohup, setsid, tmux, docker -d): Codeman may then be unable to stop it'
+    )
+    .option('--json', 'Machine-readable output')
+    .action((name: string, options: { cmd: string; json?: boolean }, command: Command) => {
+      const excess = previewAddExcessArgs(command.args);
+      if (excess) {
+        console.error(palette.err(`${GLYPH.fail} ${excess}`));
+        process.exitCode = EXIT.error;
+        return;
+      }
+      return runPreview(options.json, (deps) => agentPreviewAdd(deps, { name, cmd: options.cmd }));
+    });
+
+  preview
+    .command('ls')
+    .alias('list')
+    .description("This session's previews (name, state, port, url), and any server Codeman could not stop")
+    .option('--json', 'Machine-readable output')
+    .action((options: { json?: boolean }) => runPreview(options.json, agentPreviewLs));
+
+  preview
+    .command('rm <name>')
+    .description('Stop the server and delete the preview and its tab. Exit 1 when a server still listens on the port')
+    .option('--json', 'Machine-readable output')
+    .action((name: string, options: { json?: boolean }) =>
+      runPreview(options.json, (deps) => agentPreviewRm(deps, { name }))
+    );
+
+  preview
+    .command('logs <name>')
+    .description("The tail of the server's combined stdout and stderr")
+    .option('--tail <bytes>', 'Bytes from the end (default 65536)')
+    .option('--json', 'Machine-readable output')
+    .action((name: string, options: { tail?: string; json?: boolean }) =>
+      runPreview(options.json, (deps) =>
+        agentPreviewLogs(deps, {
+          name,
+          tail: options.tail === undefined ? undefined : parsePositiveInt(options.tail, 65536, '--tail'),
+        })
+      )
+    );
 
   return agent;
 }
