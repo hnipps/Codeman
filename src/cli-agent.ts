@@ -1261,7 +1261,7 @@ function listenerText(l: PreviewLeftRunning): string {
 
 /** The server cannot stop what the command handed to a process outside its group and marker. */
 const LEFT_RUNNING_HINT =
-  'Codeman could not stop it: the command handed the server to a process outside the preview (setsid, nohup &, tmux, docker, env -i). Run the server in the foreground.';
+  'Codeman could not stop it: the command handed the server to something outside the preview (tmux, screen, docker, systemd-run, env -i). Run the server itself in the foreground.';
 
 function previewFailure(deps: AgentDeps, res: ApiResponse, kept: string): number {
   const conflict = res.status === 409 ? ` ${kept}` : '';
@@ -1693,7 +1693,7 @@ export function registerAgentCommands(program: Command): Command {
     )
     .requiredOption(
       '--cmd <cmd>',
-      'Server command, ONE quoted argument, e.g. "npm run dev -- --port {port} --strictPort". It must stay in the foreground: never daemonize it (&, nohup, setsid, tmux, docker -d), or Codeman cannot stop it'
+      'Server command, ONE quoted argument, e.g. "npm run dev -- --port {port} --strictPort". It must stay in the foreground: never daemonize it (&, nohup, setsid, tmux, docker -d): Codeman may then be unable to stop it'
     )
     .option('--json', 'Machine-readable output')
     .action((name: string, options: { cmd: string; json?: boolean }) =>
