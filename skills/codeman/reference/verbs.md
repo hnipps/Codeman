@@ -3,7 +3,7 @@
 Loaded on demand from the `codeman` skill. This is the per-verb reference behind the
 table in [SKILL.md §2](../SKILL.md#2-what-do-you-want-to-do): where to spawn, readiness,
 sending a task, reading the answer, markers, liveness, interrupting, usage limits, big
-input, fan-out, listing, intent, messaging, and cleanup.
+input, fan-out, listing, intent, messaging, cleanup, the inbox, and previews.
 
 ⚠️ **Most jobs never need this file.** [SKILL.md
 §1](../SKILL.md#1-the-fast-path-n-workers-one-bash-call) already spawns N claude workers,
@@ -813,6 +813,52 @@ Rules that matter:
   not parked, `send` it one line ("read your inbox: `codeman agent inbox`").
 - **Lifetime.** An inbox goes with its session on delete. A server restart empties all
   inboxes unless the user turned on *Keep agent inbox across restarts* in Settings.
+
+### 5.16 Previews
+
+When you build a web UI, serve it as a **preview**: Codeman starts the dev server, shows
+it in a web tab that belongs to your session, and stops it when the preview, its tab or
+your session is deleted, after 4 hours unopened, and at the next boot if its record is
+gone. **Start a server only through `preview add`.** A server you start yourself (`npm
+run dev &`, `python3 -m http.server` in your own shell, a background Bash call) is one
+Codeman cannot see, show or stop, and it outlives you.
+
+```bash
+codeman agent preview add web --cmd "npm run dev -- --port {port} --strictPort"
+#   web  running  :41873  /webview/<cap>/       <- name, state, port, url
+codeman agent preview ls                        # this session's previews
+codeman agent preview logs web --tail 4000      # the server's stdout + stderr
+codeman agent preview rm web                    # stop it, delete the preview and its tab
+```
+
+- **`{port}` is substituted.** Codeman picks a free port, replaces every `{port}` in
+  `--cmd` with it and also sets `PORT`. Pass it to the server (`--port {port}`, and
+  `--strictPort` for Vite so it fails rather than moving to another port). Never
+  hard-code a port.
+- **Keep the server in the foreground.** The command runs as `/bin/sh -c` in your
+  session's directory, in its own process group. Never daemonize it or let it leave
+  that group: no trailing `&`, `nohup`, `setsid`, `tmux new-session -d`, `screen -dm`,
+  `docker run -d`, `systemd-run` or `env -i`. Codeman stops a server through its
+  process group and an environment marker, so a server that escapes both keeps running
+  after `rm`. When that happens the CLI says the port still listens and `rm` exits 1.
+- **One name, one server.** `add` with a name that exists replaces it: the old server
+  is stopped and the new command starts on the same tab. Use a second name for a
+  second server (at most 8 per session).
+- **Exit codes.** `add` exits 0 once the port answers, 2 when nothing answered within
+  20 s (read `logs`), and 3 when the command exited (read `logs`). Any refusal by the
+  server is 1 with its message: a remote (SSH) or Docker session cannot have previews,
+  and a `409` means this server is not the one that runs previews right now, so nothing
+  was started or stopped.
+- **The url** is a path on the Codeman server, the same origin the user's browser
+  already has. Tell the user the preview is up and its name; they open it from the
+  session. `--json` prints the server's answer (`port`, `url`, `state`, `ready`,
+  `leftRunning`).
+- **Clean up** with `preview rm` when the user no longer needs it. Deleting your
+  session removes its previews too.
+
+The same over HTTP: `PUT /api/v1/sessions/$CODEMAN_SESSION_ID/previews/<name>
+{"cmd":…}`, `GET /api/v1/sessions/$CODEMAN_SESSION_ID/previews`, `DELETE
+…/previews/<name>`, `GET …/previews/<name>/log?tail=<bytes>`.
 
 ## Experimental bounded inspection and guarded submission
 

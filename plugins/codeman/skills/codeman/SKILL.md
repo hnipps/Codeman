@@ -5,11 +5,12 @@ description: >-
   from any agent CLI (Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, Grok
   Build, DeepSeek Harness, OMP): list sessions, start worker sessions in any installed
   CLI, send them prompts, block until they finish (wait / wait-output / send-and-wait),
-  read their output, and clean up; where available, message claude workers directly
-  (Claude Code cross-session messaging). Use when asked to orchestrate or parallelize
-  work across Codeman sessions, get a second opinion from another CLI or model, watch
-  another session, start and manage workers, retrieve saved local Codex history
-  by file/native ID or root and descendants with topic/date filters, or import
+  read their output, and clean up; preview a web UI you built; where available,
+  message claude workers directly (Claude Code cross-session messaging). Use when
+  asked to orchestrate or parallelize work across Codeman sessions, get a second
+  opinion from another CLI or model, watch another session, start and manage
+  workers, serve a web app, retrieve saved local Codex history by file/native ID
+  or root and descendants with topic/date filters, or import
   and remove plugins and skills for every agent CLI on this host. Live API
   operations require a Codeman-managed session (CODEMAN_MUX=1). Offline history
   reads, and `codeman extension`, do not require a server or managed session.
@@ -52,7 +53,7 @@ for skills (`.claude/skills/` for Claude Code, `.agents/skills/` for Codex, Gemi
 OpenCode, Antigravity, Grok, DeepSeek and OMP). A **pi** or **shell** worker never gets
 it, but has the same environment: tell it *"other sessions: `codeman agent --help`"*.
 That bundled CLI (`ls`, `spawn`, `send`, `wait`, `read`, `inspect`, `stage`, `submit`,
-`interrupt`, `rm`, and the inbox verbs `post`, `inbox`, `ack`) is the same
+`interrupt`, `rm`, the inbox verbs `post`, `inbox`, `ack`, and `preview add|ls|rm|logs`) is the same
 verbs over the same endpoints, with the guards below (no control bytes, no self-delete,
 no guessed URL) enforced in code, and it is also your own way through when this
 machine has no `jq` for the preamble below.
@@ -630,6 +631,7 @@ One row per job. Acting on this table alone is correct; the §5 links are the de
 | read or record what the user wants | `GET/PUT .../intent`, and `POST .../readmymind` to predict | [§5.12](reference/verbs.md#512-read-my-mind) |
 | talk to a claude worker directly | `ListAgents` / `SendMessage`, when the feature is on at both ends | [§5.13](reference/verbs.md#513-messaging-claude-workers) |
 | leave a message a session reads when it is ready, any mode, multi-line | `codeman agent post <id> "…"` (`POST .../inbox`). Nothing is typed into its pane and no turn starts; the receiver reads with `codeman agent inbox --wait` and removes with `codeman agent ack <id>`. An idle receiver never looks on its own: `codeman agent ls` shows unread mail, then `send` it one line | [§5.15](reference/verbs.md#515-agent-inbox) |
+| serve a web UI you built, so the user can see it | `codeman agent preview add web --cmd "npm run dev -- --port {port} --strictPort"`: Codeman runs it in the foreground with `{port}` substituted, shows it in your session and stops it when deleted. **The only way you start a server**: never `&`, `nohup`, `setsid` or a server in your own shell, which Codeman cannot stop. `preview ls`, `preview logs <name>`, `preview rm <name>` | [§5.16](reference/verbs.md#516-previews) |
 | clean up | `delete_session "$SID"` per id you created. Case directories and git worktrees are **not** removed with it; `GET /api/v1/cases/agent-created` lists the scratch case dirs your spawns left behind, for you to report | [§5.14](reference/verbs.md#514-clean-up) |
 | import or remove a plugin or skill for every agent CLI | `codeman extension import <github-or-path>` and `codeman extension remove <id>` (`extension list` first). A local command, so no §0. Only when the user asked. A plugin install runs that CLI's installer | [extensions](reference/extensions.md) |
 
@@ -679,8 +681,8 @@ You are yourself a session on this server, and the API has **no undo**.
 - **Mutating calls you may make unprompted** (this is an allowlist):
   `POST /api/v1/quick-start`; `POST /api/v1/sessions` + `POST /api/v1/sessions/:id/interactive`
   (or `/shell`) for a directory the user's own task named; `POST /api/v1/sessions/:id/input`;
-  and `DELETE /api/v1/sessions/:id` **only** for a session you created in this
-  conversation, by exact id. Keep a list of the ids you create. Everything else
+  `DELETE /api/v1/sessions/:id` **only** for a session you created in this
+  conversation, by exact id; and your own session's previews through `codeman agent preview`. Keep a list of the ids you create. Everything else
   mutating needs the user to have asked for it.
 - **Never call these** unless the user explicitly asked, naming the target:
   - `DELETE /api/cases/:name` recursively **deletes a real directory of the user's
@@ -735,6 +737,7 @@ these**; open the one row you actually hit.
 | [5.13 Messaging claude workers](reference/verbs.md#513-messaging-claude-workers) | `ListAgents` / `SendMessage` instead of the HTTP path |
 | [5.14 Clean up](reference/verbs.md#514-clean-up) | what deleting a session does **not** remove, and how to list the case dirs you left |
 | [5.15 Agent inbox](reference/verbs.md#515-agent-inbox) | messages that wait for the receiver instead of being typed: post, read until ack, who counts as the receiver |
+| [5.16 Previews](reference/verbs.md#516-previews) | you built a web UI: serve it with `preview add`, `{port}`, keep the server in the foreground, exit codes |
 
 ## 6. Setup and auth
 
