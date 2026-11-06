@@ -108,12 +108,26 @@ the session's folder, creates the web tab and returns its proxy URL. Asking agai
 with the same name replaces the server instead of adding a second one.
 
 Codeman stops the server when you delete the preview, its web tab or its session
-(a pinned session too: a restored session starts its previews again), when nobody
-has opened it for 4 hours (`CODEMAN_PREVIEW_IDLE_STOP_MS`), and when a check finds
-a server whose record is gone. That check runs every minute, and the search for servers with no record runs at boot. It finds a
-server by an environment variable Codeman sets on it, so a command that detaches
-itself (`setsid`, `nohup ... &`) is still found and stopped. Previews keep running
-across a Codeman restart.
+(a pinned session too), and when nobody has opened it for 4 hours
+(`CODEMAN_PREVIEW_IDLE_STOP_MS`; an open WebSocket through the tab, such as Vite's
+hot reload, counts as open). Deleting a session deletes its previews for good:
+nothing restarts them, so an agent in a session that comes back (resumed from
+history, or rebuilt after a reboot) sends its `PUT` again. A check every minute marks
+dead servers `exited` and stops idle ones. A server with no record (left by a crash)
+is found and stopped at boot and when a deploy colour is promoted to live.
+
+Codeman finds a server by its process group and by an environment variable it sets
+on it, so a command that detaches itself (`setsid`, `nohup ... &`) is still found and
+stopped. It cannot stop a server the command handed to something it did not start
+(`tmux new-session -d`, `docker run`, `systemd-run`) or one started under `env -i`,
+and it never signals a process it cannot prove is the preview's. When the port still
+listens after a stop, the API answer says so (`leftRunning`), the preview log gets a
+line, and the preview lists keep showing it until the port is free; stop that server
+where it was handed off. Previews keep running across a Codeman restart.
+
+A Vite dev server needs no `--base` flag: the preview's page gets an import map that
+keeps its `/src/...` and `/@vite/...` imports inside the proxy, and its hot-reload
+WebSocket goes through the proxy too.
 
 Remote (SSH) and Docker sessions cannot have previews: the server would run on
 this machine, where their files are not. A server that binds `0.0.0.0` (as

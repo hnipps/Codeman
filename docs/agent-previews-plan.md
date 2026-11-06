@@ -151,7 +151,11 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 - [ ] The server stamps `origin {kind:"session"}` on every preview web tab it creates, and never trusts a client-supplied origin for a row an agent creates.
 - [ ] `reconcile` also deletes session-origin web tabs whose session no longer exists. That covers the stale-session sweep and the rows a reboot orphans, which P1's cascade does not reach.
 - [ ] Revoking a preview's capability closes its open proxied WebSockets.
-- [ ] Deleting a pinned session cascades to its previews, which is the decided behaviour: the preview's server dies with the session, so a restored session starts its previews again.
+- [ ] Deleting a pinned session cascades to its previews, which is the decided behaviour: the preview's server and its record die with the session. Nothing restarts them; an agent in a session that comes back sends its `PUT` again.
+- [ ] Fix round 1. A promotion to live runs the full orphan sweep once the role is `live`; `reconcile` at boot and promotion is the only orphan search, and the minute pass does not run one.
+- [ ] Fix round 1. After every stop the port is checked. A server still listening there (handed to tmux, `env -i`, Docker or `systemd-run`, which Codeman never signals) is answered as `leftRunning: {port, pids}` by `DELETE` and a replacing `PUT`, written to the preview log, and listed until the port is free.
+- [ ] Fix round 1. `DELETE` takes the deploy-colour refusal `PUT` has. `PUT`s for one session run one at a time, so concurrent ones cannot pass the eight-preview limit. An open proxied WebSocket counts as viewing for the idle stop.
+- [ ] Fix round 1. A preview's HTML gets an import map that keeps root-absolute module specifiers inside the capability prefix, so `npm run dev -- --port {port} --strictPort` in a Vite React app renders and hot-reloads with no `--base` flag. Proved by `test/preview-vite-hmr.browser.test.ts`.
 
 **You see.**
 
