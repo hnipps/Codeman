@@ -4207,8 +4207,6 @@ html[data-session-list="sidebar"] .session-sidebar .session-tab .tab-close {
   }
 }
 
-/* Session previews on a phone: the switch is the only way into a preview, so its
-   controls get thumb-sized targets, and the port gives way before Delete does. */
 @media (max-width: 599px) {
   .preview-switch {
     padding: 4px calc(6px + var(--safe-area-right)) 4px calc(6px + var(--safe-area-left));
@@ -4222,5 +4220,5 @@ html[data-session-list="sidebar"] .session-sidebar .session-tab .tab-close {
   .preview-switch-meta { min-width: 0; flex: 0 1 auto; gap: 6px; }
   .preview-switch-port { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .preview-switch-delete { min-height: 32px; padding: 4px 10px; font-size: 13px; flex: none; }
-  .preview-card-actions .btn-secondary { min-height: 40px; padding: 0 18px; }
+  .preview-card-actions button { min-height: 40px; padding: 0 18px; }
 }

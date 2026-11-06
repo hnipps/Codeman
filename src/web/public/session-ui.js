@@ -5966,19 +5966,6 @@ Object.defineProperty(CodemanApp.prototype, 'runMode', {
   },
 });
 
-// ── Session previews ────────────────────────────────────────────────────────
-//
-// A preview is a dev server Codeman runs for a session, shown through a
-// session-origin web tab that never enters the tab strip. The session tab gets a
-// badge while one is unopened, and the active session gets a Terminal / Preview
-// switch under the strip. A new preview never opens or takes focus by itself.
-//
-// State, all keyed by ids the server owns:
-//   sessionPreviews   sessionId -> PreviewView[] (GET /api/previews, sorted by name)
-//   _previewViews     sessionId -> webviewId shown, absent = Terminal (localStorage)
-//   _seenPreviews     webviewIds the operator has opened on this device (localStorage)
-//   _previewNoAnswer  webviewIds whose proxy answered 5xx the last time they were opened
-
 const PREVIEW_VIEWS_KEY = 'codeman-preview-views';
 const PREVIEW_SEEN_KEY = 'codeman-seen-previews';
 
@@ -5994,9 +5981,7 @@ function readPreviewStore(key, fallback) {
 function writePreviewStore(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* private mode / quota: the view and the badge are conveniences */
-  }
+  } catch {}
 }
 
 Object.assign(CodemanApp.prototype, {
@@ -6053,7 +6038,6 @@ Object.assign(CodemanApp.prototype, {
     return this._sessionPreviewList(sessionId).filter((p) => !this._seenPreviews?.has(p.webviewId)).length;
   },
 
-  /** Called at the tail of both tab render paths, which rebuild or patch the rows. */
   _paintPreviewBadges() {
     const container = document.getElementById('sessionTabs');
     if (!container || !this._seenPreviews) return;
@@ -6089,11 +6073,6 @@ Object.assign(CodemanApp.prototype, {
     return bar;
   },
 
-  /**
-   * Make the screen match the stored view of the active session: the switch for a
-   * session with previews, and either its terminal or the chosen preview. Safe to
-   * call at any time; it never picks a preview the operator did not pick.
-   */
   _syncSessionPreviewView() {
     this._initPreviewState();
     const bar = this._ensurePreviewSwitch();
@@ -6144,7 +6123,6 @@ Object.assign(CodemanApp.prototype, {
     };
 
     tab('Terminal', !current, () => this.showSessionTerminal(sessionId)).dataset.view = 'terminal';
-    // One preview reads "Preview: web"; with more, the names alone keep the row narrow on a phone.
     for (const preview of list) {
       const label = list.length === 1 ? `Preview: ${preview.name}` : preview.name;
       const button = tab(label, current?.webviewId === preview.webviewId, () =>
@@ -6193,15 +6171,13 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
-  /** selectSession(): bring back the session's own view, re-reading a shown preview's state. */
   _onSessionSelectedForPreviews(sessionId) {
     this._initPreviewState();
     this._syncSessionPreviewView();
     const webviewId = this._previewViews.get(sessionId);
-    if (webviewId) void this._recheckPreview(sessionId, webviewId);
+    if (webviewId) void this._rereadPreviewState(sessionId, webviewId);
   },
 
-  /** The switch's Preview button: an explicit choice, so it marks the preview seen. */
   async showSessionPreview(sessionId, webviewId) {
     this._initPreviewState();
     this._previewViews.set(sessionId, webviewId);
@@ -6213,7 +6189,7 @@ Object.assign(CodemanApp.prototype, {
     this._previewNoAnswer.delete(webviewId);
     this._paintPreviewBadges();
     this._syncSessionPreviewView();
-    await this._recheckPreview(sessionId, webviewId);
+    await this._rereadPreviewState(sessionId, webviewId);
   },
 
   showSessionTerminal(sessionId) {
@@ -6225,12 +6201,7 @@ Object.assign(CodemanApp.prototype, {
     if (this.activeSessionId === sessionId && !touch) this.terminal?.focus?.();
   },
 
-  /**
-   * Nothing tells the page that a preview's server died: its state moves only on the
-   * server's minute pass, without an event. So the state is re-read when the
-   * operator opens the preview, and the proxy is asked once whether anything answers.
-   */
-  async _recheckPreview(sessionId, webviewId) {
+  async _rereadPreviewState(sessionId, webviewId) {
     const data = await this._apiJson(`/api/sessions/${encodeURIComponent(sessionId)}/previews`);
     if (data?.previews) {
       const list = data.previews.slice().sort((a, b) => a.name.localeCompare(b.name));
@@ -6238,19 +6209,18 @@ Object.assign(CodemanApp.prototype, {
       else this.sessionPreviews.delete(sessionId);
     }
     const preview = this._sessionPreviewList(sessionId).find((p) => p.webviewId === webviewId);
-    if (preview?.state === 'running' && !(await this._previewAnswers(webviewId))) {
+    if (preview?.state === 'running' && !(await this._probePreviewUncached(webviewId))) {
       this._previewNoAnswer.add(webviewId);
     }
     this._paintPreviewBadges();
     this._syncSessionPreviewView();
   },
 
-  async _previewAnswers(webviewId) {
+  async _probePreviewUncached(webviewId) {
     const embedUrl = await this._previewEmbedUrl?.(webviewId);
     if (!embedUrl) return false;
     const abort = new AbortController();
     try {
-      // no-store: a page the browser cached would answer for a server that is gone.
       const res = await fetch(CodemanBase.url(embedUrl), { cache: 'no-store', signal: abort.signal });
       return res.status < 500;
     } catch {
@@ -6260,7 +6230,6 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
-  /** Shown in #webviewLayer in place of a frame whenever the page cannot be shown. */
   _previewCardFor(preview) {
     const card = document.createElement('div');
     card.className = 'preview-card';
@@ -6360,7 +6329,7 @@ Object.assign(CodemanApp.prototype, {
       return;
     }
     this._previewNoAnswer.delete(preview.webviewId);
-    this._dropPreviewFrame?.(preview.webviewId);
+    this._dropRevokedPreviewFrame?.(preview.webviewId);
     const leftRunning = body?.data?.leftRunning;
     if (leftRunning) {
       this.showToast?.(
@@ -6400,7 +6369,7 @@ Object.assign(CodemanApp.prototype, {
       );
     }
     if (preview) {
-      this._dropPreviewFrame?.(preview.webviewId);
+      this._dropRevokedPreviewFrame?.(preview.webviewId);
       const list = this._sessionPreviewList(sessionId).filter((p) => p.webviewId !== preview.webviewId);
       if (list.length) this.sessionPreviews.set(sessionId, list);
       else this.sessionPreviews.delete(sessionId);

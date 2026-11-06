@@ -1,12 +1,3 @@
-/**
- * @fileoverview Session previews in the browser: the badge on the session tab, the
- * Terminal / Preview switch, the frame, Delete and the stopped card
- * (session-ui.js + webview-tabs.js).
- *
- * Builds a JSDOM window in-test under the default node env, like
- * test/webview-menu-rows.test.ts, and evaluates the real frontend files into it.
- */
-
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
@@ -82,10 +73,6 @@ function sessionWebview(p: Preview) {
   };
 }
 
-/**
- * `previews` is the server's list; `routes` answers anything else by
- * `${method} ${path}`. `upstream` is the status the proxy gives a probe.
- */
 function boot(opts: { previews: Preview[]; routes?: Record<string, Reply>; upstream?: number; active?: string }) {
   const dom = new JSDOM(
     `<!doctype html><body><div class="app">

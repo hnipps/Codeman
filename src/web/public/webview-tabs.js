@@ -95,6 +95,10 @@ function linkNeedsWebTabProxy(rawUrl, pageHostname) {
   return !isOnBoxHostname(pageHostname);
 }
 
+function isSessionPreviewRecord(webview) {
+  return webview?.origin?.kind === 'session';
+}
+
 if (typeof window !== 'undefined') {
   window.CodemanWebviewLinks = { isLoopbackHostname, isOnBoxHostname, webTabOriginKey, linkNeedsWebTabProxy };
 }
@@ -211,12 +215,9 @@ Object.assign(CodemanApp.prototype, {
   async refreshWebviews() {
     const inFlight = this._apiJson('/api/webviews').then((data) => {
       if (!data) return;
-      // Session-origin records are previews: they belong to their session's
-      // Terminal / Preview switch, never to the tab strip, the rail, the Run menu
-      // or a link's reuse search, all of which read `this.webviews`.
       const all = data.webviews || [];
-      this.webviews = new Map(all.filter((w) => w.origin?.kind !== 'session').map((w) => [w.id, w]));
-      this.sessionWebviews = new Map(all.filter((w) => w.origin?.kind === 'session').map((w) => [w.id, w]));
+      this.webviews = new Map(all.filter((w) => !isSessionPreviewRecord(w)).map((w) => [w.id, w]));
+      this.sessionWebviews = new Map(all.filter(isSessionPreviewRecord).map((w) => [w.id, w]));
       if (typeof data.maxLiveFrames === 'number') this._webviewMaxFrames = data.maxLiveFrames;
       this._webviewsLoaded = true;
       this.renderWebviewMenuItems();
@@ -231,9 +232,8 @@ Object.assign(CodemanApp.prototype, {
 
   /** SSE: the saved list changed (possibly on another device). */
   async _onWebviewChanged(data) {
-    // An updated or deleted record has had its capabilities revoked, so a mounted
-    // preview frame on it is dead.
-    if (data?.id && data.action !== 'created' && this.sessionWebviews?.has(data.id)) this._dropPreviewFrame(data.id);
+    if (data?.id && data.action !== 'created' && this.sessionWebviews?.has(data.id))
+      this._dropRevokedPreviewFrame(data.id);
     await Promise.all([this.refreshWebviews(), this.refreshSessionPreviews?.()]);
     // A dashboard deleted elsewhere must not linger as a dead tab here.
     if (data && data.action === 'deleted' && data.id) this._removeWebviewTab(data.id);
@@ -597,13 +597,6 @@ Object.assign(CodemanApp.prototype, {
     this._updateActiveWebviewTab();
   },
 
-  // ── Session previews ──────────────────────────────────────────────────────
-  //
-  // The switch and the badge live in session-ui.js. These mount a preview's frame
-  // in #webviewLayer beside the dashboards, with the same sandbox and no
-  // allow-same-origin ever: the session's agent controls the page.
-
-  /** A capability URL for the preview, minted once per record and reused. */
   async _previewEmbedUrl(id) {
     this._previewEmbedUrls = this._previewEmbedUrls || new Map();
     if (this._previewEmbedUrls.has(id)) return this._previewEmbedUrls.get(id);
@@ -614,7 +607,6 @@ Object.assign(CodemanApp.prototype, {
     return data.embedUrl;
   },
 
-  /** Reveal the preview's frame, mounting it on first use; a mounted frame never reloads here. */
   async _mountPreviewFrame(id, { path = null } = {}) {
     const webview = this.sessionWebviews?.get(id);
     if (!webview) return;
@@ -628,7 +620,7 @@ Object.assign(CodemanApp.prototype, {
     this._mountWebviewFrame(id, src, { ...webview, trusted: false }, { navigate: path !== null });
   },
 
-  _dropPreviewFrame(id) {
+  _dropRevokedPreviewFrame(id) {
     this._previewEmbedUrls?.delete(id);
     this._webviewFrameLru = (this._webviewFrameLru || []).filter((x) => x !== id);
     document
@@ -638,7 +630,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   reloadPreviewFrame(id) {
-    this._dropPreviewFrame(id);
+    this._dropRevokedPreviewFrame(id);
     if (this._activePreviewWebviewId === id) void this._mountPreviewFrame(id);
   },
 

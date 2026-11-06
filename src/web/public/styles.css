@@ -17400,9 +17400,6 @@ html:not([data-skin="og"]) {
 .session-tab--web.active .tab-web-icon { color: var(--accent, #3ec8ee); }
 .session-tab--web.active { border-bottom-color: var(--accent, #3ec8ee); }
 
-/* Session previews: a Terminal / Preview switch under the tab strip for the
-   active session, a badge on a session tab while a preview is unopened, and a
-   card in place of the frame when the preview's page cannot be shown. */
 .preview-switch {
   display: flex;
   align-items: center;
@@ -17414,6 +17411,7 @@ html:not([data-skin="og"]) {
   min-width: 0;
 }
 .preview-switch[hidden] { display: none; }
+.app:has(> .main.tiles-active) > .preview-switch { display: none; }
 .preview-switch-seg {
   position: relative;
   display: flex;
@@ -17533,6 +17531,19 @@ html:not([data-skin="og"]) {
   text-align: left;
 }
 .preview-card-actions { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+.preview-card-actions button {
+  min-height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.preview-card-actions button:hover { background: var(--bg-hover); }
+.preview-card-actions .preview-card-delete { color: var(--red, #e06363); }
 
 .run-mode-webviews { max-height: 180px; overflow-y: auto; }
 /* Custom Model Endpoint Profiles' generated entries: `.run-mode-menu.active`'s
