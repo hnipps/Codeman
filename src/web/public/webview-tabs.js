@@ -95,6 +95,10 @@ function linkNeedsWebTabProxy(rawUrl, pageHostname) {
   return !isOnBoxHostname(pageHostname);
 }
 
+function isSessionPreviewRecord(webview) {
+  return webview?.origin?.kind === 'session';
+}
+
 if (typeof window !== 'undefined') {
   window.CodemanWebviewLinks = { isLoopbackHostname, isOnBoxHostname, webTabOriginKey, linkNeedsWebTabProxy };
 }
@@ -193,7 +197,7 @@ Object.assign(CodemanApp.prototype, {
     this._webviewMaxFrames = this._webviewMaxFrames || 6;
     this._webviewFrameLru = this._webviewFrameLru || [];
 
-    await this.refreshWebviews();
+    await Promise.all([this.refreshWebviews(), this.refreshSessionPreviews?.()]);
     this._installWebviewLostListener();
 
     // Restore the previously open web tabs (per device: which dashboards you keep
@@ -211,7 +215,9 @@ Object.assign(CodemanApp.prototype, {
   async refreshWebviews() {
     const inFlight = this._apiJson('/api/webviews').then((data) => {
       if (!data) return;
-      this.webviews = new Map((data.webviews || []).map((w) => [w.id, w]));
+      const all = data.webviews || [];
+      this.webviews = new Map(all.filter((w) => !isSessionPreviewRecord(w)).map((w) => [w.id, w]));
+      this.sessionWebviews = new Map(all.filter(isSessionPreviewRecord).map((w) => [w.id, w]));
       if (typeof data.maxLiveFrames === 'number') this._webviewMaxFrames = data.maxLiveFrames;
       this._webviewsLoaded = true;
       this.renderWebviewMenuItems();
@@ -226,7 +232,9 @@ Object.assign(CodemanApp.prototype, {
 
   /** SSE: the saved list changed (possibly on another device). */
   async _onWebviewChanged(data) {
-    await this.refreshWebviews();
+    if (data?.id && data.action !== 'created' && this.sessionWebviews?.has(data.id))
+      this._dropRevokedPreviewFrame(data.id);
+    await Promise.all([this.refreshWebviews(), this.refreshSessionPreviews?.()]);
     // A dashboard deleted elsewhere must not linger as a dead tab here.
     if (data && data.action === 'deleted' && data.id) this._removeWebviewTab(data.id);
     this.renderSessionTabs();
@@ -257,7 +265,8 @@ Object.assign(CodemanApp.prototype, {
         const frame = wrap.querySelector('iframe');
         if (!frame || frame.contentWindow !== event.source) continue;
         const id = wrap.dataset.webviewId;
-        if (!id || !this.webviews?.has(id)) return;
+        const preview = !!id && !!this.sessionWebviews?.has(id);
+        if (!id || (!preview && !this.webviews?.has(id))) return;
         const now = Date.now();
         this._webviewRecoveries = this._webviewRecoveries || new Map();
         const recent = (this._webviewRecoveries.get(id) || []).filter((at) => now - at < 60000);
@@ -274,10 +283,9 @@ Object.assign(CodemanApp.prototype, {
         // one `/`, and refuse whatever still opens a second one. The proxied form
         // is refused server-side as well (resolveUpstreamUrl).
         const path = data.path.replace(/[\t\n\r]/g, '').replace(/^[/\\]+/, '/');
-        void this.openWebview(id, {
-          path: path.startsWith('/') && !/^\/[/\\]/.test(path) ? path : '/',
-          auto: true,
-        });
+        const safePath = path.startsWith('/') && !/^\/[/\\]/.test(path) ? path : '/';
+        if (preview) void this._mountPreviewFrame(id, { path: safePath });
+        else void this.openWebview(id, { path: safePath, auto: true });
         return;
       }
     };
@@ -426,6 +434,7 @@ Object.assign(CodemanApp.prototype, {
     document.querySelector('.main')?.classList.add('webview-active');
     this.renderSessionTabs();
     this._updateActiveWebviewTab();
+    this._syncSessionPreviewView?.();
     // Web tabs live in the same list as sessions, so picking one from the
     // handheld session drawer has to dismiss it too (no-op elsewhere).
     this.closeSessionSidebarOnHandheld?.();
@@ -489,6 +498,15 @@ Object.assign(CodemanApp.prototype, {
 
   _webviewFailureHtml(id) {
     const jsonId = escapeHtml(JSON.stringify(id));
+    if (this.sessionWebviews?.has(id)) {
+      return `<div class="webview-failure-inner">
+        <h3>This preview did not load</h3>
+        <p>Its server may still be starting, or it may have stopped.</p>
+        <div class="webview-failure-actions">
+          <button class="btn-secondary" onclick="app.reloadPreviewFrame(${jsonId})">Reload</button>
+        </div>
+      </div>`;
+    }
     return `<div class="webview-failure-inner">
         <h3>This URL did not load</h3>
         <p>It may be unreachable from the Codeman server, or it may refuse to be embedded.</p>
@@ -508,7 +526,7 @@ Object.assign(CodemanApp.prototype, {
     if (!layer) return;
     while (this._webviewFrameLru.length > this._webviewMaxFrames) {
       const evict = this._webviewFrameLru.shift();
-      if (evict === this.activeWebviewId) continue;
+      if (evict === this.activeWebviewId || evict === this._activePreviewWebviewId) continue;
       layer.querySelector(`.webview-frame[data-webview-id="${CSS.escape(evict)}"]`)?.remove();
     }
   },
@@ -561,6 +579,7 @@ Object.assign(CodemanApp.prototype, {
         // Fall back to whatever session was last shown, or the welcome screen.
         if (this.activeSessionId) this._updateActiveTabImmediate(this.activeSessionId);
         else this.showWelcome?.();
+        this._syncSessionPreviewView?.();
       }
     }
   },
@@ -569,11 +588,50 @@ Object.assign(CodemanApp.prototype, {
   _hideWebviewLayer() {
     if (!this.activeWebviewId && !document.querySelector('.main.webview-active')) return;
     this.activeWebviewId = null;
-    document.querySelector('.main')?.classList.remove('webview-active');
+    document.querySelector('.main')?.classList.remove('webview-active', 'preview-active');
     for (const frame of document.querySelectorAll('#webviewLayer .webview-frame')) {
       frame.classList.remove('active');
     }
+    document.querySelector('#webviewLayer .preview-card')?.remove();
+    this._activePreviewWebviewId = null;
     this._updateActiveWebviewTab();
+  },
+
+  async _previewEmbedUrl(id) {
+    this._previewEmbedUrls = this._previewEmbedUrls || new Map();
+    if (this._previewEmbedUrls.has(id)) return this._previewEmbedUrls.get(id);
+    const data = await this._apiJson(`/api/webviews/${encodeURIComponent(id)}/open`, { method: 'POST' });
+    if (!data?.embedUrl) return null;
+    if (data.webview) this.sessionWebviews?.set(id, data.webview);
+    this._previewEmbedUrls.set(id, data.embedUrl);
+    return data.embedUrl;
+  },
+
+  async _mountPreviewFrame(id, { path = null } = {}) {
+    const webview = this.sessionWebviews?.get(id);
+    if (!webview) return;
+    const embedUrl = await this._previewEmbedUrl(id);
+    if (this._activePreviewWebviewId !== id) return;
+    if (!embedUrl) {
+      this.showToast?.('Could not open the preview', 'error');
+      return;
+    }
+    const src = path ? `${embedUrl.replace(/\/?$/, '/')}${path.replace(/^\//, '')}` : embedUrl;
+    this._mountWebviewFrame(id, src, { ...webview, trusted: false }, { navigate: path !== null });
+  },
+
+  _dropRevokedPreviewFrame(id) {
+    this._previewEmbedUrls?.delete(id);
+    this._webviewFrameLru = (this._webviewFrameLru || []).filter((x) => x !== id);
+    document
+      .getElementById('webviewLayer')
+      ?.querySelector(`.webview-frame[data-webview-id="${CSS.escape(id)}"]`)
+      ?.remove();
+  },
+
+  reloadPreviewFrame(id) {
+    this._dropRevokedPreviewFrame(id);
+    if (this._activePreviewWebviewId === id) void this._mountPreviewFrame(id);
   },
 
   // ── Run-menu entries ──────────────────────────────────────────────────────

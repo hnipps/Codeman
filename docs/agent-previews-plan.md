@@ -257,26 +257,27 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Files.**
 
-- [ ] Edit `src/web/public/webview-tabs.js`.
-- [ ] Edit `src/web/public/session-ui.js`.
-- [ ] Edit `src/web/public/mobile.css` and `src/web/public/styles.css`.
-- [ ] Edit `docs/web-tabs.md`.
-- [ ] Create `test/preview-session-ui.test.ts`.
+- [x] Edit `src/web/public/webview-tabs.js`.
+- [x] Edit `src/web/public/session-ui.js`.
+- [x] Edit `src/web/public/mobile.css` and `src/web/public/styles.css`.
+- [x] Edit `src/web/public/app.js` with three hook calls: the badge repaint at the tail of both tab render paths, and the session's own view in `selectSession`. The tab markup and `selectSession` live there.
+- [x] Edit `docs/web-tabs.md`.
+- [x] Create `test/preview-session-ui.test.ts`.
 
 **Build.**
 
-- [ ] Exclude session-origin records from the top-level web tab strip in `webview-tabs.js`.
-- [ ] Add a badge to the session tab in `session-ui.js` when the session has a preview the operator has not opened. Never switch tabs or open the preview on its own.
-- [ ] Add a Terminal and Preview switch under the tab strip for a session with previews. Selecting a preview mounts its frame in `#webviewLayer` with the existing sandbox, and the switch shows the preview's name, port and a Delete control.
-- [ ] Show a stopped or exited preview as a card with its state and a Restart control, never as a blank frame.
+- [x] Exclude session-origin records from the top-level web tab strip in `webview-tabs.js`.
+- [x] Add a badge to the session tab in `session-ui.js` when the session has a preview the operator has not opened. Never switch tabs or open the preview on its own.
+- [x] Add a Terminal and Preview switch under the tab strip for a session with previews. Selecting a preview mounts its frame in `#webviewLayer` with the existing sandbox, and the switch shows the preview's name, port and a Delete control.
+- [x] Show a stopped or exited preview as a card with its state and a Restart control, never as a blank frame.
 
 **You see.**
 
-- [ ] After an agent runs `preview add`, the session tab shows a badge and nothing else on screen changes. Tapping the session and then Preview shows the page.
+- [x] After an agent runs `preview add`, the session tab shows a badge and nothing else on screen changes. Tapping the session and then Preview shows the page.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `test/preview-session-ui.test.ts` gains jsdom cases for the badge appearing and clearing, the switch rendering per session, Delete calling the API, and a stopped preview rendering its card. Run `npm test -- test/preview-session-ui.test.ts`.
+- [x] `test/preview-session-ui.test.ts` gains jsdom cases for the badge appearing and clearing, the switch rendering per session, Delete calling the API, and a stopped preview rendering its card. Run `npm test -- test/preview-session-ui.test.ts`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `grok-4.7-xhigh-fast` at the PR head, per the boot recipe.
 
