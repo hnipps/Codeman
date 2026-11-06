@@ -5,6 +5,7 @@
  */
 
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -129,13 +130,15 @@ describe('preview add', () => {
     );
   });
 
-  it('a 409 says nothing was started', async () => {
-    const deps = fakeDeps(() => apiError(409, 'CONFLICT', 'This server is the standby deploy colour'), true);
+  it('a 409 says no new server was started, without promising nothing was stopped', async () => {
+    const deps = fakeDeps(() => apiError(409, 'CONFLICT', 'Preview start abandoned: this colour retired'), true);
     expect(await agentPreviewAdd(deps, { name: 'web', cmd: 'x' })).toBe(EXIT.error);
-    expect(JSON.parse(deps.out[0])).toEqual({
-      success: false,
-      error: 'CONFLICT: This server is the standby deploy colour (HTTP 409) Nothing was started.',
-    });
+    const { error } = JSON.parse(deps.out[0]);
+    expect(error).toMatch(
+      /^CONFLICT: Preview start abandoned: this colour retired \(HTTP 409\) The start was refused or abandoned: no new server was started/
+    );
+    expect(error).toContain('the live deploy colour owns the rest of the cleanup');
+    expect(error).not.toMatch(/nothing was stopped/i);
   });
 
   it('refuses an empty command before any request', async () => {
@@ -206,10 +209,14 @@ describe('preview rm', () => {
     expect(deps.err.join('\n')).toMatch(/removed web, but a server still listens on :41234 \(pids 9\)/);
   });
 
-  it('a 409 says the preview was kept', async () => {
-    const deps = fakeDeps(() => apiError(409, 'CONFLICT', 'This server is the standby deploy colour'));
+  it('a 409 from a stop abandoned part way says the preview was kept, not that nothing was stopped', async () => {
+    const deps = fakeDeps(() => apiError(409, 'CONFLICT', 'Preview stop abandoned: this colour retired'));
     expect(await agentPreviewRm(deps, { name: 'web' })).toBe(EXIT.error);
-    expect(deps.err.join('\n')).toContain('Nothing was stopped; the preview and its tab are kept.');
+    const err = deps.err.join('\n');
+    expect(err).toContain('The stop was refused or abandoned: the preview record and its tab are kept.');
+    expect(err).toContain('some of the old processes may already be stopped');
+    expect(err).toContain('the live deploy colour owns the rest of the cleanup');
+    expect(err).not.toMatch(/nothing was stopped/i);
   });
 
   it('a 404 is exit 1', async () => {
@@ -269,6 +276,67 @@ describe('the commands', () => {
       process.exitCode = undefined;
       spy.mockRestore();
     }
+  });
+});
+
+describe('preview add --cmd parsing', () => {
+  let api: http.Server;
+  let bodies: string[];
+  const saved = { ...process.env };
+
+  beforeAll(async () => {
+    bodies = [];
+    api = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        bodies.push(`${req.method} ${req.url} ${body}`);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: true, data: preview({ ready: true, url: '/webview/c/' }) }));
+      });
+    });
+    await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => api.close(() => resolve()));
+  });
+
+  async function parse(...argv: string[]): Promise<{ code: number | string | undefined; errors: string }> {
+    const errors: string[] = [];
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((line: string) => void errors.push(line));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      process.env.CODEMAN_MUX = '1';
+      process.env.CODEMAN_API_URL = `http://127.0.0.1:${(api.address() as net.AddressInfo).port}`;
+      process.env.CODEMAN_SESSION_ID = SELF;
+      const program = new Command();
+      program.exitOverride();
+      registerAgentCommands(program);
+      await program.parseAsync(['node', 'codeman', 'agent', 'preview', 'add', ...argv]);
+      return { code: process.exitCode, errors: errors.join('\n') };
+    } finally {
+      process.env = { ...saved };
+      process.exitCode = undefined;
+      errSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  }
+
+  it('sends a quoted command whole', async () => {
+    bodies.length = 0;
+    const { code } = await parse('web', '--cmd', 'node server.js {port}');
+    expect(code).toBe(EXIT.ok);
+    expect(bodies).toEqual([`PUT ${PREVIEWS}/web {"cmd":"node server.js {port}"}`]);
+  });
+
+  it('refuses an unquoted command before any request, telling the agent to quote it', async () => {
+    bodies.length = 0;
+    const { code, errors } = await parse('web', '--cmd', 'node', 'server.js');
+    expect(code).toBe(EXIT.error);
+    expect(bodies).toEqual([]);
+    expect(errors).toContain('unexpected argument(s) after <name>: server.js');
+    expect(errors).toMatch(/Quote the whole server command as ONE --cmd argument/);
   });
 });
 

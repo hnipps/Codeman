@@ -847,8 +847,10 @@ codeman agent preview rm web                    # stop it, delete the preview an
 - **Exit codes.** `add` exits 0 once the port answers, 2 when nothing answered within
   20 s (read `logs`), and 3 when the command exited (read `logs`). Any refusal by the
   server is 1 with its message: a remote (SSH) or Docker session cannot have previews,
-  and a `409` means this server is not the one that runs previews right now, so nothing
-  was started or stopped.
+  and a `409` means this server is not the one that runs previews right now, or it
+  stopped being that one part way: the start or stop was refused or abandoned, no new
+  server was started, and the preview and its tab are kept. A stop abandoned part way
+  may already have stopped some old processes; the live deploy colour cleans up the rest.
 - **The url** is a path on the Codeman server, the same origin the user's browser
   already has. Tell the user the preview is up and its name; they open it from the
   session. `--json` prints the server's answer (`port`, `url`, `state`, `ready`,

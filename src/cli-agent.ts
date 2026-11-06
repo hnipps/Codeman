@@ -1257,9 +1257,25 @@ function listenerText(l: PreviewLeftRunning): string {
 const LEFT_RUNNING_HINT =
   'Codeman could not stop it: the command handed the server to something outside the preview (tmux, screen, docker, systemd-run, env -i). Run the server itself in the foreground.';
 
+const PREVIEW_CONFLICT_TAIL =
+  'If the stop had begun, some of the old processes may already be stopped; the live deploy colour owns the rest of the cleanup.';
+const PREVIEW_ADD_CONFLICT = `The start was refused or abandoned: no new server was started, and an existing preview record and its tab are kept. ${PREVIEW_CONFLICT_TAIL}`;
+const PREVIEW_RM_CONFLICT = `The stop was refused or abandoned: the preview record and its tab are kept. ${PREVIEW_CONFLICT_TAIL}`;
+
 function previewFailure(deps: AgentDeps, res: ApiResponse, kept: string): number {
   const conflict = res.status === 409 ? ` ${kept}` : '';
   return fail(deps, `${describeFailure(res)}${conflict}`);
+}
+
+/**
+ * Why `preview add` refuses its positional words, or `undefined` for just `<name>`.
+ * An unquoted `--cmd node server.js` gives commander `--cmd node` plus a stray
+ * `server.js`; sending only `node` would replace a working preview with the wrong server.
+ */
+export function previewAddExcessArgs(words: readonly string[]): string | undefined {
+  if (words.length <= 1) return undefined;
+  const stray = words.slice(1).join(' ');
+  return `refusing: unexpected argument(s) after <name>: ${stray}. Quote the whole server command as ONE --cmd argument, e.g. --cmd "node server.js {port}"`;
 }
 
 /**
@@ -1277,7 +1293,7 @@ export async function agentPreviewAdd(deps: AgentDeps, options: { name: string; 
     body: { cmd: options.cmd },
     timeoutMs: 60_000,
   });
-  if (!res.json?.success) return previewFailure(deps, res, 'Nothing was started.');
+  if (!res.json?.success) return previewFailure(deps, res, PREVIEW_ADD_CONFLICT);
   const data = res.json.data as PreviewView & { leftRunning?: PreviewLeftRunning };
   const code = data.state === 'exited' ? EXIT.dead : data.ready ? EXIT.ok : EXIT.timeout;
   if (deps.json) {
@@ -1344,7 +1360,7 @@ export async function agentPreviewRm(deps: AgentDeps, options: { name: string })
   const self = await resolveSessionId(deps, deps.ctx.selfId);
   if ('error' in self) return fail(deps, self.error, self.code);
   const res = await deps.request(deps.ctx, { method: 'DELETE', path: previewPath(self.id, options.name) });
-  if (!res.json?.success) return previewFailure(deps, res, 'Nothing was stopped; the preview and its tab are kept.');
+  if (!res.json?.success) return previewFailure(deps, res, PREVIEW_RM_CONFLICT);
   const data = res.json.data as { name: string; webviewId: string; leftRunning?: PreviewLeftRunning };
   const code = data.leftRunning ? EXIT.error : EXIT.ok;
   if (deps.json) {
@@ -1689,9 +1705,15 @@ export function registerAgentCommands(program: Command): Command {
       'Server command, ONE quoted argument, e.g. "npm run dev -- --port {port} --strictPort". It must stay in the foreground: never daemonize it (&, nohup, setsid, tmux, docker -d): Codeman may then be unable to stop it'
     )
     .option('--json', 'Machine-readable output')
-    .action((name: string, options: { cmd: string; json?: boolean }) =>
-      runPreview(options.json, (deps) => agentPreviewAdd(deps, { name, cmd: options.cmd }))
-    );
+    .action((name: string, options: { cmd: string; json?: boolean }, command: Command) => {
+      const excess = previewAddExcessArgs(command.args);
+      if (excess) {
+        console.error(palette.err(`${GLYPH.fail} ${excess}`));
+        process.exitCode = EXIT.error;
+        return;
+      }
+      return runPreview(options.json, (deps) => agentPreviewAdd(deps, { name, cmd: options.cmd }));
+    });
 
   preview
     .command('ls')
