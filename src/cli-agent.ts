@@ -1230,11 +1230,6 @@ export async function agentAck(deps: AgentDeps, options: { ids: string[] }): Pro
   return EXIT.ok;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Previews
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** A `leftRunning` row of the preview list routes. */
 interface PreviewLeftRunningRow extends PreviewLeftRunning {
   sessionId: string;
   name: string;
@@ -1242,7 +1237,7 @@ interface PreviewLeftRunningRow extends PreviewLeftRunning {
 }
 
 interface PreviewList {
-  previews: PreviewView[];
+  previews: Omit<PreviewView, 'url'>[];
   leftRunning: PreviewLeftRunningRow[];
 }
 
@@ -1259,7 +1254,6 @@ function listenerText(l: PreviewLeftRunning): string {
   return `:${l.port}${l.pids.length ? ` (pids ${l.pids.join(' ')})` : " (another user's process)"}`;
 }
 
-/** The server cannot stop what the command handed to a process outside its group and marker. */
 const LEFT_RUNNING_HINT =
   'Codeman could not stop it: the command handed the server to something outside the preview (tmux, screen, docker, systemd-run, env -i). Run the server itself in the foreground.';
 
@@ -1321,7 +1315,6 @@ export async function agentPreviewLs(deps: AgentDeps): Promise<number> {
   const res = await deps.request(deps.ctx, { method: 'GET', path: previewPath(self.id) });
   if (!res.json?.success) return fail(deps, describeFailure(res));
   const list = res.json.data as PreviewList;
-  // The list routes carry no `url`: it is a capability minted per request, by the single GET.
   const previews = await Promise.all(
     list.previews.map(async (p) => {
       const one = await deps.request(deps.ctx, { method: 'GET', path: previewPath(self.id, p.name) });
