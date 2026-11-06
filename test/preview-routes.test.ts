@@ -315,6 +315,23 @@ describe('fix round 1', () => {
     }
   });
 
+  it('web tab DELETE and session delete stop nothing on a deploy colour that may not write', async () => {
+    const sid = await createSession('prev-colour-tab');
+    const created = (await put(sid, 'web')).body.data;
+    deployRole.initFromEnv({ CODEMAN_DEPLOY_ROLE: 'candidate' });
+    try {
+      const tab = await call('DELETE', `/api/v1/webviews/${created.webviewId}`);
+      expect(tab.status).toBe(409);
+      expect(tab.body.errorCode).toBe('CONFLICT');
+      expect((await webviews()).some((w) => w.id === created.webviewId)).toBe(true);
+      expect((await call('DELETE', `/api/v1/sessions/${sid}`)).status).toBe(200);
+      expect(await portOpen(created.port)).toBe(true);
+      expect(server.previews.forWebview(created.webviewId)?.state).toBe('running');
+    } finally {
+      deployRole.initFromEnv({});
+    }
+  });
+
   it('concurrent PUTs stop at the eight-preview limit', async () => {
     const sid = await createSession('prev-limit');
     const results = await Promise.all(Array.from({ length: 9 }, (_, i) => put(sid, `n${i}`, 'exit 0')));

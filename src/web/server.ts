@@ -416,6 +416,7 @@ export class WebServer extends EventEmitter {
   readonly previews = new PreviewSupervisor({
     dataDir: getDataDir(),
     canPersist: () => deployRole.allows('persist'),
+    mayAct: () => deployRole.allows('persist'),
   });
   private restoreSucceeded = false;
   private previewReconcileInFlight: Promise<void> | null = null;
@@ -1867,6 +1868,7 @@ export class WebServer extends EventEmitter {
     }
     this.previewReconcileSweeping = sweepOrphans;
     const run = (async () => {
+      if (!deployRole.allows('automate')) return;
       const ctx = { broadcast: this.broadcast.bind(this), tabLayouts: this.tabLayouts };
       await removeOrphanSessionWebviews(ctx, (id) => this.sessions.has(id) || !!this.store.getSession(id));
       for (const id of webviewsWithOpenSockets()) this.previews.markViewed(id);

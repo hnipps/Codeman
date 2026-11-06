@@ -167,6 +167,9 @@ export function parseLeftRunningRecords(raw: string): PreviewLeftRunningRecord[]
 
 export class PreviewLimitError extends Error {}
 
+/** A start or stop asked of a colour that may not act on preview processes. */
+export class PreviewRefusedError extends Error {}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function signal(pid: number, sig: NodeJS.Signals): void {
@@ -210,6 +213,12 @@ export interface PreviewSupervisorOptions {
   stopGraceMs?: number;
   readyTimeoutMs?: number;
   canPersist?: () => boolean;
+  /**
+   * Whether this process may start or stop preview processes. Read when queued work
+   * begins, not when it was asked for: a colour that retired while a sweep waited
+   * must not run it, since the live colour's previews carry the same owner marker.
+   */
+  mayAct?: () => boolean;
 }
 
 export interface PreviewStartInput {
@@ -245,6 +254,7 @@ export class PreviewSupervisor {
   private readonly stopGraceMs: number;
   private readonly readyTimeoutMs: number;
   private readonly canPersist: () => boolean;
+  private readonly mayAct: () => boolean;
   private queue: Promise<unknown> = Promise.resolve();
   private dirty = false;
 
@@ -255,7 +265,13 @@ export class PreviewSupervisor {
     this.stopGraceMs = opts.stopGraceMs ?? PREVIEW_STOP_GRACE_MS;
     this.readyTimeoutMs = opts.readyTimeoutMs ?? PREVIEW_READY_TIMEOUT_MS;
     this.canPersist = opts.canPersist ?? (() => true);
+    this.mayAct = opts.mayAct ?? (() => true);
     this.load();
+  }
+
+  /** Whether a start or stop asked now would run. The queued work checks again when it begins. */
+  get acts(): boolean {
+    return this.mayAct();
   }
 
   get filePath(): string {
@@ -333,7 +349,7 @@ export class PreviewSupervisor {
     maxPerSession: number
   ): Promise<PreviewStartResult> {
     let leftRunning: PreviewLeftRunning | undefined;
-    const record = await this.serialize(async () => {
+    const record = await this.serializeAction(async () => {
       const existing = this.find(input.sessionId, input.name);
       if (!existing) {
         const count = [...this.records.values()].filter((r) => r.sessionId === input.sessionId).length;
@@ -359,7 +375,7 @@ export class PreviewSupervisor {
   }
 
   remove(webviewId: string, owner?: string): Promise<PreviewRemoval | null> {
-    return this.serialize(async () => {
+    return this.serializeAction(async () => {
       const record = this.records.get(webviewId);
       if (!record) return null;
       const leftRunning = await this.drop(record, owner);
@@ -369,7 +385,7 @@ export class PreviewSupervisor {
   }
 
   removeSession(sessionId: string, owner?: string): Promise<PreviewRemoval[]> {
-    return this.serialize(async () => {
+    return this.serializeAction(async () => {
       const removed: PreviewRemoval[] = [];
       for (const record of [...this.records.values()].filter((r) => r.sessionId === sessionId)) {
         const leftRunning = await this.drop(record, owner);
@@ -383,13 +399,17 @@ export class PreviewSupervisor {
   /**
    * One reconcile pass. `webviewIds` is read inside the queue, so a preview being
    * created cannot be judged against a web tab list from before its tab existed.
+   * A colour that may not act runs nothing and answers an empty plan.
    */
   reconcile(
     webviewIds: () => Promise<ReadonlySet<string>>,
     { sweepOrphans = true }: { sweepOrphans?: boolean } = {}
   ): Promise<ReconcilePlan> {
     return this.serialize(async () => {
+      const idle: ReconcilePlan = { decisions: [], orphanPids: [] };
+      if (!this.mayAct()) return idle;
       const ids = await webviewIds();
+      if (!this.mayAct()) return idle;
       const snapshot = this.reconcileSnapshot(ids, sweepOrphans);
       const plan = planReconcile({
         records: [...this.records.values()],
@@ -403,11 +423,20 @@ export class PreviewSupervisor {
       for (const decision of plan.decisions) {
         const record = this.records.get(decision.webviewId);
         if (!record) continue;
-        if (decision.kill) await this.terminate(record);
         if (decision.next === 'removed') {
           await this.drop(record);
           changed = true;
-        } else if (decision.next !== record.state) {
+          continue;
+        }
+        if (decision.kill) {
+          await this.terminate(record);
+          const left = await this.stillListening(record.port);
+          if (left) {
+            this.keepLeftRunning(record, left, record.logPath);
+            changed = true;
+          }
+        }
+        if (decision.next !== record.state) {
           record.state = decision.next;
           changed = true;
         }
@@ -475,6 +504,13 @@ export class PreviewSupervisor {
     const next = this.queue.then(fn);
     this.queue = next.catch(() => undefined);
     return next;
+  }
+
+  private serializeAction<T>(fn: () => Promise<T>): Promise<T> {
+    return this.serialize(async () => {
+      if (!this.mayAct()) throw new PreviewRefusedError('This colour may not start or stop preview processes');
+      return fn();
+    });
   }
 
   private spawnServer(
@@ -657,11 +693,15 @@ export class PreviewSupervisor {
     this.dirty = false;
     if (!this.canPersist()) return;
     if (!existsSync(this.opts.dataDir)) mkdirSync(this.opts.dataDir, { recursive: true });
-    const tmp = `${this.filePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify([...this.records.values()], null, 2), { mode: 0o600 });
-    await fs.rename(tmp, this.filePath);
-    const leftTmp = `${this.leftRunningPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-    await fs.writeFile(leftTmp, JSON.stringify([...this.leftRunning.values()], null, 2), { mode: 0o600 });
-    await fs.rename(leftTmp, this.leftRunningPath);
+    // Escaped listeners first: a failure before the second rename then leaves a
+    // record listed twice, never a listener listed nowhere.
+    await this.writeAtomic(this.leftRunningPath, [...this.leftRunning.values()]);
+    await this.writeAtomic(this.filePath, [...this.records.values()]);
+  }
+
+  private async writeAtomic(file: string, rows: unknown[]): Promise<void> {
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(rows, null, 2), { mode: 0o600 });
+    await fs.rename(tmp, file);
   }
 }

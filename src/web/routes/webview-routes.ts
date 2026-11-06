@@ -48,10 +48,11 @@ import {
 } from '../../config/webview-limits.js';
 import { readWebviews, writeWebviews } from '../../webview-store.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
-import type { PreviewSupervisor } from '../../preview-supervisor.js';
+import { PreviewRefusedError, type PreviewSupervisor } from '../../preview-supervisor.js';
 import { egressBlockedReason, webviewEgressLookup, webviewFetch, type EgressLookup } from '../webview-egress.js';
 import { blockedWebviewHostReason } from '../webview-egress-policy.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
+import { deployRole } from '../../deploy-role.js';
 import type { Webview, WebviewManagedKind, WebviewOpenData, WebviewOrigin, WebviewProbe } from '../../types.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
 import { canAccessOwned, findSessionOrFail, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
@@ -112,7 +113,7 @@ function withWebviews<T>(fn: (list: Webview[]) => Promise<T> | T): Promise<T> {
 }
 
 export interface WebviewPreviewHooks {
-  previews?: Pick<PreviewSupervisor, 'remove' | 'markViewed'>;
+  previews?: Pick<PreviewSupervisor, 'remove' | 'markViewed' | 'forWebview' | 'acts'>;
 }
 
 type WebviewRouteContext = EventPort & TabLayoutPort & SessionPort & WebviewPreviewHooks;
@@ -365,6 +366,11 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
   app.delete<{ Params: { id: string } }>('/api/webviews/:id', async (req, reply) => {
     const user = getAuthUser(req);
     const { id } = req.params;
+    if (ctx.previews?.forWebview(id) && !ctx.previews.acts) {
+      return reply
+        .code(409)
+        .send(createErrorResponse(ApiErrorCode.CONFLICT, `This server is the ${deployRole.current} deploy colour`));
+    }
 
     const result = await withWebviews(async (list) => {
       const index = list.findIndex((w) => w.id === id);
@@ -394,7 +400,14 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
 
     webviewCapabilities.revokeWebview(id);
     socketCounts.delete(id);
-    const leftRunning = (await ctx.previews?.remove(id, result.owner))?.leftRunning;
+    // The tab is gone either way; a colour that retired since the check above leaves
+    // the server to the live colour, whose reconcile stops a preview without its tab.
+    const leftRunning = (
+      await ctx.previews?.remove(id, result.owner).catch((err) => {
+        if (err instanceof PreviewRefusedError) return null;
+        throw err;
+      })
+    )?.leftRunning;
     ctx.broadcast(SseEvent.WebviewChanged, {
       action: 'deleted',
       id,

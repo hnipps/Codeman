@@ -114,7 +114,10 @@ hot reload, counts as open). Deleting a session deletes its previews for good:
 nothing restarts them, so an agent in a session that comes back (resumed from
 history, or rebuilt after a reboot) sends its `PUT` again. A check every minute marks
 dead servers `exited` and stops idle ones. A server with no record (left by a crash)
-is found and stopped at boot and when a deploy colour is promoted to live.
+is searched for at boot and when a deploy colour is promoted to live, and also by
+any minute check that finds a recorded server dead or a preview's web tab gone.
+Only the live deploy colour starts or stops preview servers; a standby answers
+`409` to a preview or preview web tab delete and leaves the server running.
 
 Codeman finds a server by its process group and by an environment variable it sets
 on it, so a command that detaches itself (`setsid`, `nohup ... &`) is still found and

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import net from 'node:net';
@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   PreviewLimitError,
+  PreviewRefusedError,
   PreviewSupervisor,
   nextPreviewState,
   parsePreviewRecords,
@@ -412,6 +413,50 @@ describe('a server Codeman cannot stop', () => {
     }
   });
 
+  it('an idle stop checks the port and reports a listener that survived', async () => {
+    let now = Date.now();
+    const sup = supervisor({ now: () => now, idleStopMs: () => 1000 });
+    const cmd = `${escaped}; exec ${NODE} -e "setInterval(() => {}, 1000)"`;
+    const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd, cwd: workDir }, bindNew);
+    try {
+      const deadline = Date.now() + 5000;
+      while (!(await portOpen(record.port)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      const listener = findListenerPids(record.port);
+      now += 5000;
+      await sup.reconcile(async () => new Set([record.webviewId]));
+      expect(sup.forWebview(record.webviewId)?.state).toBe('stopped');
+      expect(markerPids(dataDir)).toEqual([]);
+      expect(sup.listLeftRunning()).toEqual([expect.objectContaining({ port: record.port, pids: listener })]);
+      expect(await fs.readFile(record.logPath, 'utf-8')).toContain(`Port ${record.port} is still listening`);
+    } finally {
+      killListener(record.port);
+    }
+  });
+
+  it('a failed write of previews.json after a stop still leaves the escaped server listed on reload', async () => {
+    const sup = supervisor();
+    const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: escaped, cwd: workDir }, bindNew);
+    const previewsFile = path.join(dataDir, 'previews.json');
+    const realRename = fs.rename;
+    const spy = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (to === previewsFile) throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+      return realRename(from, to);
+    });
+    try {
+      const deadline = Date.now() + 5000;
+      while (!(await portOpen(record.port)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      await expect(sup.remove(record.webviewId, 'alice')).rejects.toThrow('injected EIO');
+      spy.mockRestore();
+      expect(await portOpen(record.port)).toBe(true);
+      expect(supervisor().listLeftRunning()).toEqual([
+        expect.objectContaining({ port: record.port, webviewId: record.webviewId, owner: 'alice' }),
+      ]);
+    } finally {
+      spy.mockRestore();
+      killListener(record.port);
+    }
+  });
+
   it('a stopped server whose port frees reports nothing', async () => {
     const sup = supervisor();
     const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: SERVER, cwd: workDir }, bindNew);
@@ -442,5 +487,53 @@ describe('starts of one session', () => {
     const results = await Promise.all([sup.start(input, bind), sup.start(input, bind), sup.start(input, bind)]);
     expect(results.map((r) => r.ready)).toEqual([true, true, true]);
     expect(sup.list()).toHaveLength(1);
+  });
+});
+
+describe('a colour that may not act', () => {
+  it('a sweep queued before the colour retired stops nothing when it runs', async () => {
+    let live = true;
+    const sup = supervisor({ mayAct: () => live, canPersist: () => live });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const first = sup.reconcile(async () => {
+      await held;
+      return new Set();
+    });
+    const queued = sup.reconcile(async () => new Set());
+    await new Promise((r) => setTimeout(r, 50));
+
+    live = false;
+    const child = spawn(NODE, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, CODEMAN_PREVIEW_ID: 'started-by-the-live-colour', CODEMAN_PREVIEW_OWNER: dataDir },
+    });
+    child.unref();
+    await new Promise((r) => setTimeout(r, 200));
+    const pid = child.pid!;
+    expect(markerPids(dataDir)).toEqual([pid]);
+
+    release();
+    expect(await first).toEqual({ decisions: [], orphanPids: [] });
+    expect(await queued).toEqual({ decisions: [], orphanPids: [] });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(markerPids(dataDir)).toEqual([pid]);
+  });
+
+  it('refuses a start, a remove and a session removal when the work begins', async () => {
+    let live = true;
+    const sup = supervisor({ mayAct: () => live });
+    const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: SERVER, cwd: workDir }, bindNew);
+    live = false;
+    const bind = vi.fn(bindNew);
+    await expect(sup.start({ sessionId: 's1', name: 'web', cmd: SERVER, cwd: workDir }, bind)).rejects.toThrow(
+      PreviewRefusedError
+    );
+    await expect(sup.remove(record.webviewId)).rejects.toThrow(PreviewRefusedError);
+    await expect(sup.removeSession('s1')).rejects.toThrow(PreviewRefusedError);
+    expect(bind).not.toHaveBeenCalled();
+    expect(await portOpen(record.port)).toBe(true);
+    expect(sup.forWebview(record.webviewId)?.pid).toBe(record.pid);
   });
 });

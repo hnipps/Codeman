@@ -13,7 +13,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { MAX_PREVIEWS_PER_SESSION } from '../../config/preview-limits.js';
 import { deployRole } from '../../deploy-role.js';
-import { PreviewLimitError, type PreviewSupervisor } from '../../preview-supervisor.js';
+import { PreviewLimitError, PreviewRefusedError, type PreviewSupervisor } from '../../preview-supervisor.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import type { PreviewLeftRunningRecord, PreviewProcess, PreviewView, Webview } from '../../types.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
@@ -62,6 +62,8 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     deployRole.allows('persist')
       ? null
       : createErrorResponse(ApiErrorCode.CONFLICT, `This server is the ${deployRole.current} deploy colour`);
+
+  const refusedHere = (err: Error) => createErrorResponse(ApiErrorCode.CONFLICT, err.message);
 
   const leftRunningView = ({ port, pids, sessionId, name, since }: PreviewLeftRunningRecord) => ({
     port,
@@ -138,6 +140,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
       );
     } catch (err) {
       if (createdId && !ctx.previews.forWebview(createdId)) await removeWebview(ctx, createdId);
+      if (err instanceof PreviewRefusedError) return reply.code(409).send(notThisColour() ?? refusedHere(err));
       if (err instanceof PreviewLimitError) {
         return reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, err.message));
       }
@@ -173,7 +176,13 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     const refused = notThisColour();
     if (refused) return reply.code(409).send(refused);
     const owner = (await webviewsById()).get(record.webviewId)?.owner ?? session.owner;
-    const removal = await ctx.previews.remove(record.webviewId, owner);
+    let removal;
+    try {
+      removal = await ctx.previews.remove(record.webviewId, owner);
+    } catch (err) {
+      if (err instanceof PreviewRefusedError) return reply.code(409).send(notThisColour() ?? refusedHere(err));
+      throw err;
+    }
     await removeWebview(ctx, record.webviewId);
     const leftRunning = removal?.leftRunning;
     return { success: true, data: { name, webviewId: record.webviewId, ...(leftRunning ? { leftRunning } : {}) } };
