@@ -170,6 +170,16 @@ export class PreviewLimitError extends Error {}
 /** A start or stop asked of a colour that may not act on preview processes. */
 export class PreviewRefusedError extends Error {}
 
+/**
+ * A start or stop given up part way because the colour retired during it. The new
+ * live colour's reconcile owns the server from then on.
+ */
+export class PreviewAbandonedError extends PreviewRefusedError {
+  constructor() {
+    super('This colour retired during the stop, so the stop was handed to the live colour');
+  }
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function signal(pid: number, sig: NodeJS.Signals): void {
@@ -215,8 +225,9 @@ export interface PreviewSupervisorOptions {
   canPersist?: () => boolean;
   /**
    * Whether this process may start or stop preview processes. Read when queued work
-   * begins, not when it was asked for: a colour that retired while a sweep waited
-   * must not run it, since the live colour's previews carry the same owner marker.
+   * begins and again at every signal and spawn, in the same tick as the `kill`: a
+   * stop runs for seconds, and the live colour's previews carry the same owner
+   * marker, so a colour that retired mid-stop must send nothing more.
    */
   mayAct?: () => boolean;
 }
@@ -362,8 +373,10 @@ export class PreviewSupervisor {
       const port = (existing && !leftRunning && (await bindablePort(existing.port))) || (await bindablePort(0));
       if (!port) throw new Error('No free port for the preview');
       this.leftRunning.delete(port);
+      if (!this.mayAct()) throw new PreviewAbandonedError();
       const webviewId = await bindWebview(port, existing?.webviewId);
       if (existing && existing.webviewId !== webviewId) this.records.delete(existing.webviewId);
+      if (!this.mayAct()) throw new PreviewAbandonedError();
       const next = this.spawnServer(input, webviewId, port, existing?.state);
       this.records.set(webviewId, next);
       if (existing && leftRunning) this.keepLeftRunning(existing, leftRunning, next.logPath);
@@ -419,41 +432,52 @@ export class PreviewSupervisor {
         now: this.now(),
         idleStopMs: this.idleStopMs(),
       });
-      let changed = this.dirty;
-      for (const decision of plan.decisions) {
-        const record = this.records.get(decision.webviewId);
-        if (!record) continue;
-        if (decision.next === 'removed') {
-          await this.drop(record);
-          changed = true;
-          continue;
-        }
-        if (decision.kill) {
-          await this.terminate(record);
-          const left = await this.stillListening(record.port);
-          if (left) {
-            this.keepLeftRunning(record, left, record.logPath);
-            changed = true;
-          }
-        }
-        if (decision.next !== record.state) {
-          record.state = decision.next;
-          changed = true;
-        }
-        if (record.state === 'running') this.capLog(record.logPath);
+      try {
+        await this.applyPlan(plan, snapshot);
+      } catch (err) {
+        if (!(err instanceof PreviewAbandonedError)) throw err;
+        console.warn(`[Previews] ${err.message}`);
       }
-      if (plan.orphanPids.length > 0) {
-        await this.terminatePids(new Map(plan.orphanPids.map((pid) => [pid, snapshot.get(pid)!.startTicks])));
-      }
-      for (const left of [...this.leftRunning.values()]) {
-        if (isPortListening(left.port)) continue;
-        this.leftRunning.delete(left.port);
-        if (!this.records.has(left.webviewId)) await fs.rm(left.logPath, { force: true }).catch(() => undefined);
-        changed = true;
-      }
-      if (changed) await this.persist();
       return plan;
     });
+  }
+
+  private async applyPlan(plan: ReconcilePlan, snapshot: ProcSnapshot): Promise<void> {
+    let changed = this.dirty;
+    for (const decision of plan.decisions) {
+      const record = this.records.get(decision.webviewId);
+      if (!record) continue;
+      if (decision.next === 'removed') {
+        await this.drop(record);
+        changed = true;
+        continue;
+      }
+      if (decision.kill) {
+        await this.terminate(record);
+        const left = await this.stillListening(record.port);
+        if (left) {
+          this.keepLeftRunning(record, left, record.logPath);
+          changed = true;
+        }
+      } else if (decision.next !== 'running' && this.noteEscapedListener(record, decision.next)) {
+        changed = true;
+      }
+      if (decision.next !== record.state) {
+        record.state = decision.next;
+        changed = true;
+      }
+      if (record.state === 'running') this.capLog(record.logPath);
+    }
+    if (plan.orphanPids.length > 0) {
+      await this.terminatePids(new Map(plan.orphanPids.map((pid) => [pid, snapshot.get(pid)!.startTicks])));
+    }
+    for (const left of [...this.leftRunning.values()]) {
+      if (isPortListening(left.port)) continue;
+      this.leftRunning.delete(left.port);
+      if (!this.records.has(left.webviewId)) await fs.rm(left.logPath, { force: true }).catch(() => undefined);
+      changed = true;
+    }
+    if (changed) await this.persist();
   }
 
   /**
@@ -571,10 +595,12 @@ export class PreviewSupervisor {
       if (await canConnect('127.0.0.1', record.port)) return { ready: true, host: '127.0.0.1' };
       if (await canConnect('::1', record.port)) return { ready: true, host: '::1' };
       if (!this.isAlive(record)) {
+        await this.portSettles(record.port);
         await this.serialize(async () => {
           const current = this.records.get(record.webviewId);
           if (current === record && current.state === 'running' && !this.isAlive(current)) {
             current.state = nextPreviewState(current.state, 'gone');
+            this.noteEscapedListener(current, current.state);
             await this.persist();
           }
         });
@@ -613,9 +639,46 @@ export class PreviewSupervisor {
     return undefined;
   }
 
-  private keepLeftRunning(record: PreviewProcess, left: PreviewLeftRunning, logPath: string, owner?: string): void {
+  /**
+   * A command such as `setsid server &` exits at once, so its record is `exited` while
+   * the escaped server listens and no stop ever runs to notice it. Reported through the
+   * same tombstone a stop writes. A listener that carries this owner's marker for
+   * another preview is that preview's server, which took the freed port, not an escape.
+   */
+  private noteEscapedListener(record: PreviewProcess, state: PreviewState): boolean {
+    if (this.leftRunning.has(record.port) || !isPortListening(record.port)) return false;
+    for (const other of this.records.values()) {
+      if (other !== record && other.port === record.port) return false;
+    }
+    const pids = findListenerPids(record.port);
+    if (pids.length > 0 && pids.every((pid) => this.carriesOtherMarker(pid, record.webviewId))) return false;
+    this.keepLeftRunning(record, { port: record.port, pids }, record.logPath, undefined, state === 'exited');
+    return true;
+  }
+
+  /** Gives a server the command backgrounded a moment to bind before its exit is judged. */
+  private async portSettles(port: number): Promise<void> {
+    const deadline = Date.now() + LEFT_RUNNING_SETTLE_MS;
+    while (!isPortListening(port) && Date.now() < deadline) await sleep(100);
+  }
+
+  /** The tombstone of this record's own port, while the record is not running. */
+  leftRunningOn(webviewId: string): PreviewLeftRunning | undefined {
+    const record = this.records.get(webviewId);
+    const left = record && record.state !== 'running' ? this.leftRunning.get(record.port) : undefined;
+    return left && left.webviewId === webviewId ? { port: left.port, pids: [...left.pids] } : undefined;
+  }
+
+  private keepLeftRunning(
+    record: PreviewProcess,
+    left: PreviewLeftRunning,
+    logPath: string,
+    owner?: string,
+    exited = false
+  ): void {
     const pids = left.pids.length > 0 ? `pids ${left.pids.join(', ')}` : 'a process of another user';
-    const line = `[codeman] Port ${left.port} is still listening (${pids}) after "${record.name}" was stopped. The server left the preview's process group and environment, so Codeman cannot stop it; stop it where it was handed off.\n`;
+    const after = exited ? `"${record.name}" exited` : `"${record.name}" was stopped`;
+    const line = `[codeman] Port ${left.port} is still listening (${pids}) after ${after}. The server left the preview's process group and environment, so Codeman cannot stop it; stop it where it was handed off.\n`;
     try {
       appendFileSync(logPath, line);
     } catch {
@@ -647,7 +710,7 @@ export class PreviewSupervisor {
   private signalPreviewIfAlive(record: PreviewProcess, sig: NodeJS.Signals): boolean {
     const snapshot = readProcSnapshot();
     const { leaderAlive, markerPids } = previewLiveness(record, snapshot, this.owner);
-    if (leaderAlive) signal(-record.pgid, sig);
+    if (leaderAlive) this.send(-record.pgid, sig);
     for (const pid of markerPids) this.signalIfSame(pid, snapshot.get(pid)!.startTicks, sig);
     let listener = false;
     for (const pid of findListenerPids(record.port)) {
@@ -669,15 +732,30 @@ export class PreviewSupervisor {
 
   private signalIfSame(pid: number, startTicks: number, sig: NodeJS.Signals): void {
     const stat = readProcStat(pid);
-    if (stat && !stat.zombie && stat.startTicks === startTicks) signal(pid, sig);
+    if (stat && !stat.zombie && stat.startTicks === startTicks) this.send(pid, sig);
+  }
+
+  /** The one place a signal leaves the supervisor. */
+  private send(pid: number, sig: NodeJS.Signals): void {
+    if (!this.mayAct()) throw new PreviewAbandonedError();
+    signal(pid, sig);
   }
 
   private carriesMarker(pid: number, webviewId: string): boolean {
+    const marker = this.markerOf(pid);
+    return marker?.previewId === webviewId && marker.previewOwner === this.owner;
+  }
+
+  private carriesOtherMarker(pid: number, webviewId: string): boolean {
+    const marker = this.markerOf(pid);
+    return !!marker?.previewId && marker.previewId !== webviewId && marker.previewOwner === this.owner;
+  }
+
+  private markerOf(pid: number): { previewId?: string; previewOwner?: string } | null {
     try {
-      const marker = parsePreviewMarker(readFileSync(`/proc/${pid}/environ`, 'latin1'));
-      return marker.previewId === webviewId && marker.previewOwner === this.owner;
+      return parsePreviewMarker(readFileSync(`/proc/${pid}/environ`, 'latin1'));
     } catch {
-      return false;
+      return null;
     }
   }
 

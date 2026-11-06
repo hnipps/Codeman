@@ -373,3 +373,61 @@ describe('fix round 1', () => {
     }
   }, 20_000);
 });
+
+describe('fix round 3', () => {
+  const killListener = (port: number) => {
+    for (const pid of findListenerPids(port)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  };
+
+  it('a web tab DELETE whose stop the supervisor refuses after the tab is gone says the stop was deferred', async () => {
+    const sid = await createSession('prev-deferred');
+    const created = (await put(sid, 'web')).body.data;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const holding = server.previews.reconcile(async () => {
+      await held;
+      return new Set([created.webviewId]);
+    });
+    try {
+      const deletion = call('DELETE', `/api/v1/webviews/${created.webviewId}`);
+      const deadline = Date.now() + 5000;
+      while ((await webviews()).some((w) => w.id === created.webviewId) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      deployRole.initFromEnv({ CODEMAN_DEPLOY_ROLE: 'candidate' });
+      release();
+      const { status, body } = await deletion;
+      await holding;
+      expect(status).toBe(200);
+      expect(body.data).toEqual({ id: created.webviewId, previewStop: 'deferred' });
+      expect(await portOpen(created.port)).toBe(true);
+    } finally {
+      release();
+      deployRole.initFromEnv({});
+    }
+  });
+
+  it('an exited preview whose server escaped lists the listener on the preview and under leftRunning', async () => {
+    const sid = await createSession('prev-exited-escaped');
+    const cmd = `env -i PATH=/usr/bin:/bin setsid ${SERVER} >/dev/null 2>&1 &`;
+    const created = (await put(sid, 'web', cmd)).body.data;
+    try {
+      expect(created.state).toBe('exited');
+      const pids = findListenerPids(created.port);
+      expect(pids).toHaveLength(1);
+      expect(created.stillListening).toEqual({ port: created.port, pids });
+      const listed = (await call('GET', '/api/v1/previews')).body.data;
+      expect(listed.previews).toEqual([expect.objectContaining({ webviewId: created.webviewId, state: 'exited' })]);
+      expect(listed.previews[0].stillListening).toEqual({ port: created.port, pids });
+      expect(listed.leftRunning).toEqual([expect.objectContaining({ port: created.port, pids, name: 'web' })]);
+    } finally {
+      killListener(created.port);
+      await new Promise((r) => setTimeout(r, 200));
+      await server.reconcilePreviews(false);
+    }
+  });
+});

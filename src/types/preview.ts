@@ -39,6 +39,12 @@ export interface PreviewView extends PreviewProcess {
   url?: string;
   /** True once the port accepted a connection during the PUT. */
   ready?: boolean;
+  /**
+   * Present while the preview is not `running` but a server Codeman cannot stop still
+   * listens on its port, e.g. one a command backgrounded with `setsid ... &` before it
+   * exited. The same server is listed under `leftRunning`.
+   */
+  stillListening?: PreviewLeftRunning;
 }
 
 /** A server still listening after its preview was stopped. */

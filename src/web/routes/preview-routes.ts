@@ -13,7 +13,12 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { MAX_PREVIEWS_PER_SESSION } from '../../config/preview-limits.js';
 import { deployRole } from '../../deploy-role.js';
-import { PreviewLimitError, PreviewRefusedError, type PreviewSupervisor } from '../../preview-supervisor.js';
+import {
+  PreviewAbandonedError,
+  PreviewLimitError,
+  PreviewRefusedError,
+  type PreviewSupervisor,
+} from '../../preview-supervisor.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import type { PreviewLeftRunningRecord, PreviewProcess, PreviewView, Webview } from '../../types.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
@@ -36,8 +41,13 @@ function loopbackUrl(host: '127.0.0.1' | '::1', port: number): string {
   return host === '::1' ? `http://[::1]:${port}/` : `http://127.0.0.1:${port}/`;
 }
 
-function toView(record: PreviewProcess, webview: Webview | undefined): PreviewView {
-  return { ...record, targetUrl: webview?.url ?? loopbackUrl('127.0.0.1', record.port) };
+function toView(previews: PreviewSupervisor, record: PreviewProcess, webview: Webview | undefined): PreviewView {
+  const stillListening = previews.leftRunningOn(record.webviewId);
+  return {
+    ...record,
+    targetUrl: webview?.url ?? loopbackUrl('127.0.0.1', record.port),
+    ...(stillListening ? { stillListening } : {}),
+  };
 }
 
 function unsupportedSessionType(session: Session): string | null {
@@ -64,6 +74,8 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
       : createErrorResponse(ApiErrorCode.CONFLICT, `This server is the ${deployRole.current} deploy colour`);
 
   const refusedHere = (err: Error) => createErrorResponse(ApiErrorCode.CONFLICT, err.message);
+  const refused409 = (err: PreviewRefusedError) =>
+    err instanceof PreviewAbandonedError ? refusedHere(err) : (notThisColour() ?? refusedHere(err));
 
   const leftRunningView = ({ port, pids, sessionId, name, since }: PreviewLeftRunningRecord) => ({
     port,
@@ -79,7 +91,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     const previews = ctx.previews
       .list()
       .filter((r) => canAccessOwned(user, webviews.get(r.webviewId)?.owner ?? ctx.sessions.get(r.sessionId)?.owner))
-      .map((r) => toView(r, webviews.get(r.webviewId)));
+      .map((r) => toView(ctx.previews, r, webviews.get(r.webviewId)));
     const leftRunning = ctx.previews
       .listLeftRunning()
       .filter((r) => canAccessOwned(user, r.owner ?? ctx.sessions.get(r.sessionId)?.owner))
@@ -93,7 +105,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     const previews = ctx.previews
       .list()
       .filter((r) => r.sessionId === session.id)
-      .map((r) => toView(r, webviews.get(r.webviewId)));
+      .map((r) => toView(ctx.previews, r, webviews.get(r.webviewId)));
     const leftRunning = ctx.previews
       .listLeftRunning()
       .filter((r) => r.sessionId === session.id)
@@ -140,7 +152,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
       );
     } catch (err) {
       if (createdId && !ctx.previews.forWebview(createdId)) await removeWebview(ctx, createdId);
-      if (err instanceof PreviewRefusedError) return reply.code(409).send(notThisColour() ?? refusedHere(err));
+      if (err instanceof PreviewRefusedError) return reply.code(409).send(refused409(err));
       if (err instanceof PreviewLimitError) {
         return reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, err.message));
       }
@@ -155,7 +167,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     return {
       success: true,
       data: {
-        ...toView(current, webview),
+        ...toView(ctx.previews, current, webview),
         url: proxyUrl(current, webview?.owner),
         ready,
         ...(leftRunning ? { leftRunning } : {}),
@@ -167,7 +179,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     const { record } = previewOf(req);
     if (!record) return reply.code(404).send(notFound());
     const webview = (await webviewsById()).get(record.webviewId);
-    return { success: true, data: { ...toView(record, webview), url: proxyUrl(record, webview?.owner) } };
+    return { success: true, data: { ...toView(ctx.previews, record, webview), url: proxyUrl(record, webview?.owner) } };
   });
 
   app.delete<{ Params: PreviewParams }>('/api/sessions/:id/previews/:name', async (req, reply) => {
@@ -180,7 +192,7 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
     try {
       removal = await ctx.previews.remove(record.webviewId, owner);
     } catch (err) {
-      if (err instanceof PreviewRefusedError) return reply.code(409).send(notThisColour() ?? refusedHere(err));
+      if (err instanceof PreviewRefusedError) return reply.code(409).send(refused409(err));
       throw err;
     }
     await removeWebview(ctx, record.webviewId);

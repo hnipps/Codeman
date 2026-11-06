@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  PreviewAbandonedError,
   PreviewLimitError,
   PreviewRefusedError,
   PreviewSupervisor,
@@ -535,5 +536,117 @@ describe('a colour that may not act', () => {
     expect(bind).not.toHaveBeenCalled();
     expect(await portOpen(record.port)).toBe(true);
     expect(sup.forWebview(record.webviewId)?.pid).toBe(record.pid);
+  });
+
+  describe('retiring during a stop', () => {
+    const resistant = `${NODE} -e "process.on('SIGTERM',()=>{});require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.argv[1]))" {port}`;
+
+    function startLiveColourProcess(previewId: string): number {
+      const child = spawn(NODE, ['-e', 'setInterval(() => {}, 1000)'], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, CODEMAN_PREVIEW_ID: previewId, CODEMAN_PREVIEW_OWNER: dataDir },
+      });
+      child.unref();
+      return child.pid!;
+    }
+
+    const alive = (pid: number) => {
+      const stat = readProcStat(pid);
+      return !!stat && !stat.zombie;
+    };
+
+    async function retireDuringGrace(live: { value: boolean }, previewId: string): Promise<number> {
+      await new Promise((r) => setTimeout(r, 300));
+      live.value = false;
+      const pid = startLiveColourProcess(previewId);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(alive(pid)).toBe(true);
+      return pid;
+    }
+
+    it('a remove abandons its stop and never signals the live colour once retired', async () => {
+      const live = { value: true };
+      const sup = supervisor({ mayAct: () => live.value, canPersist: () => live.value });
+      const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: resistant, cwd: workDir }, bindNew);
+      expect(await portOpen(record.port)).toBe(true);
+      const removal = sup.remove(record.webviewId);
+      const replacement = await retireDuringGrace(live, record.webviewId);
+      await expect(removal).rejects.toThrow(PreviewAbandonedError);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(alive(replacement)).toBe(true);
+      expect(sup.forWebview(record.webviewId)).toBeDefined();
+    });
+
+    it('a reconcile abandons its stop once retired and leaves the live colour alone', async () => {
+      const live = { value: true };
+      const sup = supervisor({ mayAct: () => live.value, canPersist: () => live.value });
+      const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: resistant, cwd: workDir }, bindNew);
+      const pass = sup.reconcile(async () => new Set());
+      const replacement = await retireDuringGrace(live, record.webviewId);
+      await expect(pass).resolves.toBeDefined();
+      await new Promise((r) => setTimeout(r, 300));
+      expect(alive(replacement)).toBe(true);
+    });
+
+    it('a replacing start retired during the stop spawns no new server', async () => {
+      const live = { value: true };
+      const sup = supervisor({ mayAct: () => live.value, canPersist: () => live.value });
+      const input = { sessionId: 's1', name: 'web', cmd: resistant, cwd: workDir };
+      const { record } = await sup.start(input, bindNew);
+      const bind = vi.fn(async (_p: number, existing?: string) => existing ?? 'never');
+      const restart = sup.start({ ...input, cmd: SERVER }, bind);
+      const replacement = await retireDuringGrace(live, record.webviewId);
+      await expect(restart).rejects.toThrow(PreviewAbandonedError);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(alive(replacement)).toBe(true);
+      expect(bind).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('an exited preview whose server escaped', () => {
+  const escaped = `env -i PATH=/usr/bin:/bin setsid ${NODE} -e "require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.argv[1]))" {port} >/dev/null 2>&1 &`;
+
+  function killListener(port: number) {
+    for (const pid of findListenerPids(port)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  }
+
+  it('is reported as still listening as soon as the start answers', async () => {
+    const sup = supervisor();
+    const { record, ready } = await sup.start({ sessionId: 's1', name: 'web', cmd: escaped, cwd: workDir }, bindNew);
+    try {
+      expect(ready).toBe(false);
+      expect(sup.forWebview(record.webviewId)?.state).toBe('exited');
+      const listener = findListenerPids(record.port);
+      expect(listener).toHaveLength(1);
+      expect(sup.leftRunningOn(record.webviewId)).toEqual({ port: record.port, pids: listener });
+      expect(sup.listLeftRunning()).toEqual([expect.objectContaining({ port: record.port, name: 'web' })]);
+      expect(await fs.readFile(record.logPath, 'utf-8')).toContain(`after "web" exited`);
+    } finally {
+      killListener(record.port);
+    }
+  });
+
+  it('a reconcile pass finds it from the exited record and writes the tombstone', async () => {
+    const first = supervisor();
+    const { record } = await first.start({ sessionId: 's1', name: 'web', cmd: escaped, cwd: workDir }, bindNew);
+    try {
+      await fs.rm(path.join(dataDir, 'previews-left-running.json'), { force: true });
+      const sup = supervisor();
+      expect(sup.listLeftRunning()).toEqual([]);
+      expect(sup.forWebview(record.webviewId)?.state).toBe('exited');
+      await sup.reconcile(async () => new Set([record.webviewId]), { sweepOrphans: false });
+      expect(sup.listLeftRunning()).toEqual([
+        expect.objectContaining({ port: record.port, pids: findListenerPids(record.port) }),
+      ]);
+      expect(supervisor().listLeftRunning()).toHaveLength(1);
+    } finally {
+      killListener(record.port);
+    }
   });
 });

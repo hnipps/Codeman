@@ -115,9 +115,13 @@ nothing restarts them, so an agent in a session that comes back (resumed from
 history, or rebuilt after a reboot) sends its `PUT` again. A check every minute marks
 dead servers `exited` and stops idle ones. A server with no record (left by a crash)
 is searched for at boot and when a deploy colour is promoted to live, and also by
-any minute check that finds a recorded server dead or a preview's web tab gone.
-Only the live deploy colour starts or stops preview servers; a standby answers
-`409` to a preview or preview web tab delete and leaves the server running.
+a minute check that finds a recorded server dead while its preview is running or
+has lost its web tab. A live server whose tab is gone is stopped, but that starts
+no search. Only the live deploy colour starts or stops preview servers, and it
+checks at every signal it sends: a stop under way when the colour retires gives up
+and leaves the server to the new live colour. A standby answers `409` to a preview
+delete; a web tab delete it cannot finish answers with `previewStop: "deferred"`,
+and the live colour stops that server within a minute.
 
 Codeman finds a server by its process group and by an environment variable it sets
 on it, so a command that detaches itself (`setsid`, `nohup ... &`) is still found and
@@ -126,7 +130,9 @@ stopped. It cannot stop a server the command handed to something it did not star
 and it never signals a process it cannot prove is the preview's. When the port still
 listens after a stop, the API answer says so (`leftRunning`), the preview log gets a
 line, and the preview lists keep showing it until the port is free; stop that server
-where it was handed off. Previews keep running across a Codeman restart.
+where it was handed off. The same goes for a command that backgrounds its server and
+exits at once: the preview shows `exited`, but its `stillListening` field and the
+`leftRunning` list say the server still listens. Previews keep running across a Codeman restart.
 
 A Vite dev server needs no `--base` flag: the preview's page gets an import map that
 keeps its `/src/...` and `/@vite/...` imports inside the proxy, and its hot-reload

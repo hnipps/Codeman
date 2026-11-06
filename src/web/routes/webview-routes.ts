@@ -388,7 +388,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
         await writeWebviews(configDir(), list);
         throw error;
       }
-      return { status: 'deleted' as const, owner: removed.owner };
+      return { status: 'deleted' as const, owner: removed.owner, session: removed.origin.kind === 'session' };
     });
 
     if (result === 'not-found') {
@@ -400,12 +400,15 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
 
     webviewCapabilities.revokeWebview(id);
     socketCounts.delete(id);
-    // The tab is gone either way; a colour that retired since the check above leaves
-    // the server to the live colour, whose reconcile stops a preview without its tab.
+    // The tab is gone either way. A colour that may not act (it retired since the check
+    // above, or it never knew this preview) stops nothing and says so: the live colour's
+    // reconcile stops a preview without its tab.
+    let deferred = false;
     const leftRunning = (
       await ctx.previews?.remove(id, result.owner).catch((err) => {
-        if (err instanceof PreviewRefusedError) return null;
-        throw err;
+        if (!(err instanceof PreviewRefusedError)) throw err;
+        deferred = result.session;
+        return null;
       })
     )?.leftRunning;
     ctx.broadcast(SseEvent.WebviewChanged, {
@@ -413,7 +416,10 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
       id,
       owner: ownerLayoutKey(result.owner),
     });
-    return { success: true, data: { id, ...(leftRunning ? { leftRunning } : {}) } };
+    return {
+      success: true,
+      data: { id, ...(leftRunning ? { leftRunning } : {}), ...(deferred ? { previewStop: 'deferred' } : {}) },
+    };
   });
 
   /**
