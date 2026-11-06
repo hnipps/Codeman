@@ -658,13 +658,15 @@ try{
  * JavaScript response has to be rewritten. The prefix maps to itself so an
  * already-rebased specifier is not prefixed twice. A page whose served HTML has its
  * own import map tag keeps it alone: browsers before multiple-map support reject a
- * second one. The check is a scan of the markup outside comments, not a parse, so a
- * map the page adds by script or writes with an encoded `type` is not seen, and
- * Codeman's map, coming first, then wins for root-absolute specifiers.
+ * second one. The check is a literal scan, not a parse: a map the page adds by
+ * script or writes with an encoded `type` is not seen, and Codeman's map, coming
+ * first, then wins for root-absolute specifiers. Comments are deliberately not
+ * stripped first: `<!--` inside an attribute is not a comment, and stripping from
+ * it hid the real map after it. So a commented-out tag also counts, which only
+ * leaves Codeman's map out.
  */
 function moduleImportMap(html: string, prefix: string): string {
-  const markup = html.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  if (/<script\b[^>]*\btype\s*=\s*(["']?)importmap\1(?=[\s>/])/i.test(markup)) return '';
+  if (/<script\b[^>]*\btype\s*=\s*(["']?)importmap\1(?=[\s>/])/i.test(html)) return '';
   const map = JSON.stringify({ imports: { '/': prefix, [prefix]: prefix } }).replace(/</g, '\\u003c');
   return `<script type="importmap">${map}</script>`;
 }

@@ -131,9 +131,11 @@ where it was handed off. Previews keep running across a Codeman restart.
 A Vite dev server needs no `--base` flag: the preview's page gets an import map that
 keeps its `/src/...` and `/@vite/...` imports inside the proxy, and its hot-reload
 WebSocket goes through the proxy too. A page that writes its own
-`<script type="importmap">` tag in its HTML gets no injected map. A map the page adds
-from script, or whose `type` is written with an HTML entity, is not noticed, and
-Codeman's map then takes precedence for paths that start with `/`.
+`<script type="importmap">` tag in its HTML gets no injected map. The check looks for
+that tag text anywhere in the HTML, so a tag inside an HTML comment also counts: the
+page then gets no injected map, and only its root-absolute imports are affected. A map
+the page adds from script, or whose `type` is written with an HTML entity, is not
+noticed, and Codeman's map then takes precedence for paths that start with `/`.
 
 Remote (SSH) and Docker sessions cannot have previews: the server would run on
 this machine, where their files are not. A server that binds `0.0.0.0` (as

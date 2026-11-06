@@ -399,16 +399,26 @@ describe('rewriteHtml', () => {
     expect(out.match(/importmap/g)).toHaveLength(1);
   });
 
-  it('with moduleMap, a commented-out import map tag or an importmap-shim still gets the map', () => {
-    for (const page of [
-      '<head><!-- <script type="importmap">{}</script> --></head>',
-      '<head><script type="importmap-shim">{"imports":{}}</script></head>',
-    ]) {
-      const out = rewriteHtml(page, CAP, '', { moduleMap: true });
-      expect(out).toContain(
-        `<script type="importmap">${JSON.stringify({ imports: { '/': PREFIX, [PREFIX]: PREFIX } })}`
-      );
-    }
+  it('with moduleMap, an importmap-shim still gets the map', () => {
+    const out = rewriteHtml('<head><script type="importmap-shim">{"imports":{}}</script></head>', CAP, '', {
+      moduleMap: true,
+    });
+    expect(out).toContain(`<script type="importmap">${JSON.stringify({ imports: { '/': PREFIX, [PREFIX]: PREFIX } })}`);
+  });
+
+  it('with moduleMap, a real import map after comment-looking attribute text is still seen', () => {
+    const page =
+      '<head><meta name="note" content="<!--"><script type="importmap">{"imports":{"/":"./vendor/"}}</script></head>';
+    const out = rewriteHtml(page, CAP, '', { moduleMap: true });
+    expect(out.match(/type="importmap"/g)).toHaveLength(1);
+    expect(out).toContain('{"imports":{"/":"./vendor/"}}');
+  });
+
+  it('with moduleMap, a commented-out import map tag leaves the map out', () => {
+    const out = rewriteHtml('<head><!-- <script type="importmap">{}</script> --></head>', CAP, '', {
+      moduleMap: true,
+    });
+    expect(out.match(/type="importmap"/g)).toHaveLength(1);
   });
 });
 
