@@ -90,10 +90,12 @@ codeman agent preview add web --cmd "npm run dev -- --port {port} --strictPort" 
 - **`preview add|ls|rm|logs`** serve a web UI the agent built as a preview of its own session:
   Codeman starts the server with `{port}` replaced by a free port, shows it in a web tab and
   stops it when the preview or the session is deleted. `add` prints
-  `web  running  :<port>  /webview/<cap>/`. The server must stay in the foreground: one that
-  daemonizes or leaves its process group (`&`, `nohup`, `setsid`, `tmux`, `docker run -d`)
-  keeps running, and `rm` then says so and exits `1`. The skill tells agents to start servers
-  only this way. Routes and exit codes: [API reference](https://github.com/Ark0N/Codeman/blob/master/docs/api-reference.md#previews-apiv1sessionsidpreviews).
+  `web  running  :<port>  /webview/<cap>/`. The server must stay in the foreground. Codeman
+  stops it through its process group and an environment marker the server inherits, so a
+  plain `&`, `nohup` or `setsid` is usually still stopped. A server that also loses the marker
+  (`env -i`) or hands its work to another service (`tmux`, `screen`, `docker run -d`,
+  `systemd-run`) may survive `rm`, which then says the port still listens and exits `1`. The
+  skill tells agents to start servers only this way. Routes and exit codes: [API reference](https://github.com/Ark0N/Codeman/blob/master/docs/api-reference.md#previews-apiv1sessionsidpreviews).
 - **`inspect`, `stage`, `submit`** are experimental and opt-in: they answer `403 FORBIDDEN`
   naming the setting until **Experimental agent coordination** is on (see
   [Settings Reference](Settings-Reference); `agentCoordinationEnabled`, synced, off by

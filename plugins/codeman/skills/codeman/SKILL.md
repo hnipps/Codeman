@@ -492,6 +492,8 @@ plain-text 401: see §6 and [the symptom gallery](reference/endpoints.md#symptom
 block is the whole thing. Run it, report, and stop reading. §2 onward is for jobs this
 does not cover; you are not being careless by not reading them.**
 
+**A dev server, yours or a worker's, starts only with `codeman agent preview add <name> --cmd "<server command with {port}>"`**, never in a shell, never daemonized: see [§5.16](reference/verbs.md#516-previews).
+
 Fill in the case names and the prompts, then run it as your FIRST Bash call: no
 standalone preamble check before it (line one below IS that check), and no
 reconnaissance. `ls ~/codeman-cases` answers nothing this block needs: invented
