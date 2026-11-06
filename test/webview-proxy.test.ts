@@ -378,6 +378,26 @@ describe('rewriteHtml', () => {
     const html = '<head></head><script src="/a.js"></script>';
     expect(rewriteHtml(html, CAP)).toBe(rewriteHtml(html, CAP));
   });
+
+  it('adds no import map unless asked', () => {
+    expect(rewriteHtml('<head></head>', CAP)).not.toContain('importmap');
+  });
+
+  it('with moduleMap, maps root-absolute module specifiers into the prefix before any page script', () => {
+    const out = rewriteHtml('<head></head><script type="module" src="/src/main.jsx"></script>', CAP, '', {
+      moduleMap: true,
+    });
+    const match = /<script type="importmap">(.*?)<\/script>/.exec(out);
+    expect(JSON.parse(match![1])).toEqual({ imports: { '/': PREFIX, [PREFIX]: PREFIX } });
+    expect(out.indexOf('importmap')).toBeLessThan(out.indexOf('src/main.jsx'));
+  });
+
+  it('with moduleMap, leaves a page that ships its own import map alone', () => {
+    const out = rewriteHtml('<head><script type="importmap">{"imports":{}}</script></head>', CAP, '', {
+      moduleMap: true,
+    });
+    expect(out.match(/importmap/g)).toHaveLength(1);
+  });
 });
 
 describe('buildProxyCorsHeaders', () => {

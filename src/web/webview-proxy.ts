@@ -647,6 +647,25 @@ try{
 }
 
 /**
+ * An import map that sends root-absolute module specifiers into the prefix.
+ *
+ * A dev server such as Vite serves modules that import `/src/App.jsx` or
+ * `/@vite/client`, and its HMR client computes `import(base + path)` at runtime.
+ * Neither `<base>` nor the shim reaches a module specifier, and the sandboxed frame's
+ * opaque origin means the request carries no Referer for the 404 fallback, so the
+ * module graph died at Codeman's root and the frame stayed blank. An import map is
+ * the one layer the browser applies to every static and dynamic import, so no
+ * JavaScript response has to be rewritten. The prefix maps to itself so an
+ * already-rebased specifier is not prefixed twice. A page with its own import map
+ * keeps it alone: browsers before multiple-map support reject a second one.
+ */
+function moduleImportMap(html: string, prefix: string): string {
+  if (/<script\b[^>]*\btype\s*=\s*["']?importmap/i.test(html)) return '';
+  const map = JSON.stringify({ imports: { '/': prefix, [prefix]: prefix } }).replace(/</g, '\\u003c');
+  return `<script type="importmap">${map}</script>`;
+}
+
+/**
  * Inject `<base href="/webview/<cap>/">` plus the runtime URL shim, and rebase
  * root-absolute `src`/`href`/`action` attributes, which `<base>` alone does not
  * affect.
@@ -655,7 +674,12 @@ try{
  * relative URLs, attribute rewriting for root-absolute markup, and the shim for
  * URLs built at runtime.
  */
-export function rewriteHtml(html: string, capability: string, basePath = ''): string {
+export function rewriteHtml(
+  html: string,
+  capability: string,
+  basePath = '',
+  { moduleMap = false }: { moduleMap?: boolean } = {}
+): string {
   const prefix = proxyPrefixFor(capability, basePath);
 
   // Fresh regexes per call: module-level /g patterns carry `lastIndex` between calls.
@@ -666,7 +690,10 @@ export function rewriteHtml(html: string, capability: string, basePath = ''): st
   // A page that ships its own <base> keeps it (overriding it would break the
   // author's intent), but it STILL needs the shim, which is the layer that
   // catches runtime-built URLs. So only the base tag is conditional.
-  const injected = (/<base\b/i.test(rebased) ? '' : `<base href="${prefix}">`) + runtimeUrlShim(prefix);
+  const injected =
+    (/<base\b/i.test(rebased) ? '' : `<base href="${prefix}">`) +
+    runtimeUrlShim(prefix) +
+    (moduleMap ? moduleImportMap(rebased, prefix) : '');
 
   const headMatch = /<head\b[^>]*>/i.exec(rebased);
   if (headMatch) {
