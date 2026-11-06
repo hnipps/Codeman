@@ -656,11 +656,15 @@ try{
  * module graph died at Codeman's root and the frame stayed blank. An import map is
  * the one layer the browser applies to every static and dynamic import, so no
  * JavaScript response has to be rewritten. The prefix maps to itself so an
- * already-rebased specifier is not prefixed twice. A page with its own import map
- * keeps it alone: browsers before multiple-map support reject a second one.
+ * already-rebased specifier is not prefixed twice. A page whose served HTML has its
+ * own import map tag keeps it alone: browsers before multiple-map support reject a
+ * second one. The check is a scan of the markup outside comments, not a parse, so a
+ * map the page adds by script or writes with an encoded `type` is not seen, and
+ * Codeman's map, coming first, then wins for root-absolute specifiers.
  */
 function moduleImportMap(html: string, prefix: string): string {
-  if (/<script\b[^>]*\btype\s*=\s*["']?importmap/i.test(html)) return '';
+  const markup = html.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+  if (/<script\b[^>]*\btype\s*=\s*(["']?)importmap\1(?=[\s>/])/i.test(markup)) return '';
   const map = JSON.stringify({ imports: { '/': prefix, [prefix]: prefix } }).replace(/</g, '\\u003c');
   return `<script type="importmap">${map}</script>`;
 }

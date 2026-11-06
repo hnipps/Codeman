@@ -398,6 +398,18 @@ describe('rewriteHtml', () => {
     });
     expect(out.match(/importmap/g)).toHaveLength(1);
   });
+
+  it('with moduleMap, a commented-out import map tag or an importmap-shim still gets the map', () => {
+    for (const page of [
+      '<head><!-- <script type="importmap">{}</script> --></head>',
+      '<head><script type="importmap-shim">{"imports":{}}</script></head>',
+    ]) {
+      const out = rewriteHtml(page, CAP, '', { moduleMap: true });
+      expect(out).toContain(
+        `<script type="importmap">${JSON.stringify({ imports: { '/': PREFIX, [PREFIX]: PREFIX } })}`
+      );
+    }
+  });
 });
 
 describe('buildProxyCorsHeaders', () => {
