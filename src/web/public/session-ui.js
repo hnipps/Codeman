@@ -5965,3 +5965,457 @@ Object.defineProperty(CodemanApp.prototype, 'runMode', {
     this._runMode = firstEnabled ? firstEnabled.id : 'claude';
   },
 });
+
+// ── Session previews ────────────────────────────────────────────────────────
+//
+// A preview is a dev server Codeman runs for a session, shown through a
+// session-origin web tab that never enters the tab strip. The session tab gets a
+// badge while one is unopened, and the active session gets a Terminal / Preview
+// switch under the strip. A new preview never opens or takes focus by itself.
+//
+// State, all keyed by ids the server owns:
+//   sessionPreviews   sessionId -> PreviewView[] (GET /api/previews, sorted by name)
+//   _previewViews     sessionId -> webviewId shown, absent = Terminal (localStorage)
+//   _seenPreviews     webviewIds the operator has opened on this device (localStorage)
+//   _previewNoAnswer  webviewIds whose proxy answered 5xx the last time they were opened
+
+const PREVIEW_VIEWS_KEY = 'codeman-preview-views';
+const PREVIEW_SEEN_KEY = 'codeman-seen-previews';
+
+function readPreviewStore(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || 'null');
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writePreviewStore(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* private mode / quota: the view and the badge are conveniences */
+  }
+}
+
+Object.assign(CodemanApp.prototype, {
+  _initPreviewState() {
+    if (this._previewViews) return;
+    this.sessionPreviews = this.sessionPreviews || new Map();
+    this._previewViews = new Map(Object.entries(readPreviewStore(PREVIEW_VIEWS_KEY, {})));
+    this._seenPreviews = new Set(readPreviewStore(PREVIEW_SEEN_KEY, []));
+    this._previewNoAnswer = new Set();
+  },
+
+  async refreshSessionPreviews() {
+    this._initPreviewState();
+    const data = await this._apiJson('/api/previews');
+    if (!data) return;
+    const bySession = new Map();
+    for (const preview of data.previews || []) {
+      if (!bySession.has(preview.sessionId)) bySession.set(preview.sessionId, []);
+      bySession.get(preview.sessionId).push(preview);
+    }
+    for (const list of bySession.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    this.sessionPreviews = bySession;
+    this._prunePreviewStores();
+    this._paintPreviewBadges();
+    this._syncSessionPreviewView();
+  },
+
+  _prunePreviewStores() {
+    const live = new Set([...this.sessionPreviews.values()].flat().map((p) => p.webviewId));
+    const seen = [...this._seenPreviews].filter((id) => live.has(id));
+    if (seen.length !== this._seenPreviews.size) {
+      this._seenPreviews = new Set(seen);
+      writePreviewStore(PREVIEW_SEEN_KEY, seen);
+    }
+    let viewsChanged = false;
+    for (const [sessionId, webviewId] of this._previewViews) {
+      if (!live.has(webviewId)) {
+        this._previewViews.delete(sessionId);
+        viewsChanged = true;
+      }
+    }
+    if (viewsChanged) this._persistPreviewViews();
+  },
+
+  _persistPreviewViews() {
+    writePreviewStore(PREVIEW_VIEWS_KEY, Object.fromEntries(this._previewViews));
+  },
+
+  _sessionPreviewList(sessionId) {
+    return (sessionId && this.sessionPreviews?.get(sessionId)) || [];
+  },
+
+  _unseenPreviewCount(sessionId) {
+    return this._sessionPreviewList(sessionId).filter((p) => !this._seenPreviews?.has(p.webviewId)).length;
+  },
+
+  /** Called at the tail of both tab render paths, which rebuild or patch the rows. */
+  _paintPreviewBadges() {
+    const container = document.getElementById('sessionTabs');
+    if (!container || !this._seenPreviews) return;
+    for (const tab of container.querySelectorAll('.session-tab[data-id]')) {
+      const count = this._unseenPreviewCount(tab.dataset.id);
+      let badge = tab.querySelector(':scope > .tab-preview-badge');
+      if (!count) {
+        badge?.remove();
+        continue;
+      }
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'tab-preview-badge';
+        tab.insertBefore(badge, tab.querySelector(':scope > .tab-actions'));
+      }
+      const label = count === 1 ? '1 new preview' : `${count} new previews`;
+      if (badge.textContent !== String(count)) badge.textContent = String(count);
+      badge.setAttribute('aria-label', label);
+      badge.title = label;
+    }
+  },
+
+  _ensurePreviewSwitch() {
+    let bar = document.getElementById('previewSwitch');
+    if (bar) return bar;
+    const main = document.querySelector('.main');
+    if (!main) return null;
+    bar = document.createElement('div');
+    bar.id = 'previewSwitch';
+    bar.className = 'preview-switch';
+    bar.hidden = true;
+    main.parentNode.insertBefore(bar, main);
+    return bar;
+  },
+
+  /**
+   * Make the screen match the stored view of the active session: the switch for a
+   * session with previews, and either its terminal or the chosen preview. Safe to
+   * call at any time; it never picks a preview the operator did not pick.
+   */
+  _syncSessionPreviewView() {
+    this._initPreviewState();
+    const bar = this._ensurePreviewSwitch();
+    const main = document.querySelector('.main');
+    if (!bar || !main) return;
+    if (this.activeWebviewId) {
+      bar.hidden = true;
+      main.classList.remove('preview-active');
+      document.querySelector('#webviewLayer .preview-card')?.remove();
+      this._activePreviewWebviewId = null;
+      return;
+    }
+    const sessionId = this.activeSessionId;
+    const owned = !main.classList.contains('tiles-active') && this.sessions?.has?.(sessionId);
+    const list = owned ? this._sessionPreviewList(sessionId) : [];
+    const current = list.find((p) => p.webviewId === this._previewViews.get(sessionId)) || null;
+
+    if (!list.length) {
+      bar.hidden = true;
+      bar.replaceChildren();
+    } else {
+      this._renderPreviewSwitch(bar, sessionId, list, current);
+      bar.hidden = false;
+    }
+
+    if (current) this._showPreviewStage(current);
+    else if (main.classList.contains('preview-active')) this._showTerminalStage();
+  },
+
+  _renderPreviewSwitch(bar, sessionId, list, current) {
+    const seg = document.createElement('div');
+    seg.className = 'preview-switch-seg';
+    seg.setAttribute('role', 'tablist');
+    seg.setAttribute('aria-label', 'Session view');
+
+    const tab = (label, selected, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'preview-switch-option' + (selected ? ' on' : '');
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      button.addEventListener('click', onClick);
+      const text = document.createElement('span');
+      text.textContent = label;
+      button.appendChild(text);
+      seg.appendChild(button);
+      return button;
+    };
+
+    tab('Terminal', !current, () => this.showSessionTerminal(sessionId)).dataset.view = 'terminal';
+    // One preview reads "Preview: web"; with more, the names alone keep the row narrow on a phone.
+    for (const preview of list) {
+      const label = list.length === 1 ? `Preview: ${preview.name}` : preview.name;
+      const button = tab(label, current?.webviewId === preview.webviewId, () =>
+        this.showSessionPreview(sessionId, preview.webviewId)
+      );
+      button.dataset.webviewId = preview.webviewId;
+      button.setAttribute('aria-label', `Preview ${preview.name}`);
+      button.setAttribute('data-i18n-skip', '');
+      if (preview.state !== 'running') {
+        const state = document.createElement('span');
+        state.className = 'preview-switch-state';
+        state.textContent = preview.state;
+        button.appendChild(state);
+      }
+      if (!this._seenPreviews.has(preview.webviewId)) {
+        const dot = document.createElement('span');
+        dot.className = 'preview-switch-new';
+        dot.setAttribute('aria-label', 'new');
+        button.appendChild(dot);
+      }
+    }
+
+    const parts = [seg];
+    if (current) {
+      const meta = document.createElement('div');
+      meta.className = 'preview-switch-meta';
+      const port = document.createElement('span');
+      port.className = 'preview-switch-port';
+      port.setAttribute('data-i18n-skip', '');
+      port.textContent = `:${current.port}`;
+      port.title = `${current.name} on port ${current.port}`;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'preview-switch-delete';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', `Delete preview ${current.name}`);
+      del.addEventListener('click', () => this.deleteSessionPreview(sessionId, current.name));
+      meta.append(port, del);
+      parts.push(meta);
+    }
+    bar.replaceChildren(...parts);
+    // Never scrollIntoView(): on a phone it scrolls the document under the fixed header.
+    const on = seg.querySelector('.on');
+    if (on && on.offsetLeft + on.offsetWidth > seg.clientWidth) {
+      seg.scrollLeft = on.offsetLeft + on.offsetWidth - seg.clientWidth;
+    }
+  },
+
+  /** selectSession(): bring back the session's own view, re-reading a shown preview's state. */
+  _onSessionSelectedForPreviews(sessionId) {
+    this._initPreviewState();
+    this._syncSessionPreviewView();
+    const webviewId = this._previewViews.get(sessionId);
+    if (webviewId) void this._recheckPreview(sessionId, webviewId);
+  },
+
+  /** The switch's Preview button: an explicit choice, so it marks the preview seen. */
+  async showSessionPreview(sessionId, webviewId) {
+    this._initPreviewState();
+    this._previewViews.set(sessionId, webviewId);
+    this._persistPreviewViews();
+    if (!this._seenPreviews.has(webviewId)) {
+      this._seenPreviews.add(webviewId);
+      writePreviewStore(PREVIEW_SEEN_KEY, [...this._seenPreviews]);
+    }
+    this._previewNoAnswer.delete(webviewId);
+    this._paintPreviewBadges();
+    this._syncSessionPreviewView();
+    await this._recheckPreview(sessionId, webviewId);
+  },
+
+  showSessionTerminal(sessionId) {
+    this._initPreviewState();
+    this._previewViews.delete(sessionId);
+    this._persistPreviewViews();
+    this._syncSessionPreviewView();
+    const touch = typeof MobileDetection !== 'undefined' && MobileDetection.isTouchDevice?.();
+    if (this.activeSessionId === sessionId && !touch) this.terminal?.focus?.();
+  },
+
+  /**
+   * Nothing tells the page that a preview's server died: its state moves only on the
+   * server's minute pass, without an event. So the state is re-read when the
+   * operator opens the preview, and the proxy is asked once whether anything answers.
+   */
+  async _recheckPreview(sessionId, webviewId) {
+    const data = await this._apiJson(`/api/sessions/${encodeURIComponent(sessionId)}/previews`);
+    if (data?.previews) {
+      const list = data.previews.slice().sort((a, b) => a.name.localeCompare(b.name));
+      if (list.length) this.sessionPreviews.set(sessionId, list);
+      else this.sessionPreviews.delete(sessionId);
+    }
+    const preview = this._sessionPreviewList(sessionId).find((p) => p.webviewId === webviewId);
+    if (preview?.state === 'running' && !(await this._previewAnswers(webviewId))) {
+      this._previewNoAnswer.add(webviewId);
+    }
+    this._paintPreviewBadges();
+    this._syncSessionPreviewView();
+  },
+
+  async _previewAnswers(webviewId) {
+    const embedUrl = await this._previewEmbedUrl?.(webviewId);
+    if (!embedUrl) return false;
+    const abort = new AbortController();
+    try {
+      // no-store: a page the browser cached would answer for a server that is gone.
+      const res = await fetch(CodemanBase.url(embedUrl), { cache: 'no-store', signal: abort.signal });
+      return res.status < 500;
+    } catch {
+      return false;
+    } finally {
+      abort.abort();
+    }
+  },
+
+  /** Shown in #webviewLayer in place of a frame whenever the page cannot be shown. */
+  _previewCardFor(preview) {
+    const card = document.createElement('div');
+    card.className = 'preview-card';
+    card.dataset.webviewId = preview.webviewId;
+    card.setAttribute('role', 'status');
+    const inner = document.createElement('div');
+    inner.className = 'preview-card-inner';
+
+    const title = document.createElement('h3');
+    title.setAttribute('data-i18n-skip', '');
+    const noAnswer = preview.state === 'running';
+    title.textContent = noAnswer
+      ? `${preview.name} is not answering`
+      : `${preview.name} ${preview.state === 'stopped' ? 'is stopped' : 'exited'}`;
+
+    const state = document.createElement('p');
+    state.className = 'preview-card-state';
+    state.textContent = noAnswer
+      ? `Nothing answers on :${preview.port}. The server may have crashed.`
+      : preview.state === 'stopped'
+        ? `Codeman stopped its server on :${preview.port} after it went unopened.`
+        : `Its server on :${preview.port} ended on its own.`;
+
+    const cmd = document.createElement('code');
+    cmd.className = 'preview-card-cmd';
+    cmd.setAttribute('data-i18n-skip', '');
+    cmd.textContent = preview.cmd;
+
+    inner.append(title, state, cmd);
+
+    if (preview.stillListening) {
+      const pids = preview.stillListening.pids?.length ? ` (pid ${preview.stillListening.pids.join(', ')})` : '';
+      const warn = document.createElement('p');
+      warn.className = 'preview-card-listening';
+      warn.textContent =
+        `A server is still listening on :${preview.stillListening.port}${pids}, outside Codeman. ` +
+        'Codeman cannot stop it from here; stop it where it was started.';
+      inner.appendChild(warn);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'preview-card-actions';
+    const restart = document.createElement('button');
+    restart.type = 'button';
+    restart.className = 'btn-secondary preview-card-restart';
+    restart.textContent = 'Restart';
+    restart.addEventListener('click', () => this.restartSessionPreview(preview.sessionId, preview.name));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn-secondary preview-card-delete';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => this.deleteSessionPreview(preview.sessionId, preview.name));
+    actions.append(restart, del);
+    inner.appendChild(actions);
+
+    card.appendChild(inner);
+    return card;
+  },
+
+  _showPreviewStage(preview) {
+    const main = document.querySelector('.main');
+    const layer = document.getElementById('webviewLayer');
+    if (!main || !layer) return;
+    main.classList.add('webview-active', 'preview-active');
+    this.hideWelcome?.();
+    layer.querySelector('.preview-card')?.remove();
+    const showCard = preview.state !== 'running' || this._previewNoAnswer.has(preview.webviewId);
+    if (showCard) {
+      for (const frame of layer.querySelectorAll('.webview-frame')) frame.classList.remove('active');
+      layer.appendChild(this._previewCardFor(preview));
+      this._activePreviewWebviewId = null;
+      return;
+    }
+    this._activePreviewWebviewId = preview.webviewId;
+    void this._mountPreviewFrame?.(preview.webviewId);
+  },
+
+  _showTerminalStage() {
+    const main = document.querySelector('.main');
+    main?.classList.remove('webview-active', 'preview-active');
+    const layer = document.getElementById('webviewLayer');
+    layer?.querySelector('.preview-card')?.remove();
+    for (const frame of layer?.querySelectorAll('.webview-frame') || []) frame.classList.remove('active');
+    this._activePreviewWebviewId = null;
+  },
+
+  async restartSessionPreview(sessionId, name) {
+    const preview = this._sessionPreviewList(sessionId).find((p) => p.name === name);
+    if (!preview) return;
+    const path = `/api/sessions/${encodeURIComponent(sessionId)}/previews/${encodeURIComponent(name)}`;
+    const res = await this._api(path, { method: 'PUT', body: { cmd: preview.cmd } });
+    const body = await this._previewResponseBody(res);
+    if (!res?.ok) {
+      this.showToast?.(`Could not restart ${name}: ${body?.error || 'no answer from Codeman'}`, 'error', {
+        duration: 0,
+      });
+      return;
+    }
+    this._previewNoAnswer.delete(preview.webviewId);
+    this._dropPreviewFrame?.(preview.webviewId);
+    const leftRunning = body?.data?.leftRunning;
+    if (leftRunning) {
+      this.showToast?.(
+        `${name} restarted, but an earlier server still listens on :${leftRunning.port} outside Codeman. ` +
+          'Codeman cannot stop it from here.',
+        'warning',
+        { duration: 0 }
+      );
+    }
+    await this.refreshSessionPreviews();
+  },
+
+  async deleteSessionPreview(sessionId, name) {
+    if (!confirm(`Delete preview "${name}" and stop its server?`)) return;
+    const preview = this._sessionPreviewList(sessionId).find((p) => p.name === name);
+    const path = `/api/sessions/${encodeURIComponent(sessionId)}/previews/${encodeURIComponent(name)}`;
+    const res = await this._api(path, { method: 'DELETE' });
+    const body = await this._previewResponseBody(res);
+    if (!res?.ok && res?.status !== 404) {
+      const reason = body?.error || 'no answer from Codeman';
+      this.showToast?.(`${name} was not deleted: ${reason}`, 'error', { duration: 0 });
+      return;
+    }
+    const data = body?.data || {};
+    if (data.previewStop === 'deferred') {
+      this.showToast?.(
+        `${name} was removed, but this Codeman may not stop its server. The live Codeman stops it on its next check.`,
+        'warning',
+        { duration: 0 }
+      );
+    } else if (data.leftRunning) {
+      this.showToast?.(
+        `${name} was deleted, but a server still listens on :${data.leftRunning.port} outside Codeman. ` +
+          'Codeman cannot stop it from here.',
+        'warning',
+        { duration: 0 }
+      );
+    }
+    if (preview) {
+      this._dropPreviewFrame?.(preview.webviewId);
+      const list = this._sessionPreviewList(sessionId).filter((p) => p.webviewId !== preview.webviewId);
+      if (list.length) this.sessionPreviews.set(sessionId, list);
+      else this.sessionPreviews.delete(sessionId);
+    }
+    this._prunePreviewStores();
+    this._paintPreviewBadges();
+    this._syncSessionPreviewView();
+  },
+
+  async _previewResponseBody(res) {
+    if (!res) return null;
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+});
