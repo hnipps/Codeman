@@ -37,6 +37,7 @@ export {
   removeOrphanSessionWebviews,
   removeSessionWebviews,
   sessionWebviewIds,
+  webviewsWithOpenSockets,
   tryWebviewRefererFallback,
 } from './webview-routes.js';
 export { registerPreviewRoutes } from './preview-routes.js';

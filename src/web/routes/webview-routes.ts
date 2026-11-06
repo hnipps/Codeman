@@ -216,6 +216,11 @@ export function removeOrphanSessionWebviews(
   return removeWebviewsWhere(ctx, (w) => w.origin.kind === 'session' && !sessionExists(w.origin.sessionId));
 }
 
+/** Web tabs with an open proxied WebSocket. A preview a viewer still holds a socket to is being watched. */
+export function webviewsWithOpenSockets(): string[] {
+  return [...socketCounts.keys()];
+}
+
 export async function sessionWebviewIds(): Promise<Set<string>> {
   const list = await readWebviews(configDir());
   return new Set(list.filter((w) => w.origin.kind === 'session').map((w) => w.id));
@@ -389,13 +394,13 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
 
     webviewCapabilities.revokeWebview(id);
     socketCounts.delete(id);
-    await ctx.previews?.remove(id);
+    const leftRunning = (await ctx.previews?.remove(id, result.owner))?.leftRunning;
     ctx.broadcast(SseEvent.WebviewChanged, {
       action: 'deleted',
       id,
       owner: ownerLayoutKey(result.owner),
     });
-    return { success: true, data: { id } };
+    return { success: true, data: { id, ...(leftRunning ? { leftRunning } : {}) } };
   });
 
   /**

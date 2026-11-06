@@ -40,3 +40,24 @@ export interface PreviewView extends PreviewProcess {
   /** True once the port accepted a connection during the PUT. */
   ready?: boolean;
 }
+
+/** A server still listening after its preview was stopped. */
+export interface PreviewLeftRunning {
+  port: number;
+  /** Listeners of Codeman's uid on the port; empty when the listener belongs to another uid (Docker, sudo). */
+  pids: number[];
+}
+
+/**
+ * What stays of a preview whose server Codeman could not stop: the command handed the
+ * server to a process outside the marker (tmux, `env -i`, Docker, `systemd-run`), and
+ * Codeman never signals a listener without the marker. Kept until the port is free.
+ */
+export interface PreviewLeftRunningRecord extends PreviewLeftRunning {
+  webviewId: string;
+  sessionId: string;
+  name: string;
+  owner?: string;
+  logPath: string;
+  since: number;
+}

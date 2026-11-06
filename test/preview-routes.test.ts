@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { WebServer } from '../src/web/server.js';
 import { TmuxManager } from '../src/tmux-manager.js';
-import { readProcSnapshot, readProcStat } from '../src/preview-proc.js';
+import { findListenerPids, readProcSnapshot, readProcStat } from '../src/preview-proc.js';
+import { deployRole } from '../src/deploy-role.js';
 import { webviewCapabilities } from '../src/webview-capabilities.js';
 
 vi.spyOn(TmuxManager, 'isTmuxAvailable').mockReturnValue(true);
@@ -34,7 +36,8 @@ async function createSession(name: string): Promise<string> {
   return body.data.id ?? body.data.session?.id;
 }
 
-const put = (sid: string, name: string, cmd = SERVER) => call('PUT', `/api/v1/sessions/${sid}/previews/${name}`, { cmd });
+const put = (sid: string, name: string, cmd = SERVER) =>
+  call('PUT', `/api/v1/sessions/${sid}/previews/${name}`, { cmd });
 
 function markerPids(): number[] {
   return [...readProcSnapshot().values()].filter((e) => !e.zombie && e.previewOwner === dataDir).map((e) => e.pid);
@@ -262,4 +265,94 @@ describe('revoking a capability', () => {
       upstream.close();
     }
   });
+});
+
+describe('fix round 1', () => {
+  const killListener = (port: number) => {
+    for (const pid of findListenerPids(port)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  };
+
+  it('DELETE says a server that escaped the marker is still listening, and the list shows it', async () => {
+    const sid = await createSession('prev-escaped');
+    const created = (await put(sid, 'web', `(env -i setsid ${SERVER} >/dev/null 2>&1 &)`)).body.data;
+    try {
+      const deadline = Date.now() + 5000;
+      while (!(await portOpen(created.port)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      const pids = findListenerPids(created.port);
+      expect(pids).toHaveLength(1);
+      const { status, body } = await call('DELETE', `/api/v1/sessions/${sid}/previews/web`);
+      expect(status).toBe(200);
+      expect(body.data.leftRunning).toEqual({ port: created.port, pids });
+      const listed = (await call('GET', '/api/v1/previews')).body.data;
+      expect(listed.previews).toEqual([]);
+      expect(listed.leftRunning).toEqual([
+        expect.objectContaining({ port: created.port, pids, sessionId: sid, name: 'web' }),
+      ]);
+      expect((await call('GET', `/api/v1/sessions/${sid}/previews`)).body.data.leftRunning).toHaveLength(1);
+    } finally {
+      killListener(created.port);
+      await new Promise((r) => setTimeout(r, 200));
+      await server.reconcilePreviews(false);
+    }
+    expect((await call('GET', '/api/v1/previews')).body.data.leftRunning).toEqual([]);
+  });
+
+  it('DELETE is refused on a deploy colour that may not write, and stops nothing', async () => {
+    const sid = await createSession('prev-colour');
+    const created = (await put(sid, 'web')).body.data;
+    deployRole.initFromEnv({ CODEMAN_DEPLOY_ROLE: 'candidate' });
+    try {
+      const { status, body } = await call('DELETE', `/api/v1/sessions/${sid}/previews/web`);
+      expect(status).toBe(409);
+      expect(body.errorCode).toBe('CONFLICT');
+      expect(await portOpen(created.port)).toBe(true);
+    } finally {
+      deployRole.initFromEnv({});
+    }
+  });
+
+  it('concurrent PUTs stop at the eight-preview limit', async () => {
+    const sid = await createSession('prev-limit');
+    const results = await Promise.all(Array.from({ length: 9 }, (_, i) => put(sid, `n${i}`, 'exit 0')));
+    expect(results.filter((r) => r.status === 200)).toHaveLength(8);
+    const refused = results.filter((r) => r.status === 400);
+    expect(refused).toHaveLength(1);
+    expect(refused[0].body.error).toContain('at most 8 previews');
+    expect(server.previews.list().filter((p) => p.sessionId === sid)).toHaveLength(8);
+  });
+
+  it('an open proxied WebSocket keeps a preview from being stopped as idle', async () => {
+    const { WebSocket } = await import('ws');
+    const wsModule = createRequire(import.meta.url).resolve('ws');
+    const cmd = `${process.execPath} -e "const {WebSocketServer}=require(process.argv[2]);new WebSocketServer({port:Number(process.argv[1])})" {port} ${wsModule}`;
+    const sid = await createSession('prev-ws-idle');
+    const created = (await put(sid, 'live', cmd)).body.data;
+    expect(created.ready).toBe(true);
+    const saved = process.env.CODEMAN_PREVIEW_IDLE_STOP_MS;
+    process.env.CODEMAN_PREVIEW_IDLE_STOP_MS = '1500';
+    try {
+      const client = new WebSocket(`ws://localhost:${server.boundPort}${created.url}`);
+      await new Promise((resolve, reject) => {
+        client.once('open', resolve);
+        client.once('error', reject);
+      });
+      await new Promise((r) => setTimeout(r, 2500));
+      await server.reconcilePreviews(false);
+      expect(server.previews.forWebview(created.webviewId)?.state).toBe('running');
+      const closed = new Promise((resolve) => client.once('close', resolve));
+      client.close();
+      await closed;
+      await new Promise((r) => setTimeout(r, 2500));
+      await server.reconcilePreviews(false);
+      expect(server.previews.forWebview(created.webviewId)?.state).toBe('stopped');
+      expect(await portOpen(created.port)).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.CODEMAN_PREVIEW_IDLE_STOP_MS;
+      else process.env.CODEMAN_PREVIEW_IDLE_STOP_MS = saved;
+    }
+  }, 20_000);
 });

@@ -8,7 +8,16 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, truncateSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  truncateSync,
+} from 'node:fs';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import { join } from 'node:path';
@@ -22,15 +31,18 @@ import {
   PREVIEW_ID_ENV,
   PREVIEW_OWNER_ENV,
   findListenerPids,
+  isPortListening,
   parsePreviewMarker,
   readProcSnapshot,
   readProcStat,
   type ProcEntry,
   type ProcSnapshot,
 } from './preview-proc.js';
-import type { PreviewProcess, PreviewState } from './types/preview.js';
+import type { PreviewLeftRunning, PreviewLeftRunningRecord, PreviewProcess, PreviewState } from './types/preview.js';
 
 const PREVIEWS_FILE = 'previews.json';
+const LEFT_RUNNING_FILE = 'previews-left-running.json';
+const LEFT_RUNNING_SETTLE_MS = 1000;
 
 export type PreviewEvent = 'started' | 'idle' | 'gone';
 
@@ -133,6 +145,28 @@ export function parsePreviewRecords(raw: string): PreviewProcess[] {
   });
 }
 
+export function parseLeftRunningRecords(raw: string): PreviewLeftRunningRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((row): row is PreviewLeftRunningRecord => {
+    if (!row || typeof row !== 'object') return false;
+    const r = row as Record<string, unknown>;
+    return (
+      ['webviewId', 'sessionId', 'name', 'logPath'].every((k) => typeof r[k] === 'string') &&
+      ['port', 'since'].every((k) => Number.isFinite(r[k])) &&
+      Array.isArray(r.pids) &&
+      (r.owner === undefined || typeof r.owner === 'string')
+    );
+  });
+}
+
+export class PreviewLimitError extends Error {}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function signal(pid: number, sig: NodeJS.Signals): void {
@@ -192,10 +226,19 @@ export interface PreviewStartResult {
   record: PreviewProcess;
   ready: boolean;
   host: '127.0.0.1' | '::1';
+  /** The replaced server, when it was still listening after the stop. */
+  leftRunning?: PreviewLeftRunning;
+}
+
+export interface PreviewRemoval {
+  record: PreviewProcess;
+  leftRunning?: PreviewLeftRunning;
 }
 
 export class PreviewSupervisor {
   private readonly records = new Map<string, PreviewProcess>();
+  private readonly leftRunning = new Map<number, PreviewLeftRunningRecord>();
+  private readonly sessionLocks = new Map<string, Promise<unknown>>();
   private readonly owner: string;
   private readonly now: () => number;
   private readonly idleStopMs: () => number;
@@ -219,19 +262,30 @@ export class PreviewSupervisor {
     return join(this.opts.dataDir, PREVIEWS_FILE);
   }
 
+  private get leftRunningPath(): string {
+    return join(this.opts.dataDir, LEFT_RUNNING_FILE);
+  }
+
   load(): void {
     this.records.clear();
-    let raw = '';
-    try {
-      raw = readFileSync(this.filePath, 'utf-8');
-    } catch {
-      return;
-    }
-    for (const record of parsePreviewRecords(raw)) this.records.set(record.webviewId, record);
+    this.leftRunning.clear();
+    const read = (file: string) => {
+      try {
+        return readFileSync(file, 'utf-8');
+      } catch {
+        return '[]';
+      }
+    };
+    for (const record of parsePreviewRecords(read(this.filePath))) this.records.set(record.webviewId, record);
+    for (const left of parseLeftRunningRecords(read(this.leftRunningPath))) this.leftRunning.set(left.port, left);
   }
 
   list(): PreviewProcess[] {
     return [...this.records.values()].map((r) => ({ ...r }));
+  }
+
+  listLeftRunning(): PreviewLeftRunningRecord[] {
+    return [...this.leftRunning.values()].map((r) => ({ ...r, pids: [...r.pids] }));
   }
 
   get(sessionId: string, name: string): PreviewProcess | undefined {
@@ -253,37 +307,74 @@ export class PreviewSupervisor {
     this.dirty = true;
   }
 
-  async start(input: PreviewStartInput, bindWebview: PreviewWebviewBinder): Promise<PreviewStartResult> {
+  /**
+   * Starts of one session run one at a time, readiness wait included, so the
+   * per-session limit is checked against what earlier starts really created and an
+   * earlier caller is not handed `ready: false` for a server a later start replaced.
+   */
+  start(
+    input: PreviewStartInput,
+    bindWebview: PreviewWebviewBinder,
+    { maxPerSession = Infinity }: { maxPerSession?: number } = {}
+  ): Promise<PreviewStartResult> {
+    const previous = this.sessionLocks.get(input.sessionId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => this.startNow(input, bindWebview, maxPerSession));
+    const tail = run.catch(() => undefined);
+    this.sessionLocks.set(input.sessionId, tail);
+    void tail.then(() => {
+      if (this.sessionLocks.get(input.sessionId) === tail) this.sessionLocks.delete(input.sessionId);
+    });
+    return run;
+  }
+
+  private async startNow(
+    input: PreviewStartInput,
+    bindWebview: PreviewWebviewBinder,
+    maxPerSession: number
+  ): Promise<PreviewStartResult> {
+    let leftRunning: PreviewLeftRunning | undefined;
     const record = await this.serialize(async () => {
       const existing = this.find(input.sessionId, input.name);
-      if (existing) await this.terminate(existing);
-      const port = (existing && (await bindablePort(existing.port))) ?? (await bindablePort(0));
+      if (!existing) {
+        const count = [...this.records.values()].filter((r) => r.sessionId === input.sessionId).length;
+        if (count >= maxPerSession) throw new PreviewLimitError(`A session can run at most ${maxPerSession} previews`);
+      }
+      if (existing) {
+        await this.terminate(existing);
+        leftRunning = await this.stillListening(existing.port);
+      }
+      const port = (existing && !leftRunning && (await bindablePort(existing.port))) || (await bindablePort(0));
       if (!port) throw new Error('No free port for the preview');
+      this.leftRunning.delete(port);
       const webviewId = await bindWebview(port, existing?.webviewId);
       if (existing && existing.webviewId !== webviewId) this.records.delete(existing.webviewId);
       const next = this.spawnServer(input, webviewId, port, existing?.state);
       this.records.set(webviewId, next);
+      if (existing && leftRunning) this.keepLeftRunning(existing, leftRunning, next.logPath);
       await this.persist();
       return next;
     });
     const { ready, host } = await this.waitReady(record);
-    return { record: { ...record }, ready, host };
+    return { record: { ...record }, ready, host, ...(leftRunning ? { leftRunning } : {}) };
   }
 
-  remove(webviewId: string): Promise<PreviewProcess | null> {
+  remove(webviewId: string, owner?: string): Promise<PreviewRemoval | null> {
     return this.serialize(async () => {
       const record = this.records.get(webviewId);
       if (!record) return null;
-      await this.drop(record);
+      const leftRunning = await this.drop(record, owner);
       await this.persist();
-      return record;
+      return { record, ...(leftRunning ? { leftRunning } : {}) };
     });
   }
 
-  removeSession(sessionId: string): Promise<PreviewProcess[]> {
+  removeSession(sessionId: string, owner?: string): Promise<PreviewRemoval[]> {
     return this.serialize(async () => {
-      const removed = [...this.records.values()].filter((r) => r.sessionId === sessionId);
-      for (const record of removed) await this.drop(record);
+      const removed: PreviewRemoval[] = [];
+      for (const record of [...this.records.values()].filter((r) => r.sessionId === sessionId)) {
+        const leftRunning = await this.drop(record, owner);
+        removed.push({ record, ...(leftRunning ? { leftRunning } : {}) });
+      }
       if (removed.length > 0) await this.persist();
       return removed;
     });
@@ -324,6 +415,12 @@ export class PreviewSupervisor {
       }
       if (plan.orphanPids.length > 0) {
         await this.terminatePids(new Map(plan.orphanPids.map((pid) => [pid, snapshot.get(pid)!.startTicks])));
+      }
+      for (const left of [...this.leftRunning.values()]) {
+        if (isPortListening(left.port)) continue;
+        this.leftRunning.delete(left.port);
+        if (!this.records.has(left.webviewId)) await fs.rm(left.logPath, { force: true }).catch(() => undefined);
+        changed = true;
       }
       if (changed) await this.persist();
       return plan;
@@ -458,10 +555,46 @@ export class PreviewSupervisor {
     return previewLiveness(record, readProcSnapshot(), this.owner).markerPids.length > 0;
   }
 
-  private async drop(record: PreviewProcess): Promise<void> {
+  private async drop(record: PreviewProcess, owner?: string): Promise<PreviewLeftRunning | undefined> {
     await this.terminate(record);
     this.records.delete(record.webviewId);
-    await fs.rm(record.logPath, { force: true }).catch(() => undefined);
+    const leftRunning = await this.stillListening(record.port);
+    if (leftRunning) this.keepLeftRunning(record, leftRunning, record.logPath, owner);
+    else await fs.rm(record.logPath, { force: true }).catch(() => undefined);
+    return leftRunning;
+  }
+
+  /**
+   * A stopped server's socket closes as it exits, so the port gets a moment to free
+   * before a listener on it counts as a server Codeman could not stop.
+   */
+  private async stillListening(port: number): Promise<PreviewLeftRunning | undefined> {
+    const deadline = Date.now() + LEFT_RUNNING_SETTLE_MS;
+    while (isPortListening(port)) {
+      if (Date.now() >= deadline) return { port, pids: findListenerPids(port) };
+      await sleep(100);
+    }
+    return undefined;
+  }
+
+  private keepLeftRunning(record: PreviewProcess, left: PreviewLeftRunning, logPath: string, owner?: string): void {
+    const pids = left.pids.length > 0 ? `pids ${left.pids.join(', ')}` : 'a process of another user';
+    const line = `[codeman] Port ${left.port} is still listening (${pids}) after "${record.name}" was stopped. The server left the preview's process group and environment, so Codeman cannot stop it; stop it where it was handed off.\n`;
+    try {
+      appendFileSync(logPath, line);
+    } catch {
+      // The log directory is gone; the record below still reports it.
+    }
+    console.warn(`[Previews] ${line.slice('[codeman] '.length).trim()}`);
+    this.leftRunning.set(left.port, {
+      webviewId: record.webviewId,
+      sessionId: record.sessionId,
+      name: record.name,
+      ...(owner !== undefined ? { owner } : {}),
+      logPath,
+      since: this.now(),
+      ...left,
+    });
   }
 
   private async terminate(record: PreviewProcess): Promise<void> {
@@ -527,5 +660,8 @@ export class PreviewSupervisor {
     const tmp = `${this.filePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await fs.writeFile(tmp, JSON.stringify([...this.records.values()], null, 2), { mode: 0o600 });
     await fs.rename(tmp, this.filePath);
+    const leftTmp = `${this.leftRunningPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    await fs.writeFile(leftTmp, JSON.stringify([...this.leftRunning.values()], null, 2), { mode: 0o600 });
+    await fs.rename(leftTmp, this.leftRunningPath);
   }
 }

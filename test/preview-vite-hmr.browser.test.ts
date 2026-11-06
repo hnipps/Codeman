@@ -20,7 +20,12 @@ const SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads allow-mo
 
 function scaffoldViteApp(root: string): string {
   const npm = (args: string[], cwd: string) =>
-    execFileSync('npm', args, { cwd, stdio: 'ignore', timeout: 300_000, env: { ...process.env, npm_config_yes: 'true' } });
+    execFileSync('npm', args, {
+      cwd,
+      stdio: 'ignore',
+      timeout: 300_000,
+      env: { ...process.env, npm_config_yes: 'true' },
+    });
   npm(['create', 'vite@latest', 'app', '--', '--template', 'react'], root);
   const app = join(root, 'app');
   npm(['install'], app);

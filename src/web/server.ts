@@ -244,6 +244,7 @@ import {
   removeSessionWebviews,
   removeOrphanSessionWebviews,
   sessionWebviewIds,
+  webviewsWithOpenSockets,
   registerPreviewRoutes,
   registerTabLayoutRoutes,
   registerMcpSyncRoutes,
@@ -418,6 +419,7 @@ export class WebServer extends EventEmitter {
   });
   private restoreSucceeded = false;
   private previewReconcileInFlight: Promise<void> | null = null;
+  private previewReconcileSweeping = false;
 
   // Git fetch on an interval (git-fetch-scheduler.ts): the due-tracking lives in the service; the server
   // lends it the facts a decision needs and stores what it reports on the session. A field initializer for
@@ -1632,7 +1634,7 @@ export class WebServer extends EventEmitter {
       await this.tabLayouts.runSessionDeletion([{ id: sessionId, owner: session.owner }], () =>
         this._doCleanupSession(sessionId, killMux, reason, false)
       );
-      await this._removeSessionWebviews(sessionId);
+      await this._removeSessionWebviews(sessionId, session.owner);
       return;
     }
     const lifecycleLog = getLifecycleLog();
@@ -1841,12 +1843,12 @@ export class WebServer extends EventEmitter {
     this.remoteWake?.drop(sessionId);
 
     this.broadcast(SseEvent.SessionDeleted, { id: sessionId });
-    if (killMux && coordinateLayout) await this._removeSessionWebviews(sessionId);
+    if (killMux && coordinateLayout) await this._removeSessionWebviews(sessionId, session?.owner);
   }
 
-  private async _removeSessionWebviews(sessionId: string): Promise<void> {
+  private async _removeSessionWebviews(sessionId: string, owner: string | undefined): Promise<void> {
     try {
-      await this.previews.removeSession(sessionId);
+      await this.previews.removeSession(sessionId, owner);
     } catch (err) {
       console.error(`[Server] Failed to stop previews of session ${sessionId}:`, err);
     }
@@ -1858,10 +1860,16 @@ export class WebServer extends EventEmitter {
   }
 
   reconcilePreviews(sweepOrphans = true): Promise<void> {
-    if (this.previewReconcileInFlight) return this.previewReconcileInFlight;
+    const inFlight = this.previewReconcileInFlight;
+    if (inFlight) {
+      if (!sweepOrphans || this.previewReconcileSweeping) return inFlight;
+      return inFlight.then(() => this.reconcilePreviews(true));
+    }
+    this.previewReconcileSweeping = sweepOrphans;
     const run = (async () => {
       const ctx = { broadcast: this.broadcast.bind(this), tabLayouts: this.tabLayouts };
       await removeOrphanSessionWebviews(ctx, (id) => this.sessions.has(id) || !!this.store.getSession(id));
+      for (const id of webviewsWithOpenSockets()) this.previews.markViewed(id);
       await this.previews.reconcile(sessionWebviewIds, { sweepOrphans });
     })()
       .catch((err) => console.error('[Previews] reconcile failed:', getErrorMessage(err)))
@@ -4314,6 +4322,9 @@ export class WebServer extends EventEmitter {
     if (!restored) throw new Error('the sessions on disk could not be restored');
     await this.finalizeRestoredState(restored);
     deployRole.enter('live');
+    // finalizeRestoredState ran as the candidate, which may not act, so the full orphan
+    // sweep the boot of a live colour runs happens here instead.
+    void this.reconcilePreviews();
     await this.writeSharedState();
     this.keepWarmService.rescheduleAll();
     await this.runLiveUpkeep(restored).catch((err) =>

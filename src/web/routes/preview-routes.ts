@@ -13,9 +13,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { MAX_PREVIEWS_PER_SESSION } from '../../config/preview-limits.js';
 import { deployRole } from '../../deploy-role.js';
-import type { PreviewSupervisor } from '../../preview-supervisor.js';
+import { PreviewLimitError, type PreviewSupervisor } from '../../preview-supervisor.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
-import type { PreviewProcess, PreviewView, Webview } from '../../types.js';
+import type { PreviewLeftRunningRecord, PreviewProcess, PreviewView, Webview } from '../../types.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
 import type { Session } from '../../session.js';
 import type { EventPort, SessionPort, TabLayoutPort } from '../ports/index.js';
@@ -58,6 +58,19 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
 
   const notFound = () => createErrorResponse(ApiErrorCode.NOT_FOUND, 'Preview not found');
 
+  const notThisColour = () =>
+    deployRole.allows('persist')
+      ? null
+      : createErrorResponse(ApiErrorCode.CONFLICT, `This server is the ${deployRole.current} deploy colour`);
+
+  const leftRunningView = ({ port, pids, sessionId, name, since }: PreviewLeftRunningRecord) => ({
+    port,
+    pids,
+    sessionId,
+    name,
+    since,
+  });
+
   app.get('/api/previews', async (req) => {
     const user = getAuthUser(req);
     const webviews = await webviewsById();
@@ -65,7 +78,11 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
       .list()
       .filter((r) => canAccessOwned(user, webviews.get(r.webviewId)?.owner ?? ctx.sessions.get(r.sessionId)?.owner))
       .map((r) => toView(r, webviews.get(r.webviewId)));
-    return { success: true, data: { previews } };
+    const leftRunning = ctx.previews
+      .listLeftRunning()
+      .filter((r) => canAccessOwned(user, r.owner ?? ctx.sessions.get(r.sessionId)?.owner))
+      .map(leftRunningView);
+    return { success: true, data: { previews, leftRunning } };
   });
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/previews', async (req) => {
@@ -75,11 +92,15 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
       .list()
       .filter((r) => r.sessionId === session.id)
       .map((r) => toView(r, webviews.get(r.webviewId)));
-    return { success: true, data: { previews } };
+    const leftRunning = ctx.previews
+      .listLeftRunning()
+      .filter((r) => r.sessionId === session.id)
+      .map(leftRunningView);
+    return { success: true, data: { previews, leftRunning } };
   });
 
   app.put<{ Params: PreviewParams }>('/api/sessions/:id/previews/:name', async (req, reply) => {
-    const { session, name, record: existing } = previewOf(req);
+    const { session, name } = previewOf(req);
     const { cmd } = parseBody(PreviewPutSchema, req.body);
     const unsupported = unsupportedSessionType(session);
     if (unsupported) {
@@ -92,22 +113,8 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
           )
         );
     }
-    if (!deployRole.allows('persist')) {
-      return reply
-        .code(409)
-        .send(createErrorResponse(ApiErrorCode.CONFLICT, `This server is the ${deployRole.current} deploy colour`));
-    }
-    const siblings = ctx.previews.list().filter((r) => r.sessionId === session.id && r.name !== name);
-    if (!existing && siblings.length >= MAX_PREVIEWS_PER_SESSION) {
-      return reply
-        .code(400)
-        .send(
-          createErrorResponse(
-            ApiErrorCode.INVALID_INPUT,
-            `A session can run at most ${MAX_PREVIEWS_PER_SESSION} previews`
-          )
-        );
-    }
+    const refused = notThisColour();
+    if (refused) return reply.code(409).send(refused);
 
     let createdId: string | undefined;
     let result;
@@ -126,21 +133,30 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
           });
           createdId = webview.id;
           return webview.id;
-        }
+        },
+        { maxPerSession: MAX_PREVIEWS_PER_SESSION }
       );
     } catch (err) {
       if (createdId && !ctx.previews.forWebview(createdId)) await removeWebview(ctx, createdId);
+      if (err instanceof PreviewLimitError) {
+        return reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, err.message));
+      }
       const message = err instanceof Error ? err.message : String(err);
       return reply.code(500).send(createErrorResponse(ApiErrorCode.OPERATION_FAILED, message));
     }
 
-    const { record, ready, host } = result;
+    const { record, ready, host, leftRunning } = result;
     if (host !== '127.0.0.1') await setWebviewUrl(ctx, record.webviewId, loopbackUrl(host, record.port));
     const current = ctx.previews.forWebview(record.webviewId) ?? record;
     const webview = (await webviewsById()).get(record.webviewId);
     return {
       success: true,
-      data: { ...toView(current, webview), url: proxyUrl(current, webview?.owner), ready },
+      data: {
+        ...toView(current, webview),
+        url: proxyUrl(current, webview?.owner),
+        ready,
+        ...(leftRunning ? { leftRunning } : {}),
+      },
     };
   });
 
@@ -152,11 +168,15 @@ export function registerPreviewRoutes(app: FastifyInstance, ctx: PreviewRouteCon
   });
 
   app.delete<{ Params: PreviewParams }>('/api/sessions/:id/previews/:name', async (req, reply) => {
-    const { name, record } = previewOf(req);
+    const { session, name, record } = previewOf(req);
     if (!record) return reply.code(404).send(notFound());
-    await ctx.previews.remove(record.webviewId);
+    const refused = notThisColour();
+    if (refused) return reply.code(409).send(refused);
+    const owner = (await webviewsById()).get(record.webviewId)?.owner ?? session.owner;
+    const removal = await ctx.previews.remove(record.webviewId, owner);
     await removeWebview(ctx, record.webviewId);
-    return { success: true, data: { name, webviewId: record.webviewId } };
+    const leftRunning = removal?.leftRunning;
+    return { success: true, data: { name, webviewId: record.webviewId, ...(leftRunning ? { leftRunning } : {}) } };
   });
 
   app.get<{ Params: PreviewParams; Querystring: { tail?: string } }>(

@@ -106,6 +106,18 @@ export function readProcSnapshot(uid: number = process.getuid?.() ?? 0): ProcSna
   return snapshot;
 }
 
+/** Whether any process, of any uid, listens on `port`. */
+export function isPortListening(port: number): boolean {
+  for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    try {
+      if (parseListenInodes(readFileSync(file, 'utf-8'), port).length > 0) return true;
+    } catch {
+      // No IPv6 on this host.
+    }
+  }
+  return false;
+}
+
 export function findListenerPids(port: number, uid: number = process.getuid?.() ?? 0): number[] {
   const inodes = new Set<string>();
   for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {

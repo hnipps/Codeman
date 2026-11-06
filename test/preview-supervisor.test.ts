@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  PreviewLimitError,
   PreviewSupervisor,
   nextPreviewState,
   parsePreviewRecords,
@@ -140,7 +141,13 @@ describe('planReconcile', () => {
     lastViewedAt: 1_000,
     ...over,
   });
-  const entry = (over: Partial<ProcEntry>): ProcEntry => ({ pid: 100, pgid: 100, startTicks: 5000, zombie: false, ...over });
+  const entry = (over: Partial<ProcEntry>): ProcEntry => ({
+    pid: 100,
+    pgid: 100,
+    startTicks: 5000,
+    zombie: false,
+    ...over,
+  });
   const snap = (...entries: ProcEntry[]) => new Map(entries.map((e) => [e.pid, e]));
   const base = { owner, now: 2_000, idleStopMs: 10_000, webviewIds: new Set(['w1']) };
 
@@ -213,7 +220,9 @@ describe('start and stop against real processes', () => {
     const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: SERVER, cwd: workDir }, bindNew);
     process.kill(-record.pgid, 'SIGKILL');
     await new Promise((r) => setTimeout(r, 200));
-    expect(await sup.remove(record.webviewId)).toMatchObject({ webviewId: record.webviewId });
+    expect(await sup.remove(record.webviewId)).toEqual({
+      record: expect.objectContaining({ webviewId: record.webviewId }),
+    });
     expect(sup.list()).toEqual([]);
     expect(await fs.readFile(path.join(dataDir, 'previews.json'), 'utf-8')).toBe('[]');
   });
@@ -336,5 +345,102 @@ describe('reconcile against real processes', () => {
     expect(await portOpen(record.port)).toBe(false);
     const onDisk = JSON.parse(await fs.readFile(path.join(dataDir, 'previews.json'), 'utf-8'));
     expect(onDisk[0].state).toBe('stopped');
+  });
+});
+
+describe('a server Codeman cannot stop', () => {
+  const escaped = `(env -i setsid ${SERVER} >/dev/null 2>&1 &)`;
+
+  function killListener(port: number) {
+    for (const pid of findListenerPids(port)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  }
+
+  it('reports a server that escaped the marker with env -i, keeps it listed, and logs it', async () => {
+    const sup = supervisor();
+    const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: escaped, cwd: workDir }, bindNew);
+    try {
+      const deadline = Date.now() + 5000;
+      while (!(await portOpen(record.port)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      const listener = findListenerPids(record.port);
+      expect(listener).toHaveLength(1);
+      expect(markerPids(dataDir)).toEqual([]);
+
+      const removal = await sup.remove(record.webviewId, 'alice');
+      expect(removal?.leftRunning).toEqual({ port: record.port, pids: listener });
+      expect(await portOpen(record.port)).toBe(true);
+      expect(sup.list()).toEqual([]);
+      expect(sup.listLeftRunning()).toEqual([
+        expect.objectContaining({ port: record.port, pids: listener, name: 'web', sessionId: 's1', owner: 'alice' }),
+      ]);
+      expect(await fs.readFile(record.logPath, 'utf-8')).toContain(`Port ${record.port} is still listening`);
+      const onDisk = JSON.parse(await fs.readFile(path.join(dataDir, 'previews-left-running.json'), 'utf-8'));
+      expect(onDisk).toMatchObject([{ port: record.port, webviewId: record.webviewId }]);
+      expect(supervisor().listLeftRunning()).toHaveLength(1);
+
+      killListener(record.port);
+      await new Promise((r) => setTimeout(r, 200));
+      await sup.reconcile(async () => new Set(), { sweepOrphans: false });
+      expect(sup.listLeftRunning()).toEqual([]);
+      await expect(fs.stat(record.logPath)).rejects.toThrow();
+    } finally {
+      killListener(record.port);
+    }
+  });
+
+  it('a replacing start reports the escaped server and moves to another port', async () => {
+    const sup = supervisor();
+    const input = { sessionId: 's1', name: 'web', cmd: escaped, cwd: workDir };
+    const first = await sup.start(input, async (_p, existing) => existing ?? 'wv-escape');
+    try {
+      const deadline = Date.now() + 5000;
+      while (!(await portOpen(first.record.port)) && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 100));
+      const second = await sup.start({ ...input, cmd: SERVER }, async (_p, existing) => existing ?? 'wv-escape');
+      expect(second.leftRunning?.port).toBe(first.record.port);
+      expect(second.record.port).not.toBe(first.record.port);
+      expect(second.ready).toBe(true);
+      expect(sup.listLeftRunning().map((r) => r.port)).toEqual([first.record.port]);
+      expect(await fs.readFile(second.record.logPath, 'utf-8')).toContain(
+        `Port ${first.record.port} is still listening`
+      );
+    } finally {
+      killListener(first.record.port);
+    }
+  });
+
+  it('a stopped server whose port frees reports nothing', async () => {
+    const sup = supervisor();
+    const { record } = await sup.start({ sessionId: 's1', name: 'web', cmd: SERVER, cwd: workDir }, bindNew);
+    expect(await sup.remove(record.webviewId)).not.toHaveProperty('leftRunning');
+    expect(sup.listLeftRunning()).toEqual([]);
+  });
+});
+
+describe('starts of one session', () => {
+  it('concurrent starts never pass the per-session limit', async () => {
+    const sup = supervisor();
+    const results = await Promise.allSettled(
+      Array.from({ length: 4 }, (_, i) =>
+        sup.start({ sessionId: 's1', name: `n${i}`, cmd: 'exit 0', cwd: workDir }, bindNew, { maxPerSession: 3 })
+      )
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBeInstanceOf(PreviewLimitError);
+    expect(sup.list()).toHaveLength(3);
+  });
+
+  it('concurrent starts of one name each report the server they started as ready', async () => {
+    const sup = supervisor();
+    const input = { sessionId: 's1', name: 'web', cmd: SERVER, cwd: workDir };
+    const bind = async (_port: number, existing?: string) => existing ?? 'wv-concurrent';
+    const results = await Promise.all([sup.start(input, bind), sup.start(input, bind), sup.start(input, bind)]);
+    expect(results.map((r) => r.ready)).toEqual([true, true, true]);
+    expect(sup.list()).toHaveLength(1);
   });
 });
