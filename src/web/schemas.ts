@@ -22,6 +22,11 @@ import { CODEX_REASONING_EFFORTS } from '../types/session.js';
 import { WEBHOOK_KINDS, WEBHOOK_SCOPES } from '../types/push.js';
 import { MIN_MATCH_LENGTH, MAX_MATCH_LENGTH } from '../config/agent-wait.js';
 import { MAX_WAKE_MACS } from '../config/remote-wake-limits.js';
+import {
+  MAX_PREVIEW_CMD_LENGTH,
+  PREVIEW_LOG_TAIL_DEFAULT_BYTES,
+  PREVIEW_LOG_TAIL_MAX_BYTES,
+} from '../config/preview-limits.js';
 import { MAX_INPUT_LENGTH } from '../config/terminal-limits.js';
 import { MAX_MESSAGE_BYTES } from './agent-inbox.js';
 import { enabledCliIds, enabledClis } from '../config/cli-registry/registry.js';
@@ -2413,6 +2418,25 @@ export function webviewUpdateRefusal(
 
 /** POST /api/webviews/probe: reachability + framing check for the editor's Test button. */
 export const WebviewProbeSchema = z.object({ url: webviewUrlSchema });
+
+export const PreviewNameSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'Preview name must be 1-64 letters, digits, ".", "_" or "-"');
+
+export const PreviewPutSchema = z
+  .object({
+    cmd: z
+      .string()
+      .trim()
+      .min(1, 'cmd is required')
+      .max(MAX_PREVIEW_CMD_LENGTH)
+      .refine((cmd) => !cmd.includes('\0'), 'cmd must not contain a NUL byte'),
+  })
+  .strict();
+
+export const PreviewLogQuerySchema = z.object({
+  tail: z.coerce.number().int().min(1).max(PREVIEW_LOG_TAIL_MAX_BYTES).default(PREVIEW_LOG_TAIL_DEFAULT_BYTES),
+});
 
 // Custom Model Endpoint Profiles (docs/custom-model-endpoints-plan.md) — a
 // user-configured custom OpenAI-compatible endpoint, local (llama.cpp) or cloud

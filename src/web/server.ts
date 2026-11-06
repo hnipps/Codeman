@@ -97,6 +97,8 @@ import { RunSummaryTracker } from '../run-summary.js';
 import { PlanOrchestrator } from '../plan-orchestrator.js';
 import { OrchestratorLoop } from '../orchestrator-loop.js';
 import { getLifecycleLog } from '../session-lifecycle-log.js';
+import { PreviewSupervisor } from '../preview-supervisor.js';
+import { PREVIEW_RECONCILE_INTERVAL_MS } from '../config/preview-limits.js';
 import { deployRole, planRoleChange, type DeployRole, type DeployRoleOutcome } from '../deploy-role.js';
 import { resolvePaneApiUrl } from './pane-api-url.js';
 import {
@@ -240,6 +242,10 @@ import {
   registerVoiceRoutes,
   registerWebviewRoutes,
   removeSessionWebviews,
+  removeOrphanSessionWebviews,
+  sessionWebviewIds,
+  webviewsWithOpenSockets,
+  registerPreviewRoutes,
   registerTabLayoutRoutes,
   registerMcpSyncRoutes,
   registerConfigBackupRoutes,
@@ -407,6 +413,15 @@ export class WebServer extends EventEmitter {
     },
     log: (message) => console.log(message),
   });
+  readonly previews = new PreviewSupervisor({
+    dataDir: getDataDir(),
+    canPersist: () => deployRole.allows('persist'),
+    mayAct: () => deployRole.allows('persist'),
+  });
+  private restoreSucceeded = false;
+  private previewReconcileInFlight: Promise<void> | null = null;
+  private previewReconcileSweeping = false;
+
   // Git fetch on an interval (git-fetch-scheduler.ts): the due-tracking lives in the service; the server
   // lends it the facts a decision needs and stores what it reports on the session. A field initializer for
   // the same reason as the keep-warm one above, and the scheduler reads the app setting FRESH on every tick:
@@ -884,6 +899,7 @@ export class WebServer extends EventEmitter {
       keepWarm: this.keepWarmService,
       addSession: this.registerSessionWithLayout.bind(this),
       tabLayouts: this.tabLayouts,
+      previews: this.previews,
       cleanupSession: this.cleanupSession.bind(this),
       setupSessionListeners: this.setupSessionListeners.bind(this),
       persistSessionState: this.persistSessionState.bind(this),
@@ -1352,6 +1368,16 @@ export class WebServer extends EventEmitter {
     registerAdminRoutes(this.app, ctx);
     registerOrchestratorRoutes(this.app, ctx);
     registerWebviewRoutes(this.app, ctx, this.basePath);
+    registerPreviewRoutes(this.app, ctx, this.basePath);
+    if (!this.testMode) {
+      this.cleanup.setInterval(
+        () => {
+          if (this.restoreSucceeded && deployRole.allows('automate')) void this.reconcilePreviews(false);
+        },
+        PREVIEW_RECONCILE_INTERVAL_MS,
+        { description: 'preview reconcile' }
+      );
+    }
     registerTabLayoutRoutes(this.app, ctx);
     registerMcpSyncRoutes(this.app);
     registerConfigBackupRoutes(this.app);
@@ -1609,7 +1635,7 @@ export class WebServer extends EventEmitter {
       await this.tabLayouts.runSessionDeletion([{ id: sessionId, owner: session.owner }], () =>
         this._doCleanupSession(sessionId, killMux, reason, false)
       );
-      await this._removeSessionWebviews(sessionId);
+      await this._removeSessionWebviews(sessionId, session.owner);
       return;
     }
     const lifecycleLog = getLifecycleLog();
@@ -1818,15 +1844,42 @@ export class WebServer extends EventEmitter {
     this.remoteWake?.drop(sessionId);
 
     this.broadcast(SseEvent.SessionDeleted, { id: sessionId });
-    if (killMux && coordinateLayout) await this._removeSessionWebviews(sessionId);
+    if (killMux && coordinateLayout) await this._removeSessionWebviews(sessionId, session?.owner);
   }
 
-  private async _removeSessionWebviews(sessionId: string): Promise<void> {
+  private async _removeSessionWebviews(sessionId: string, owner: string | undefined): Promise<void> {
+    try {
+      await this.previews.removeSession(sessionId, owner);
+    } catch (err) {
+      console.error(`[Server] Failed to stop previews of session ${sessionId}:`, err);
+    }
     try {
       await removeSessionWebviews({ broadcast: this.broadcast.bind(this), tabLayouts: this.tabLayouts }, sessionId);
     } catch (err) {
       console.error(`[Server] Failed to remove web tabs of session ${sessionId}:`, err);
     }
+  }
+
+  reconcilePreviews(sweepOrphans = true): Promise<void> {
+    const inFlight = this.previewReconcileInFlight;
+    if (inFlight) {
+      if (!sweepOrphans || this.previewReconcileSweeping) return inFlight;
+      return inFlight.then(() => this.reconcilePreviews(true));
+    }
+    this.previewReconcileSweeping = sweepOrphans;
+    const run = (async () => {
+      if (!deployRole.allows('automate')) return;
+      const ctx = { broadcast: this.broadcast.bind(this), tabLayouts: this.tabLayouts };
+      await removeOrphanSessionWebviews(ctx, (id) => this.sessions.has(id) || !!this.store.getSession(id));
+      for (const id of webviewsWithOpenSockets()) this.previews.markViewed(id);
+      await this.previews.reconcile(sessionWebviewIds, { sweepOrphans });
+    })()
+      .catch((err) => console.error('[Previews] reconcile failed:', getErrorMessage(err)))
+      .finally(() => {
+        this.previewReconcileInFlight = null;
+      });
+    this.previewReconcileInFlight = run;
+    return run;
   }
 
   private async renderIndexHtml(soloSessionId?: string): Promise<string> {
@@ -4153,6 +4206,8 @@ export class WebServer extends EventEmitter {
     this.tabLayouts.markRestorationComplete();
     await this.cleanupStaleSessions();
     await this.tabLayouts.reconcileAfterRestoration();
+    this.restoreSucceeded = true;
+    if (deployRole.allows('automate')) void this.reconcilePreviews();
     // Same gate as the tab layouts: only a restore that succeeded may decide which
     // inboxes are orphans. A failed one returns above and leaves every message alone.
     // Kept: live sessions plus every record state.json still holds (a session that
@@ -4261,6 +4316,7 @@ export class WebServer extends EventEmitter {
     this.store.reloadFromDisk();
     this.mux.reloadFromDisk?.();
     intentStore.forget();
+    this.previews.load();
     agentInboxPersistence.load(await this.getAgentInboxPersistEnabled());
     // The retiring colour flushed its logins; take them over, including any made since boot.
     this.authSessions?.load();
@@ -4268,6 +4324,9 @@ export class WebServer extends EventEmitter {
     if (!restored) throw new Error('the sessions on disk could not be restored');
     await this.finalizeRestoredState(restored);
     deployRole.enter('live');
+    // finalizeRestoredState ran as the candidate, which may not act, so the full orphan
+    // sweep the boot of a live colour runs happens here instead.
+    void this.reconcilePreviews();
     await this.writeSharedState();
     this.keepWarmService.rescheduleAll();
     await this.runLiveUpkeep(restored).catch((err) =>
