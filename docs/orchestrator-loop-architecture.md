@@ -154,7 +154,7 @@ src/
 │   ├── routes/
 │   │   └── orchestrator-routes.ts  # API endpoints (~250 lines)
 │   └── public/
-│       └── orchestrator-ui.js    # Frontend panel (~500 lines)
+│       └── orchestrator-panel.js # Frontend panel (~475 lines)
 ```
 
 ## Integration Points with Existing Code
@@ -363,5 +363,5 @@ The Orchestrator can optionally USE the Ralph Loop internally for phase executio
 | `src/types/orchestrator.ts` | Type definitions |
 | `src/prompts/orchestrator.ts` | Prompt templates |
 | `src/web/routes/orchestrator-routes.ts` | API endpoints |
-| `src/web/public/orchestrator-ui.js` | Frontend panel |
+| `src/web/public/orchestrator-panel.js` | Frontend panel |
 | `src/web/ports/orchestrator-port.ts` | Port interface |
