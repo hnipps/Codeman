@@ -255,6 +255,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P2.
 
+**Status.** Open PR #5 (`feat/previews-p4-session-ui`, on P2, a sibling of P3), verified clean at `a0ecdeaa` (`9082f5ed` adds review screenshots only), waiting for the operator's review. Not merged.
+
 **Files.**
 
 - [x] Edit `src/web/public/webview-tabs.js`.
