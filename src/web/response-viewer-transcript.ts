@@ -83,10 +83,6 @@ const PANE_DIALECTS: Record<string, PaneDialect> = {
   },
 };
 
-const SCREEN_READERS: Record<string, ((text: string) => ResponseViewerTranscriptBlock[]) | undefined> = {
-  grok: parseGrokScreen,
-};
-
 function isPromptLine(line: string): boolean {
   return /^\s*›\s*/.test(line);
 }
@@ -345,14 +341,7 @@ export function isExternalCliTranscriptMode(mode: string | null | undefined): bo
  * stripping the escapes from the stream concatenates every row into one run of text.
  */
 export function transcriptNeedsScreenCapture(mode: string | null | undefined): boolean {
-  return (
-    transcriptRequiresScreenCapture(mode) || Object.prototype.hasOwnProperty.call(PANE_DIALECTS, String(mode || ''))
-  );
-}
-
-/** Screen-only readers cannot fall back to a raw stream of cursor-addressed repaints. */
-export function transcriptRequiresScreenCapture(mode: string | null | undefined): boolean {
-  return Object.prototype.hasOwnProperty.call(SCREEN_READERS, String(mode || ''));
+  return mode === 'grok' || Object.prototype.hasOwnProperty.call(PANE_DIALECTS, String(mode || ''));
 }
 
 function parseGrokScreen(cleaned: string): ResponseViewerTranscriptBlock[] {
@@ -519,8 +508,7 @@ export function parseExternalCliTranscript(
   const cleaned = cleanTerminalTranscript(buffer);
   if (!cleaned) return [];
 
-  const screenReader = Object.hasOwn(SCREEN_READERS, resolvedMode) ? SCREEN_READERS[resolvedMode] : undefined;
-  if (screenReader) return screenReader(cleaned);
+  if (resolvedMode === 'grok') return parseGrokScreen(cleaned);
 
   const dialect = PANE_DIALECTS[resolvedMode];
   if (dialect) return parseDialectTranscript(cleaned, dialect);

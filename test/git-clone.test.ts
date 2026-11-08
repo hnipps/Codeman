@@ -335,11 +335,7 @@ describe.skipIf(!gitPresent)('cloneRepository / probeGitRemote (real git)', () =
   let origin: string;
 
   const git = (args: string[], cwd: string) =>
-    execFileSync('git', ['-c', 'safe.bareRepository=all', ...args], {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), 'codeman-clone-test-'));
