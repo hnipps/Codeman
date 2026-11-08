@@ -20,6 +20,8 @@ type Internals = {
   _state: string;
   completeCycle(): void;
   checkUpdateComplete(): void;
+  onIdleDetected(): void;
+  budgetChain: Promise<void>;
 };
 
 const git = (cwd: string, ...args: string[]) =>
@@ -97,6 +99,35 @@ describe('respawn cycle budget', () => {
     c.completeCycle();
     await waitFor(() => controller.state === 'stopped');
     expect(controller.state).toBe('stopped');
+  });
+
+  // Invariant RL-5: No loop exceeds its total cycle budget
+  it('stops at 50 cycles by default even when unchanged detection is disabled', async () => {
+    const c = make({ maxUnchangedCycles: 0 });
+    const reasons: string[] = [];
+    controller.on('budgetExhausted', (r: { reason: string }) => reasons.push(r.reason));
+    for (let i = 0; i < 50; i++) {
+      c.onIdleDetected();
+      await waitFor(() => controller.state === 'waiting_update');
+      c.completeCycle();
+      await c.budgetChain;
+    }
+    expect(controller.state).toBe('stopped');
+    expect(reasons).toEqual(['max_cycles']);
+    c.onIdleDetected();
+    expect(controller.getStatus().cycleCount).toBe(50);
+  });
+
+  it('allows more than 50 cycles when maxCycles is explicitly unlimited (0)', async () => {
+    const c = make({ maxCycles: 0, maxUnchangedCycles: 0 });
+    for (let i = 0; i < 51; i++) {
+      c.onIdleDetected();
+      await waitFor(() => controller.state === 'waiting_update');
+      c.completeCycle();
+      await c.budgetChain;
+    }
+    expect(controller.state).not.toBe('stopped');
+    expect(controller.getStatus().cycleCount).toBe(51);
   });
 
   it('never stops on unchanged cycles when the check is disabled (0)', async () => {

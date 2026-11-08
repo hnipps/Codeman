@@ -22,6 +22,15 @@ describe('respawn-routes', () => {
 
   // ========== GET /api/sessions/:id/respawn ==========
 
+  it('accepts explicitly unlimited total cycles through the configuration API', async () => {
+    const res = await harness.app.inject({
+      method: 'PUT',
+      url: `/api/sessions/${harness.ctx._sessionId}/respawn/config`,
+      payload: { maxCycles: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   describe('GET /api/sessions/:id/respawn', () => {
     it('returns disabled status when no controller exists', async () => {
       const res = await harness.app.inject({
