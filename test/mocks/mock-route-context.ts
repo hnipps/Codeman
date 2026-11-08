@@ -10,6 +10,7 @@
 import { vi } from 'vitest';
 import { MockSession, createMockSession } from './mock-session.js';
 import { resolveTerminalHistoryConfig } from '../../src/config/terminal-history.js';
+import { stopRespawnForSession } from '../../src/web/respawn-event-wiring.js';
 
 /**
  * Creates a mock context that satisfies all port interfaces.
@@ -30,7 +31,7 @@ export function createMockRouteContext(options?: {
   // assert that setSessionOrder() actually persists what the handler computed.
   let sessionOrder: string[] = [];
 
-  return {
+  const ctx = {
     // -- SessionPort --
     sessions,
     addSession: vi.fn(async (s: MockSession) => {
@@ -88,6 +89,18 @@ export function createMockRouteContext(options?: {
     setupTimedRespawn: vi.fn(),
     restoreRespawnController: vi.fn(),
     saveRespawnConfig: vi.fn(),
+    stopRespawnForSession: vi.fn((id: string) =>
+      stopRespawnForSession(id, {
+        broadcast: (event, data) => ctx.broadcast(event, data),
+        persistSessionState: (s) => ctx.persistSessionState(s as never),
+        getSession: (sid) => ctx.sessions.get(sid) as never,
+        getRespawnControllers: () => ctx.respawnControllers,
+        getRespawnTimers: () => ctx.respawnTimers,
+        getPendingRespawnStarts: () => new Map(),
+        mux: ctx.mux as never,
+        store: ctx.store as never,
+      })
+    ),
 
     // -- KeepWarmPort --
     keepWarm: { schedule: vi.fn(), rescheduleAll: vi.fn(), remove: vi.fn() },
@@ -201,6 +214,7 @@ export function createMockRouteContext(options?: {
     _session: session,
     _sessionId: sessionId,
   };
+  return ctx;
 }
 
 export type MockRouteContext = ReturnType<typeof createMockRouteContext>;

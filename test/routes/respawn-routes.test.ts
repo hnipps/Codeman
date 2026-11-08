@@ -100,14 +100,17 @@ describe('respawn-routes', () => {
   // ========== POST /api/sessions/:id/respawn/stop ==========
 
   describe('POST /api/sessions/:id/respawn/stop', () => {
-    it('returns error when no controller exists', async () => {
-      const res = await harness.app.inject({
-        method: 'POST',
-        url: `/api/sessions/${harness.ctx._sessionId}/respawn/stop`,
-      });
+    // Invariant RL-1: Respawn stop is absorbing
+    it('succeeds and clears persisted enabled state when no controller exists', async () => {
+      const id = harness.ctx._sessionId;
+      harness.ctx.store.getSession.mockReturnValue({ id, respawnEnabled: true, respawnConfig: { enabled: true } });
+      const res = await harness.app.inject({ method: 'POST', url: `/api/sessions/${id}/respawn/stop` });
       expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.success).toBe(false);
+      expect(JSON.parse(res.body)).toEqual({});
+      expect(harness.ctx.mux.clearRespawnConfig).toHaveBeenCalledWith(id);
+      const written = harness.ctx.store.setSession.mock.calls.at(-1)?.[1];
+      expect(written.respawnEnabled).toBe(false);
+      expect(written.respawnConfig?.enabled).toBeFalsy();
     });
 
     it('stops existing controller and cleans up', async () => {
