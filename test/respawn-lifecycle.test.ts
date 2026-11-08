@@ -11,6 +11,7 @@ import {
   restoreRespawnController,
   stopRespawnForSession,
   saveRespawnConfig,
+  setupTimedRespawn,
   type RespawnWiringDeps,
 } from '../src/web/respawn-event-wiring.js';
 import type { RespawnController } from '../src/respawn-controller.js';
@@ -31,6 +32,7 @@ describe('respawn lifecycle', () => {
   let store: StateStore;
   let controllers: Map<string, RespawnController>;
   let pending: Map<string, NodeJS.Timeout>;
+  let timers: Map<string, { timer: NodeJS.Timeout; endAt: number; startedAt: number }>;
   let muxConfig: PersistedRespawnConfig | undefined;
   let session: MockSession;
   let deps: RespawnWiringDeps;
@@ -42,6 +44,7 @@ describe('respawn lifecycle', () => {
     store = new StateStore(join(dir, 'state.json'));
     controllers = new Map();
     pending = new Map();
+    timers = new Map();
     muxConfig = { ...enabledConfig };
     session = new MockSession('s1');
     serverStartTime = Date.now();
@@ -54,7 +57,7 @@ describe('respawn lifecycle', () => {
       sessionExists: () => true,
       getRunSummaryTracker: () => undefined,
       getRespawnControllers: () => controllers,
-      getRespawnTimers: () => new Map(),
+      getRespawnTimers: () => timers,
       getPendingRespawnStarts: () => pending,
       teamWatcher: { getTeams: () => [], getTeamTasks: () => [], hasActiveTeammates: () => false } as never,
       serverStartTime,
@@ -111,6 +114,41 @@ describe('respawn lifecycle', () => {
     expect(first.state).toBe('stopped');
     expect(controllers.get('s1')).not.toBe(first);
     expect(controllers.size).toBe(1);
+  });
+
+  it('budget exhaustion clears desired state, timers and pending restore, and broadcasts its reason once', () => {
+    restoreRespawnController(session as never, enabledConfig, 'state.json', deps);
+    const controller = controllers.get('s1')!;
+    setupTimedRespawn('s1', 10, deps);
+    vi.mocked(deps.broadcast).mockClear();
+    const reason = { reason: 'unchanged_workspace', details: '3 unchanged cycles' };
+    controller.emit('budgetExhausted', reason);
+    vi.advanceTimersByTime(700000);
+
+    expect(store.getSession('s1')?.respawnEnabled).toBe(false);
+    expect(store.getSession('s1')?.respawnConfig).toBeUndefined();
+    expect(muxConfig).toBeUndefined();
+    expect(controllers.size).toBe(0);
+    expect(pending.size).toBe(0);
+    expect(timers.size).toBe(0);
+    expect(vi.mocked(deps.broadcast).mock.calls.filter(([event]) => event === 'respawn:stopped')).toEqual([
+      ['respawn:stopped', { sessionId: 's1', ...reason }],
+    ]);
+  });
+
+  it('duration exhaustion uses the persisted stop path and cancels a delayed restore', () => {
+    restoreRespawnController(session as never, enabledConfig, 'state.json', deps);
+    setupTimedRespawn('s1', 1, deps);
+    vi.advanceTimersByTime(300000);
+    expect(store.getSession('s1')?.respawnEnabled).toBe(false);
+    expect(store.getSession('s1')?.respawnConfig).toBeUndefined();
+    expect(muxConfig).toBeUndefined();
+    expect(pending.size).toBe(0);
+    expect(controllers.size).toBe(0);
+    expect(deps.broadcast).toHaveBeenCalledWith('respawn:stopped', {
+      sessionId: 's1',
+      reason: 'duration_expired',
+    });
   });
 
   // Invariant RL-3: Loop off implies the respawn it started is off
