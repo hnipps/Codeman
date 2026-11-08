@@ -34,7 +34,7 @@ Follow these on every change. The same rules are in `AGENTS.md` and `.github/cop
 | Format      | `npm run format` (check: `npm run format:check`)                                                                                                                    |
 | Tests       | `npm test` (the CI gate — safe to run bare) · one file: `npm test -- test/<file>.test.ts` · see Testing for the excluded suites |
 | Build       | `npm run build` (esbuild via `scripts/build.mjs`, NOT tsc — `tsc --noEmit` is type-check only)                                                                      |
-| Production  | `npm run build && systemctl --user restart codeman-web`                                                                                                             |
+| Production  | `codeman-deploy "$(git rev-parse HEAD)"` in this fork ([`docs/self-building.md`](docs/self-building.md)); upstream installs use `npm run build && systemctl --user restart codeman-web` |
 
 ## CRITICAL: Session Safety
 
