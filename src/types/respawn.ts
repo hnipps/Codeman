@@ -130,8 +130,6 @@ export interface RespawnCycleMetrics {
   idleDetectionMs: number;
   /** Steps completed in this cycle */
   stepsCompleted: string[];
-  /** Whether /clear was skipped (P2-002) */
-  clearSkipped: boolean;
   /** Outcome of the cycle */
   outcome: CycleOutcome;
   /** Error message if outcome is 'error' */

@@ -71,7 +71,6 @@ export class RespawnCycleMetricsTracker {
       idleReason,
       idleDetectionMs: now - idleDetectionStartTime,
       stepsCompleted: [],
-      clearSkipped: false,
       tokenCountAtStart: lastTokenCount,
       completionConfirmMsUsed: adaptiveCompletionConfirmMs,
     };
@@ -84,15 +83,6 @@ export class RespawnCycleMetricsTracker {
   recordStep(step: string): void {
     if (!this.currentCycleMetrics) return;
     this.currentCycleMetrics.stepsCompleted?.push(step);
-  }
-
-  /**
-   * Mark that /clear was skipped in the current cycle.
-   */
-  markClearSkipped(): void {
-    if (this.currentCycleMetrics) {
-      this.currentCycleMetrics.clearSkipped = true;
-    }
   }
 
   /**
