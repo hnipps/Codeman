@@ -82,8 +82,8 @@ Bigger extension points worth discussing first: new CLI backends (the pluggable 
 ## PR expectations
 
 - **One change per PR.** Small and focused reviews fast; a grab-bag stalls.
-- Target the `master` branch.
-- **Keep your branch mergeable.** A PR with conflicts silently gets no CI runs at all (GitHub quirk), so rebase or merge master when conflicts appear.
+- Target the `main` branch.
+- **Keep your branch mergeable.** A PR with conflicts silently gets no CI runs at all (GitHub quirk), so rebase or merge main when conflicts appear.
 - Include or update tests when you change behavior. Route handlers have a lightweight pattern in `test/routes/` using `app.inject()` (no live server needed).
 - Formatting is Prettier with a deliberately narrow scope (`npm run format`), several frontend files are hand-formatted on purpose and excluded via `.prettierignore`. Don't "fix" a file by adding it back into Prettier's scope.
 - Don't bump versions or touch `CHANGELOG.md`; releases are handled by the maintainer via changesets after merge.
