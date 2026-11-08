@@ -41,6 +41,36 @@ connection error. LAN and tailnet addresses still open directly. `*.localhost` n
 deliberately not auto-routed: they are DNS names rather than address literals, and the link
 came from agent output. Add such a dashboard by hand instead.
 
+## Agent previews
+
+An agent that builds a web page or app can show it to you inside Codeman. It runs
+`codeman agent preview add web --cmd "npm run dev -- --port {port}"`, Codeman picks a free
+port for `{port}`, starts the server in the session's folder, and hands back the page's
+address. Codeman's case setup notes and the [Codeman skill](Codeman-Skill) tell agents to do
+this, so asking "build a hello page and preview it" is usually enough.
+
+A preview never gets a tab of its own and never opens by itself. Its session's tab gets a
+yellow badge counting previews you have not opened yet. Open the session and a
+**Terminal / Preview** switch sits under the tab strip; pick a preview to see its page, pick
+Terminal to get the terminal back. The page stays loaded while you switch, and the choice is
+remembered per session on that device.
+
+**Codeman owns the server.** It stops it when you delete the preview (the **Delete** beside
+the switch), when you delete the session, and when nobody has opened it for 4 hours. Nothing
+is left holding a port after the session is gone. A preview that cannot be shown, because it
+was stopped, its server exited or it is not answering, shows a card with its command and a
+**Restart** instead of a blank frame.
+
+A few limits:
+
+- Remote (SSH) and Docker sessions cannot have previews.
+- A server the command handed to something else (`tmux`, `docker run`, `systemd-run`) can
+  outlive the preview. Codeman then says so, in the agent's answer and in a toast, rather
+  than reporting it stopped.
+- `python3 -m http.server` and many dev servers listen on every network interface. Add
+  `--bind 127.0.0.1` (or the server's equivalent) when that matters.
+- There is no list of every preview across sessions yet. Each one lives under its session.
+
 ## Why dashboards are proxied
 
 A plain cross-origin iframe fails three ways at once in the setup Codeman actually ships in:

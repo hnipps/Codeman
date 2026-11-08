@@ -90,6 +90,7 @@ codeman web    # then open http://localhost:3000
 | [Docker Cases](Docker-Cases)                  | How do I sandbox a project in a container?   |
 | [Remote SSH Sessions](Remote-SSH-Sessions)    | How do I run the agent on another machine?   |
 | [Web Tabs](Web-Tabs)                          | Can my Grafana live in here too?             |
+| [Agent previews](Web-Tabs#agent-previews)     | Can my agent show me the app it built?       |
 | [Multi-User Mode](Multi-User-Mode)            | Can several people share one Codeman?        |
 
 ### Access and security

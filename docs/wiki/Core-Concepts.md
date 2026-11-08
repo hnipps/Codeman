@@ -118,6 +118,10 @@ ssh-backed; a session is claude or codex or shell.
 tab beside your agents, but there is no PTY, no tmux, and no respawn behind it. See
 [Web Tabs](Web-Tabs).
 
+A **preview** is a web tab that belongs to a session: a dev server an agent asked Codeman to
+run. It shows under that session's Terminal / Preview switch, and Codeman stops its server
+when the session is deleted. See [Agent previews](Web-Tabs#agent-previews).
+
 ## Why tmux
 
 tmux is a hard requirement, and it is the reason Codeman behaves the way it does.
@@ -223,6 +227,7 @@ See [Hooks And Integrations](Hooks-And-Integrations).
 | **Orchestrator** | A phased plan driven across multiple agents.                                                      |
 | **Subagent**     | An agent the CLI spawned itself, shown live in its own window.                                    |
 | **Web tab**      | A saved dashboard URL rendered as a tab. Not a session.                                           |
+| **Preview**      | A dev server Codeman runs for a session, shown under its Terminal / Preview switch.               |
 | **Instance**     | One Codeman server with its own data directory and tmux socket.                                   |
 
 ## Read next

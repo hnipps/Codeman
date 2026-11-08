@@ -84,6 +84,7 @@ These prompts work as written:
 | "Have a claude worker summarize `src/session.ts`, then close it."                          | Spawns, waits until the worker is ready, sends and waits, reads the answer, deletes the session. |
 | "Have a DeepSeek Harness worker build search and a claude worker build checkout."          | A mixed fleet: one worker per CLI, started in one go. |
 | "Watch session w4 and tell me if it gets stuck on a permission prompt."                    | Blocks on the `blocked` signal and brings the question to **you**. |
+| "Build a hello page and preview it."                                                       | Starts the server with `codeman agent preview add`, badges the session tab and gives you the URL. Open it under the session's Terminal / Preview switch. |
 
 Sessions the agent creates are deleted when it is done, so you can watch the tabs appear and
 disappear in the dashboard while it works.

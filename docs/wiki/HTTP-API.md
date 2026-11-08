@@ -66,7 +66,7 @@ self-signed certificate, add `-k`.
 
 ## Endpoint map
 
-Roughly 235 handlers across 26 route modules. By domain:
+Roughly 300 handlers across 42 route modules. By domain:
 
 | Domain              | Handlers | Covers                                              |
 | ------------------- | -------- | --------------------------------------------------- |
@@ -81,6 +81,7 @@ Roughly 235 handlers across 26 route modules. By domain:
 | Plan                | 8        | Plan orchestration.                                   |
 | Respawn             | 7        | Respawn configuration and presets.                    |
 | Webviews            | 6        | Saved dashboards, plus the proxy.                     |
+| Previews            | 6        | Dev servers Codeman runs for a session, and their logs. |
 | Mux                 | 5        | tmux operations.                                      |
 | Custom model endpoints | 5     | Saved OpenAI-compatible endpoints, and applying one to a session. |
 | Push                | 4        | Web push subscriptions.                               |
