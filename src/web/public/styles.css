@@ -6383,6 +6383,11 @@ html[data-skin="og"] .welcome-primary:hover {
   display: none;
 }
 
+/* Mobile Previews button - hidden on desktop; the phone block in mobile.css shows it */
+.btn-previews-mobile {
+  display: none;
+}
+
 /* Mobile case settings gear - hidden on desktop */
 .btn-case-settings-mobile {
   display: none;
@@ -23629,4 +23634,220 @@ html[data-header-stats='tiles'] .header-plan-usage:not(:has(.pu-row)) {
    inside .xterm-screen, so they move with it, and every hit test reads rects. */
 body.keyboard-visible .terminal-container .xterm-screen {
   transform: translateY(calc(-1 * var(--kb-clip, 0px)));
+}
+
+/* ── Previews drawer (webview-tabs.js) ───────────────────────────────────────── */
+
+.btn-previews {
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.preview-drawer-count {
+  min-width: 1.3em;
+  padding: 0 0.35em;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.preview-drawer-count[hidden] {
+  display: none;
+}
+
+.preview-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+}
+
+.preview-drawer[hidden] {
+  display: none;
+}
+
+.preview-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+/* Desktop and tablet: a panel above the toolbar's right end. */
+.preview-drawer-sheet {
+  position: absolute;
+  right: 12px;
+  bottom: calc(var(--toolbar-height) + 8px);
+  width: 400px;
+  max-width: calc(100vw - 24px);
+  max-height: min(560px, calc(100dvh - var(--header-height) - var(--toolbar-height) - 32px));
+  display: flex;
+  flex-direction: column;
+  background: var(--floating-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--control-border);
+  border-radius: 12px;
+  box-shadow: var(--elevated-shadow);
+  overflow: hidden;
+}
+
+.preview-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.preview-drawer-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.preview-drawer-empty {
+  margin: 0;
+  padding: 1.25rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.preview-drawer-empty[hidden] {
+  display: none;
+}
+
+.preview-drawer-empty code {
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.preview-drawer-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+
+.preview-drawer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px;
+  border-radius: 8px;
+}
+
+.preview-drawer-row + .preview-drawer-row {
+  margin-top: 2px;
+}
+
+.preview-drawer-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.preview-drawer-open:hover,
+.preview-drawer-open:focus-visible {
+  background: var(--control-bg-hover);
+}
+
+.preview-drawer-open:focus-visible,
+.preview-drawer-delete:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.preview-drawer-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview-drawer-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-drawer-port,
+.preview-drawer-uptime {
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.preview-drawer-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.preview-drawer-session {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.preview-drawer-state {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  line-height: 1.6;
+  background: var(--control-bg);
+  color: var(--text-dim);
+}
+
+.preview-drawer-state--running {
+  color: var(--green);
+}
+
+.preview-drawer-state--stopped,
+.preview-drawer-state--exited {
+  color: var(--yellow);
+}
+
+.preview-drawer-uptime {
+  margin-left: auto;
+}
+
+.preview-drawer-delete {
+  flex: none;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--red);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.preview-drawer-delete:hover {
+  background: var(--control-bg-hover);
+  border-color: var(--red);
 }

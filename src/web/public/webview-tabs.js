@@ -210,6 +210,7 @@ Object.assign(CodemanApp.prototype, {
     }
     this.webviewOrder = saved.filter((id) => this.webviews.has(id));
     this.renderSessionTabs();
+    this._paintPreviewDrawerButtons();
   },
 
   async refreshWebviews() {
@@ -238,6 +239,8 @@ Object.assign(CodemanApp.prototype, {
     // A dashboard deleted elsewhere must not linger as a dead tab here.
     if (data && data.action === 'deleted' && data.id) this._removeWebviewTab(data.id);
     this.renderSessionTabs();
+    if (this._previewDrawerOpen) this._renderPreviewDrawer();
+    else this._paintPreviewDrawerButtons();
   },
 
   /**
@@ -824,5 +827,237 @@ Object.assign(CodemanApp.prototype, {
     this.renderWebviewMenuItems();
     this.renderSessionTabs();
     return true;
+  },
+});
+
+// ── Previews drawer ─────────────────────────────────────────────────────────
+//
+// One sheet listing every preview the caller can see (GET /api/previews), with a
+// row per preview: session, name, port, state, uptime and a Delete. A row opens
+// that session's Preview view (session-ui.js). It reads the same
+// `this.sessionPreviews` the badges and the switch read, so the three never
+// disagree. No SSE carries a preview's state, so the list is read again on open
+// and every PREVIEW_DRAWER_POLL_MS while the sheet is open (an idle stop shows
+// without a reopen); `webview:changed` re-renders it at once.
+
+const PREVIEW_DRAWER_POLL_MS = 10000;
+
+function formatPreviewUptime(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+Object.assign(CodemanApp.prototype, {
+  _previewDrawerRows() {
+    const rows = [];
+    for (const list of this.sessionPreviews?.values?.() || []) {
+      for (const preview of list) {
+        const createdAt = this.sessionWebviews?.get(preview.webviewId)?.createdAt;
+        rows.push({ preview, createdAt: Number.isFinite(createdAt) ? createdAt : null });
+      }
+    }
+    // Longest running first; a preview whose web tab has not loaded yet has no
+    // start time and goes last.
+    rows.sort((a, b) => {
+      if (a.createdAt !== b.createdAt) {
+        if (a.createdAt === null) return 1;
+        if (b.createdAt === null) return -1;
+        return a.createdAt - b.createdAt;
+      }
+      return a.preview.sessionId.localeCompare(b.preview.sessionId) || a.preview.name.localeCompare(b.preview.name);
+    });
+    return rows;
+  },
+
+  _paintPreviewDrawerButtons() {
+    let running = 0;
+    for (const list of this.sessionPreviews?.values?.() || []) {
+      running += list.filter((p) => p.state === 'running').length;
+    }
+    for (const button of document.querySelectorAll('[data-preview-drawer-toggle]')) {
+      const count = button.querySelector('.preview-drawer-count');
+      if (count) {
+        count.textContent = running ? String(running) : '';
+        count.hidden = !running;
+      }
+      button.setAttribute('aria-label', running ? `Previews, ${running} running` : 'Previews');
+      button.setAttribute('aria-expanded', this._previewDrawerOpen ? 'true' : 'false');
+    }
+  },
+
+  togglePreviewDrawer(event) {
+    if (this._previewDrawerOpen) this.closePreviewDrawer();
+    else void this.openPreviewDrawer(event?.currentTarget || null);
+  },
+
+  async openPreviewDrawer(opener = null) {
+    const drawer = document.getElementById('previewDrawer');
+    if (!drawer) return;
+    this._previewDrawerOpen = true;
+    this._previewDrawerOpener = opener || document.activeElement;
+    drawer.hidden = false;
+    this._renderPreviewDrawer({ focus: true });
+    this._previewDrawerKeydown = (e) => this._onPreviewDrawerKeydown(e);
+    document.addEventListener('keydown', this._previewDrawerKeydown);
+    clearInterval(this._previewDrawerTick);
+    this._previewDrawerTick = setInterval(() => this._tickPreviewDrawerUptimes(), 1000);
+    clearInterval(this._previewDrawerPoll);
+    this._previewDrawerPoll = setInterval(() => void this._refreshPreviewDrawer(), PREVIEW_DRAWER_POLL_MS);
+    await this._refreshPreviewDrawer();
+    // The cached list can be empty on a first open, which put focus on Close.
+    const first = document.querySelector('#previewDrawerList .preview-drawer-open');
+    if (first && this._previewDrawerOpen && document.activeElement?.id === 'previewDrawerClose') first.focus();
+  },
+
+  closePreviewDrawer({ refocus = true } = {}) {
+    if (!this._previewDrawerOpen) return;
+    this._previewDrawerOpen = false;
+    const drawer = document.getElementById('previewDrawer');
+    if (drawer) drawer.hidden = true;
+    clearInterval(this._previewDrawerTick);
+    clearInterval(this._previewDrawerPoll);
+    this._previewDrawerTick = null;
+    this._previewDrawerPoll = null;
+    if (this._previewDrawerKeydown) document.removeEventListener('keydown', this._previewDrawerKeydown);
+    this._previewDrawerKeydown = null;
+    this._paintPreviewDrawerButtons();
+    const opener = this._previewDrawerOpener;
+    this._previewDrawerOpener = null;
+    if (refocus && opener?.isConnected && typeof opener.focus === 'function') opener.focus();
+  },
+
+  async _refreshPreviewDrawer() {
+    await Promise.all([this.refreshWebviews(), this.refreshSessionPreviews()]);
+    if (this._previewDrawerOpen) this._renderPreviewDrawer();
+  },
+
+  _onPreviewDrawerKeydown(e) {
+    if (!this._previewDrawerOpen) return;
+    const drawer = document.getElementById('previewDrawer');
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      this.closePreviewDrawer();
+      return;
+    }
+    if (e.key !== 'Tab' || !drawer) return;
+    const focusable = [...drawer.querySelectorAll('button:not([disabled])')].filter((b) => !b.closest('[hidden]'));
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const inside = drawer.contains(document.activeElement);
+    if (e.shiftKey && (document.activeElement === first || !inside)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+      e.preventDefault();
+      first.focus();
+    }
+  },
+
+  _renderPreviewDrawer({ focus = false } = {}) {
+    const list = document.getElementById('previewDrawerList');
+    const empty = document.getElementById('previewDrawerEmpty');
+    if (!list) return;
+    const focusedId = document.activeElement?.closest?.('.preview-drawer-row')?.dataset.webviewId;
+    const focusedDelete = !!document.activeElement?.classList?.contains('preview-drawer-delete');
+    const rows = this._previewDrawerRows();
+    const now = Date.now();
+    list.replaceChildren(...rows.map((row) => this._previewDrawerRow(row, now)));
+    if (empty) empty.hidden = rows.length > 0;
+    this._paintPreviewDrawerButtons();
+
+    if (focusedId) {
+      const row = [...list.children].find((li) => li.dataset.webviewId === focusedId);
+      row?.querySelector(focusedDelete ? '.preview-drawer-delete' : '.preview-drawer-open')?.focus();
+    } else if (focus) {
+      const target = list.querySelector('.preview-drawer-open') || document.getElementById('previewDrawerClose');
+      target?.focus();
+    }
+  },
+
+  _previewDrawerRow({ preview, createdAt }, now) {
+    const li = document.createElement('li');
+    li.className = 'preview-drawer-row';
+    li.dataset.webviewId = preview.webviewId;
+    li.dataset.state = preview.state;
+    li.setAttribute('data-i18n-skip', '');
+
+    const sessionName = this.sessions.get(preview.sessionId)?.name || preview.sessionId.slice(0, 8);
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'preview-drawer-open';
+    open.setAttribute('aria-label', `Open preview ${preview.name} of ${sessionName}`);
+    open.addEventListener('click', () => void this.openPreviewFromDrawer(preview.sessionId, preview.webviewId));
+
+    const top = document.createElement('span');
+    top.className = 'preview-drawer-line';
+    const name = document.createElement('span');
+    name.className = 'preview-drawer-name';
+    name.textContent = preview.name;
+    const port = document.createElement('span');
+    port.className = 'preview-drawer-port';
+    port.textContent = `:${preview.port}`;
+    top.append(name, port);
+
+    const bottom = document.createElement('span');
+    bottom.className = 'preview-drawer-line preview-drawer-sub';
+    const session = document.createElement('span');
+    session.className = 'preview-drawer-session';
+    session.textContent = sessionName;
+    const state = document.createElement('span');
+    state.className = `preview-drawer-state preview-drawer-state--${preview.state}`;
+    state.textContent = preview.state;
+    const uptime = document.createElement('span');
+    uptime.className = 'preview-drawer-uptime';
+    if (preview.state === 'running' && createdAt !== null) {
+      uptime.dataset.since = String(createdAt);
+      uptime.textContent = formatPreviewUptime(now - createdAt);
+      uptime.title = `Up since ${new Date(createdAt).toLocaleString()}`;
+    }
+    bottom.append(session, state, uptime);
+    open.append(top, bottom);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'preview-drawer-delete';
+    del.textContent = 'Delete';
+    del.setAttribute('aria-label', `Delete preview ${preview.name} of ${sessionName}`);
+    del.addEventListener(
+      'click',
+      () => void this.deletePreviewFromDrawer(preview.sessionId, preview.name, preview.webviewId)
+    );
+
+    li.append(open, del);
+    return li;
+  },
+
+  _tickPreviewDrawerUptimes() {
+    const now = Date.now();
+    for (const el of document.querySelectorAll('#previewDrawerList .preview-drawer-uptime[data-since]')) {
+      const text = formatPreviewUptime(now - Number(el.dataset.since));
+      if (el.textContent !== text) el.textContent = text;
+    }
+  },
+
+  async openPreviewFromDrawer(sessionId, webviewId) {
+    this.closePreviewDrawer({ refocus: false });
+    if (this.activeSessionId !== sessionId || this.activeWebviewId) await this.selectSession(sessionId);
+    await this.showSessionPreview(sessionId, webviewId);
+  },
+
+  async deletePreviewFromDrawer(sessionId, name, webviewId) {
+    const list = document.getElementById('previewDrawerList');
+    const index = [...(list?.children || [])].findIndex((li) => li.dataset.webviewId === webviewId);
+    await this.deleteSessionPreview(sessionId, name);
+    if (!this._previewDrawerOpen || !list) return;
+    this._renderPreviewDrawer();
+    const next = list.children[Math.min(Math.max(index, 0), list.children.length - 1)];
+    (next?.querySelector('.preview-drawer-open') || document.getElementById('previewDrawerClose'))?.focus();
   },
 });
