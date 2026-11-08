@@ -74,7 +74,11 @@ function teardownRespawnRuntime(sessionId: string, deps: RespawnStopDeps): void 
  * mux-sessions.json) before anything else can re-save it, so a restart, recover or deploy
  * cannot restore the respawn. Idempotent: works with no controller in the map.
  */
-export function stopRespawnForSession(sessionId: string, deps: RespawnStopDeps): void {
+export function stopRespawnForSession(
+  sessionId: string,
+  deps: RespawnStopDeps,
+  reason?: { reason: string; details?: string }
+): void {
   teardownRespawnRuntime(sessionId, deps);
   deps.mux.clearRespawnConfig(sessionId);
 
@@ -86,7 +90,7 @@ export function stopRespawnForSession(sessionId: string, deps: RespawnStopDeps):
 
   const session = deps.getSession(sessionId);
   if (session) deps.persistSessionState(session);
-  deps.broadcast(SseEvent.RespawnStopped, { sessionId });
+  deps.broadcast(SseEvent.RespawnStopped, { sessionId, ...reason });
 }
 
 // ============================================================================
@@ -131,18 +135,7 @@ export function wireRespawnListeners(sessionId: string, controller: RespawnContr
    * `respawn:stopped` with the reason for the UI.
    */
   controller.on('budgetExhausted', (data: { reason: string; details: string }) => {
-    controller.stop();
-    deps.getRespawnControllers().delete(sessionId);
-    const timers = deps.getRespawnTimers();
-    const timerInfo = timers.get(sessionId);
-    if (timerInfo) {
-      clearTimeout(timerInfo.timer);
-      timers.delete(sessionId);
-    }
-    deps.mux.clearRespawnConfig(sessionId);
-    const session = deps.getSession(sessionId);
-    if (session) deps.persistSessionState(session);
-    deps.broadcast(SseEvent.RespawnStopped, { sessionId, reason: data.reason, details: data.details });
+    stopRespawnForSession(sessionId, deps, data);
     const tracker = getTracker();
     if (tracker) tracker.recordWarning(`Respawn stopped: ${data.reason}`, data.details);
   });
@@ -293,21 +286,7 @@ export function setupTimedRespawn(sessionId: string, durationMinutes: number, de
 
   const timer = setTimeout(
     () => {
-      // Stop respawn when time is up
-      const controllers = deps.getRespawnControllers();
-      const controller = controllers.get(sessionId);
-      if (controller) {
-        controller.stop();
-        controller.removeAllListeners();
-        controllers.delete(sessionId);
-        deps.broadcast(SseEvent.RespawnStopped, { sessionId, reason: 'duration_expired' });
-      }
-      timers.delete(sessionId);
-      // Update persisted state (respawn no longer active)
-      const session = deps.getSession(sessionId);
-      if (session) {
-        deps.persistSessionState(session);
-      }
+      stopRespawnForSession(sessionId, deps, { reason: 'duration_expired' });
     },
     durationMinutes * 60 * 1000
   );
