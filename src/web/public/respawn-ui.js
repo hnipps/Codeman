@@ -20,6 +20,9 @@ Object.assign(CodemanApp.prototype, {
 
   _onRespawnStopped(data) {
     delete this.respawnStatus[data.sessionId];
+    if (data.details) {
+      this.showToast(`Respawn stopped: ${data.details}`, 'warning');
+    }
     if (data.sessionId === this.activeSessionId) {
       this.hideRespawnBanner();
     }

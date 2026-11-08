@@ -187,6 +187,8 @@ export function registerRespawnRoutes(
         config.aiPlanCheckTimeoutMs ?? currentConfig?.aiPlanCheckTimeoutMs ?? AI_PLAN_CHECK_TIMEOUT_MS,
       aiPlanCheckCooldownMs:
         config.aiPlanCheckCooldownMs ?? currentConfig?.aiPlanCheckCooldownMs ?? AI_PLAN_CHECK_COOLDOWN_MS,
+      maxUnchangedCycles: config.maxUnchangedCycles ?? currentConfig?.maxUnchangedCycles,
+      maxCycles: config.maxCycles ?? currentConfig?.maxCycles,
       durationMinutes: currentConfig?.durationMinutes,
     };
     ctx.mux.updateRespawnConfig(id, merged);
