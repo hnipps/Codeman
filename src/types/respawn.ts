@@ -84,9 +84,9 @@ export interface RespawnConfig {
 
   // ========== Cycle Budget ==========
 
-  /** Stop after this many consecutive cycles with an unchanged git workspace (0 disables, default 3) */
+  /** Stop after this many consecutive cycles with an unchanged workspace (0 disables, default 3) */
   maxUnchangedCycles?: number;
-  /** Stop after this many cycles in total (unset = no limit) */
+  /** Stop after this many cycles in total (0 disables, default 50) */
   maxCycles?: number;
 
   // ========== P2-004: Cycle Metrics ==========
@@ -280,9 +280,9 @@ export interface PersistedRespawnConfig {
   aiPlanCheckTimeoutMs?: number;
   /** Cooldown after NOT_PLAN_MODE verdict in ms */
   aiPlanCheckCooldownMs?: number;
-  /** Stop after this many consecutive cycles with an unchanged git workspace (0 disables) */
+  /** Stop after this many consecutive cycles with an unchanged workspace (0 disables, default 3) */
   maxUnchangedCycles?: number;
-  /** Stop after this many cycles in total */
+  /** Stop after this many cycles in total (0 disables, default 50) */
   maxCycles?: number;
   /** Duration in minutes if timed respawn was set */
   durationMinutes?: number;

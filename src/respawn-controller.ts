@@ -69,6 +69,7 @@ import { RespawnCycleMetricsTracker } from './respawn-metrics.js';
 import { calculateHealthScore, type HealthInputs } from './respawn-health.js';
 import {
   CycleBudget,
+  DEFAULT_MAX_CYCLES,
   DEFAULT_MAX_UNCHANGED_CYCLES,
   computeWorkspaceFingerprint,
   type BudgetExhaustion,
@@ -443,7 +444,8 @@ export interface RespawnConfig {
   maxUnchangedCycles?: number;
 
   /**
-   * Stop after this many cycles in total. Unset = no limit.
+   * Stop after this many cycles in total. 0 disables.
+   * @default 50
    */
   maxCycles?: number;
 
@@ -547,6 +549,7 @@ const DEFAULT_CONFIG: RespawnConfig = {
   adaptiveMinConfirmMs: 5000, // Minimum 5 seconds
   adaptiveMaxConfirmMs: 30000, // Maximum 30 seconds
   maxUnchangedCycles: DEFAULT_MAX_UNCHANGED_CYCLES,
+  maxCycles: DEFAULT_MAX_CYCLES,
   // P2-004: Cycle metrics
   trackCycleMetrics: true, // Track and persist cycle metrics
   // P2-001: Confidence scoring

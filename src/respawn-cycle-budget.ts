@@ -18,6 +18,8 @@ import { probePathKind } from './utils/bounded-path-probe.js';
 
 /** Consecutive unchanged cycles after which the loop stops. 0 disables the check. */
 export const DEFAULT_MAX_UNCHANGED_CYCLES = 3;
+/** Total cycles after which the loop stops. 0 disables the check. */
+export const DEFAULT_MAX_CYCLES = 50;
 
 const GIT_TIMEOUT_MS = 10000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;

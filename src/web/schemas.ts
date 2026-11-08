@@ -1389,7 +1389,7 @@ export const RespawnConfigSchema = z.object({
   adaptiveMinConfirmMs: z.number().int().min(1000).max(60000).optional(),
   adaptiveMaxConfirmMs: z.number().int().min(1000).max(600000).optional(),
   maxUnchangedCycles: z.number().int().min(0).max(1000).optional(),
-  maxCycles: z.number().int().min(1).max(100000).optional(),
+  maxCycles: z.number().int().min(0).max(100000).optional(),
 });
 
 /**
