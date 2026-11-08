@@ -6,6 +6,19 @@ Implementation detail extracted from `CLAUDE.md` so that file stays small enough
 
 ---
 
+## Respawn lifecycle and bounded usage
+
+`stopRespawnForSession` is the shared persisted stop for manual disable, loop-owned
+disable, duration expiry and cycle-budget exhaustion. It cancels pending restore
+starts and timers, clears mux configuration, drops the state's respawn configuration
+and persists `respawnEnabled: false` before broadcasting the stop reason.
+Respawn defaults to 3 consecutive unchanged cycles and 50 total cycles; `0` disables
+either limit. Git state or bounded non-git content hashes detect unchanged workspaces;
+the hard cycle cap also applies before another cycle starts. `/clear` is never
+skipped based on the CLI's per-turn token counter.
+See [the state machine](respawn-state-machine.md) for configuration and
+[RL-1 through RL-6](invariants/respawn-lifecycle.md) for promises, tests and limitations.
+
 ## Network binding and instance isolation
 
 ### Default bind, and the non-loopback warning path

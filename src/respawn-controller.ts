@@ -2767,6 +2767,15 @@ export class RespawnController extends EventEmitter {
       return;
     }
 
+    const maxCycles = this.config.maxCycles ?? DEFAULT_MAX_CYCLES;
+    if (maxCycles > 0 && this.cycleCount >= maxCycles) {
+      this.exhaustCycleBudget({
+        reason: 'max_cycles',
+        details: `Reached the maximum of ${maxCycles} respawn cycles`,
+      });
+      return;
+    }
+
     // Clear all detection timers before starting cycle to prevent stale callbacks
     this.clearTimers();
 
@@ -3011,7 +3020,10 @@ export class RespawnController extends EventEmitter {
       }
     }
 
-    if (!exhausted) return;
+    if (exhausted) this.exhaustCycleBudget(exhausted);
+  }
+
+  private exhaustCycleBudget(exhausted: BudgetExhaustion): void {
     this.log(`Cycle budget exhausted (${exhausted.reason}): ${exhausted.details}`);
     this.logAction('budget', exhausted.details);
     this.emit('budgetExhausted', exhausted);

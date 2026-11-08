@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-08 — Idle respawn has two usage backstops
+
+**Type:** intent-refinement
+**Touches:** `src/respawn-cycle-budget.ts`, `src/respawn-controller.ts`, `src/web/respawn-event-wiring.ts`, `docs/invariants/respawn-lifecycle.md`
+**Why:** The incident workspace was not a git repository, and documentation rewritten
+every cycle could evade unchanged detection even with git.
+**Links:** [integration intent](../intent/2026-11-08-respawn-integration.md)
+
+Non-git workspaces now use bounded content fingerprints. Three unchanged cycles stop
+idle loops; fifty total cycles are the default backstop for continually changing
+workspaces. Zero explicitly disables either limit. Budget and duration expiry both
+use the persisted stop path, including cancellation of a pending restore. Dead
+skip-clear metrics were removed. RL-4 through RL-6 link the state machine and tests;
+RL-6 remains draft because simultaneous lease acquisition is not atomic.
+
 ## 2026-11-08 — A respawn stop is persisted desired state
 
 **Type:** drift

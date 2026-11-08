@@ -65,6 +65,7 @@ describe('respawn cycle budget', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // Invariant RL-4: Unchanged workspaces stop within their cycle budget
   it('stops after N consecutive cycles that left the workspace unchanged, and says why', async () => {
     const c = make({ maxUnchangedCycles: 3 });
     const reasons: string[] = [];
@@ -93,6 +94,7 @@ describe('respawn cycle budget', () => {
     expect(controller.state).not.toBe('stopped');
   });
 
+  // Invariant RL-5: No loop exceeds its total cycle budget
   it('stops after maxCycles when set, regardless of changes', async () => {
     const c = make({ maxCycles: 2, maxUnchangedCycles: 0 });
     (controller as unknown as { cycleCount: number }).cycleCount = 2;

@@ -55,6 +55,7 @@ afterEach(async () => {
 });
 
 describe('a role-less server beside a live Codeman', () => {
+  // Invariant RL-6: At most one process holds the live lease per data directory
   it('refuses to start and says which process owns the data dir', async () => {
     const pid = await foreignCodeman();
     holdLease(pid);
@@ -70,6 +71,7 @@ describe('a role-less server beside a live Codeman', () => {
     expect(err!.message).toContain('CODEMAN_INSTANCE');
   });
 
+  // Invariant RL-6: At most one process holds the live lease per data directory
   it('still lets a candidate start, and refuses its promotion until the holder is gone', async () => {
     const pid = await foreignCodeman();
     holdLease(pid);
@@ -122,6 +124,7 @@ describe('stale leases', () => {
 });
 
 describe('handover', () => {
+  // Invariant RL-6: At most one process holds the live lease per data directory
   it('moves from the retiring colour to the promoted one, and only the holder can release', () => {
     const probe = fakeProbe({
       1: { command: 'node index.js web', startedAt: 'a' },

@@ -2,6 +2,9 @@
 
 The respawn controller (`src/respawn-controller.ts`) manages autonomous session cycling. It detects idle sessions and restarts them through a configurable sequence of steps.
 
+Persisted stop, cycle-budget and live-lease promises are documented together in
+[Respawn lifecycle (RL-1 through RL-6)](invariants/respawn-lifecycle.md).
+
 ## State Diagram
 
 ```
