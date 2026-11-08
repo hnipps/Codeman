@@ -202,6 +202,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P2.
 
+**Status.** Open PR #4 (`feat/previews-p3-cli`, on P2), fix round 3 pushed at `ea2c698c`; its verification verdict is not in yet. Not merged.
+
 **Files.**
 
 - [ ] Edit `src/cli-agent.ts`.
