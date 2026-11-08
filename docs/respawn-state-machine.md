@@ -79,5 +79,5 @@ Uses temp file for prompt to avoid E2BIG errors with large terminal buffers.
 
 - `test/respawn-scenarios.md` - Comprehensive test scenarios for edge cases
 - `test/respawn-test-plan.md` - Test environment architecture and strategies
-- `test/respawn-test-utils.ts` - Mock utilities (MockSession, MockAiIdleChecker, MockAiPlanChecker)
+- `test/mocks/` - Shared mocks (`MockSession`, `MockStateStore`), imported from `test/mocks/index.js`
 - `test/respawn-analysis.md` - Code coverage analysis and identified issues
