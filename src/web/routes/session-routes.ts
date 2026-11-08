@@ -208,6 +208,7 @@ import { readOmpConversation, scanOmpSessionsHistory } from '../../omp-transcrip
 import { scanCodexSessionsHistory, codexThreadBySessionId } from '../../codex-transcript.js';
 import {
   transcriptNeedsScreenCapture,
+  transcriptRequiresScreenCapture,
   getLastTranscriptResponse,
   isExternalCliTranscriptMode,
   parseExternalCliTranscript,
@@ -2945,7 +2946,7 @@ export function registerSessionRoutes(
           : null;
       // Grok's raw redraw stream is not a transcript. If capture is unavailable,
       // return no context rather than displaying concatenated repaints.
-      const source = screen ?? (session.mode === 'grok' ? '' : session.terminalBuffer);
+      const source = screen ?? (transcriptRequiresScreenCapture(session.mode) ? '' : session.terminalBuffer);
       const blocks = parseExternalCliTranscript(source, session.mode);
       return {
         text: getLastTranscriptResponse(blocks),

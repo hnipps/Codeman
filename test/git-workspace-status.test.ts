@@ -374,7 +374,7 @@ describe('getGitWorkspaceStatus against a real repository', () => {
       chmodSync(hook, 0o755);
       git(repo, 'config', 'core.fsmonitor', hook);
       // Control: git itself runs it for a plain status, so the assertion below is not vacuous.
-      git(repo, 'status', '--short');
+      git(repo, '-c', `core.fsmonitor=${hook}`, 'status', '--short');
       expect(existsSync(marker)).toBe(true);
       rmSync(marker);
       await getGitWorkspaceStatus(repo);

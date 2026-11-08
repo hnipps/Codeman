@@ -17,6 +17,12 @@ use the persisted stop path, including cancellation of a pending restore. Dead
 skip-clear metrics were removed. RL-4 through RL-6 link the state machine and tests;
 RL-6 remains draft because simultaneous lease acquisition is not atomic.
 
+The full CI run also exposed pre-existing CLI-id branches in plugin removal and
+Grok screen parsing; those dispatches now read data without changing behavior.
+Git fixture commands explicitly configure their own temporary bare repositories
+and fsmonitor control, so inherited shell hardening cannot make their assertions
+vacuous. Bare-repository refusals remain refusals with the correct explanation.
+
 ## 2026-11-08 — A respawn stop is persisted desired state
 
 **Type:** drift

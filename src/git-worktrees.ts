@@ -506,7 +506,7 @@ export async function resolveCaseRepository(
     timeoutMs: WORKTREE_READ_TIMEOUT_MS,
   });
   if (run.code !== 0 || run.spawnError || run.timedOut) {
-    if (/must be run in a work tree/i.test(run.stderr)) {
+    if (/must be run in a work tree|cannot use bare repository/i.test(run.stderr)) {
       return fail('INVALID_INPUT', 'This case folder is a bare git repository, which has no work tree to branch from.');
     }
     if (/not a git repository/i.test(run.stderr)) {

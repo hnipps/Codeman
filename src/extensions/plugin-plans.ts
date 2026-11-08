@@ -114,18 +114,16 @@ export function pluginPlans(input: {
 
 /** Uninstall argv for a selector the catalog stored. Unknown CLIs are skipped. */
 export function uninstallStep(plugin: ExtensionPluginInstall): PluginInstallStep | undefined {
-  switch (plugin.cli) {
-    case 'claude':
-      return { bin: 'claude', args: ['plugin', 'uninstall', plugin.selector, '--scope', 'user', '--yes', '--json'] };
-    case 'grok':
-      return { bin: 'grok', args: ['plugin', 'uninstall', plugin.selector, '--confirm'] };
-    case 'codex':
-      return { bin: 'codex', args: ['plugin', 'remove', plugin.selector, '--json'] };
-    case 'agy':
-      return { bin: 'agy', args: ['plugin', 'uninstall', plugin.selector] };
-    case 'copilot':
-      return { bin: 'copilot', args: ['plugin', 'uninstall', plugin.selector] };
-    default:
-      return undefined;
-  }
+  return Object.hasOwn(UNINSTALL_STEPS, plugin.cli) ? UNINSTALL_STEPS[plugin.cli]?.(plugin.selector) : undefined;
 }
+
+const UNINSTALL_STEPS: Record<string, ((selector: string) => PluginInstallStep) | undefined> = {
+  claude: (selector) => ({
+    bin: 'claude',
+    args: ['plugin', 'uninstall', selector, '--scope', 'user', '--yes', '--json'],
+  }),
+  grok: (selector) => ({ bin: 'grok', args: ['plugin', 'uninstall', selector, '--confirm'] }),
+  codex: (selector) => ({ bin: 'codex', args: ['plugin', 'remove', selector, '--json'] }),
+  agy: (selector) => ({ bin: 'agy', args: ['plugin', 'uninstall', selector] }),
+  copilot: (selector) => ({ bin: 'copilot', args: ['plugin', 'uninstall', selector] }),
+};
