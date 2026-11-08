@@ -4206,3 +4206,19 @@ html[data-session-list="sidebar"] .session-sidebar .session-tab .tab-close {
     touch-action: pan-x pan-y;
   }
 }
+
+@media (max-width: 599px) {
+  .preview-switch {
+    padding: 4px calc(6px + var(--safe-area-right)) 4px calc(6px + var(--safe-area-left));
+    gap: 6px;
+  }
+  .preview-switch-option {
+    min-height: 32px;
+    padding: 4px 12px;
+    font-size: 13px;
+  }
+  .preview-switch-meta { min-width: 0; flex: 0 1 auto; gap: 6px; }
+  .preview-switch-port { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .preview-switch-delete { min-height: 32px; padding: 4px 10px; font-size: 13px; flex: none; }
+  .preview-card-actions button { min-height: 40px; padding: 0 18px; }
+}

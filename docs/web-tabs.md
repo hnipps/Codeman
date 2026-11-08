@@ -149,6 +149,29 @@ this machine, where their files are not. A server that binds `0.0.0.0` (as
 `--bind 127.0.0.1` style option when that matters. The API is in
 [`docs/api-reference.md`](api-reference.md#previews-apiv1sessionsidpreviews).
 
+### Where a preview shows
+
+A preview never gets a tab of its own in the strip, the rail or the Run menu, and a
+new one never opens or takes focus by itself. Its session's tab gets a yellow count
+of previews you have not opened yet. Open the session and a **Terminal / Preview**
+switch sits under the tab strip, with one entry per preview (`Preview: web` for a
+single one, the names alone for several). Picking a preview shows its page in the
+same sandboxed frame as any web tab, with its port and a **Delete** control beside
+the switch; picking Terminal brings the terminal back. The frame stays loaded while
+you switch, so the page does not reload, and the choice is remembered per session on
+this device, across a reload too. Which previews you have opened is remembered per
+device, so another device still shows the badge.
+
+A preview whose page cannot be shown is a card, never a blank frame: `stopped` (the
+idle stop), `exited`, or "not answering" when its state is still `running` but the
+proxy gets no answer. Nothing pushes a state change to the page, so the state is read
+again each time you open the preview or its session. The card shows the command and a
+**Restart**, which sends the preview's own command again. When a server Codeman cannot
+stop still listens on the port (`stillListening`), the card says so; Delete then
+removes the preview but cannot stop that server. Otherwise Delete stops the server;
+when the answer is a `409`, a `previewStop: "deferred"` or a `leftRunning`, a toast
+says what happened instead of reporting success.
+
 ## The sandbox, and when to turn it off
 
 Because a proxied dashboard is served from Codeman's own address, it is
@@ -314,4 +337,5 @@ then every API call fails, which looks like the dashboard being broken.
 | Persistence              | `src/webview-store.ts`                  |
 | Limits                   | `src/config/webview-limits.ts`          |
 | Frontend                 | `src/web/public/webview-tabs.js`        |
+| Preview switch + badge   | `src/web/public/session-ui.js`          |
 | Auth exemption           | `src/web/middleware/auth.ts`             |

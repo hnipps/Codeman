@@ -7087,6 +7087,7 @@ class CodemanApp {
       // Full rebuild needed (sessions added/removed)
       this._fullRenderSessionTabs();
     }
+    this._paintPreviewBadges?.();
 
     // Keep the reveal-on-change bookkeeping honest when only the incremental
     // branch ran: _updateActiveTabImmediate has already scrolled the new active
@@ -7576,6 +7577,7 @@ class CodemanApp {
     // underneath a render, and a solo window forces 'header' regardless.
     if (richRows) this._startSidebarRichClock();
     else this._stopSidebarRichClock();
+    this._paintPreviewBadges?.();
   }
 
   // Set up arrow key navigation for session tabs (accessibility)
@@ -10160,6 +10162,7 @@ class CodemanApp {
     if (userInitiated) this.markIdleAlertSeen(sessionId);
     // Instant active-class toggle (no 100ms debounce), then schedule full render for badges/status
     this._updateActiveTabImmediate(sessionId);
+    this._onSessionSelectedForPreviews?.(sessionId);
     // Handheld: the session drawer overlays the terminal, so slide it away now
     // that a session has been picked. No-op on desktop and in header layout.
     this.closeSessionSidebarOnHandheld();
