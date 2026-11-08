@@ -39,6 +39,17 @@ Steps can be skipped via config:
 - `sendInit: false` - Skip the init step
 - `kickstartPrompt` - Optional prompt if `/init` doesn't trigger work
 
+`/clear` is sent every cycle when `sendClear` is true. There is no context-size shortcut: Claude's on-screen `N tokens` figure is a per-turn counter, not the context size.
+
+## Cycle Budget
+
+A loop with nothing to do stops by itself. After each cycle the controller fingerprints the session's working directory (git `HEAD` + hashes of `git status --porcelain` and `git diff HEAD`):
+
+- `maxUnchangedCycles` (default `3`, `0` disables): stop after this many consecutive cycles whose fingerprint did not change. A directory that is not a git repository has no fingerprint, so only `maxCycles` can end its loop.
+- `maxCycles` (default unset): stop after this many cycles in total.
+
+The stop is torn down like `POST /respawn/stop` (controller removed, persisted config cleared) and broadcast as `respawn:stopped` with `reason` (`unchanged_workspace` | `max_cycles`) and `details`.
+
 ## Step Confirmation
 
 After sending each step (update, clear, init, kickstart), the controller waits for `completionConfirmMs` (10s) of output silence before proceeding. This prevents sending commands while Claude is still processing.

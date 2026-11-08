@@ -70,6 +70,28 @@ export function wireRespawnListeners(sessionId: string, controller: RespawnContr
     deps.broadcast(SseEvent.RespawnCycleCompleted, { sessionId, cycleNumber });
   });
 
+  /**
+   * Handles `budgetExhausted` — the loop used up its cycle budget. Torn down exactly like
+   * `POST /respawn/stop` so a restart does not bring it back, then broadcasts
+   * `respawn:stopped` with the reason for the UI.
+   */
+  controller.on('budgetExhausted', (data: { reason: string; details: string }) => {
+    controller.stop();
+    deps.getRespawnControllers().delete(sessionId);
+    const timers = deps.getRespawnTimers();
+    const timerInfo = timers.get(sessionId);
+    if (timerInfo) {
+      clearTimeout(timerInfo.timer);
+      timers.delete(sessionId);
+    }
+    deps.mux.clearRespawnConfig(sessionId);
+    const session = deps.getSession(sessionId);
+    if (session) deps.persistSessionState(session);
+    deps.broadcast(SseEvent.RespawnStopped, { sessionId, reason: data.reason, details: data.details });
+    const tracker = getTracker();
+    if (tracker) tracker.recordWarning(`Respawn stopped: ${data.reason}`, data.details);
+  });
+
   /** Broadcasts `respawn:blocked` + push notification — respawn blocked by error/circuit breaker */
   controller.on('respawnBlocked', (data: { reason: string; details: string }) => {
     deps.broadcast(SseEvent.RespawnBlocked, { sessionId, reason: data.reason, details: data.details });
@@ -275,6 +297,8 @@ export function restoreRespawnController(
     aiPlanCheckMaxContext: config.aiPlanCheckMaxContext,
     aiPlanCheckTimeoutMs: config.aiPlanCheckTimeoutMs,
     aiPlanCheckCooldownMs: config.aiPlanCheckCooldownMs,
+    maxUnchangedCycles: config.maxUnchangedCycles,
+    maxCycles: config.maxCycles,
   });
 
   const controllers = deps.getRespawnControllers();
@@ -354,6 +378,8 @@ export function saveRespawnConfig(
     aiPlanCheckMaxContext: config.aiPlanCheckMaxContext,
     aiPlanCheckTimeoutMs: config.aiPlanCheckTimeoutMs,
     aiPlanCheckCooldownMs: config.aiPlanCheckCooldownMs,
+    maxUnchangedCycles: config.maxUnchangedCycles,
+    maxCycles: config.maxCycles,
     durationMinutes,
   };
   mux.updateRespawnConfig(sessionId, persistedConfig);

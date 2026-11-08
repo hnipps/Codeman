@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateHealthScore, shouldSkipClear, HealthInputs } from '../src/respawn-health.js';
+import { calculateHealthScore, HealthInputs } from '../src/respawn-health.js';
 import type { RespawnAggregateMetrics, CircuitBreakerStatus } from '../src/types/index.js';
 
 /**
@@ -477,41 +477,5 @@ describe('calculateHealthScore', () => {
       expect(result.calculatedAt).toBeGreaterThanOrEqual(before);
       expect(result.calculatedAt).toBeLessThanOrEqual(after);
     });
-  });
-});
-
-describe('shouldSkipClear', () => {
-  it('should not skip when token count is 0 (unknown)', () => {
-    expect(shouldSkipClear(0, 50, 200000)).toBe(false);
-  });
-
-  it('should skip when usage is below threshold', () => {
-    // 10000 / 200000 = 5% < 50%
-    expect(shouldSkipClear(10000, 50, 200000)).toBe(true);
-  });
-
-  it('should not skip when usage is above threshold', () => {
-    // 150000 / 200000 = 75% > 50%
-    expect(shouldSkipClear(150000, 50, 200000)).toBe(false);
-  });
-
-  it('should not skip when usage equals threshold', () => {
-    // 100000 / 200000 = 50% == 50% -> not less than, so false
-    expect(shouldSkipClear(100000, 50, 200000)).toBe(false);
-  });
-
-  it('should handle edge case of very small threshold', () => {
-    // 1000 / 200000 = 0.5% < 1%
-    expect(shouldSkipClear(1000, 1, 200000)).toBe(true);
-  });
-
-  it('should handle 100% threshold (always skip)', () => {
-    // 190000 / 200000 = 95% < 100%
-    expect(shouldSkipClear(190000, 100, 200000)).toBe(true);
-  });
-
-  it('should handle 0% threshold (never skip except when unknown)', () => {
-    // Any positive count / total > 0% so not < 0%
-    expect(shouldSkipClear(1, 0, 200000)).toBe(false);
   });
 });

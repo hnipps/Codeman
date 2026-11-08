@@ -94,26 +94,6 @@ export function calculateHealthScore(inputs: HealthInputs): RalphLoopHealthScore
 }
 
 /**
- * Determine whether to skip the /clear step based on current context usage.
- * Skips if token count is below the configured threshold percentage.
- *
- * @param lastTokenCount - Current token count from the session
- * @param skipClearThresholdPercent - Threshold percentage below which to skip /clear
- * @param maxContextTokens - Approximate max context window size
- * @returns True if /clear should be skipped
- */
-export function shouldSkipClear(
-  lastTokenCount: number,
-  skipClearThresholdPercent: number,
-  maxContextTokens: number
-): boolean {
-  if (lastTokenCount === 0) return false; // Can't determine, don't skip
-
-  const usagePercent = (lastTokenCount / maxContextTokens) * 100;
-  return usagePercent < skipClearThresholdPercent;
-}
-
-/**
  * Calculate score based on recent cycle success rate.
  */
 function calculateCycleSuccessScore(aggregateMetrics: RespawnAggregateMetrics): number {

@@ -5,7 +5,7 @@
  * per-cycle metrics, aggregate health scoring, and adaptive timing.
  *
  * Key exports:
- * - RespawnConfig — full respawn settings (idle timeout, AI checks, adaptive timing, skip-clear)
+ * - RespawnConfig — full respawn settings (idle timeout, AI checks, adaptive timing, cycle budget)
  * - PersistedRespawnConfig — subset saved to disk for mux session recovery
  * - RespawnPreset — named preset for quick setup (solo-work, team-lead, overnight-autonomous, etc.)
  * - RespawnCycleMetrics — per-cycle outcome tracking (duration, idle reason, steps, tokens)
@@ -82,12 +82,12 @@ export interface RespawnConfig {
   /** Maximum value for adaptive completion confirm (ms) */
   adaptiveMaxConfirmMs?: number;
 
-  // ========== P2-002: Skip-Clear Optimization ==========
+  // ========== Cycle Budget ==========
 
-  /** Whether to skip /clear when context is below threshold */
-  skipClearWhenLowContext?: boolean;
-  /** Token percentage threshold below which /clear is skipped (0-100) */
-  skipClearThresholdPercent?: number;
+  /** Stop after this many consecutive cycles with an unchanged git workspace (0 disables, default 3) */
+  maxUnchangedCycles?: number;
+  /** Stop after this many cycles in total (unset = no limit) */
+  maxCycles?: number;
 
   // ========== P2-004: Cycle Metrics ==========
 
@@ -278,6 +278,10 @@ export interface PersistedRespawnConfig {
   aiPlanCheckTimeoutMs?: number;
   /** Cooldown after NOT_PLAN_MODE verdict in ms */
   aiPlanCheckCooldownMs?: number;
+  /** Stop after this many consecutive cycles with an unchanged git workspace (0 disables) */
+  maxUnchangedCycles?: number;
+  /** Stop after this many cycles in total */
+  maxCycles?: number;
   /** Duration in minutes if timed respawn was set */
   durationMinutes?: number;
 }
