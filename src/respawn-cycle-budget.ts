@@ -28,6 +28,7 @@ const MAX_FILE_BYTES = 1024 * 1024;
 
 async function contentFingerprint(workingDir: string): Promise<string | null> {
   const hash = createHash('sha256');
+  const content = Buffer.allocUnsafe(MAX_FILE_BYTES + 1);
   let files = 0;
   let directories = 0;
   const pending = [''];
@@ -49,8 +50,12 @@ async function contentFingerprint(workingDir: string): Promise<string | null> {
           try {
             const stat = await file.stat();
             if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-            const content = Buffer.alloc(MAX_FILE_BYTES + 1);
-            const { bytesRead } = await file.read(content, 0, content.length, 0);
+            let bytesRead = 0;
+            while (bytesRead < content.length) {
+              const chunk = await file.read(content, bytesRead, content.length - bytesRead, bytesRead);
+              if (chunk.bytesRead === 0) break;
+              bytesRead += chunk.bytesRead;
+            }
             if (bytesRead > MAX_FILE_BYTES) continue;
             hash
               .update(relativePath)

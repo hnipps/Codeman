@@ -73,8 +73,10 @@ describe('respawn lifecycle', () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const c of controllers.values()) c.stop();
+    store.flush();
+    await store.settle();
     vi.useRealTimers();
     rmSync(dir, { recursive: true, force: true });
   });
