@@ -12,6 +12,7 @@ import type { PersistedRespawnConfig } from '../types.js';
 import type { RunSummaryTracker } from '../run-summary.js';
 import type { TerminalMultiplexer } from '../mux-interface.js';
 import type { TeamWatcher } from '../team-watcher.js';
+import type { StateStore } from '../state-store.js';
 import { SseEvent } from './sse-events.js';
 
 // ============================================================================
@@ -32,6 +33,60 @@ export interface RespawnWiringDeps {
   serverStartTime: number;
   respawnRestoreGracePeriodMs: number;
   mux: TerminalMultiplexer;
+  store: Pick<StateStore, 'getSession' | 'setSession'>;
+}
+
+export type RespawnStopDeps = Pick<
+  RespawnWiringDeps,
+  | 'broadcast'
+  | 'persistSessionState'
+  | 'getSession'
+  | 'getRespawnControllers'
+  | 'getRespawnTimers'
+  | 'getPendingRespawnStarts'
+  | 'mux'
+  | 'store'
+>;
+
+/** Stops the live controller, its timed-respawn timer and any restore start still waiting out the grace period. */
+function teardownRespawnRuntime(sessionId: string, deps: RespawnStopDeps): void {
+  const controllers = deps.getRespawnControllers();
+  controllers.get(sessionId)?.stop();
+  controllers.delete(sessionId);
+
+  const timers = deps.getRespawnTimers();
+  const timerInfo = timers.get(sessionId);
+  if (timerInfo) {
+    clearTimeout(timerInfo.timer);
+    timers.delete(sessionId);
+  }
+
+  const pendingStarts = deps.getPendingRespawnStarts();
+  const pending = pendingStarts.get(sessionId);
+  if (pending) {
+    clearTimeout(pending);
+    pendingStarts.delete(sessionId);
+  }
+}
+
+/**
+ * The one way a user's "respawn off" happens. Persists the desired state (state.json and
+ * mux-sessions.json) before anything else can re-save it, so a restart, recover or deploy
+ * cannot restore the respawn. Idempotent: works with no controller in the map.
+ */
+export function stopRespawnForSession(sessionId: string, deps: RespawnStopDeps): void {
+  teardownRespawnRuntime(sessionId, deps);
+  deps.mux.clearRespawnConfig(sessionId);
+
+  const persisted = deps.store.getSession(sessionId);
+  if (persisted) {
+    const { respawnConfig: _dropped, ...rest } = persisted;
+    deps.store.setSession(sessionId, { ...rest, respawnEnabled: false });
+  }
+
+  const session = deps.getSession(sessionId);
+  if (session) deps.persistSessionState(session);
+  deps.broadcast(SseEvent.RespawnStopped, { sessionId });
 }
 
 // ============================================================================
@@ -253,6 +308,8 @@ export function restoreRespawnController(
   source: string,
   deps: RespawnWiringDeps
 ): void {
+  teardownRespawnRuntime(session.id, deps);
+
   const controller = new RespawnController(session, {
     idleTimeoutMs: config.idleTimeoutMs,
     updatePrompt: config.updatePrompt,
@@ -330,8 +387,10 @@ export function saveRespawnConfig(
   sessionId: string,
   config: RespawnConfig,
   mux: TerminalMultiplexer,
-  durationMinutes?: number
+  durationMinutes?: number,
+  opts?: { startedByLoop?: boolean }
 ): void {
+  const startedByLoop = opts?.startedByLoop ?? mux.getSession(sessionId)?.respawnConfig?.startedByLoop;
   const persistedConfig: PersistedRespawnConfig = {
     enabled: config.enabled,
     idleTimeoutMs: config.idleTimeoutMs,
@@ -355,6 +414,7 @@ export function saveRespawnConfig(
     aiPlanCheckTimeoutMs: config.aiPlanCheckTimeoutMs,
     aiPlanCheckCooldownMs: config.aiPlanCheckCooldownMs,
     durationMinutes,
+    ...(startedByLoop ? { startedByLoop } : {}),
   };
   mux.updateRespawnConfig(sessionId, persistedConfig);
 }

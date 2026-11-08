@@ -133,32 +133,8 @@ export function registerRespawnRoutes(
     const { id } = req.params as { id: string };
     // Owner-gate before any side effects (matches start/config/enable): a non-owner
     // gets NOT_FOUND and never reaches stop/delete/clearRespawnConfig/persist.
-    const session = findSessionOrFail(ctx, id, req);
-    const controller = ctx.respawnControllers.get(id);
-
-    if (!controller) {
-      return createErrorResponse(ApiErrorCode.NOT_FOUND, 'Respawn controller not found');
-    }
-
-    controller.stop();
-
-    // Remove controller from map so persistSessionState doesn't save respawnEnabled: true
-    ctx.respawnControllers.delete(id);
-
-    // Clear any timed respawn
-    const timerInfo = ctx.respawnTimers.get(id);
-    if (timerInfo) {
-      clearTimeout(timerInfo.timer);
-      ctx.respawnTimers.delete(id);
-    }
-
-    // Clear persisted respawn config
-    ctx.mux.clearRespawnConfig(id);
-
-    // Update state.json (respawnConfig removed)
-    ctx.persistSessionState(session);
-
-    ctx.broadcast(SseEvent.RespawnStopped, { sessionId: id });
+    findSessionOrFail(ctx, id, req);
+    ctx.stopRespawnForSession(id);
 
     return {};
   });
