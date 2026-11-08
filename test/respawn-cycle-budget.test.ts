@@ -7,13 +7,14 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { RespawnController } from '../src/respawn-controller.js';
 import { Session } from '../src/session.js';
 import { MockSession } from './mocks/index.js';
+import { computeWorkspaceFingerprint } from '../src/respawn-cycle-budget.js';
 
 type Internals = {
   _state: string;
@@ -107,16 +108,65 @@ describe('respawn cycle budget', () => {
     expect(controller.state).not.toBe('stopped');
   });
 
-  it('does not stop a non-git working directory on unchanged cycles', async () => {
+  // Invariant RL-4: Unchanged workspaces stop within their cycle budget
+  it('stops a non-git working directory after unchanged cycles', async () => {
     const plain = mkdtempSync(join(tmpdir(), 'respawn-budget-plain-'));
     try {
       session.workingDir = plain;
       const c = make({ maxUnchangedCycles: 2 });
-      for (let i = 0; i < 4; i++) {
+      writeFileSync(join(plain, 'notes.txt'), 'nothing left to do');
+      const reasons: string[] = [];
+      controller.on('budgetExhausted', (r: { reason: string }) => reasons.push(r.reason));
+      for (let i = 0; i < 2; i++) {
         c.completeCycle();
         await new Promise((r) => setTimeout(r, 100));
       }
-      expect(controller.state).not.toBe('stopped');
+      await waitFor(() => controller.state === 'stopped');
+      expect(controller.state).toBe('stopped');
+      expect(reasons).toEqual(['unchanged_workspace']);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  it('hashes non-git content, ignores excluded trees and large files, and never follows symlinks', async () => {
+    const plain = mkdtempSync(join(tmpdir(), 'respawn-budget-files-'));
+    try {
+      mkdirSync(join(plain, 'docs'));
+      writeFileSync(join(plain, 'docs', 'notes.txt'), 'one');
+      for (const name of ['.git', '.cache', 'node_modules']) {
+        mkdirSync(join(plain, name));
+        writeFileSync(join(plain, name, 'ignored.txt'), 'one');
+      }
+      writeFileSync(join(plain, 'large.bin'), Buffer.alloc(1024 * 1024 + 1));
+      symlinkSync(dir, join(plain, 'linked'));
+      const first = await computeWorkspaceFingerprint(plain);
+      expect(first).not.toBeNull();
+      for (const name of ['.git', '.cache', 'node_modules']) {
+        writeFileSync(join(plain, name, 'ignored.txt'), 'two');
+      }
+      writeFileSync(join(plain, 'large.bin'), Buffer.alloc(1024 * 1024 + 1, 1));
+      writeFileSync(join(dir, 'a.txt'), 'outside');
+      expect(await computeWorkspaceFingerprint(plain)).toBe(first);
+      writeFileSync(join(plain, 'docs', 'notes.txt'), 'two');
+      expect(await computeWorkspaceFingerprint(plain)).not.toBe(first);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  it('stops the non-git scan after 5000 files in deterministic path order', async () => {
+    const plain = mkdtempSync(join(tmpdir(), 'respawn-budget-cap-'));
+    try {
+      for (let i = 0; i < 5001; i++) {
+        writeFileSync(join(plain, `${String(i).padStart(4, '0')}.txt`), 'one');
+      }
+      const first = await computeWorkspaceFingerprint(plain);
+      expect(first).not.toBeNull();
+      writeFileSync(join(plain, '5000.txt'), 'outside the cap');
+      expect(await computeWorkspaceFingerprint(plain)).toBe(first);
+      writeFileSync(join(plain, '0000.txt'), 'changed');
+      expect(await computeWorkspaceFingerprint(plain)).not.toBe(first);
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
