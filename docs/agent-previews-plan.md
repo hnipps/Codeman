@@ -127,6 +127,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P1.
 
+**Status.** Open PR #3 (`feat/previews-p2-supervisor`, on P1), verified clean at `f67edeaa` after three fix rounds, not merged.
+
 **Files.**
 
 - [ ] Create `src/preview-supervisor.ts`.

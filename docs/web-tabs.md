@@ -126,8 +126,8 @@ and the live colour stops that server within a minute.
 Codeman finds a server by its process group and by an environment variable it sets
 on it, so a command that detaches itself (`setsid`, `nohup ... &`) is still found and
 stopped. It cannot stop a server the command handed to something it did not start
-(`tmux new-session -d`, `docker run`, `systemd-run`) or one started under `env -i`,
-and it never signals a process it cannot prove is the preview's. When the port still
+(`tmux new-session -d`, `docker run`, `systemd-run`) or one started under `env -i`
+that outlives the command's shell, and it never signals a process it cannot prove is the preview's. When the port still
 listens after a stop, the API answer says so (`leftRunning`), the preview log gets a
 line, and the preview lists keep showing it until the port is free; stop that server
 where it was handed off. The same goes for a command that backgrounds its server and
