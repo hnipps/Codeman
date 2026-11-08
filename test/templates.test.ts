@@ -81,6 +81,7 @@ describe('generateClaudeMd', () => {
       expect(result).toContain('codeman agent preview add <name> --cmd');
       expect(result).toContain('http.server {port} --bind 127.0.0.1');
       expect(result).toContain('prints the URL to give the user');
+      expect(result).toContain("under the session's Terminal / Preview switch");
       expect(result).not.toContain('Preview tab');
     });
 

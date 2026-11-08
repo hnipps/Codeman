@@ -67,7 +67,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** None.
 
-**Status.** Open PR #2 (`feat/previews-p1-origin`), verified clean at `7427a417`, not merged.
+**Status.** Merged to master (PR #2, merge commit `e4fd3f9f`) on 2026-11-08 and deployed with the stack at `382d5c41`.
 
 **Files.**
 
@@ -129,7 +129,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P1.
 
-**Status.** Open PR #3 (`feat/previews-p2-supervisor`, on P1), verified clean at `f67edeaa` after three fix rounds, not merged.
+**Status.** Merged to master (PR #3, merge commit `75b11404`) on 2026-11-08, after three fix rounds, and deployed with the stack at `382d5c41`.
 
 **Files.**
 
@@ -206,7 +206,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P2.
 
-**Status.** Open PR #4 (`feat/previews-p3-cli`, on P2), fix round 3 pushed at `ea2c698c`; its verification verdict is not in yet. Not merged.
+**Status.** Merged to master (PR #4, merge commit `65ca82fe`) on 2026-11-08 and deployed with the stack at `382d5c41`. Fix round 3 (`ea2c698c`) merged on the operator's call before its independent verification ran.
 
 **Files.**
 
@@ -261,7 +261,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P2.
 
-**Status.** Open PR #5 (`feat/previews-p4-session-ui`, on P2, a sibling of P3), verified clean at `a0ecdeaa` (`9082f5ed` adds review screenshots only), waiting for the operator's review. Not merged.
+**Status.** Merged to master (PR #5, merge commit `382d5c41`) on 2026-11-08 and deployed at `382d5c41`.
 
 **Files.**
 
@@ -384,7 +384,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 ## Close the program
 
 - [ ] Every box above is checked with its evidence.
-- [ ] Set `intent/2026-11-05-agent-previews.md` to its final status and add a `docs/JOURNAL.md` entry for the process ownership decision.
+- [x] Set `intent/2026-11-05-agent-previews.md` to its final status and add a `docs/JOURNAL.md` entry for the process ownership decision.
 - [ ] Reply to the operator with the report the execution playbook names.
 
 ## Appendix A. Prototype evidence

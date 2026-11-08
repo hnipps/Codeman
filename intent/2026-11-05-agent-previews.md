@@ -1,6 +1,6 @@
 # Intent: Agent previews
 
-**Status:** Draft
+**Status:** Landed (P1 to P4, 2026-11-08; the drawer of all previews, P5, is not built)
 
 ## Problem statement
 

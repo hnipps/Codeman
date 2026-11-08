@@ -853,7 +853,8 @@ codeman agent preview rm web                    # stop it and delete the preview
   server was started, and the preview is kept. A stop abandoned part way may already
   have stopped some old processes; the live deploy colour cleans up the rest.
 - **The url** is a path on the Codeman server. Give it to the user: it opens at the
-  same address they use for Codeman. `--json` prints the server's answer (`port`,
+  same address they use for Codeman, and they can also open it from the session's
+  Terminal / Preview switch. `--json` prints the server's answer (`port`,
   `url`, `state`, `ready`, `leftRunning`).
 - **Clean up** with `preview rm` when the user no longer needs it. Deleting your
   session removes its previews too.
