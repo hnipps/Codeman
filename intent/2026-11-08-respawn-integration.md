@@ -32,12 +32,6 @@ None.
 
 ## Validation findings
 
-The full CI run also found pre-existing CLI-id guard violations in plugin uninstall
-plans and Grok pane readers, missing generated spreadsheet assets, and Git fixture
-failures under inherited `safe.bareRepository=explicit` / `core.fsmonitor=false`.
-Remediation preserves behavior: dispatch through data, restore existing vendor
-bundles, explicitly configure only temporary Git fixtures, and recognize Git's
-bare-repository refusal without weakening the refusal or existing assertions.
 The live lease's simultaneous-acquisition race is recorded as an open RL-6 gap;
 this integration adds its documentation, not a new locking design.
 
