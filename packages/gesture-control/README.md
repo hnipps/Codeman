@@ -42,10 +42,10 @@ branch `beta/session-detach` (open as **PR #103**) — including this session's
 gesture *improvements* (direct-detach, Run/Run Shell taps, self-hosted MediaPipe,
 cache-bust), ported onto the PR in commit `eea84db` (CI green). See
 [Codeman integration](#codeman-integration) below and the hand-off brief
-[`../docs/CODEMAN_DETACH_BRIEF.md`](../docs/CODEMAN_DETACH_BRIEF.md).
+[`docs/CODEMAN_DETACH_BRIEF.md`](docs/CODEMAN_DETACH_BRIEF.md).
 
 **Multi-monitor mode — built & validated at the desk (2026-06-08).** Approach
-**A+C** (see [`../docs/MULTIMONITOR_DESIGN.md`](../docs/MULTIMONITOR_DESIGN.md)):
+**A+C** (see [`docs/MULTIMONITOR_DESIGN.md`](docs/MULTIMONITOR_DESIGN.md)):
 (A) gesture "detach" now pops a session into a re-grabbable **in-page floating
 panel** (an `<iframe src="/session/:id">`, not an OS window — so the hand keeps
 control); (C) `scripts/span-codeman.sh` runs Codeman in a **single window spanned
