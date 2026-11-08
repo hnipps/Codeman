@@ -2,6 +2,22 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-08 — Respawn lifecycle has a real-process check
+
+**Type:** propagated-discovery
+**Touches:** `scripts/verify-respawn-lifecycle.sh`, `docs/invariants/respawn-lifecycle.md`
+**Why:** In-process tests cannot reproduce two live servers or a real restart's
+restoration of disabled desired state.
+**Links:** [E2E intent](../intent/2026-11-08-respawn-e2e.md)
+
+The manual runner builds a selected ref in a temporary worktree and uses only
+shell sessions with a private HOME, data directory and tmux socket. Master failed
+all three scenarios; the integrated fixes passed stop/restart, established-holder
+lease refusal and the three-cycle unchanged-workspace stop. Shell step completion
+needs the detector's prompt glyph and a short command delay after delivery.
+Restart observations extend beyond the two-minute restore grace period.
+This is not a CI gate or coverage of simultaneous first lease acquisition.
+
 ## 2026-11-08 — Idle respawn has two usage backstops
 
 **Type:** intent-refinement

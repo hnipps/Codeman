@@ -72,3 +72,15 @@ holder, not simultaneous first acquisition. The current read-then-rename acquisi
 is not atomic across processes; concurrent acquisition remains a gap in this draft
 promise. Separate data directories on the same tmux socket and older servers without
 a lease are also outside its protection.
+
+## Real-process verification
+
+Run `scripts/verify-respawn-lifecycle.sh [ref]` (default `HEAD`) for RL-1, RL-4
+and RL-6's established-holder refusal. It builds the ref in a temporary worktree
+using `~/codeman/node_modules`, then exercises real servers and shell panes with
+private HOME, data and tmux socket, without invoking a model. Each scenario prints
+PASS/FAIL with observed state; failures return non-zero. Cleanup runs on exit and
+interruption. Restarts are sampled beyond the two-minute restore grace period.
+The shell prompt uses the detector's glyph; `true; sleep 0.5` allows delivery to
+finish before step completion. This manual check is not a CI gate and does not
+test simultaneous first lease acquisition.
