@@ -99,6 +99,7 @@ import { OrchestratorLoop } from '../orchestrator-loop.js';
 import { getLifecycleLog } from '../session-lifecycle-log.js';
 import { PreviewSupervisor } from '../preview-supervisor.js';
 import { PREVIEW_RECONCILE_INTERVAL_MS } from '../config/preview-limits.js';
+import { requireLiveLease, releaseLiveLease } from '../deploy-lease.js';
 import { deployRole, planRoleChange, type DeployRole, type DeployRoleOutcome } from '../deploy-role.js';
 import { resolvePaneApiUrl } from './pane-api-url.js';
 import {
@@ -3219,6 +3220,7 @@ export class WebServer extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    if (deployRole.current === 'live') requireLiveLease();
     // Multi-user first boot: create the initial admin from CODEMAN_USERNAME/PASSWORD
     // if there are no users yet, else refuse to start (there would be no way in).
     if (isMultiUserMode() && !this.testMode) {
@@ -4285,9 +4287,15 @@ export class WebServer extends EventEmitter {
     if (change.kind === 'refused') return { kind: 'refused', reason: change.reason, role: previous };
     if (change.kind === 'transition') {
       console.log(`[Deploy] ${change.transition}: ${previous} -> ${target}`);
+      if (target === 'live') requireLiveLease();
       switch (change.transition) {
         case 'promote':
-          await this.promoteToLive();
+          try {
+            await this.promoteToLive();
+          } catch (err) {
+            if (deployRole.current !== 'live') releaseLiveLease();
+            throw err;
+          }
           break;
         case 'retire':
           await this.retireFromLive();
@@ -4343,6 +4351,7 @@ export class WebServer extends EventEmitter {
     await this.store.settle();
     const listWritten = this.writeSharedState();
     deployRole.enter('retired');
+    releaseLiveLease();
     await listWritten;
   }
 
@@ -4492,6 +4501,7 @@ export class WebServer extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    releaseLiveLease();
     getLifecycleLog().log({ event: 'server_stopped', sessionId: '*' });
     // Set stopping flag to prevent new timer creation during shutdown
     this.sse.setStopping();
