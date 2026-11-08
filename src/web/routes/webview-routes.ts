@@ -51,12 +51,12 @@ import { webviewCapabilities } from '../../webview-capabilities.js';
 import { egressBlockedReason, webviewEgressLookup, webviewFetch, type EgressLookup } from '../webview-egress.js';
 import { blockedWebviewHostReason } from '../webview-egress-policy.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
-import type { Webview, WebviewOpenData, WebviewProbe } from '../../types.js';
+import type { Webview, WebviewManagedKind, WebviewOpenData, WebviewOrigin, WebviewProbe } from '../../types.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
-import { canAccessOwned, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
-import { WebviewCreateSchema, WebviewProbeSchema, WebviewUpdateSchema } from '../schemas.js';
+import { canAccessOwned, findSessionOrFail, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
+import { WebviewCreateSchema, WebviewProbeSchema, WebviewUpdateSchema, webviewUpdateRefusal } from '../schemas.js';
 import { SseEvent } from '../sse-events.js';
-import type { EventPort, TabLayoutPort } from '../ports/index.js';
+import type { EventPort, SessionPort, TabLayoutPort } from '../ports/index.js';
 import { ownerLayoutKey } from '../../tab-layout-persistence.js';
 import {
   buildDownstreamResponseHeaders,
@@ -102,18 +102,62 @@ function withWebviews<T>(fn: (list: Webview[]) => Promise<T> | T): Promise<T> {
   return next;
 }
 
-export function registerWebviewRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort, basePath = ''): void {
+type WebviewRouteContext = EventPort & TabLayoutPort & SessionPort;
+
+export function registerWebviewRoutes(app: FastifyInstance, ctx: WebviewRouteContext, basePath = ''): void {
   registerCrudRoutes(app, ctx, basePath);
   registerProxyRoutes(app, basePath);
 }
 
+/**
+ * Delete every web tab a deleted session owns. Called by session cleanup outside
+ * the tab-layout owner lock, since `webviewDeleted` takes it.
+ */
+export async function removeSessionWebviews(
+  ctx: Pick<EventPort, 'broadcast'> & TabLayoutPort,
+  sessionId: string
+): Promise<void> {
+  const removed = await withWebviews(async (list) => {
+    const owned = list.filter((w) => w.origin.kind === 'session' && w.origin.sessionId === sessionId);
+    if (owned.length === 0) return owned;
+    await writeWebviews(
+      configDir(),
+      list.filter((w) => !owned.includes(w))
+    );
+    return owned;
+  });
+  for (const webview of removed) {
+    webviewCapabilities.revokeWebview(webview.id);
+    socketCounts.delete(webview.id);
+    try {
+      await ctx.tabLayouts.webviewDeleted(ownerLayoutKey(webview.owner), webview.id);
+    } catch (error) {
+      console.error(`[Webviews] Failed to drop layout ref for web tab ${webview.id}:`, error);
+    }
+    ctx.broadcast(SseEvent.WebviewChanged, {
+      action: 'deleted',
+      id: webview.id,
+      owner: ownerLayoutKey(webview.owner),
+    });
+  }
+}
+
+/**
+ * `/api/v1` shipped a top-level `managed` field before `origin` existed, and the
+ * stable API only grows, so managed rows keep it on the wire. Deprecated.
+ */
+type WebviewResponse = Webview & { managed?: WebviewManagedKind };
+function toResponse(webview: Webview): WebviewResponse {
+  return webview.origin.kind === 'managed' ? { ...webview, managed: webview.origin.managed } : webview;
+}
+
 // ───────────────────────────── CRUD ─────────────────────────────
 
-function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort, basePath: string): void {
+function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, basePath: string): void {
   app.get('/api/webviews', async (req) => {
     const user = getAuthUser(req);
     const all = await readWebviews(configDir());
-    const webviews = all.filter((w) => canAccessOwned(user, w.owner));
+    const webviews = all.filter((w) => canAccessOwned(user, w.owner)).map(toResponse);
     return { success: true, data: { webviews, maxLiveFrames: MAX_LIVE_WEBVIEW_FRAMES } };
   });
 
@@ -121,6 +165,13 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
     const input = parseBody(WebviewCreateSchema, req.body);
     const owner = ownerFor(req);
     const user = getAuthUser(req);
+    let origin: WebviewOrigin = { kind: 'user' };
+    if (input.origin?.kind === 'managed') origin = input.origin;
+    else if (input.managed) origin = { kind: 'managed', managed: input.managed };
+    if (input.origin?.kind === 'session') {
+      const session = findSessionOrFail(ctx, input.origin.sessionId, req);
+      origin = { kind: 'session', sessionId: session.id, name: session.name };
+    }
 
     const created = await withWebviews(async (list) => {
       const mine = list.filter((w) => canAccessOwned(user, w.owner));
@@ -135,7 +186,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
         // dashboard on an HTTPS Codeman, which is the common case.
         embedMode: input.embedMode ?? 'proxy',
         trusted: input.trusted ?? false,
-        managed: input.managed,
+        origin,
         owner,
         createdAt: Date.now(),
       };
@@ -170,7 +221,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
       id: created.id,
       owner: ownerLayoutKey(created.owner),
     });
-    return { success: true, data: created };
+    return { success: true, data: toResponse(created) };
   });
 
   app.patch<{ Params: { id: string } }>('/api/webviews/:id', async (req, reply) => {
@@ -182,8 +233,12 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
       const index = list.findIndex((w) => w.id === id);
       if (index === -1) return 'not-found' as const;
       if (!canAccessOwned(user, list[index].owner)) return 'forbidden' as const;
+      const refusal = webviewUpdateRefusal(list[index].origin, input);
+      if (refusal) return { refusal };
 
-      const next: Webview = { ...list[index], ...input };
+      const { managed, ...fields } = input;
+      const next: Webview = { ...list[index], ...fields };
+      if (managed) next.origin = { kind: 'managed', managed };
       list[index] = next;
       await writeWebviews(configDir(), list);
       return next;
@@ -195,6 +250,9 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
     if (updated === 'forbidden') {
       return reply.code(403).send(createErrorResponse(ApiErrorCode.FORBIDDEN, 'Not your webview'));
     }
+    if ('refusal' in updated) {
+      return reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, updated.refusal));
+    }
 
     // Any edit invalidates the outstanding capability. Otherwise a token minted
     // against the OLD url keeps proxying to it after the user repointed the tab.
@@ -204,7 +262,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
       id,
       owner: ownerLayoutKey(updated.owner),
     });
-    return { success: true, data: updated };
+    return { success: true, data: toResponse(updated) };
   });
 
   app.delete<{ Params: { id: string } }>('/api/webviews/:id', async (req, reply) => {
@@ -286,12 +344,12 @@ function registerCrudRoutes(app: FastifyInstance, ctx: EventPort & TabLayoutPort
 
     // Direct mode has no capability to mint: the iframe loads the real URL.
     if (webview.embedMode === 'direct') {
-      const data: WebviewOpenData = { webview };
+      const data: WebviewOpenData = { webview: toResponse(webview) };
       return { success: true, data };
     }
 
     const capability = webviewCapabilities.mint(webview.id, webview.owner);
-    const data: WebviewOpenData = { webview, embedUrl: proxyPrefixFor(capability, basePath) };
+    const data: WebviewOpenData = { webview: toResponse(webview), embedUrl: proxyPrefixFor(capability, basePath) };
     return { success: true, data };
   });
 }

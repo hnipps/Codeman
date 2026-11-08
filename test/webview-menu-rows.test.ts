@@ -22,8 +22,10 @@ import { JSDOM } from 'jsdom';
 const CONSTANTS = readFileSync(new URL('../src/web/public/constants.js', import.meta.url), 'utf-8');
 const WEBVIEW_TABS = readFileSync(new URL('../src/web/public/webview-tabs.js', import.meta.url), 'utf-8');
 
+const USER = { kind: 'user' };
+
 interface AppLike {
-  webviews: Map<string, { id: string; name: string; url: string; icon?: string }>;
+  webviews: Map<string, { id: string; name: string; url: string; icon?: string; origin: { kind: string } }>;
   webviewOrder: string[];
   activeWebviewId: string | null;
   renderWebviewMenuItems(): void;
@@ -61,8 +63,8 @@ function boot(deleteOk = true) {
   const deleted: string[] = [];
   const app = new win.CodemanApp();
   app.webviews = new Map([
-    ['id-a', { id: 'id-a', name: 'Bio Dashboard', url: 'https://box.ts.net:4000', icon: '📈' }],
-    ['id-b', { id: 'id-b', name: 'Grafana', url: 'http://127.0.0.1:3000/d/x' }],
+    ['id-a', { id: 'id-a', name: 'Bio Dashboard', url: 'https://box.ts.net:4000', icon: '📈', origin: USER }],
+    ['id-b', { id: 'id-b', name: 'Grafana', url: 'http://127.0.0.1:3000/d/x', origin: USER }],
   ]);
   app.webviewOrder = [];
   app.activeWebviewId = null;
@@ -92,7 +94,7 @@ describe('Run dropdown Web/URL rows', () => {
     const { win, app } = boot();
     const name = '<img src=x onerror=alert(1)>';
     const url = 'https://h/"onmouseover="x';
-    app.webviews.set('id-x', { id: 'id-x', name, url });
+    app.webviews.set('id-x', { id: 'id-x', name, url, origin: USER });
     app.renderWebviewMenuItems();
 
     // Assert on the DOM, not on innerHTML: attribute serialization does not

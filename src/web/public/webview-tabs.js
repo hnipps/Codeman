@@ -147,7 +147,7 @@ Object.assign(CodemanApp.prototype, {
       // agent that can write into the dev server's tree (it IS the workspace) could
       // otherwise print a path that one tap navigates that privileged frame to.
       // Opening such a dashboard from the Run dropdown is still an explicit action.
-      if (webview.managed || webview.trusted || (webview.embedMode ?? 'proxy') !== 'proxy') continue;
+      if (webview.origin?.kind === 'managed' || webview.trusted || (webview.embedMode ?? 'proxy') !== 'proxy') continue;
       try {
         if (webTabOriginKey(new URL(webview.url)) === wantedKey) {
           existing = webview;
@@ -588,10 +588,10 @@ Object.assign(CodemanApp.prototype, {
   renderWebviewMenuItems() {
     const container = document.getElementById('runModeWebviews');
     if (!container) return;
-    // Managed records are maintained by their own menu entry (the DeepSeek web
-    // UI shortcut), so listing them here showed one dashboard twice: the
-    // shortcut that starts it, and the row it wrote on the previous click.
-    const list = [...(this.webviews?.values() || [])].filter((w) => !w.managed);
+    // Managed records are maintained by their own menu entry (the DeepSeek web UI
+    // shortcut), so listing them here showed one dashboard twice; session records
+    // belong to their session.
+    const list = [...(this.webviews?.values() || [])].filter((w) => w.origin?.kind === 'user');
     if (list.length === 0) {
       container.innerHTML = '<div class="run-mode-empty">No URLs yet</div>';
       return;
