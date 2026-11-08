@@ -43,9 +43,9 @@ Steps can be skipped via config:
 
 ## Cycle Budget
 
-A loop with nothing to do stops by itself. After each cycle the controller fingerprints the session's working directory (git `HEAD` + hashes of `git status --porcelain` and `git diff HEAD`):
+A loop with nothing to do stops by itself. After each cycle the controller fingerprints the session's working directory (git `HEAD` + hashes of `git status --porcelain` and `git diff HEAD`). Outside git it hashes file paths and content, skipping dot-directories, `node_modules`, symlinks and files over 1 MB, with a cap of 5000 files and directories. Changes outside this bounded sample are not detected; an unreadable workspace is not counted as unchanged.
 
-- `maxUnchangedCycles` (default `3`, `0` disables): stop after this many consecutive cycles whose fingerprint did not change. A directory that is not a git repository has no fingerprint, so only `maxCycles` can end its loop.
+- `maxUnchangedCycles` (default `3`, `0` disables): stop after this many consecutive cycles whose fingerprint did not change, git or not.
 - `maxCycles` (default unset): stop after this many cycles in total.
 
 The stop is torn down like `POST /respawn/stop` (controller removed, persisted config cleared) and broadcast as `respawn:stopped` with `reason` (`unchanged_workspace` | `max_cycles`) and `details`.

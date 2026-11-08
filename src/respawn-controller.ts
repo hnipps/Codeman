@@ -436,9 +436,8 @@ export interface RespawnConfig {
   // ========== Cycle Budget ==========
 
   /**
-   * Stop after this many consecutive cycles that left the working directory's git
-   * state (HEAD, status, diff) unchanged. Not applied to a directory that is not
-   * a git repository. 0 disables.
+   * Stop after this many consecutive cycles that left the workspace unchanged.
+   * Uses git state or bounded content hashing outside git. 0 disables.
    * @default 3
    */
   maxUnchangedCycles?: number;
