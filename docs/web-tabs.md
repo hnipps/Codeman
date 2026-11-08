@@ -90,12 +90,64 @@ one a Codeman shortcut keeps up to date (the DeepSeek web UI), and `session` for
 an agent session owns. The Run dropdown lists only your own (`user`) dashboards.
 
 A session-owned web tab goes away with its session: deleting the session deletes
-the record, and its proxy URL stops working. It can never be trusted (the sandbox
+the record, and its proxy URL stops working. One whose session no longer exists
+at all (after a reboot, or a session swept as stale) is deleted by the next
+preview check. It can never be trusted (the sandbox
 below always applies), because the session's agent controls the page it shows.
 
 Records saved by an older Codeman have no `origin`. They read as `user`, or as
 `managed` if they carried the old `managed` marker, and the file is rewritten in the
 new shape only on the next save.
+
+## Previews
+
+A preview is a session-owned web tab whose server Codeman runs itself. An agent
+sends `PUT /api/v1/sessions/<id>/previews/<name>` with a command such as
+`python3 -m http.server {port}`; Codeman picks a free port, starts the command in
+the session's folder, creates the web tab and returns its proxy URL. Asking again
+with the same name replaces the server instead of adding a second one.
+
+Codeman stops the server when you delete the preview, its web tab or its session
+(a pinned session too), and when nobody has opened it for 4 hours
+(`CODEMAN_PREVIEW_IDLE_STOP_MS`; an open WebSocket through the tab, such as Vite's
+hot reload, counts as open). Deleting a session deletes its previews for good:
+nothing restarts them, so an agent in a session that comes back (resumed from
+history, or rebuilt after a reboot) sends its `PUT` again. A check every minute marks
+dead servers `exited` and stops idle ones. A server with no record (left by a crash)
+is searched for at boot and when a deploy colour is promoted to live, and also by
+a minute check that finds a recorded server dead while its preview is running or
+has lost its web tab. A live server whose tab is gone is stopped, but that starts
+no search. Only the live deploy colour starts or stops preview servers, and it
+checks at every signal it sends: a stop under way when the colour retires gives up
+and leaves the server to the new live colour. A standby answers `409` to a preview
+delete; a web tab delete it cannot finish answers with `previewStop: "deferred"`,
+and the live colour stops that server within a minute.
+
+Codeman finds a server by its process group and by an environment variable it sets
+on it, so a command that detaches itself (`setsid`, `nohup ... &`) is still found and
+stopped. It cannot stop a server the command handed to something it did not start
+(`tmux new-session -d`, `docker run`, `systemd-run`) or one started under `env -i`
+that outlives the command's shell, and it never signals a process it cannot prove is the preview's. When the port still
+listens after a stop, the API answer says so (`leftRunning`), the preview log gets a
+line, and the preview lists keep showing it until the port is free; stop that server
+where it was handed off. The same goes for a command that backgrounds its server and
+exits at once: the preview shows `exited`, but its `stillListening` field and the
+`leftRunning` list say the server still listens. Previews keep running across a Codeman restart.
+
+A Vite dev server needs no `--base` flag: the preview's page gets an import map that
+keeps its `/src/...` and `/@vite/...` imports inside the proxy, and its hot-reload
+WebSocket goes through the proxy too. A page that writes its own
+`<script type="importmap">` tag in its HTML gets no injected map. The check looks for
+that tag text anywhere in the HTML, so a tag inside an HTML comment also counts: the
+page then gets no injected map, and only its root-absolute imports are affected. A map
+the page adds from script, or whose `type` is written with an HTML entity, is not
+noticed, and Codeman's map then takes precedence for paths that start with `/`.
+
+Remote (SSH) and Docker sessions cannot have previews: the server would run on
+this machine, where their files are not. A server that binds `0.0.0.0` (as
+`python3 -m http.server` does) is reachable from your network too; pass a
+`--bind 127.0.0.1` style option when that matters. The API is in
+[`docs/api-reference.md`](api-reference.md#previews-apiv1sessionsidpreviews).
 
 ## The sandbox, and when to turn it off
 

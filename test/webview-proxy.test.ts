@@ -378,6 +378,48 @@ describe('rewriteHtml', () => {
     const html = '<head></head><script src="/a.js"></script>';
     expect(rewriteHtml(html, CAP)).toBe(rewriteHtml(html, CAP));
   });
+
+  it('adds no import map unless asked', () => {
+    expect(rewriteHtml('<head></head>', CAP)).not.toContain('importmap');
+  });
+
+  it('with moduleMap, maps root-absolute module specifiers into the prefix before any page script', () => {
+    const out = rewriteHtml('<head></head><script type="module" src="/src/main.jsx"></script>', CAP, '', {
+      moduleMap: true,
+    });
+    const match = /<script type="importmap">(.*?)<\/script>/.exec(out);
+    expect(JSON.parse(match![1])).toEqual({ imports: { '/': PREFIX, [PREFIX]: PREFIX } });
+    expect(out.indexOf('importmap')).toBeLessThan(out.indexOf('src/main.jsx'));
+  });
+
+  it('with moduleMap, leaves a page that ships its own import map alone', () => {
+    const out = rewriteHtml('<head><script type="importmap">{"imports":{}}</script></head>', CAP, '', {
+      moduleMap: true,
+    });
+    expect(out.match(/importmap/g)).toHaveLength(1);
+  });
+
+  it('with moduleMap, an importmap-shim still gets the map', () => {
+    const out = rewriteHtml('<head><script type="importmap-shim">{"imports":{}}</script></head>', CAP, '', {
+      moduleMap: true,
+    });
+    expect(out).toContain(`<script type="importmap">${JSON.stringify({ imports: { '/': PREFIX, [PREFIX]: PREFIX } })}`);
+  });
+
+  it('with moduleMap, a real import map after comment-looking attribute text is still seen', () => {
+    const page =
+      '<head><meta name="note" content="<!--"><script type="importmap">{"imports":{"/":"./vendor/"}}</script></head>';
+    const out = rewriteHtml(page, CAP, '', { moduleMap: true });
+    expect(out.match(/type="importmap"/g)).toHaveLength(1);
+    expect(out).toContain('{"imports":{"/":"./vendor/"}}');
+  });
+
+  it('with moduleMap, a commented-out import map tag leaves the map out', () => {
+    const out = rewriteHtml('<head><!-- <script type="importmap">{}</script> --></head>', CAP, '', {
+      moduleMap: true,
+    });
+    expect(out.match(/type="importmap"/g)).toHaveLength(1);
+  });
 });
 
 describe('buildProxyCorsHeaders', () => {

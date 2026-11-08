@@ -35,6 +35,7 @@ export class WebviewCapabilityStore {
   private readonly capabilities: StaleExpirationMap<string, WebviewCapabilityRecord>;
   /** Reverse index so re-opening a webview reuses its capability instead of leaking one per click. */
   private readonly byWebview = new Map<string, string>();
+  private readonly revokeListeners = new Set<(token: string) => void>();
 
   constructor(ttlMs: number = WEBVIEW_CAPABILITY_TTL_MS) {
     this.capabilities = new StaleExpirationMap<string, WebviewCapabilityRecord>({
@@ -45,6 +46,15 @@ export class WebviewCapabilityStore {
         if (current !== undefined) this.byWebview.delete(record.webviewId);
       },
     });
+  }
+
+  onRevoke(listener: (token: string) => void): () => void {
+    this.revokeListeners.add(listener);
+    return () => this.revokeListeners.delete(listener);
+  }
+
+  private revoked(token: string): void {
+    for (const listener of this.revokeListeners) listener(token);
   }
 
   /** Mint (or reuse) a capability for a webview. Returns the token. */
@@ -79,6 +89,7 @@ export class WebviewCapabilityStore {
     if (token) {
       this.capabilities.delete(token);
       this.byWebview.delete(webviewId);
+      this.revoked(token);
     }
   }
 
@@ -105,6 +116,7 @@ export class WebviewCapabilityStore {
       if (record?.owner === owner) {
         this.capabilities.delete(token);
         this.byWebview.delete(webviewId);
+        this.revoked(token);
         revoked++;
       }
     }

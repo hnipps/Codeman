@@ -49,6 +49,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/case-custom-path.browser.test.ts',
   'test/doctor-settings.browser.test.ts',
   'test/git-status.browser.test.ts',
+  'test/preview-vite-hmr.browser.test.ts',
   'test/split-pane-orchestration.browser.test.ts',
   'test/split-pane-auto-collapse.browser.test.ts',
   'test/spreadsheet-preview.browser.test.ts',

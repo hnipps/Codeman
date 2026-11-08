@@ -48,9 +48,11 @@ import {
 } from '../../config/webview-limits.js';
 import { readWebviews, writeWebviews } from '../../webview-store.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
+import { PreviewRefusedError, type PreviewSupervisor } from '../../preview-supervisor.js';
 import { egressBlockedReason, webviewEgressLookup, webviewFetch, type EgressLookup } from '../webview-egress.js';
 import { blockedWebviewHostReason } from '../webview-egress-policy.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
+import { deployRole } from '../../deploy-role.js';
 import type { Webview, WebviewManagedKind, WebviewOpenData, WebviewOrigin, WebviewProbe } from '../../types.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
 import { canAccessOwned, findSessionOrFail, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
@@ -85,6 +87,14 @@ function configDir(): string {
 /** Live proxied WebSockets per webview id, so one dashboard cannot exhaust the socket budget. */
 const socketCounts = new Map<string, number>();
 
+const socketClosersByCapability = new Map<string, Set<() => void>>();
+webviewCapabilities.onRevoke((token) => {
+  const sockets = socketClosersByCapability.get(token);
+  if (!sockets) return;
+  socketClosersByCapability.delete(token);
+  for (const close of sockets) close();
+});
+
 interface ProxyParams {
   cap: string;
   '*'?: string;
@@ -102,23 +112,76 @@ function withWebviews<T>(fn: (list: Webview[]) => Promise<T> | T): Promise<T> {
   return next;
 }
 
-type WebviewRouteContext = EventPort & TabLayoutPort & SessionPort;
+export interface WebviewPreviewHooks {
+  previews?: Pick<PreviewSupervisor, 'remove' | 'markViewed' | 'forWebview' | 'acts'>;
+}
+
+type WebviewRouteContext = EventPort & TabLayoutPort & SessionPort & WebviewPreviewHooks;
 
 export function registerWebviewRoutes(app: FastifyInstance, ctx: WebviewRouteContext, basePath = ''): void {
   registerCrudRoutes(app, ctx, basePath);
-  registerProxyRoutes(app, basePath);
+  registerProxyRoutes(app, ctx, basePath);
 }
 
-/**
- * Delete every web tab a deleted session owns. Called by session cleanup outside
- * the tab-layout owner lock, since `webviewDeleted` takes it.
- */
-export async function removeSessionWebviews(
-  ctx: Pick<EventPort, 'broadcast'> & TabLayoutPort,
-  sessionId: string
-): Promise<void> {
+type WebviewWriteContext = Pick<EventPort, 'broadcast'> & TabLayoutPort;
+
+export async function createSessionWebview(
+  ctx: WebviewWriteContext,
+  input: { sessionId: string; sessionName: string; name: string; url: string; owner?: string }
+): Promise<Webview> {
+  const webview: Webview = {
+    id: randomUUID(),
+    name: input.name,
+    url: input.url,
+    embedMode: 'proxy',
+    trusted: false,
+    origin: { kind: 'session', sessionId: input.sessionId, name: input.sessionName },
+    owner: input.owner,
+    createdAt: Date.now(),
+  };
+  await withWebviews(async (list) => {
+    list.push(webview);
+    await writeWebviews(configDir(), list);
+  });
+  try {
+    await ctx.tabLayouts.webviewCreated(ownerLayoutKey(webview.owner));
+  } catch (error) {
+    await withWebviews(async (list) => {
+      await writeWebviews(
+        configDir(),
+        list.filter((w) => w.id !== webview.id)
+      );
+    });
+    throw error;
+  }
+  ctx.broadcast(SseEvent.WebviewChanged, { action: 'created', id: webview.id, owner: ownerLayoutKey(webview.owner) });
+  return webview;
+}
+
+export async function setWebviewUrl(ctx: WebviewWriteContext, id: string, url: string): Promise<boolean> {
+  const updated = await withWebviews(async (list) => {
+    const index = list.findIndex((w) => w.id === id);
+    if (index === -1) return null;
+    if (list[index].url === url) return { webview: list[index], changed: false };
+    list[index] = { ...list[index], url };
+    await writeWebviews(configDir(), list);
+    return { webview: list[index], changed: true };
+  });
+  if (!updated) return false;
+  if (updated.changed) {
+    webviewCapabilities.revokeWebview(id);
+    ctx.broadcast(SseEvent.WebviewChanged, {
+      action: 'updated',
+      id,
+      owner: ownerLayoutKey(updated.webview.owner),
+    });
+  }
+  return true;
+}
+
+async function removeWebviewsWhere(ctx: WebviewWriteContext, match: (w: Webview) => boolean): Promise<Webview[]> {
   const removed = await withWebviews(async (list) => {
-    const owned = list.filter((w) => w.origin.kind === 'session' && w.origin.sessionId === sessionId);
+    const owned = list.filter(match);
     if (owned.length === 0) return owned;
     await writeWebviews(
       configDir(),
@@ -140,6 +203,41 @@ export async function removeSessionWebviews(
       owner: ownerLayoutKey(webview.owner),
     });
   }
+  return removed;
+}
+
+export async function removeWebview(ctx: WebviewWriteContext, id: string): Promise<boolean> {
+  return (await removeWebviewsWhere(ctx, (w) => w.id === id)).length > 0;
+}
+
+export function removeOrphanSessionWebviews(
+  ctx: WebviewWriteContext,
+  sessionExists: (sessionId: string) => boolean
+): Promise<Webview[]> {
+  return removeWebviewsWhere(ctx, (w) => w.origin.kind === 'session' && !sessionExists(w.origin.sessionId));
+}
+
+/** Web tabs with an open proxied WebSocket. A preview a viewer still holds a socket to is being watched. */
+export function webviewsWithOpenSockets(): string[] {
+  return [...socketCounts.keys()];
+}
+
+export async function sessionWebviewIds(): Promise<Set<string>> {
+  const list = await readWebviews(configDir());
+  return new Set(list.filter((w) => w.origin.kind === 'session').map((w) => w.id));
+}
+
+export async function webviewsById(): Promise<Map<string, Webview>> {
+  const list = await readWebviews(configDir());
+  return new Map(list.map((w) => [w.id, w]));
+}
+
+/**
+ * Delete every web tab a deleted session owns. Called by session cleanup outside
+ * the tab-layout owner lock, since `webviewDeleted` takes it.
+ */
+export async function removeSessionWebviews(ctx: WebviewWriteContext, sessionId: string): Promise<void> {
+  await removeWebviewsWhere(ctx, (w) => w.origin.kind === 'session' && w.origin.sessionId === sessionId);
 }
 
 /**
@@ -268,6 +366,11 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
   app.delete<{ Params: { id: string } }>('/api/webviews/:id', async (req, reply) => {
     const user = getAuthUser(req);
     const { id } = req.params;
+    if (ctx.previews?.forWebview(id) && !ctx.previews.acts) {
+      return reply
+        .code(409)
+        .send(createErrorResponse(ApiErrorCode.CONFLICT, `This server is the ${deployRole.current} deploy colour`));
+    }
 
     const result = await withWebviews(async (list) => {
       const index = list.findIndex((w) => w.id === id);
@@ -285,7 +388,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
         await writeWebviews(configDir(), list);
         throw error;
       }
-      return { status: 'deleted' as const, owner: removed.owner };
+      return { status: 'deleted' as const, owner: removed.owner, session: removed.origin.kind === 'session' };
     });
 
     if (result === 'not-found') {
@@ -297,12 +400,26 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
 
     webviewCapabilities.revokeWebview(id);
     socketCounts.delete(id);
+    // The tab is gone either way. A colour that may not act (it retired since the check
+    // above, or it never knew this preview) stops nothing and says so: the live colour's
+    // reconcile stops a preview without its tab.
+    let deferred = false;
+    const leftRunning = (
+      await ctx.previews?.remove(id, result.owner).catch((err) => {
+        if (!(err instanceof PreviewRefusedError)) throw err;
+        deferred = result.session;
+        return null;
+      })
+    )?.leftRunning;
     ctx.broadcast(SseEvent.WebviewChanged, {
       action: 'deleted',
       id,
       owner: ownerLayoutKey(result.owner),
     });
-    return { success: true, data: { id } };
+    return {
+      success: true,
+      data: { id, ...(leftRunning ? { leftRunning } : {}), ...(deferred ? { previewStop: 'deferred' } : {}) },
+    };
   });
 
   /**
@@ -417,7 +534,11 @@ async function probeUrl(url: string): Promise<WebviewProbe> {
 
 // ───────────────────────────── Proxy ─────────────────────────────
 
-function registerProxyRoutes(app: FastifyInstance, basePath: string): void {
+let previewViewed: ((webviewId: string) => void) | undefined;
+
+function registerProxyRoutes(app: FastifyInstance, ctx: WebviewPreviewHooks, basePath: string): void {
+  const previews = ctx.previews;
+  previewViewed = previews ? (id) => previews.markViewed(id) : undefined;
   app.register(async (scope) => {
     // Encapsulated to this plugin only. The proxy must relay request bodies
     // BYTE-FOR-BYTE, so every parser is replaced with a pass-through that hands
@@ -463,6 +584,7 @@ async function lookupCapability(capability: string): Promise<Webview | null> {
   // The capability is bound to the identity that minted it; an ownership change
   // on the record must not leave a stale token working.
   if (webview.owner !== record.owner) return null;
+  if (webview.origin.kind === 'session') previewViewed?.(webview.id);
   return webview;
 }
 
@@ -653,7 +775,11 @@ async function proxyRequest(
     // Buffer only HTML, only under the cap: `<base>` injection needs the whole
     // document, and buffering an unbounded upstream body is a memory hazard.
     const html = await response.text();
-    return reply.send(html.length <= MAX_WEBVIEW_HTML_REWRITE_BYTES ? rewriteHtml(html, cap, basePath) : html);
+    return reply.send(
+      html.length <= MAX_WEBVIEW_HTML_REWRITE_BYTES
+        ? rewriteHtml(html, cap, basePath, { moduleMap: webview.origin.kind === 'session' })
+        : html
+    );
   }
 
   return reply.send(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]));
@@ -755,10 +881,17 @@ function proxyWebSocket(socket: WebSocket, req: FastifyRequest<{ Params: ProxyPa
     }
 
     socketCounts.set(webview.id, live + 1);
+    let sockets = socketClosersByCapability.get(cap);
+    if (!sockets) socketClosersByCapability.set(cap, (sockets = new Set()));
+    const closeRevoked = () => closeBoth(4003, 'Revoked');
+    sockets.add(closeRevoked);
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
+      const set = socketClosersByCapability.get(cap);
+      set?.delete(closeRevoked);
+      if (set?.size === 0) socketClosersByCapability.delete(cap);
       const count = socketCounts.get(webview.id) ?? 1;
       if (count <= 1) socketCounts.delete(webview.id);
       else socketCounts.set(webview.id, count - 1);
@@ -795,6 +928,7 @@ function proxyWebSocket(socket: WebSocket, req: FastifyRequest<{ Params: ProxyPa
     });
 
     socket.on('message', (data: Buffer, isBinary: boolean) => {
+      if (webview.origin.kind === 'session') previewViewed?.(webview.id);
       const payload = isBinary ? data : data.toString();
       if (upstreamOpen) upstreamSocket.send(payload);
       else if (pending.length < 64) pending.push(payload);
