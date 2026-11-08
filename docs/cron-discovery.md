@@ -134,7 +134,7 @@ records), kept distinct from the existing `ScheduledRun`.
 | Persistence | `StateStore` / `AppState` | `src/types/app-state.ts`, `src/state-store.ts` |
 | Next-run time math | — (new, pure, unit-tested) | `src/cron/cron-time.ts` |
 | Launch + send prompt | `SessionPort` (`addSession`/listeners/`writeViaMux`) | `src/cron/cron-service.ts` |
-| Background due loop | `cleanup.setInterval` pattern | `src/cron/cron-loop.ts` |
+| Background due loop | `cleanup.setInterval` pattern | `CronService.tickDueJobs()` in `src/cron/cron-service.ts`, driven by an interval in `src/web/server.ts` |
 | Routes + schema | route/ports/zod/SSE patterns | `src/web/routes/cron-routes.ts`, `src/web/schemas.ts`, `src/web/sse-events.ts` |
 | UI | panel/modal/mixin conventions | `src/web/public/cron-ui.js`, `index.html` |
 
