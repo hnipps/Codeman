@@ -130,6 +130,18 @@ describe('respawn cycle budget', () => {
     expect(controller.getStatus().cycleCount).toBe(51);
   });
 
+  // Invariant RL-5: No loop exceeds its total cycle budget
+  it('cannot start another cycle while the completed cycle budget check is still pending', async () => {
+    const c = make({ maxCycles: 1, maxUnchangedCycles: 0 });
+    c.onIdleDetected();
+    await waitFor(() => controller.state === 'waiting_update');
+    c.completeCycle();
+    c.onIdleDetected();
+    await c.budgetChain;
+    expect(controller.getStatus().cycleCount).toBe(1);
+    expect(controller.state).toBe('stopped');
+  });
+
   it('never stops on unchanged cycles when the check is disabled (0)', async () => {
     const c = make({ maxUnchangedCycles: 0 });
     for (let i = 0; i < 4; i++) {
