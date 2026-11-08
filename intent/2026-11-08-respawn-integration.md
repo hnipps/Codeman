@@ -1,6 +1,6 @@
 # Intent: Bound idle respawn usage across integrated fixes
 
-**Status:** Draft
+**Status:** Complete
 
 ## Problem statement
 
@@ -40,3 +40,8 @@ bundles, explicitly configure only temporary Git fixtures, and recognize Git's
 bare-repository refusal without weakening the refusal or existing assertions.
 The live lease's simultaneous-acquisition race is recorded as an open RL-6 gap;
 this integration adds its documentation, not a new locking design.
+
+Final validation: `npm run typecheck`, `npm run lint`, `npm run format:check`,
+frontend syntax and public assets pass. `npm test` passes 696 files and 13882
+tests (1 file / 12 tests skipped). All existing respawn files also pass:
+11 files, 368 tests. No deployment or live-instance changes were made.
