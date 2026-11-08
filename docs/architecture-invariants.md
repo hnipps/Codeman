@@ -1345,6 +1345,10 @@ Target: 20 sessions, 50 agent windows at 60fps. Limits in `src/config/`: termina
 
 ⚠️ Truncation is reported through `onTruncated` rather than silently, with BOTH caps named: a silent depth cap hides a deep tree exactly as effectively as a silent node cap hides a wide one.
 
+### User-chosen paths are probed bounded
+
+- **User-chosen paths are probed BOUNDED, never with `existsSync`/`statSync`** (#516): a linked case or a `workingDir` can sit on a network mount that stopped answering. A synchronous check there freezes the whole server, and an unbounded async `stat`/`lstat`/`readFile` holds one of libuv's threadpool workers (4 by default, shared with every `fs`, `dns.lookup` and `crypto` call) until the mount returns. On a request or spawn path use `probePath()`/`probePathKind()` (`utils/bounded-path-probe.ts`, read its `@fileoverview`). ⚠️ `unknown` is NEVER `absent`: nothing is created, scaffolded or 404'd on it. Bulk scans keep the stall cap; a request for ONE path the user named may pass `{ pastCap: true }`, which still stops at the ceiling that keeps one worker free; and a helper that would otherwise touch the path skips whatever is still `unknown`. User-facing errors for it go through `describeUnknownPath()`, so a refused probe is not reported as a broken folder.
+
 ## Local packages and build artifacts
 
 ### xterm-zerolag-input is single-source
