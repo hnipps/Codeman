@@ -75,6 +75,15 @@ describe('generateClaudeMd', () => {
       expect(result).toContain('codeman skill install');
     });
 
+    it('should tell the agent how to preview a web page inside Codeman', () => {
+      const result = generateClaudeMd('my-project');
+
+      expect(result).toContain('codeman agent preview add <name> --cmd');
+      expect(result).toContain('http.server {port} --bind 127.0.0.1');
+      expect(result).toContain('prints the URL to give the user');
+      expect(result).not.toContain('Preview tab');
+    });
+
     it('should include workflow rules', () => {
       const result = generateClaudeMd('my-project');
 

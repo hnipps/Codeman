@@ -206,6 +206,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** P2.
 
+**Status.** Open PR #4 (`feat/previews-p3-cli`, on P2), fix round 3 pushed at `ea2c698c`; its verification verdict is not in yet. Not merged.
+
 **Files.**
 
 - [ ] Edit `src/cli-agent.ts`.
@@ -244,7 +246,7 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 - [ ] Metric. Wall time of `codeman agent ls` at trunk and head, and of `codeman agent preview ls` at head.
 - [ ] Probe. Run each 30 times, interleaved between trunk and head, with `hyperfine`.
 - [ ] Baseline. Record the trunk `codeman agent ls` median first.
-- [ ] Rule. Head fails if `codeman agent ls` exceeds trunk by more than 10 percent, or if `preview ls` exceeds 400 milliseconds at the median.
+- [ ] Rule. Head fails if `codeman agent ls` exceeds trunk by more than 10 percent, or if head `preview ls` exceeds head `agent ls` by more than 10 percent at the median, both run the same way. An absolute cap does not work here: every run through `npx tsx` pays about 1100 ms of boot before the command does anything (trunk `agent ls` measured 1182 ms at the median), so a 400 ms cap would measure `tsx` startup, not the command.
 
 **Review gate.** None. P3 is not review-gated.
 
