@@ -67,6 +67,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 
 **Depends on.** None.
 
+**Status.** Open PR #2 (`feat/previews-p1-origin`), verified clean at `7427a417`, not merged.
+
 **Files.**
 
 - [ ] Edit `src/types/webview.ts`.
@@ -308,6 +310,8 @@ Each live lane runs as a Codeman worker on this host, in its own worktree at the
 ## List every running preview in a drawer (P5)
 
 **Depends on.** P4.
+
+**Status.** Not started.
 
 **Files.**
 
