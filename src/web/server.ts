@@ -137,6 +137,7 @@ import { detectUsageLimitPause } from '../usage-limit-patterns.js';
 import { stopDeepSeekWeb } from '../deepseek-web-server.js';
 import {
   wireRespawnListeners,
+  stopRespawnForSession,
   setupTimedRespawn,
   restoreRespawnController,
   saveRespawnConfig,
@@ -921,6 +922,7 @@ export class WebServer extends EventEmitter {
       setupTimedRespawn: this.setupTimedRespawn.bind(this),
       restoreRespawnController: this.restoreRespawnController.bind(this),
       saveRespawnConfig: this.saveRespawnConfig.bind(this),
+      stopRespawnForSession: this.stopRespawnForSession.bind(this),
       // ConfigPort
       store: this.store,
       // A getter, not a snapshot: this context is built in setupRoutes(), BEFORE
@@ -1571,11 +1573,12 @@ export class WebServer extends EventEmitter {
       // due to errors. Intentional stops via /respawn/stop call clearRespawnConfig().
       state.respawnEnabled = config.enabled;
     } else {
-      // Don't overwrite respawnConfig if it exists in state - preserve it for restart
+      // Preserve an ENABLED config across a session cleanup so a restart restores it. A stop
+      // (stopRespawnForSession) removes the config from state first, so it is never re-enabled here.
       const existingState = this.store.getSession(session.id);
-      if (existingState?.respawnConfig) {
+      if (existingState?.respawnConfig?.enabled) {
         state.respawnConfig = existingState.respawnConfig;
-        state.respawnEnabled = existingState.respawnConfig.enabled ?? false;
+        state.respawnEnabled = true;
       } else {
         state.respawnEnabled = false;
       }
@@ -1583,8 +1586,17 @@ export class WebServer extends EventEmitter {
     this.store.setSession(session.id, state);
   }
 
-  private saveRespawnConfig(sessionId: string, config: RespawnConfig, durationMinutes?: number): void {
-    saveRespawnConfig(sessionId, config, this.mux, durationMinutes);
+  private stopRespawnForSession(sessionId: string): void {
+    stopRespawnForSession(sessionId, this.buildRespawnWiringDeps());
+  }
+
+  private saveRespawnConfig(
+    sessionId: string,
+    config: RespawnConfig,
+    durationMinutes?: number,
+    opts?: { startedByLoop?: boolean }
+  ): void {
+    saveRespawnConfig(sessionId, config, this.mux, durationMinutes, opts);
   }
 
   // Clean up all resources associated with a session
@@ -2329,6 +2341,7 @@ export class WebServer extends EventEmitter {
       serverStartTime: this.serverStartTime,
       respawnRestoreGracePeriodMs: 2 * 60 * 1000,
       mux: this.mux,
+      store: this.store,
     };
   }
 

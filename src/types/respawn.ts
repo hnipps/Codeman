@@ -238,6 +238,8 @@ export interface TimingHistory {
 export interface PersistedRespawnConfig {
   /** Whether respawn was enabled */
   enabled: boolean;
+  /** Started by POST /api/ralph-loop/start enableRespawn, so disabling that loop stops it */
+  startedByLoop?: boolean;
   /** How long to wait after seeing prompt before considering truly idle (ms) */
   idleTimeoutMs: number;
   /** The prompt to send for updating docs */

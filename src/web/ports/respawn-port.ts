@@ -13,5 +13,12 @@ export interface RespawnPort {
   setupRespawnListeners(sessionId: string, controller: RespawnController): void;
   setupTimedRespawn(sessionId: string, durationMinutes: number): void;
   restoreRespawnController(session: Session, config: PersistedRespawnConfig, source: string): void;
-  saveRespawnConfig(sessionId: string, config: RespawnConfig, durationMinutes?: number): void;
+  saveRespawnConfig(
+    sessionId: string,
+    config: RespawnConfig,
+    durationMinutes?: number,
+    opts?: { startedByLoop?: boolean }
+  ): void;
+  /** The single stop path: persists the stop, cancels pending restore starts, idempotent. */
+  stopRespawnForSession(sessionId: string): void;
 }
