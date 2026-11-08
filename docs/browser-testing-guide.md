@@ -8,9 +8,16 @@ This guide documents the browser testing infrastructure, framework comparison re
 # Run standalone benchmark (recommended - avoids vitest hook issues)
 npx tsx scripts/browser-comparison.mjs
 
-# Run existing browser E2E tests
-npm test -- test/browser-e2e.test.ts
+# Run the Playwright-driven browser suite (`npm test` skips it)
+npm run test:browser
+
+# Run one browser test file
+npx vitest run --config config/vitest.browser.config.ts test/tab-focus.browser.test.ts
 ```
+
+Browser tests are named `test/*.browser.test.ts` and listed one by one in
+`BROWSER_TEST_GLOBS` (`config/test-suites.ts`). A new one must be added there;
+`npm run check:browser-excludes` fails when a browser-driven file is missing from the list.
 
 ## Framework Comparison Results
 
@@ -67,7 +74,7 @@ We tested three browser automation frameworks against the Codeman web UI:
    });
    ```
 
-3. **Use the existing browser-e2e.test.ts pattern** which uses agent-browser CLI commands via `execSync` (avoids async hook issues)
+3. **Follow an existing `*.browser.test.ts` file** (for example `test/tab-focus.browser.test.ts`), which launches Playwright chromium in `beforeAll` and runs under `config/vitest.browser.config.ts` (60 s test and teardown timeouts, no file parallelism)
 
 ## Test File Structure
 
@@ -91,13 +98,11 @@ fixed ports 3180-3182.
 
 ### File Purposes
 
-| File | Framework | Status |
+| File | Framework | Runner |
 |------|-----------|--------|
-| `test/browser-e2e.test.ts` | agent-browser | ✅ Working |
-| `test/browser-playwright.test.ts` | Playwright | ⚠️ Vitest hook issues |
-| `test/browser-puppeteer.test.ts` | Puppeteer | ⚠️ Vitest hook issues |
-| `test/browser-agent.test.ts` | agent-browser | ⚠️ Vitest hook issues |
-| `scripts/browser-comparison.mjs` | All three | ✅ Working (standalone) |
+| `test/*.browser.test.ts` | Playwright | `npm run test:browser` |
+| `test/mobile/**` | Playwright | `npm run test:mobile` (own config, per-machine PNG baselines) |
+| `scripts/browser-comparison.mjs` | All three | standalone `npx tsx` |
 
 ## Framework-Specific Patterns
 
