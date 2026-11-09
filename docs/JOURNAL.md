@@ -2,6 +2,24 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Load Mermaid through the authenticated parent
+
+**Type:** propagated-discovery
+**Touches:** `src/web/public/mermaid-render.js`, `test/mermaid-renderer.browser.test.ts`
+**Why:** Production verification caught a renderer timeout that unauthenticated browser tests missed.
+**Links:** [Authenticated renderer intent](../intent/2026-11-09-mermaid-authenticated-frame.md)
+
+The supervisor deployed the original feature successfully, and the installed
+agent command rendered images. The authenticated live Markdown check failed.
+The release was rolled back before repairing it. Enabling authentication in the
+browser regression reproduced the same timeout.
+
+The auth middleware deliberately intercepts non-route HTML iframe navigations
+with lost-frame recovery. A static renderer document is such a navigation.
+The parent now fetches that protected document and assigns it to the opaque
+frame's `srcdoc`. This leaves recovery, authentication and sandbox rules intact,
+keeps credentials out of the frame, and preserves the existing render timeout.
+
 ## 2026-11-09 - Recover the native renderer from Git
 
 **Type:** intent-refinement

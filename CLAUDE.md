@@ -284,6 +284,8 @@ The terminal provider scans `terminalLinkLine()` and `terminalCellWrappedPaths()
 
 **Mermaid diagrams** render in Chat, the Response Viewer, and Markdown file previews through one isolated document shared with `codeman mermaid render <file|-> -o <new.png|new.svg>`. Keep the iframe opaque and network-disabled, and display its SVG as an image, never inline dashboard markup. The renderer HTML uses `no-cache`. → [architecture-invariants#mermaid-diagrams](docs/architecture-invariants.md#mermaid-diagrams)
 
+Fetch the renderer document in the authenticated parent and load it with `srcdoc`, not an iframe navigation that lost-frame recovery intercepts. Do not exempt the asset from authentication or give the frame same-origin access.
+
 The offline renderer reads optional `mermaid-runtime.json` from the instance data directory. Its `noSandbox` is an explicit host choice, never an automatic fallback; `--sandbox` overrides it. A Linux `libraryPath` affects only the browser child. The default stays sandboxed.
 
 `codeman mermaid setup` restores the Git-versioned native bundle on Ubuntu 24.04 x64. Keep native binaries, checksums, notices and matching LGPL source together in `dist/mermaid-runtime/`, outside web assets. Setup verifies every bundled file, refuses conflicting existing files/configuration, and stores libraries under `dataPath()` rather than a prunable release. A saved sandbox opt-out requires explicit `--no-sandbox`.
