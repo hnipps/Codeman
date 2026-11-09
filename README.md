@@ -1029,12 +1029,29 @@ engine, with no network access during rendering. Source is limited to 50,000
 characters and graphs to 500 edges. Configuration directives and frontmatter
 are refused.
 
-The command uses Puppeteer's Chromium, downloaded during installation.
-If browser downloads were disabled, run `npx puppeteer browsers install chrome`.
-Linux also needs Chromium's system libraries. `PUPPETEER_EXECUTABLE_PATH` can
-select an existing compatible browser. The OS sandbox stays enabled unless
-you explicitly pass `--no-sandbox` on a host that cannot support it.
+The command uses Puppeteer's smaller Chromium headless shell, downloaded during
+installation. If browser downloads were disabled, run
+`npx puppeteer browsers install chrome-headless-shell`.
+Linux still needs native shared libraries, but they do not have to be installed
+system-wide. `PUPPETEER_EXECUTABLE_PATH` can select an existing compatible browser.
+The OS sandbox stays enabled unless you explicitly disable it.
 Remote and Docker agents need Codeman and Chromium installed where they run.
+
+For a private library directory or an approved sandbox opt-out, create
+`mermaid-runtime.json` in this instance's data directory:
+
+```json
+{
+  "noSandbox": true,
+  "libraryPath": "/absolute/path/to/private/lib"
+}
+```
+
+Both fields are optional. `libraryPath` is Linux-only and affects the browser
+child, not the agent's environment. Keep private libraries updated with the
+browser and OS. Set `noSandbox` only when you accept that trust boundary.
+`--sandbox` and `--no-sandbox` override the saved choice for one command.
+This configuration never changes the UI iframe sandbox.
 
 ### `codeman history read`: saved Codex conversations, offline
 

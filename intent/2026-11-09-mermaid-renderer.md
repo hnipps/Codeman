@@ -30,8 +30,28 @@ preparation, the local CLI, and the bundled agent instructions.
 
 ## Open questions
 
-- None. This host needs Chromium libraries and an explicit sandbox opt-out.
-  Verification uses session-local extracted libraries, not a system installation.
+- The owner approves disabling Chromium's OS sandbox inside this VM.
+  Keep that choice local to this instance, never the default for other hosts.
+
+## Host runtime follow-up
+
+The smaller Chromium headless shell still requires native shared libraries.
+Those are binary dependencies, not JavaScript that a bundler can remove.
+This account has no passwordless package-manager access. Use a private runtime
+directory containing only the missing libraries instead of changing system
+packages. Persist its library path and the approved sandbox opt-out in an
+instance-local renderer configuration. Existing agents must be able to use the
+same render command without temporary environment variables or extra flags.
+
+The configuration is read only when the renderer runs. Other commands, browser
+Markdown rendering, and hosts without this configuration keep their behavior.
+Keep the renderer offline and do not change the supervisor or deploy yet.
+
+The private runtime now contains the 12 missing libraries, totaling about 2 MB.
+The compiled command produces PNG and SVG with no temporary environment
+variables or sandbox flags. The VM's explicit opt-out is stored only locally.
+Focused runtime tests, all five browser tests, and the 309-test deployment gate
+pass. The feature remains undeployed.
 
 ## Workflow and throughput checkpoint
 

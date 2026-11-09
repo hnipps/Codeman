@@ -2,6 +2,24 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Provision the Mermaid runtime without system changes
+
+**Type:** intent-refinement
+**Touches:** `src/mermaid-renderer.ts`, `src/cli-mermaid.ts`
+**Why:** All agents need the normal render command to work without session-local environment overrides.
+**Links:** [Mermaid intent](../intent/2026-11-09-mermaid-renderer.md)
+
+The smaller Chromium headless shell still has native shared-library dependencies.
+Those cannot be removed by tree-shaking the Mermaid JavaScript. A private copy of
+the missing library closure avoids installing system packages or a desktop stack.
+The renderer reads an optional instance-local `mermaid-runtime.json` for that
+library directory and an explicit sandbox opt-out. Only the browser child gets
+the private library path. The default elsewhere remains sandboxed, and
+`--sandbox` overrides a saved opt-out. No failure triggers a weaker retry.
+
+The owner approves the opt-out inside this VM. The UI's opaque iframe, network
+restrictions, input bounds, and output bounds remain unchanged.
+
 ## 2026-11-09 - Mermaid uses one isolated renderer
 
 **Type:** intent-refinement

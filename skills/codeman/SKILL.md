@@ -22,8 +22,10 @@ To **check a Mermaid diagram**, run
 `codeman mermaid render diagram.mmd -o diagram.png`, then inspect the PNG with your
 image viewer. Use `.svg` for vector output, or `-` as the input for stdin.
 This local command works from every agent CLI without a server or §0.
-It requires Chromium and its Linux libraries. The Chromium sandbox is on by default.
-`--no-sandbox` explicitly disables it on hosts that cannot support it.
+It requires Chromium headless shell and its Linux libraries. The Chromium sandbox
+is on by default. The instance's optional `mermaid-runtime.json` can supply private
+Linux libraries and an approved sandbox opt-out. `--sandbox` and `--no-sandbox`
+override that choice for one command.
 Existing output files are never overwritten.
 
 For **saved Codex conversation history**, use `codeman history read` and

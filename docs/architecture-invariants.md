@@ -580,8 +580,14 @@ characters, more than 500 edges, and output above 4 million characters.
 Consumers cap image area at 16 million pixels and time out rendering at 15 seconds.
 The CLI intercepts its synthetic document navigation and aborts all other browser
 requests. It writes PNG or SVG with exclusive creation, never overwriting an
-existing file. The Chromium OS sandbox is on unless `--no-sandbox` explicitly
-disables it. Remote and Docker agents need their own local installation.
+existing file. The CLI uses Chromium's smaller headless shell. Its OS sandbox
+is on unless the caller explicitly disables it with `--no-sandbox` or the
+instance's `mermaid-runtime.json`. `--sandbox` overrides a saved opt-out.
+That file is read only when rendering, through `dataPath()`. Its optional
+Linux `libraryPath` prepends one absolute private library directory to the
+browser child's `LD_LIBRARY_PATH`, never changing the parent environment.
+Invalid configuration fails closed. Nothing retries with a weaker sandbox.
+Remote and Docker agents need their own local installation.
 
 Tests: `test/mermaid-renderer.test.ts`, `test/mermaid-renderer.browser.test.ts`,
 and `test/static-cache-headers.test.ts`.
