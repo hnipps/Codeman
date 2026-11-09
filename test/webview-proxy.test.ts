@@ -247,6 +247,14 @@ describe('buildUpstreamRequestHeaders', () => {
     expect(headers.referer).toBe('http://127.0.0.1:4000/panel');
   });
 
+  it("relabels a sandboxed frame's cross-site fetch as same-origin, like Origin", () => {
+    const opts = { forwardCookies: false, sessionCookieName: 'codeman_session' };
+    const framed = buildUpstreamRequestHeaders({ origin: 'null', 'sec-fetch-site': 'cross-site' }, upstream, opts);
+    expect(framed['sec-fetch-site']).toBe('same-origin');
+    const curl = buildUpstreamRequestHeaders({}, upstream, opts);
+    expect(curl['sec-fetch-site']).toBeUndefined();
+  });
+
   it('drops hop-by-hop headers, and a length that a transfer-encoding contradicts', () => {
     const headers = buildUpstreamRequestHeaders(
       { host: 'codeman.local', connection: 'keep-alive', 'transfer-encoding': 'chunked', 'content-length': '5' },

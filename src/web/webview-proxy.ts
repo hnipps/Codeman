@@ -348,6 +348,12 @@ export function buildUpstreamRequestHeaders(
   headers['origin'] = upstream.origin;
   headers['referer'] = opts.refererPath ? new URL(opts.refererPath, upstream.origin).href : upstream.href;
 
+  // A sandboxed frame is opaque-origin, so the browser labels its own fetches
+  // `Sec-Fetch-Site: cross-site`. An upstream that checks that header refuses the
+  // write although Origin matches. Only a browser's label is replaced; a client
+  // that sent none gets none.
+  if (headers['sec-fetch-site'] !== undefined) headers['sec-fetch-site'] = 'same-origin';
+
   return headers;
 }
 
