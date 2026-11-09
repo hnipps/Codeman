@@ -5,15 +5,16 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
-import puppeteer from 'puppeteer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerMermaidCommands } from '../src/cli-mermaid.js';
 import { readMermaidSource, renderMermaid } from '../src/mermaid-renderer.js';
 import { safeRmHomeTree } from './mocks/index.js';
 
-vi.mock('puppeteer', () => ({
-  default: { launch: vi.fn().mockRejectedValue(new Error('Browser launch intercepted')) },
+const { launch } = vi.hoisted(() => ({
+  launch: vi.fn().mockRejectedValue(new Error('Browser launch intercepted')),
 }));
+
+vi.mock('puppeteer', () => ({ default: { launch } }));
 
 async function* chunks(...values: (string | Buffer)[]) {
   yield* values;
@@ -45,7 +46,7 @@ describe('Mermaid host runtime', () => {
     exitCode = process.exitCode;
     root = await mkdtemp(join(homedir(), 'mermaid-runtime-'));
     vi.stubEnv('CODEMAN_DATA_DIR', root);
-    vi.mocked(puppeteer.launch).mockClear();
+    launch.mockClear();
   });
 
   afterEach(() => {
@@ -59,7 +60,7 @@ describe('Mermaid host runtime', () => {
     await expect(renderMermaid('flowchart LR\n A --> B', join(root, 'diagram.png'))).rejects.toThrow(
       'Browser launch intercepted'
     );
-    return vi.mocked(puppeteer.launch).mock.calls[0][0]!;
+    return launch.mock.calls[0][0]!;
   }
 
   it('keeps the sandbox on when the instance has no runtime configuration', async () => {
@@ -91,8 +92,8 @@ describe('Mermaid host runtime', () => {
     await program.parseAsync(['mermaid', 'render', input, '-o', join(root, 'diagram.png'), ...args], {
       from: 'user',
     });
-    expect(puppeteer.launch).toHaveBeenCalled();
-    expect(vi.mocked(puppeteer.launch).mock.calls[0][0]?.args?.includes('--no-sandbox')).toBe(noSandbox);
+    expect(launch).toHaveBeenCalled();
+    expect(launch.mock.calls[0][0]?.args?.includes('--no-sandbox')).toBe(noSandbox);
   });
 
   it.each(['{', '{"noSandbox":"false"}', '{"libraryPath":"relative"}', '{"libraryPath":"/one:/two"}', '{"args":[]}'])(
@@ -102,7 +103,7 @@ describe('Mermaid host runtime', () => {
       await expect(renderMermaid('flowchart LR\n A --> B', join(root, 'diagram.png'))).rejects.toThrow(
         'Invalid Mermaid runtime configuration'
       );
-      expect(puppeteer.launch).not.toHaveBeenCalled();
+      expect(launch).not.toHaveBeenCalled();
     }
   );
 });
