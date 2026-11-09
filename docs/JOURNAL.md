@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Publish the Agentic Canvas source documents
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/`
+**Why:** The owner wants the vision, PRD and brief readable in the public fork.
+**Links:** [Agentic Canvas documents](agentic-canvas/README.md)
+
+The brief originally said these documents must never be committed, because
+they describe the server. The owner reversed that. The one passage that named
+the server's other services was made generic, and the brief's remaining
+public-fork rules still stand. The subscription survey was not available to
+copy and is listed as not included.
+
 ## 2026-11-09 - Show named tab groups on the phone home screen
 
 **Type:** intent-refinement
