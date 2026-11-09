@@ -20,12 +20,26 @@
     frame.title = t('Mermaid renderer');
     frame.setAttribute('aria-hidden', 'true');
     frame.style.cssText = 'position:fixed;left:-20000px;top:0;width:1200px;height:800px;border:0;pointer-events:none';
-    frame.src = new URL('vendor/mermaid-frame.html', document.baseURI).href;
-    frameReady = new Promise((resolve, reject) => {
-      frame.onload = () => resolve(frame);
-      frame.onerror = () => reject(new Error('Mermaid renderer could not load.'));
-    });
-    document.body.appendChild(frame);
+    const target = frame;
+    // Fetch as the authenticated parent, not a navigation intercepted by frame recovery.
+    frameReady = fetch(new URL('vendor/mermaid-frame.html', document.baseURI), {
+      credentials: 'same-origin',
+      redirect: 'error',
+      signal: AbortSignal.timeout(15000),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('Mermaid renderer could not load.');
+        return response.text();
+      })
+      .then((html) => {
+        if (frame !== target) throw new Error('Mermaid renderer could not load.');
+        return new Promise((resolve, reject) => {
+          target.onload = () => resolve(target);
+          target.onerror = () => reject(new Error('Mermaid renderer could not load.'));
+          target.srcdoc = html;
+          document.body.appendChild(target);
+        });
+      });
     return frameReady;
   }
 

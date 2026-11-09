@@ -9,7 +9,7 @@ import { join, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import puppeteer from 'puppeteer';
 import { PNG } from 'pngjs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebServer } from '../src/web/server.js';
 import { safeRmHomeTree } from './mocks/index.js';
 
@@ -24,13 +24,19 @@ describe('Mermaid diagrams', () => {
   let root: string;
 
   beforeAll(async () => {
+    vi.stubEnv('CODEMAN_USERNAME', 'mermaid-browser-test');
+    vi.stubEnv('CODEMAN_PASSWORD', 'mermaid-browser-test-password');
     root = await mkdtemp(join(homedir(), 'mermaid-'));
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
     });
-    page = await browser.newPage({ viewport: { width: 1100, height: 800 }, deviceScaleFactor: 1 });
+    page = await browser.newPage({
+      viewport: { width: 1100, height: 800 },
+      deviceScaleFactor: 1,
+      httpCredentials: { username: 'mermaid-browser-test', password: 'mermaid-browser-test-password' },
+    });
     await page.goto(`http://localhost:${server.boundPort}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => Boolean((window as any).app && (window as any).CodemanMermaid));
   }, 60000);
@@ -38,6 +44,7 @@ describe('Mermaid diagrams', () => {
   afterAll(async () => {
     await browser?.close();
     await server?.stop();
+    vi.unstubAllEnvs();
     if (root) safeRmHomeTree(root);
   }, 60000);
 
@@ -54,7 +61,7 @@ describe('Mermaid diagrams', () => {
     }, markdown);
   }
 
-  it('renders response/chat Markdown as an inert image and preserves source and ordinary code', async () => {
+  it('renders authenticated response/chat Markdown as an inert image and preserves source and ordinary code', async () => {
     await message(MARKDOWN);
     await page.waitForFunction(() => {
       const image = document.querySelector('#mermaid-test .rv-mermaid-preview img') as HTMLImageElement;

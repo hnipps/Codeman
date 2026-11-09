@@ -575,6 +575,12 @@ the frame window, opaque origin, and request id. SVG enters the dashboard only a
 an image. The sanitizer still refuses inline SVG. A source disclosure retains
 the original code and copy action. Invalid diagrams keep that disclosure open.
 
+The parent fetches the protected document with same-origin credentials, refuses
+redirects, and loads it through `srcdoc`. An iframe navigation to the static HTML
+is intercepted by authenticated lost-frame recovery, so it must never be used.
+The fetch shares the 15-second bound; a timed-out frame must not be reattached by
+a late response. Neither authentication nor the frame sandbox is weakened.
+
 The frame refuses configuration directives, empty source, source above 50,000
 characters, more than 500 edges, and output above 4 million characters.
 Consumers cap image area at 16 million pixels and time out rendering at 15 seconds.
