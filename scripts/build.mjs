@@ -36,7 +36,7 @@ function run(label, cmd) {
 // Only specifiers that resolve without an exports map in the way: a subpath of a package
 // that has one (@xterm/*) can throw ERR_PACKAGE_PATH_NOT_EXPORTED while installed.
 // A hand-run of the asset stage alone (past a blocked tsc) skips this check.
-const BUILD_TIME_MODULES = ['exceljs/dist/exceljs.min.js', 'fflate'];
+const BUILD_TIME_MODULES = ['exceljs/dist/exceljs.min.js', 'fflate', 'mermaid'];
 const requireFromBuild = createRequire(import.meta.url);
 const missingModules = BUILD_TIME_MODULES.filter((specifier) => {
   try {
@@ -79,6 +79,7 @@ run('xterm-zerolag-input', 'npx esbuild packages/xterm-zerolag-input/src/zerolag
 // XLSX preview parser bundles: loaded only inside spreadsheet-preview-worker.js,
 // never by the page (see scripts/prepare-spreadsheet-assets.mjs).
 run('spreadsheet preview vendors', 'node scripts/prepare-spreadsheet-assets.mjs dist/web/public/vendor');
+run('mermaid renderer', 'node scripts/prepare-mermaid-assets.mjs dist/web/public/vendor');
 
 // Append global aliases so app.js can use `new LocalEchoOverlay(terminal)`
 appendFileSync(
@@ -147,6 +148,7 @@ console.log('\n[build] content-hash cache busting');
     'mobile-ime-preview.js',
     'terminal-keycode229-recovery.js',
     'sanitize-html.js',
+    'mermaid-render.js',
     'tab-layout-browser.js',
     'app.js',
     'tab-rail-resize.js',

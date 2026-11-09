@@ -2,6 +2,28 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Mermaid uses one isolated renderer
+
+**Type:** intent-refinement
+**Touches:** `scripts/mermaid-frame.js`, `src/mermaid-renderer.ts`, `src/web/public/mermaid-render.js`
+**Why:** Agents need to inspect actual diagram images, and Markdown readers need the same rendering behavior without running diagram code in the dashboard origin.
+**Links:** [Mermaid intent](../intent/2026-11-09-mermaid-renderer.md)
+
+The UI and offline agent command share one bundled Mermaid document. An opaque
+iframe renders diagrams for Markdown readers, which display the SVG as an image.
+The command writes new PNG or SVG files through Chromium and needs no server.
+Source stays available when rendering fails. Chromium's OS sandbox is enabled
+unless the caller explicitly disables it. This host lacks Chromium libraries and
+usable OS sandbox support, so verification uses session-local libraries and an
+explicit sandbox opt-out for local verification. No system libraries or live
+server are changed.
+
+Puppeteer is a runtime dependency so an installed command can provision its
+browser without a separate renderer service. This adds a browser download during
+installation. `puppeteer-core` would avoid that download but require every host
+to supply a compatible browser. Rendering itself stays offline. The UI needs no
+Chromium installation, and headless Linux hosts still need its system libraries.
+
 ## 2026-11-08 — Respawn lifecycle has a real-process check
 
 **Type:** propagated-discovery

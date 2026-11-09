@@ -357,6 +357,17 @@ if (!isGlobalInstall) {
     }
 }
 
+if (!isGlobalInstall) {
+    try {
+        execSync(`node "${join(import.meta.dirname, 'prepare-mermaid-assets.mjs')}"`, { stdio: 'pipe' });
+        console.log(colors.green('✓ Mermaid renderer prepared'));
+    } catch (err) {
+        hasWarnings = true;
+        console.log(colors.yellow('⚠ Failed to prepare Mermaid renderer'));
+        console.log(colors.dim(`  ${err.message}`));
+    }
+}
+
 // ----------------------------------------------------------------------------
 // 4b. Fetch gesture-overlay runtime assets (MediaPipe wasm + model) for dev mode
 //     (src/web/public/gesture/). Opt-in feature (CODEMAN_GESTURE=1); non-fatal.

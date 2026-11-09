@@ -48,6 +48,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'src', 'web', 'public', 'vendor');
 const NM = join(ROOT, 'node_modules');
 
+execFileSync(process.execPath, [join(ROOT, 'scripts/prepare-mermaid-assets.mjs')], { stdio: 'pipe' });
+
 /**
  * Every `vendor/` asset index.html requests, minus the two already committed
  * (dompurify, marked). Kept in sync with scripts/build.mjs steps 3-4 — a missing

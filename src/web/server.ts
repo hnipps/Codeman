@@ -1154,7 +1154,7 @@ export class WebServer extends EventEmitter {
         // `?v=`-busted, so it must revalidate. Under `immutable` a browser may keep last release's
         // copy for a year, and the page's `fetch(..., { cache: 'no-cache' })` is the only thing
         // asking it not to; the response header is what every browser honours.
-        if (filePath.endsWith('.json')) {
+        if (filePath.endsWith('.json') || filePath.endsWith('/mermaid-frame.html')) {
           reply.header('Cache-Control', 'no-cache');
           return;
         }
