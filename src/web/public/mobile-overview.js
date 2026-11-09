@@ -305,12 +305,50 @@ Object.assign(CodemanApp.prototype, {
       })
       .sort((a, b) => b.at - a.at);
 
+    const current = inSection(['working', 'idle', 'done']);
     return {
       needsYou: inSection(['needs', 'error', 'waiting']),
-      current: inSection(['working', 'idle', 'done']),
+      current,
+      currentGroups: this._mobileOverviewCurrentGroups(current, input && input.tabGroups),
       past,
       sessionCount: rows.length,
     };
+  },
+
+  /**
+   * CURRENT split by the owner's named tab groups, which phones otherwise never
+   * draw: the groups live only in the desktop rail. `tabGroups` is a
+   * `CodemanTabLayout.project()` result, so membership (a child following its
+   * parent, a session the layout has not placed yet) is the rail's own. Null
+   * when no named group holds a current row, so the section stays flat.
+   * NEEDS YOU is never split: urgency outranks grouping.
+   */
+  _mobileOverviewCurrentGroups(current, tabGroups) {
+    const sections = tabGroups && Array.isArray(tabGroups.sections) ? tabGroups.sections : [];
+    const sectionByRef = (tabGroups && tabGroups.sectionByRef) || {};
+    const groupOf = (row) => sectionByRef['session:' + row.id] || null;
+    const groups = sections
+      .filter((section) => section.id !== null)
+      .map((section) => ({
+        id: section.id,
+        name: section.name,
+        rows: current.filter((r) => groupOf(r) === section.id),
+      }))
+      .filter((group) => group.rows.length);
+    if (!groups.length) return null;
+    const named = new Set(groups.map((group) => group.id));
+    const rest = current.filter((r) => !named.has(groupOf(r)));
+    if (rest.length) groups.push({ id: null, name: 'Ungrouped', rows: rest });
+    return groups;
+  },
+
+  /** The rail's projection of the tab layout over the live sessions, or null. */
+  _mobileOverviewTabGroups() {
+    if (!this.tabLayout || !window.CodemanTabLayout) return null;
+    return window.CodemanTabLayout.project(this.tabLayout, {
+      liveSessionIds: (this.sessionOrder || []).filter((id) => this.sessions.has(id)),
+      parents: this._tabLayoutParents ? this._tabLayoutParents() : {},
+    });
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -482,6 +520,7 @@ Object.assign(CodemanApp.prototype, {
       sessionOrder: this.sessionOrder,
       pendingHooks: this.pendingHooks,
       history: this._mobileOverviewHistory,
+      tabGroups: this._mobileOverviewTabGroups(),
     });
     // Resume needs the workingDir/claudeSessionId off the row the user tapped.
     this._mobileOverviewPastRows = model.past;
@@ -503,7 +542,9 @@ Object.assign(CodemanApp.prototype, {
       this._buildMobileOverviewSection(
         'Current sessions',
         model.current.length,
-        model.current.map((r) => this._buildMobileOverviewRow(r)),
+        model.currentGroups
+          ? model.currentGroups.map((group) => this._buildMobileOverviewGroup(group))
+          : model.current.map((r) => this._buildMobileOverviewRow(r)),
         'Nothing running. Hit Run to start something.'
       )
     );
@@ -720,6 +761,30 @@ Object.assign(CodemanApp.prototype, {
     }
     for (const child of children) section.appendChild(child);
     return section;
+  },
+
+  /** One named tab group inside CURRENT: its name and count, then its rows. */
+  _buildMobileOverviewGroup(group) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mobile-overview-group';
+
+    const heading = document.createElement('h3');
+    heading.className = 'mobile-overview-group-heading';
+    const label = document.createElement('span');
+    label.className = 'mobile-overview-group-name';
+    label.textContent = group.name;
+    // A group name is user content; only the built-in "Ungrouped" label translates.
+    if (group.id !== null) label.setAttribute('data-i18n-skip', '');
+    heading.appendChild(label);
+    const count = document.createElement('span');
+    count.className = 'mobile-overview-heading-count';
+    count.textContent = String(group.rows.length);
+    count.setAttribute('data-i18n-skip', '');
+    heading.appendChild(count);
+    wrap.appendChild(heading);
+
+    for (const row of group.rows) wrap.appendChild(this._buildMobileOverviewRow(row));
+    return wrap;
   },
 
   /**

@@ -8144,6 +8144,8 @@ class CodemanApp {
     this.tabLayout = next;
     // An open Case settings popover lists the groups as its Default session group options.
     this._refreshCaseDefaultGroupOptions?.(next);
+    // The phone home screen draws the groups too (mobile-overview.js).
+    this._refreshMobileOverviewIfVisible?.();
     const storage = this._getTabCollapseStorage();
     const collapsed = storage && next
       ? window.CodemanTabLayout.loadCollapsedGroupIds(storage, next.groups.map((group) => group.id))
@@ -8515,6 +8517,7 @@ class CodemanApp {
   /** The editor's view of the layout (optimistic or confirmed) becomes the rail. */
   _adoptEditedTabLayout(layout) {
     this.tabLayout = layout;
+    this._refreshMobileOverviewIfVisible?.();
     const storage = this._getTabCollapseStorage();
     if (storage) {
       // Forget collapse state for groups that no longer exist.

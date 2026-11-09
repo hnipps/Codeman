@@ -49,7 +49,9 @@ Tapping the "C" logo gives a session overview rather than a welcome page:
 1. **NEEDS YOU** first: sessions blocked on a question, with answer strips (Approvals Inbox
    on) so you can resolve a Claude dialog without opening the session. A Codex or DeepSeek
    Harness row offers **Answer in terminal** instead, which opens the session.
-2. **CURRENT SESSIONS** with live status.
+2. **CURRENT SESSIONS** with live status. If you have named tab groups (made in the
+   desktop rail), this section is split into one heading per group, with ungrouped sessions
+   last. Sessions that need you stay in NEEDS YOU, outside any group.
 3. **PAST SESSIONS**, resumable.
 
 Row status uses the same language as the tabs: green when fine, pulsing while working,

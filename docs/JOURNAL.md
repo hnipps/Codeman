@@ -2,6 +2,20 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Show named tab groups on the phone home screen
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/mobile-overview.js`, `src/web/public/mobile.css`, `src/web/public/app.js`
+**Why:** A tab group made on the desktop was invisible on a phone, because phones never get the vertical rail.
+**Links:** [Phone tab groups intent](../intent/2026-11-09-phone-tab-groups.md)
+
+The owner chose headings on the home screen over a tag on each row or labels
+in the tab strip. Only Current sessions is split. Needs you stays flat, because
+urgency comes before grouping. Membership reuses `CodemanTabLayout.project()`,
+so the phone and the rail cannot disagree. The last heading reuses the rail's
+"Ungrouped" label, which already has a translation, rather than the mock-up's
+"Other".
+
 ## 2026-11-09 - Load Mermaid through the authenticated parent
 
 **Type:** propagated-discovery

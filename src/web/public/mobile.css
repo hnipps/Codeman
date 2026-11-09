@@ -2902,6 +2902,38 @@ html.mobile-init .file-browser-panel {
     font-weight: 600;
   }
 
+  /* A named tab group inside Current sessions. Sentence case, not the section's
+     caps: the name is the user's own words, and the step down in voice keeps it
+     under the section heading rather than beside it. */
+  .mobile-overview-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .mobile-overview-group + .mobile-overview-group {
+    margin-top: 0.6rem;
+  }
+
+  .mobile-overview-group-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0.2rem 0 0;
+    padding: 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .mobile-overview-group-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .mobile-overview-empty {
     margin: 0;
     padding: 0.5rem 0;

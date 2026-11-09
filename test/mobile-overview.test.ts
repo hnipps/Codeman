@@ -49,7 +49,7 @@ function loadOverviewApp(overrides: Record<string, any> = {}) {
   // constants.js first: it installs the row comparator (window.CodemanSessionOrder)
   // that buildMobileOverviewModel() sorts every section with, shared with the
   // desktop rail so the two home screens cannot order the same list differently.
-  for (const file of ['constants.js', 'mobile-overview.js']) {
+  for (const file of ['constants.js', 'tab-layout-browser.js', 'mobile-overview.js']) {
     vm.runInContext(readFileSync(resolve(PUBLIC, file), 'utf8'), context, { filename: file });
   }
 
@@ -175,6 +175,68 @@ describe('mobile overview model', () => {
     });
 
     expect(model.needsYou.map((r: any) => r.id)).toEqual(['starving', 'just-asked']);
+  });
+
+  it('splits CURRENT by named tab group, ungrouped last, and leaves NEEDS YOU flat', () => {
+    const layout = {
+      version: 3,
+      updatedAt: '2026-11-09T00:00:00.000Z',
+      groups: [
+        { id: 'g-empty', name: 'Nothing live', refs: [{ kind: 'session', id: 'gone' }] },
+        {
+          id: 'g-canvas',
+          name: 'Agentic Canvas',
+          refs: [
+            { kind: 'session', id: 'b' },
+            { kind: 'session', id: 'blocked' },
+          ],
+        },
+      ],
+      ungrouped: [{ kind: 'session', id: 'a' }],
+    };
+    const app = loadOverviewApp({
+      tabLayout: layout,
+      sessions: new Map(),
+      sessionOrder: ['a', 'b', 'child', 'blocked', 'late'],
+      _tabLayoutParents: () => ({ child: 'b' }),
+    });
+    for (const id of app.sessionOrder) app.sessions.set(id, { id });
+    const model = app.buildMobileOverviewModel({
+      sessions: [
+        session({ id: 'a' }),
+        session({ id: 'b' }),
+        session({ id: 'child' }),
+        session({ id: 'blocked' }),
+        session({ id: 'late' }),
+      ],
+      pendingHooks: new Map([['blocked', new Set(['permission_prompt'])]]),
+      sessionOrder: app.sessionOrder,
+      tabGroups: app._mobileOverviewTabGroups(),
+    });
+
+    expect(model.needsYou.map((r: any) => r.id)).toEqual(['blocked']);
+    expect(model.currentGroups.map((g: any) => [g.name, g.rows.map((r: any) => r.id)])).toEqual([
+      ['Agentic Canvas', ['b', 'child']],
+      ['Ungrouped', ['a', 'late']],
+    ]);
+  });
+
+  it('keeps CURRENT flat when no named group holds a current session', () => {
+    const app = loadOverviewApp();
+    const flat = app.buildMobileOverviewModel({ sessions: [session({ id: 'a' })], cases: CASES });
+    expect(flat.currentGroups).toBeNull();
+
+    const onlyEmptyGroup = app.buildMobileOverviewModel({
+      sessions: [session({ id: 'a' })],
+      tabGroups: {
+        sections: [
+          { id: 'g', name: 'Elsewhere', refs: [] },
+          { id: null, name: '', refs: [{ kind: 'session', id: 'a' }] },
+        ],
+        sectionByRef: { 'session:a': null },
+      },
+    });
+    expect(onlyEmptyGroup.currentGroups).toBeNull();
   });
 
   it('matches a session started in a subdirectory to its case (longest prefix)', () => {
