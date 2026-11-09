@@ -67,6 +67,27 @@ describe('ralph-routes', () => {
       expect(body).toEqual({});
     });
 
+    // Invariant RL-3: Loop off implies the respawn it started is off
+    it.each([
+      [true, true],
+      [false, false],
+    ])('disabling the loop with startedByLoop=%s stops respawn=%s', async (startedByLoop, stopped) => {
+      const id = harness.ctx._sessionId;
+      const controller = { stop: vi.fn(), getConfig: vi.fn(() => ({})) };
+      harness.ctx.respawnControllers.set(id, controller as never);
+      (harness.ctx.mux.getSession as ReturnType<typeof vi.fn>).mockReturnValue({
+        respawnConfig: { enabled: true, ...(startedByLoop ? { startedByLoop: true } : {}) },
+      });
+      const res = await harness.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${id}/ralph-config`,
+        payload: { enabled: false },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(harness.ctx.respawnControllers.has(id)).toBe(!stopped);
+      expect(controller.stop).toHaveBeenCalledTimes(stopped ? 1 : 0);
+    });
+
     it('enables ralph tracker', async () => {
       const tracker = (harness.ctx._session as Record<string, unknown>).ralphTracker as ReturnType<
         typeof createMockRalphTracker

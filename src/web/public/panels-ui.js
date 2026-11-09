@@ -5071,6 +5071,7 @@ Object.assign(CodemanApp.prototype, {
       // preview's, like the rebased links, or they open in the active tab's.
       for (const a of doc.querySelectorAll('a.rv-path:not([data-session-id])')) a.dataset.sessionId = info.sessionId;
       bodyEl.replaceChildren(tmpl.content);
+      window.CodemanMermaid?.hydrate(bodyEl);
       // The Response Viewer's click delegate (path links, code-block copy
       // buttons, loopback links): container-bound and idempotent, so binding it
       // on the body once serves every preview.

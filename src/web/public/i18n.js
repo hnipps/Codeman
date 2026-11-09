@@ -89,6 +89,11 @@
     'Rename case': '重命名案例',
     Rename: '重命名',
     'New name': '新名称',
+    'Mermaid renderer': 'Mermaid 渲染器',
+    'Mermaid diagram': 'Mermaid 图表',
+    'Mermaid source': 'Mermaid 源码',
+    'Rendering Mermaid diagram...': '正在渲染 Mermaid 图表...',
+    'Mermaid diagram exceeds the render limit.': 'Mermaid 图表超出渲染限制。',
     'letters, numbers, - and _': '字母、数字、- 和 _',
     'Also rename the folder on disk': '同时重命名磁盘上的文件夹',
     'A case under the cases folder is renamed together with its folder.':

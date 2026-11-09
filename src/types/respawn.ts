@@ -5,7 +5,7 @@
  * per-cycle metrics, aggregate health scoring, and adaptive timing.
  *
  * Key exports:
- * - RespawnConfig — full respawn settings (idle timeout, AI checks, adaptive timing, skip-clear)
+ * - RespawnConfig — full respawn settings (idle timeout, AI checks, adaptive timing, cycle budget)
  * - PersistedRespawnConfig — subset saved to disk for mux session recovery
  * - RespawnPreset — named preset for quick setup (solo-work, team-lead, overnight-autonomous, etc.)
  * - RespawnCycleMetrics — per-cycle outcome tracking (duration, idle reason, steps, tokens)
@@ -82,12 +82,12 @@ export interface RespawnConfig {
   /** Maximum value for adaptive completion confirm (ms) */
   adaptiveMaxConfirmMs?: number;
 
-  // ========== P2-002: Skip-Clear Optimization ==========
+  // ========== Cycle Budget ==========
 
-  /** Whether to skip /clear when context is below threshold */
-  skipClearWhenLowContext?: boolean;
-  /** Token percentage threshold below which /clear is skipped (0-100) */
-  skipClearThresholdPercent?: number;
+  /** Stop after this many consecutive cycles with an unchanged workspace (0 disables, default 3) */
+  maxUnchangedCycles?: number;
+  /** Stop after this many cycles in total (0 disables, default 50) */
+  maxCycles?: number;
 
   // ========== P2-004: Cycle Metrics ==========
 
@@ -130,8 +130,6 @@ export interface RespawnCycleMetrics {
   idleDetectionMs: number;
   /** Steps completed in this cycle */
   stepsCompleted: string[];
-  /** Whether /clear was skipped (P2-002) */
-  clearSkipped: boolean;
   /** Outcome of the cycle */
   outcome: CycleOutcome;
   /** Error message if outcome is 'error' */
@@ -238,6 +236,8 @@ export interface TimingHistory {
 export interface PersistedRespawnConfig {
   /** Whether respawn was enabled */
   enabled: boolean;
+  /** Started by POST /api/ralph-loop/start enableRespawn, so disabling that loop stops it */
+  startedByLoop?: boolean;
   /** How long to wait after seeing prompt before considering truly idle (ms) */
   idleTimeoutMs: number;
   /** The prompt to send for updating docs */
@@ -278,6 +278,10 @@ export interface PersistedRespawnConfig {
   aiPlanCheckTimeoutMs?: number;
   /** Cooldown after NOT_PLAN_MODE verdict in ms */
   aiPlanCheckCooldownMs?: number;
+  /** Stop after this many consecutive cycles with an unchanged workspace (0 disables, default 3) */
+  maxUnchangedCycles?: number;
+  /** Stop after this many cycles in total (0 disables, default 50) */
+  maxCycles?: number;
   /** Duration in minutes if timed respawn was set */
   durationMinutes?: number;
 }

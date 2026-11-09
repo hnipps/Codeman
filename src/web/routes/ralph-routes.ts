@@ -99,6 +99,9 @@ export function registerRalphRoutes(
       }
       // Persist Ralph enabled state
       ctx.mux.updateRalphEnabled(id, enabled);
+      if (!enabled && ctx.mux.getSession(id)?.respawnConfig?.startedByLoop) {
+        ctx.stopRespawnForSession(id);
+      }
     }
 
     // Configure the Ralph tracker
@@ -486,7 +489,7 @@ export function registerRalphRoutes(
       ctx.respawnControllers.set(session.id, controller);
       ctx.setupRespawnListeners(session.id, controller);
       controller.start();
-      ctx.saveRespawnConfig(session.id, controller.getConfig());
+      ctx.saveRespawnConfig(session.id, controller.getConfig(), undefined, { startedByLoop: true });
       ctx.persistSessionState(session);
       ctx.broadcast(SseEvent.RespawnStarted, {
         sessionId: session.id,

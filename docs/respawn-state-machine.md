@@ -2,6 +2,9 @@
 
 The respawn controller (`src/respawn-controller.ts`) manages autonomous session cycling. It detects idle sessions and restarts them through a configurable sequence of steps.
 
+Persisted stop, cycle-budget and live-lease promises are documented together in
+[Respawn lifecycle (RL-1 through RL-6)](invariants/respawn-lifecycle.md).
+
 ## State Diagram
 
 ```
@@ -38,6 +41,17 @@ Steps can be skipped via config:
 - `sendClear: false` - Skip the clear step
 - `sendInit: false` - Skip the init step
 - `kickstartPrompt` - Optional prompt if `/init` doesn't trigger work
+
+`/clear` is sent every cycle when `sendClear` is true. There is no context-size shortcut: Claude's on-screen `N tokens` figure is a per-turn counter, not the context size.
+
+## Cycle Budget
+
+A loop with nothing to do stops by itself. After each cycle the controller fingerprints the session's working directory (git `HEAD` + hashes of `git status --porcelain` and `git diff HEAD`). Outside git it hashes file paths and content, skipping dot-directories, `node_modules`, symlinks and files over 1 MB, with a cap of 5000 files and directories. Changes outside this bounded sample are not detected; an unreadable workspace is not counted as unchanged.
+
+- `maxUnchangedCycles` (default `3`, `0` disables): stop after this many consecutive cycles whose fingerprint did not change, git or not.
+- `maxCycles` (default `50`, `0` = unlimited): stop after this many cycles in total, even if update prompts and `/init` rewrite files every cycle.
+
+The stop is torn down like `POST /respawn/stop` (controller removed, persisted config cleared) and broadcast as `respawn:stopped` with `reason` (`unchanged_workspace` | `max_cycles`) and `details`.
 
 ## Step Confirmation
 
@@ -79,5 +93,5 @@ Uses temp file for prompt to avoid E2BIG errors with large terminal buffers.
 
 - `test/respawn-scenarios.md` - Comprehensive test scenarios for edge cases
 - `test/respawn-test-plan.md` - Test environment architecture and strategies
-- `test/respawn-test-utils.ts` - Mock utilities (MockSession, MockAiIdleChecker, MockAiPlanChecker)
+- `test/mocks/` - Shared mocks (`MockSession`, `MockStateStore`), imported from `test/mocks/index.js`
 - `test/respawn-analysis.md` - Code coverage analysis and identified issues

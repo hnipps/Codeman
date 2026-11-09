@@ -1662,7 +1662,7 @@ const BUILTIN_RESPAWN_PRESETS = [
   {
     id: 'solo-work',
     name: 'Solo',
-    description: 'Claude working alone — fast respawn cycles with context reset',
+    description: 'Claude working alone — fast respawn cycles with context reset; stops at 50 cycles or 3 unchanged cycles',
     config: {
       idleTimeoutMs: 3000,
       updatePrompt: 'summarize your progress so far before the context reset.',
@@ -1679,7 +1679,7 @@ const BUILTIN_RESPAWN_PRESETS = [
   {
     id: 'subagent-workflow',
     name: 'Subagents',
-    description: 'Lead session with Task tool subagents — longer idle tolerance',
+    description: 'Lead session with Task tool subagents — longer idle tolerance; stops at 50 cycles or 3 unchanged cycles',
     config: {
       idleTimeoutMs: 45000,
       updatePrompt: 'check on your running subagents and summarize their results before the context reset. If all subagents have finished, note what was completed and what remains.',
@@ -1696,7 +1696,7 @@ const BUILTIN_RESPAWN_PRESETS = [
   {
     id: 'team-lead',
     name: 'Team',
-    description: 'Leading an agent team via TeamCreate — tolerates long silences',
+    description: 'Leading an agent team via TeamCreate — tolerates long silences; stops at 50 cycles or 3 unchanged cycles',
     config: {
       idleTimeoutMs: 90000,
       updatePrompt: 'review the task list and teammate progress. Summarize the current state before the context reset.',
@@ -1713,7 +1713,7 @@ const BUILTIN_RESPAWN_PRESETS = [
   {
     id: 'ralph-todo',
     name: 'Ralph/Todo',
-    description: 'Ralph Loop task list — works through todos with progress tracking',
+    description: 'Ralph Loop task list — works through todos with progress tracking; stops at 50 cycles or 3 unchanged cycles',
     config: {
       idleTimeoutMs: 8000,
       updatePrompt: 'update CLAUDE.md with discoveries and progress notes, mark completed tasks in @fix_plan.md, write a brief summary so the next cycle can continue seamlessly.',
@@ -1730,7 +1730,7 @@ const BUILTIN_RESPAWN_PRESETS = [
   {
     id: 'overnight-autonomous',
     name: 'Overnight',
-    description: 'Unattended overnight runs with full context reset between cycles',
+    description: 'Unattended overnight runs with full context reset; stops at 50 cycles or 3 unchanged cycles',
     config: {
       idleTimeoutMs: 10000,
       updatePrompt: 'summarize what you accomplished so far and write key progress notes to CLAUDE.md so the next cycle can pick up where you left off.',

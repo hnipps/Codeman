@@ -66,7 +66,14 @@ import {
 } from './respawn-patterns.js';
 import { RespawnAdaptiveTiming } from './respawn-adaptive-timing.js';
 import { RespawnCycleMetricsTracker } from './respawn-metrics.js';
-import { calculateHealthScore, shouldSkipClear, type HealthInputs } from './respawn-health.js';
+import { calculateHealthScore, type HealthInputs } from './respawn-health.js';
+import {
+  CycleBudget,
+  DEFAULT_MAX_CYCLES,
+  DEFAULT_MAX_UNCHANGED_CYCLES,
+  computeWorkspaceFingerprint,
+  type BudgetExhaustion,
+} from './respawn-cycle-budget.js';
 import { deployRole } from './deploy-role.js';
 import {
   AI_CHECK_MODEL,
@@ -427,19 +434,20 @@ export interface RespawnConfig {
    */
   adaptiveMaxConfirmMs?: number;
 
-  // ========== P2-002: Skip-Clear Optimization ==========
+  // ========== Cycle Budget ==========
 
   /**
-   * Skip /clear when context usage is low.
-   * @default true
+   * Stop after this many consecutive cycles that left the workspace unchanged.
+   * Uses git state or bounded content hashing outside git. 0 disables.
+   * @default 3
    */
-  skipClearWhenLowContext?: boolean;
+  maxUnchangedCycles?: number;
 
   /**
-   * Context threshold percentage below which to skip /clear.
-   * @default 30
+   * Stop after this many cycles in total. 0 disables.
+   * @default 50
    */
-  skipClearThresholdPercent?: number;
+  maxCycles?: number;
 
   // ========== P2-004: Cycle Metrics ==========
 
@@ -540,9 +548,8 @@ const DEFAULT_CONFIG: RespawnConfig = {
   adaptiveTimingEnabled: true, // Use adaptive timing based on historical patterns
   adaptiveMinConfirmMs: 5000, // Minimum 5 seconds
   adaptiveMaxConfirmMs: 30000, // Maximum 30 seconds
-  // P2-002: Skip-clear optimization
-  skipClearWhenLowContext: true, // Skip /clear when token count is low
-  skipClearThresholdPercent: 30, // Skip if below 30% of max context
+  maxUnchangedCycles: DEFAULT_MAX_UNCHANGED_CYCLES,
+  maxCycles: DEFAULT_MAX_CYCLES,
   // P2-004: Cycle metrics
   trackCycleMetrics: true, // Track and persist cycle metrics
   // P2-001: Confidence scoring
@@ -649,6 +656,9 @@ export class RespawnController extends EventEmitter {
 
   /** Number of completed respawn cycles */
   private cycleCount: number = 0;
+  private readonly cycleBudget = new CycleBudget();
+  /** Serializes post-cycle budget checks behind the start-of-loop baseline. */
+  private budgetChain: Promise<void> = Promise.resolve();
 
   /** Timestamp of last terminal activity */
   private lastActivityTime: number = 0;
@@ -1207,6 +1217,11 @@ export class RespawnController extends EventEmitter {
 
     this.aiChecker.reset();
     this.planChecker.reset();
+    this.cycleBudget.reset();
+    this.budgetChain = computeWorkspaceFingerprint(this.session.workingDir).then(
+      (fp) => this.cycleBudget.seed(fp),
+      () => this.cycleBudget.seed(null)
+    );
     this.setState('watching');
     this.setupTerminalListener();
     this.startDetectionUpdates();
@@ -1519,18 +1534,7 @@ export class RespawnController extends EventEmitter {
     this.recordCycleStep('update');
 
     if (this.config.sendClear) {
-      // P2-002: Check if we should skip /clear
-      if (this.checkShouldSkipClear()) {
-        this.cycleMetrics.markClearSkipped();
-        // Skip /clear, go directly to /init or complete
-        if (this.config.sendInit) {
-          this.sendInit();
-        } else {
-          this.completeCycle();
-        }
-      } else {
-        this.sendClear();
-      }
+      this.sendClear();
     } else if (this.config.sendInit) {
       this.sendInit();
     } else {
@@ -2763,6 +2767,15 @@ export class RespawnController extends EventEmitter {
       return;
     }
 
+    const maxCycles = this.config.maxCycles ?? DEFAULT_MAX_CYCLES;
+    if (maxCycles > 0 && this.cycleCount >= maxCycles) {
+      this.exhaustCycleBudget({
+        reason: 'max_cycles',
+        details: `Reached the maximum of ${maxCycles} respawn cycles`,
+      });
+      return;
+    }
+
     // Clear all detection timers before starting cycle to prevent stale callbacks
     this.clearTimers();
 
@@ -2973,6 +2986,48 @@ export class RespawnController extends EventEmitter {
     if (this.config.autoAcceptPrompts) {
       this.startAutoAcceptTimer();
     }
+
+    this.budgetChain = this.budgetChain.then(() => this.enforceCycleBudget());
+  }
+
+  /**
+   * Stop the loop when it has used up its cycle budget: `maxCycles` reached, or
+   * `maxUnchangedCycles` consecutive cycles that left the workspace untouched.
+   * @fires budgetExhausted - Before the controller stops, so listeners can
+   *   persist the stop like a user stop and tell the UI why.
+   */
+  private async enforceCycleBudget(): Promise<void> {
+    if (this._state === 'stopped') return;
+    const { maxCycles, maxUnchangedCycles = DEFAULT_MAX_UNCHANGED_CYCLES } = this.config;
+
+    let exhausted: BudgetExhaustion | null = null;
+    if (maxCycles && maxCycles > 0 && this.cycleCount >= maxCycles) {
+      exhausted = { reason: 'max_cycles', details: `Reached the maximum of ${maxCycles} respawn cycles` };
+    } else if (maxUnchangedCycles > 0) {
+      let fingerprint: string | null = null;
+      try {
+        fingerprint = await computeWorkspaceFingerprint(this.session.workingDir);
+      } catch {
+        // an unreadable workspace is not evidence of idleness
+      }
+      if ((this._state as RespawnState) === 'stopped') return;
+      const unchanged = this.cycleBudget.record(fingerprint);
+      if (unchanged >= maxUnchangedCycles) {
+        exhausted = {
+          reason: 'unchanged_workspace',
+          details: `${unchanged} consecutive respawn cycles left the working directory unchanged`,
+        };
+      }
+    }
+
+    if (exhausted) this.exhaustCycleBudget(exhausted);
+  }
+
+  private exhaustCycleBudget(exhausted: BudgetExhaustion): void {
+    this.log(`Cycle budget exhausted (${exhausted.reason}): ${exhausted.details}`);
+    this.logAction('budget', exhausted.details);
+    this.emit('budgetExhausted', exhausted);
+    this.stop();
   }
 
   /**
@@ -3105,31 +3160,6 @@ export class RespawnController extends EventEmitter {
    */
   getTimingHistory(): TimingHistory {
     return this.adaptiveTiming.getTimingHistory();
-  }
-
-  // ========== P2-002: Skip-Clear Optimization (delegated to respawn-health.ts) ==========
-
-  /**
-   * Determine whether to skip the /clear step based on current context usage.
-   * Skips if token count is below the configured threshold percentage.
-   *
-   * @returns True if /clear should be skipped
-   */
-  private checkShouldSkipClear(): boolean {
-    if (!this.config.skipClearWhenLowContext) return false;
-
-    const thresholdPercent = this.config.skipClearThresholdPercent ?? 30;
-    const maxContext = 200000; // Approximate max context for Claude
-
-    const skip = shouldSkipClear(this.lastTokenCount, thresholdPercent, maxContext);
-
-    if (skip) {
-      const usagePercent = ((this.lastTokenCount / maxContext) * 100).toFixed(1);
-      this.log(`Skip-clear optimization: ${usagePercent}% < ${thresholdPercent}% threshold`);
-      this.logAction('optimization', `Skipping /clear (${usagePercent}% context used)`);
-    }
-
-    return skip;
   }
 
   // ========== P2-004: Cycle Metrics (delegated to RespawnCycleMetricsTracker) ==========

@@ -44,7 +44,6 @@ describe('RespawnCycleMetricsTracker', () => {
       expect(cycle!.cycleNumber).toBe(1);
       expect(cycle!.idleReason).toBe('completion_message');
       expect(cycle!.stepsCompleted).toEqual([]);
-      expect(cycle!.clearSkipped).toBe(false);
       expect(cycle!.tokenCountAtStart).toBe(50000);
       expect(cycle!.completionConfirmMsUsed).toBe(10000);
       // idleDetectionMs should be approximately 1500 (within margin)
@@ -77,23 +76,6 @@ describe('RespawnCycleMetricsTracker', () => {
     it('should be a no-op when no cycle is in progress', () => {
       // Should not throw
       tracker.recordStep('update');
-      expect(tracker.getCurrentCycle()).toBeNull();
-    });
-  });
-
-  describe('markClearSkipped', () => {
-    it('should set clearSkipped flag on current cycle', () => {
-      tracker.startCycle('session-1', 1, 'test', Date.now(), 0, 10000);
-
-      tracker.markClearSkipped();
-
-      const cycle = tracker.getCurrentCycle();
-      expect(cycle!.clearSkipped).toBe(true);
-    });
-
-    it('should be a no-op when no cycle is in progress', () => {
-      // Should not throw
-      tracker.markClearSkipped();
       expect(tracker.getCurrentCycle()).toBeNull();
     });
   });

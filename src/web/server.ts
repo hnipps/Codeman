@@ -99,6 +99,7 @@ import { OrchestratorLoop } from '../orchestrator-loop.js';
 import { getLifecycleLog } from '../session-lifecycle-log.js';
 import { PreviewSupervisor } from '../preview-supervisor.js';
 import { PREVIEW_RECONCILE_INTERVAL_MS } from '../config/preview-limits.js';
+import { requireLiveLease, releaseLiveLease } from '../deploy-lease.js';
 import { deployRole, planRoleChange, type DeployRole, type DeployRoleOutcome } from '../deploy-role.js';
 import { resolvePaneApiUrl } from './pane-api-url.js';
 import {
@@ -137,6 +138,7 @@ import { detectUsageLimitPause } from '../usage-limit-patterns.js';
 import { stopDeepSeekWeb } from '../deepseek-web-server.js';
 import {
   wireRespawnListeners,
+  stopRespawnForSession,
   setupTimedRespawn,
   restoreRespawnController,
   saveRespawnConfig,
@@ -921,6 +923,7 @@ export class WebServer extends EventEmitter {
       setupTimedRespawn: this.setupTimedRespawn.bind(this),
       restoreRespawnController: this.restoreRespawnController.bind(this),
       saveRespawnConfig: this.saveRespawnConfig.bind(this),
+      stopRespawnForSession: this.stopRespawnForSession.bind(this),
       // ConfigPort
       store: this.store,
       // A getter, not a snapshot: this context is built in setupRoutes(), BEFORE
@@ -1151,7 +1154,7 @@ export class WebServer extends EventEmitter {
         // `?v=`-busted, so it must revalidate. Under `immutable` a browser may keep last release's
         // copy for a year, and the page's `fetch(..., { cache: 'no-cache' })` is the only thing
         // asking it not to; the response header is what every browser honours.
-        if (filePath.endsWith('.json')) {
+        if (filePath.endsWith('.json') || filePath.endsWith('/mermaid-frame.html')) {
           reply.header('Cache-Control', 'no-cache');
           return;
         }
@@ -1571,11 +1574,12 @@ export class WebServer extends EventEmitter {
       // due to errors. Intentional stops via /respawn/stop call clearRespawnConfig().
       state.respawnEnabled = config.enabled;
     } else {
-      // Don't overwrite respawnConfig if it exists in state - preserve it for restart
+      // Preserve an ENABLED config across a session cleanup so a restart restores it. A stop
+      // (stopRespawnForSession) removes the config from state first, so it is never re-enabled here.
       const existingState = this.store.getSession(session.id);
-      if (existingState?.respawnConfig) {
+      if (existingState?.respawnConfig?.enabled) {
         state.respawnConfig = existingState.respawnConfig;
-        state.respawnEnabled = existingState.respawnConfig.enabled ?? false;
+        state.respawnEnabled = true;
       } else {
         state.respawnEnabled = false;
       }
@@ -1583,8 +1587,17 @@ export class WebServer extends EventEmitter {
     this.store.setSession(session.id, state);
   }
 
-  private saveRespawnConfig(sessionId: string, config: RespawnConfig, durationMinutes?: number): void {
-    saveRespawnConfig(sessionId, config, this.mux, durationMinutes);
+  private stopRespawnForSession(sessionId: string): void {
+    stopRespawnForSession(sessionId, this.buildRespawnWiringDeps());
+  }
+
+  private saveRespawnConfig(
+    sessionId: string,
+    config: RespawnConfig,
+    durationMinutes?: number,
+    opts?: { startedByLoop?: boolean }
+  ): void {
+    saveRespawnConfig(sessionId, config, this.mux, durationMinutes, opts);
   }
 
   // Clean up all resources associated with a session
@@ -2329,6 +2342,7 @@ export class WebServer extends EventEmitter {
       serverStartTime: this.serverStartTime,
       respawnRestoreGracePeriodMs: 2 * 60 * 1000,
       mux: this.mux,
+      store: this.store,
     };
   }
 
@@ -3219,6 +3233,7 @@ export class WebServer extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    if (deployRole.current === 'live') requireLiveLease();
     // Multi-user first boot: create the initial admin from CODEMAN_USERNAME/PASSWORD
     // if there are no users yet, else refuse to start (there would be no way in).
     if (isMultiUserMode() && !this.testMode) {
@@ -4285,9 +4300,15 @@ export class WebServer extends EventEmitter {
     if (change.kind === 'refused') return { kind: 'refused', reason: change.reason, role: previous };
     if (change.kind === 'transition') {
       console.log(`[Deploy] ${change.transition}: ${previous} -> ${target}`);
+      if (target === 'live') requireLiveLease();
       switch (change.transition) {
         case 'promote':
-          await this.promoteToLive();
+          try {
+            await this.promoteToLive();
+          } catch (err) {
+            if (deployRole.current !== 'live') releaseLiveLease();
+            throw err;
+          }
           break;
         case 'retire':
           await this.retireFromLive();
@@ -4343,6 +4364,7 @@ export class WebServer extends EventEmitter {
     await this.store.settle();
     const listWritten = this.writeSharedState();
     deployRole.enter('retired');
+    releaseLiveLease();
     await listWritten;
   }
 
@@ -4492,6 +4514,7 @@ export class WebServer extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    releaseLiveLease();
     getLifecycleLog().log({ event: 'server_stopped', sessionId: '*' });
     // Set stopping flag to prevent new timer creation during shutdown
     this.sse.setStopping();

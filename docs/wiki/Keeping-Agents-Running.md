@@ -53,7 +53,11 @@ Steps 2 and 3 are what make long runs possible: without a context reset, a multi
 session eventually spends its whole window on its own history.
 
 Configure it in **Session Options → Respawn**, then press **Enable**. It repeats until the
-duration you set runs out.
+duration you set runs out, 50 cycles complete, or 3 consecutive cycles leave the workspace unchanged,
+whichever comes first. Unchanged detection works with or without git. The configuration API
+and saved preset config accept `maxCycles` (default `50`) and `maxUnchangedCycles` (default `3`);
+`0` disables the corresponding limit. Changes outside the bounded non-git file sample are
+not detected; see [the cycle-budget details](https://github.com/hnipps/Codeman/blob/master/docs/respawn-state-machine.md#cycle-budget).
 
 | Setting                | What it controls                                                        |
 | ---------------------- | ----------------------------------------------------------------------- |
@@ -80,13 +84,14 @@ time, and a three second timeout would interrupt it constantly.
 | **Overnight**  | 10s          | 480 min  | Unattended overnight runs with a full reset between cycles.      |
 
 Start from the preset that matches your shape of work and adjust the idle timeout first.
-Presets you build yourself can be saved alongside these.
+Presets you build yourself can be saved alongside these. Every built-in uses the same
+backstops: 50 total cycles and 3 unchanged cycles.
 
 ### What it costs
 
 Every cycle is real tokens: the update prompt, the reset, and the kickstart, plus whatever
 work follows. An overnight run is a deliberate spend, not a background nicety. The duration
-setting is the ceiling, and it is worth setting honestly.
+setting and cycle budgets are ceilings, and it is worth setting them honestly.
 
 ## Auto-resume when a usage limit resets
 

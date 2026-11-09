@@ -23851,3 +23851,29 @@ body.keyboard-visible .terminal-container .xterm-screen {
   background: var(--control-bg-hover);
   border-color: var(--red);
 }
+
+/* Mermaid output stays an inert image; source and its copy action remain available. */
+.rv-mermaid-preview {
+  overflow: auto;
+  background: #fff;
+  border-radius: 4px;
+}
+.rv-mermaid-preview:empty { display: none; }
+.rv-mermaid-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.rv-mermaid-wrap > details > summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.rv-mermaid-wrap > details { position: relative; }
+.rv-mermaid-wrap > details > .rv-code-actions { top: 4px; right: 4px; }
+.rv-mermaid-status {
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}

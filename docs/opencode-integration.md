@@ -19,11 +19,11 @@
 6. [Phase 1: Type System & Backend Abstraction](#6-phase-1-type-system--backend-abstraction)
 7. [Phase 2: OpenCode CLI Resolution](#7-phase-2-opencode-cli-resolution)
 8. [Phase 3: Tmux Spawn Integration](#8-phase-3-tmux-spawn-integration)
-9. [Phase 4: Output Parsing & Idle Detection](#9-phase-4-output-parsing--idle-detection)
+9. [Phase 4: Output Parsing & Idle Detection](#9-phase-4-output-parsing--idle-detection-deferred--not-in-mvp)
 10. [Phase 5: API Routes & Frontend UI](#10-phase-5-api-routes--frontend-ui)
-11. [Phase 6: Hooks & Plugin Bridge](#11-phase-6-hooks--plugin-bridge) *(was Phase 7 — reordered, see review)*
-12. [Phase 7: Respawn & Ralph Loop Adaptation](#12-phase-7-respawn--ralph-loop-adaptation) *(was Phase 6 — reordered, see review)*
-13. [Phase 8: OpenCode Server API Integration (Advanced)](#13-phase-8-opencode-server-api-integration-advanced)
+11. [Phase 6: Hooks & Plugin Bridge](#11-phase-6-hooks--plugin-bridge-deferred--not-in-mvp) *(was Phase 7 — reordered, see review)*
+12. [Phase 7: Respawn & Ralph Loop Adaptation](#12-phase-7-respawn--ralph-loop-adaptation-deferred--not-in-mvp) *(was Phase 6 — reordered, see review)*
+13. [Phase 8: OpenCode Server API Integration (Advanced)](#13-phase-8-opencode-server-api-integration-advanced-deferred--not-in-mvp)
 14. [Files to Modify](#14-files-to-modify)
 15. [Files to Create](#15-files-to-create)
 16. [Existing plan.json Task Breakdown](#16-existing-planjson-task-breakdown)

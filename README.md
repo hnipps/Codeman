@@ -1008,6 +1008,71 @@ codeman agent preview add web --cmd "python3 -m http.server {port} --bind 127.0.
 
 Rules the commands enforce rather than document: they refuse outside a Codeman session and never guess a URL; `send` transmits printable text plus Enter only (a control byte such as `Ctrl+C` is `app_exit` in opencode — ESC exists solely as `interrupt`, which never appends Enter); `rm` refuses an empty id, an unprovable self id and a prefix match in either direction. Ids may be the 8-character prefixes `ls` prints (resolved through the list; an ambiguous prefix refuses, anything shorter than 8 characters refuses on every verb). A prompt that starts with `-` goes after `--` (`send "$SID" -- "- fix the bug"`). The echo of the prompt you sent is output too: a `--match` marker that appears verbatim in the prompt matches at once, before the worker has done anything, so the prompt asks for it in halves. A remote session whose host is asleep answers a fire-and-forget `send` with `buffered` (Codeman wakes the host and types the prompt once the pane is back) or `dropped` (over the wake buffer's cap, nothing will be typed: exit `1`). Exit codes: `0` delivered/matched/signal, `1` error, `2` timeout, `3` the worker exited or the wait ended without an answer (`delivered:false`, `ended:true`), `4` refused. `spawn` prints the id alone on stdout (prose goes to stderr), so `SID=$(…)` captures exactly the id. `spawn` with no case, or with `--working-dir`, starts the worker in that existing directory through `POST /api/v1/sessions` plus `POST /api/v1/sessions/:id/interactive` (or `/shell`) instead of quick-start, so no case is created and the directory is never labelled agent scratch; an empty `--working-dir` refuses (exit `4`) rather than falling back to cwd, and so does a cwd that is your home directory (Codeman's hooks would land in `~/.claude`), which needs an explicit `--working-dir ~`; if the start fails it still prints the created id and exits `1`. `--json` prints the envelope's `data` for every verb, except a directory `spawn`, which prints `{ sessionId, workingDir, created: true }`, plus `ready` when a readiness wait ran, `readinessError` when that call failed, and `startupError` when the start failed. `--until stop` on a mode without hook signals is the server's 400, passed through — the marker path (`--match`) is the answer there, exactly as for the skill.
 
+### Render Mermaid diagrams
+
+Chat, the Response Viewer, and Markdown file previews render fenced `mermaid`
+blocks as diagrams. Expand **Mermaid source** to inspect or copy the source.
+Invalid diagrams keep their source visible with an error.
+
+Every agent CLI can render a diagram locally without a running Codeman server.
+Inspect the PNG before sharing the diagram.
+
+```bash
+codeman mermaid render diagram.mmd -o diagram.png
+codeman mermaid render diagram.mmd -o diagram.svg
+printf 'flowchart LR\n A --> B\n' | codeman mermaid render - -o diagram.png
+```
+
+The command prints the output path on success and exits nonzero on failure.
+It never overwrites an existing file. The UI and command use the same bundled Mermaid
+engine, with no network access during rendering. Source is limited to 50,000
+characters and graphs to 500 edges. Configuration directives and frontmatter
+are refused.
+
+The command uses Puppeteer's smaller Chromium headless shell, downloaded during
+installation. If browser downloads were disabled, run
+`npx puppeteer browsers install chrome-headless-shell`.
+Linux still needs native shared libraries, but they do not have to be installed
+system-wide. `PUPPETEER_EXECUTABLE_PATH` can select an existing compatible browser.
+The OS sandbox stays enabled unless you explicitly disable it.
+Remote and Docker agents need Codeman and Chromium installed where they run.
+
+For emergency recovery on **Ubuntu 24.04 x64**, Git and built packages include the
+12 missing native libraries, their checksums, license notices, and matching LGPL
+source archives. No system package installation is needed for this bundle.
+Restore from a checkout with:
+
+```bash
+npm ci
+npm run build
+node dist/index.js mermaid setup --no-sandbox
+```
+
+Use `--no-sandbox` only on a VM where you accept that policy; omit it to keep
+Chromium's OS sandbox enabled. An installed package uses
+`codeman mermaid setup` instead. Setup verifies every bundled file, installs the
+libraries in the instance data directory, and refuses conflicting files or
+configuration. Identical repeats are safe. Each instance gets the feature and
+bundle; run setup once for each instance's data directory. npm and pinned
+Chromium downloads are still needed. This is not a backup of session data or
+a fully offline VM restore. See [native runtime provenance](src/mermaid-runtime/README.md).
+
+For a private library directory or an approved sandbox opt-out, create
+`mermaid-runtime.json` in this instance's data directory:
+
+```json
+{
+  "noSandbox": true,
+  "libraryPath": "/absolute/path/to/private/lib"
+}
+```
+
+Both fields are optional. `libraryPath` is Linux-only and affects the browser
+child, not the agent's environment. Keep private libraries updated with the
+browser and OS. Set `noSandbox` only when you accept that trust boundary.
+`--sandbox` and `--no-sandbox` override the saved choice for one command.
+This configuration never changes the UI iframe sandbox.
+
 ### `codeman history read`: saved Codex conversations, offline
 
 `codeman history read` reads Codex's own saved rollouts (`$CODEX_HOME/sessions`, else `~/.codex/sessions`) straight from disk: no server, no managed session, nothing written. Unlike `codeman agent` it works anywhere, including on a machine where Codeman is not running.
