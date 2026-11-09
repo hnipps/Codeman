@@ -2,6 +2,26 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Recover the native renderer from Git
+
+**Type:** intent-refinement
+**Touches:** `src/mermaid-runtime/`, `src/mermaid-runtime-setup.ts`, `scripts/vendor-mermaid-runtime.mjs`
+**Why:** A working machine-local runtime is not enough to recover the instance after losing its disk.
+**Links:** [Mermaid intent](../intent/2026-11-09-mermaid-renderer.md)
+
+The owner chose to preserve the small native library closure in Git while
+allowing normal pinned npm and Chromium downloads during recovery. The bundle
+keeps official Ubuntu package provenance, per-file checksums, license notices,
+and matching upstream/distribution source archives for its LGPL libraries.
+It is versioned outside public assets and copied into the published package.
+
+`mermaid setup` restores only the tested Ubuntu 24.04 x64 target, verifies all
+assets first, and copies libraries to stable instance storage. Repeats verify
+instead of overwrite; conflicting configuration and symlinks are refused.
+Sandbox policy is still an explicit instance choice, never inherited blindly
+from this VM. The library bytes and restoration mechanism now travel with the
+feature; a fully offline backup and session-state backup remain out of scope.
+
 ## 2026-11-09 - Provision the Mermaid runtime without system changes
 
 **Type:** intent-refinement

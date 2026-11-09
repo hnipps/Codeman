@@ -15,7 +15,7 @@
 
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
-import { appendFileSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { appendFileSync, cpSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { join, extname, basename, dirname } from 'path';
@@ -67,6 +67,7 @@ run('gesture assets', 'node scripts/fetch-gesture-assets.mjs');
 run('gesture bundle', 'node scripts/build-gesture-bundle.mjs');
 run('copy web assets', 'cp -r src/web/public dist/web/');
 run('copy template', 'cp src/templates/case-template.md dist/templates/');
+cpSync(join(ROOT, 'src/mermaid-runtime'), join(ROOT, 'dist/mermaid-runtime'), { recursive: true });
 
 // 3. Vendor xterm bundles (xterm.js 6.x — @xterm scoped packages)
 run('xterm css', 'cp node_modules/@xterm/xterm/css/xterm.css dist/web/public/vendor/');

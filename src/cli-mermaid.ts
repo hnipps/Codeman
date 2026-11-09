@@ -4,12 +4,24 @@
 import type { Command } from 'commander';
 import { createReadStream } from 'node:fs';
 import { readMermaidSource, renderMermaid } from './mermaid-renderer.js';
+import { setupMermaidRuntime } from './mermaid-runtime-setup.js';
 import { getErrorMessage } from './types.js';
 
 export function registerMermaidCommands(program: Command): void {
-  program
-    .command('mermaid')
-    .description('Render Mermaid diagrams locally for inspection')
+  const mermaid = program.command('mermaid').description('Render Mermaid diagrams locally for inspection');
+  mermaid
+    .command('setup')
+    .description('Restore the bundled Ubuntu 24.04 x64 native libraries for this instance')
+    .option('--no-sandbox', 'Explicitly save a Chromium OS sandbox opt-out for this instance')
+    .action(async (options: { sandbox: boolean }) => {
+      try {
+        console.log(await setupMermaidRuntime(options.sandbox === false));
+      } catch (error) {
+        console.error(`Mermaid setup failed: ${getErrorMessage(error)}`);
+        process.exitCode = 1;
+      }
+    });
+  mermaid
     .command('render <input>')
     .description('Render a .mmd file, or - for stdin, to PNG or SVG without a server')
     .requiredOption('-o, --output <path>', 'New .png or .svg output file (never overwrites)')

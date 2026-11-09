@@ -26,6 +26,9 @@ It requires Chromium headless shell and its Linux libraries. The Chromium sandbo
 is on by default. The instance's optional `mermaid-runtime.json` can supply private
 Linux libraries and an approved sandbox opt-out. `--sandbox` and `--no-sandbox`
 override that choice for one command.
+On Ubuntu 24.04 x64, `codeman mermaid setup` restores the versioned native
+bundle for this instance without system packages. Only add `--no-sandbox` with
+the owner's approval for that host. Setup refuses conflicting configuration.
 Existing output files are never overwritten.
 
 For **saved Codex conversation history**, use `codeman history read` and

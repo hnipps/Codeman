@@ -589,6 +589,16 @@ browser child's `LD_LIBRARY_PATH`, never changing the parent environment.
 Invalid configuration fails closed. Nothing retries with a weaker sandbox.
 Remote and Docker agents need their own local installation.
 
+The versioned `src/mermaid-runtime/` bundle is copied outside public web assets
+into `dist/mermaid-runtime/`, including notices and the matching LGPL source.
+`codeman mermaid setup` supports only its tested Ubuntu 24.04 x64 platform,
+verifies all file hashes before touching runtime configuration, and installs
+native libraries into stable instance storage through `dataPath()`, never a
+prunable release directory. Existing mismatched files, symlinks and configuration
+are refused, not overwritten. Identical repeats are idempotent.
+Setup saves a sandbox opt-out only with an explicit `--no-sandbox`.
+Chromium and npm dependencies still require their normal pinned downloads.
+
 Tests: `test/mermaid-renderer.test.ts`, `test/mermaid-renderer.browser.test.ts`,
 and `test/static-cache-headers.test.ts`.
 

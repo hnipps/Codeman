@@ -1037,6 +1037,26 @@ system-wide. `PUPPETEER_EXECUTABLE_PATH` can select an existing compatible brows
 The OS sandbox stays enabled unless you explicitly disable it.
 Remote and Docker agents need Codeman and Chromium installed where they run.
 
+For emergency recovery on **Ubuntu 24.04 x64**, Git and built packages include the
+12 missing native libraries, their checksums, license notices, and matching LGPL
+source archives. No system package installation is needed for this bundle.
+Restore from a checkout with:
+
+```bash
+npm ci
+npm run build
+node dist/index.js mermaid setup --no-sandbox
+```
+
+Use `--no-sandbox` only on a VM where you accept that policy; omit it to keep
+Chromium's OS sandbox enabled. An installed package uses
+`codeman mermaid setup` instead. Setup verifies every bundled file, installs the
+libraries in the instance data directory, and refuses conflicting files or
+configuration. Identical repeats are safe. Each instance gets the feature and
+bundle; run setup once for each instance's data directory. npm and pinned
+Chromium downloads are still needed. This is not a backup of session data or
+a fully offline VM restore. See [native runtime provenance](src/mermaid-runtime/README.md).
+
 For a private library directory or an approved sandbox opt-out, create
 `mermaid-runtime.json` in this instance's data directory:
 
