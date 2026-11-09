@@ -257,12 +257,12 @@ Open the printed URL. The page is a single dashboard; everything below happens t
 
 Click **+ New Session** (or **Quick Start**). A session is one AI CLI running in its own tmux-backed terminal. You choose:
 
-| Field                        | What it does                                                                                                                                                                                                           |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Field                        | What it does                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Working directory / case** | The folder the agent operates in. A "case" is just a named working dir Codeman remembers. **Add Case** creates one from scratch, links an existing folder, or clones a GitHub repo straight into one (**Clone Repo**). |
-| **CLI / run mode**           | `Claude` (default), `OpenCode`, `Codex`, `Antigravity`, `Gemini`, `Pi`, `Grok`, `DeepSeek`, `OMP`, `Copilot`, or `Terminal` (plain shell).                                                                             |
-| **Model**                    | Per-session model (App Settings → Models → New Claude sessions). A soft default — `/model` still works in-session.                                                                                                     |
-| **Effort / Ultracode**       | Reasoning effort (`low`–`max`) or `ultracode` for dynamic multi-agent workflows. Switchable anytime with `/effort`.                                                                                                    |
+| **CLI / run mode**           | `Claude` (default), `OpenCode`, `Codex`, `Antigravity`, `Gemini`, `Pi`, `Grok`, `DeepSeek`, `OMP`, `Copilot`, or `Terminal` (plain shell). |
+| **Model**                    | Per-session model (App Settings → Models → New Claude sessions). A soft default — `/model` still works in-session.                  |
+| **Effort / Ultracode**       | Reasoning effort (`low`–`max`) or `ultracode` for dynamic multi-agent workflows. Switchable anytime with `/effort`. |
 
 Hit start — Codeman spawns the CLI via a real PTY and streams it to your browser over SSE.
 
@@ -283,12 +283,12 @@ Hit start — Codeman spawns the CLI via a real PTY and streams it to your brows
 
 ### 5. Make it autonomous
 
-| Mode             | Use it for                                                                                                                        | Where                                                                  |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **Respawn**      | Long unattended runs — auto-restarts the CLI on idle/limit, with adaptive timing. Presets: `solo-work`, `overnight-autonomous`, … | Respawn tab                                                            |
-| **Orchestrator** | Turn one goal into a phased plan and drive it to completion across agents.                                                        | Orchestrator panel                                                     |
+| Mode             | Use it for                                                                                                                        | Where                                                               |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| **Respawn**      | Long unattended runs — auto-restarts the CLI on idle/limit, with adaptive timing. Presets: `solo-work`, `overnight-autonomous`, … | Respawn tab                                                         |
+| **Orchestrator** | Turn one goal into a phased plan and drive it to completion across agents.                                                        | Orchestrator panel                                                  |
 | **Cron**         | Saved, named jobs on a schedule (`once`/`interval`/`daily`/`weekly`) that spawn a session and send a prompt when due.             | ⏰ Cron button _(opt-in: App Settings → Header & Panels → Scheduling)_ |
-| **Auto-resume**  | Automatically continue after a subscription rate-limit resets.                                                                    | Respawn tab (top)                                                      |
+| **Auto-resume**  | Automatically continue after a subscription rate-limit resets.                                                                    | Respawn tab (top)                                                   |
 
 ### 6. Reach it from anywhere
 
@@ -652,7 +652,7 @@ When someone authenticates via QR, the desktop shows a notification toast with t
 | **Brute force**          | 56.8 billion combinations, ~2 valid at any time, dual-layer rate limiting blocks well before statistical feasibility.                      |
 | **QRLjacking**           | 60s rotation forces real-time relay. Desktop toast provides instant detection. Self-hosted single-user context makes phishing implausible. |
 | **Timing attack**        | Hash-based Map lookup — no string comparison timing leak.                                                                                  |
-| **Session cookie theft** | HttpOnly + Secure + SameSite=lax + 30-day sliding TTL. Stored hashed on disk. Manual revocation at `POST /api/auth/revoke`.                |
+| **Session cookie theft** | HttpOnly + Secure + SameSite=lax + 30-day sliding TTL. Stored hashed on disk. Manual revocation at `POST /api/auth/revoke`.                  |
 
 #### How It Compares
 
@@ -722,33 +722,33 @@ The web UI remains the primary surface; see **[docs/tui.md](docs/tui.md)** for t
 
 > Ctrl bindings also accept Cmd on macOS.
 
-| Shortcut                        | Action                                                                                                                                                        |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shortcut                        | Action                                                        |
+| ------------------------------- | ------------------------------------------------------------- |
 | `Ctrl+W`                        | Not a Codeman shortcut: it reaches the terminal (delete the previous word). **Close Session** has no default key and can be bound in App Settings → Shortcuts |
-| `Ctrl/Cmd/Option+K`             | Find open session or start a new one                                                                                                                          |
-| `Ctrl/Cmd+Tab`                  | Next session                                                                                                                                                  |
-| `Alt/Option+[` / `Alt/Option+]` | Previous / next session                                                                                                                                       |
-| `Alt/Option+1`-`Alt/Option+9`   | Switch to tab N (physical keys, so macOS Option layouts work)                                                                                                 |
-| `Alt/Option+B`                  | Collapse / expand the session sidebar (sidebar layout only)                                                                                                   |
-| `Ctrl+Shift+{` / `Ctrl+Shift+}` | Move active tab left / right                                                                                                                                  |
-| `Ctrl/Cmd+C`                    | Copy selection, or interrupt when nothing is selected                                                                                                         |
-| `Ctrl+Shift+C`                  | Copy selection (never interrupts)                                                                                                                             |
-| `Ctrl/Cmd+V`                    | Paste, or upload a clipboard image and paste its path                                                                                                         |
-| `Ctrl/Cmd+L`                    | Clear terminal                                                                                                                                                |
-| `Ctrl+Shift+R`                  | Restore terminal size                                                                                                                                         |
-| `Ctrl+Shift+V`                  | Toggle voice input                                                                                                                                            |
-| `Ctrl+Shift+G`                  | Open or close the tile grid                                                                                                                                   |
-| `Alt+Shift+Arrows`              | Focus the tile to the left, right, above or below                                                                                                             |
-| `Ctrl+Shift+Arrows`             | Move the focused tile one place (into an empty cell, or swap)                                                                                                 |
-| `Alt+Shift+Enter`               | Zoom the focused tile, or restore the grid                                                                                                                    |
-| `Ctrl/Cmd +` / `-`              | Font size                                                                                                                                                     |
-| `Ctrl/Cmd+?`                    | Keyboard help                                                                                                                                                 |
-| `Shift+Enter`                   | Insert newline (sent to terminal)                                                                                                                             |
-| `Shift+drag`                    | Select text in a pane whose mouse events go to the CLI                                                                                                        |
-| Right-click                     | Copy the selection (the native menu stays when nothing is selected)                                                                                           |
-| `Shift+Wheel`                   | Scroll the local scrollback while the wheel is forwarded to the CLI                                                                                           |
-| `Ctrl+Z`                        | Swallowed in agent sessions so a running CLI cannot be suspended; normal job control in a shell                                                               |
-| `Escape`                        | Close panels & modals                                                                                                                                         |
+| `Ctrl/Cmd/Option+K`             | Find open session or start a new one                          |
+| `Ctrl/Cmd+Tab`                  | Next session                                                  |
+| `Alt/Option+[` / `Alt/Option+]` | Previous / next session                                       |
+| `Alt/Option+1`-`Alt/Option+9`   | Switch to tab N (physical keys, so macOS Option layouts work) |
+| `Alt/Option+B`                  | Collapse / expand the session sidebar (sidebar layout only)   |
+| `Ctrl+Shift+{` / `Ctrl+Shift+}` | Move active tab left / right                                  |
+| `Ctrl/Cmd+C`                    | Copy selection, or interrupt when nothing is selected         |
+| `Ctrl+Shift+C`                  | Copy selection (never interrupts)                             |
+| `Ctrl/Cmd+V`                    | Paste, or upload a clipboard image and paste its path          |
+| `Ctrl/Cmd+L`                    | Clear terminal                                                |
+| `Ctrl+Shift+R`                  | Restore terminal size                                         |
+| `Ctrl+Shift+V`                  | Toggle voice input                                            |
+| `Ctrl+Shift+G`                  | Open or close the tile grid                                   |
+| `Alt+Shift+Arrows`              | Focus the tile to the left, right, above or below             |
+| `Ctrl+Shift+Arrows`             | Move the focused tile one place (into an empty cell, or swap) |
+| `Alt+Shift+Enter`               | Zoom the focused tile, or restore the grid                    |
+| `Ctrl/Cmd +` / `-`              | Font size                                                     |
+| `Ctrl/Cmd+?`                    | Keyboard help                                                 |
+| `Shift+Enter`                   | Insert newline (sent to terminal)                             |
+| `Shift+drag`                    | Select text in a pane whose mouse events go to the CLI        |
+| Right-click                     | Copy the selection (the native menu stays when nothing is selected) |
+| `Shift+Wheel`                   | Scroll the local scrollback while the wheel is forwarded to the CLI |
+| `Ctrl+Z`                        | Swallowed in agent sessions so a running CLI cannot be suspended; normal job control in a shell |
+| `Escape`                        | Close panels & modals                                         |
 
 ---
 
@@ -766,13 +766,13 @@ Everything in this section also ships as an **agent skill**, [`skills/codeman`](
 
 #### Step 1: install it
 
-| How                | Command                                                                        | Scope                                                                                                                                                                                                                                                                                                    |
-| ------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Skills CLI         | `npx skills add Ark0N/Codeman --skill codeman -g`                              | Global, for any skills-aware agent ([skills.sh](https://skills.sh)); the way to give it to pi                                                                                                                                                                                                            |
-| Claude Code plugin | `/plugin marketplace add Ark0N/Codeman` then `/plugin install codeman@codeman` | Global, through Claude Code's plugin manager; `/plugin update codeman` follows releases. Pick this OR a `codeman skill install`, not both: a Claude Code with both lists the skill twice (`codeman` and `codeman:codeman`)                                                                               |
-| Bundled CLI        | `codeman skill install`                                                        | Global (`~/.claude/skills/codeman`), for npm installs that never cloned the repo                                                                                                                                                                                                                         |
-| Bundled CLI        | `codeman skill install --case <name> [--mode <mode>]`                          | One case only; `--mode codex` (or any other run mode) writes it where that CLI looks for skills                                                                                                                                                                                                          |
-| Web UI             | App Settings → Agents & CLIs → All agent CLIs → **Codeman Agent Skill**        | Auto-injects into each case on session create, where that session's CLI looks: `.claude/skills/` for Claude Code, `.agents/skills/` for Codex, Gemini CLI, OpenCode, Antigravity, Grok, DeepSeek and OMP; not pi, whose project skills trigger a trust prompt (`agentSkillEnabled`, SYNCED, default off) |
+| How            | Command                                                    | Scope                                                                                      |
+| -------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Skills CLI     | `npx skills add Ark0N/Codeman --skill codeman -g`          | Global, for any skills-aware agent ([skills.sh](https://skills.sh)); the way to give it to pi |
+| Claude Code plugin | `/plugin marketplace add Ark0N/Codeman` then `/plugin install codeman@codeman` | Global, through Claude Code's plugin manager; `/plugin update codeman` follows releases. Pick this OR a `codeman skill install`, not both: a Claude Code with both lists the skill twice (`codeman` and `codeman:codeman`) |
+| Bundled CLI    | `codeman skill install`                                    | Global (`~/.claude/skills/codeman`), for npm installs that never cloned the repo            |
+| Bundled CLI    | `codeman skill install --case <name> [--mode <mode>]`      | One case only; `--mode codex` (or any other run mode) writes it where that CLI looks for skills |
+| Web UI         | App Settings → Agents & CLIs → All agent CLIs → **Codeman Agent Skill** | Auto-injects into each case on session create, where that session's CLI looks: `.claude/skills/` for Claude Code, `.agents/skills/` for Codex, Gemini CLI, OpenCode, Antigravity, Grok, DeepSeek and OMP; not pi, whose project skills trigger a trust prompt (`agentSkillEnabled`, SYNCED, default off) |
 
 `codeman skill uninstall [--case <name>]` reverses the CLI installs (with `--case`, every Codeman-managed copy in that case, whichever CLI's directory it sits in), and never touches a `skills/codeman` you wrote yourself.
 
@@ -780,13 +780,13 @@ Everything in this section also ships as an **agent skill**, [`skills/codeman`](
 
 That is the entire interface. No curl, no endpoint names, no session ids. These prompts work as written:
 
-| You say                                                                                     | The skill does                                                                                                                  |
-| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| _"What sessions are running right now?"_                                                    | Lists them with name, mode and status. Read-only, safe to ask anytime.                                                          |
-| _"Start a shell worker on the `myapp` case, run the test suite, tell me if it passes."_     | Spawns, waits on a split completion marker, reads back the exit code, cleans up.                                                |
-| _"Spin up 3 workers for lint, typecheck and tests. Run them in parallel, report failures."_ | The fan-out flow: one session per task, all started first, then gathered as each finishes.                                      |
-| _"Have a claude worker on `refactor-auth` summarize `src/session.ts`, then close it."_      | Spawns, runs the readiness ladder (first-run trust dialog included), send-and-wait, reads the clean transcript answer, deletes. |
-| _"Watch session w4 and tell me if it gets stuck on a permission prompt."_                   | Blocks on the `blocked` signal and surfaces the question to **you**. It never answers another session's prompt itself.          |
+| You say                                                                                    | The skill does                                                                                           |
+| ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| _"What sessions are running right now?"_                                                   | Lists them with name, mode and status. Read-only, safe to ask anytime.                                    |
+| _"Start a shell worker on the `myapp` case, run the test suite, tell me if it passes."_    | Spawns, waits on a split completion marker, reads back the exit code, cleans up.                          |
+| _"Spin up 3 workers for lint, typecheck and tests. Run them in parallel, report failures."_ | The fan-out flow: one session per task, all started first, then gathered as each finishes.                |
+| _"Have a claude worker on `refactor-auth` summarize `src/session.ts`, then close it."_     | Spawns, runs the readiness ladder (first-run trust dialog included), send-and-wait, reads the clean transcript answer, deletes. |
+| _"Watch session w4 and tell me if it gets stuck on a permission prompt."_                  | Blocks on the `blocked` signal and surfaces the question to **you**. It never answers another session's prompt itself. |
 
 One short line is enough. Here a Claude Code lead gets `use codeman to start 5 claude workers, one per TODO item`, and five real Claude Code workers power on, shown side by side in the tile grid:
 
@@ -818,19 +818,19 @@ syntax       DONE_syntax_18501    rc=0
 deleted 9f2d8e5f, aff9c691, be9f1f15    tabs disappear
 ```
 
-Those `DONE_<task>_<random>` strings are the skill's **split marker** trick, and they are why the fan-out is reliable on hook-less `shell` sessions: the typed line contains `${M}_17909`, so only the command's real _output_ ever contains `DONE_17909`. An unsplit marker would match the echo of your own keystrokes before the command had even run.
+Those `DONE_<task>_<random>` strings are the skill's **split marker** trick, and they are why the fan-out is reliable on hook-less `shell` sessions: the typed line contains `${M}_17909`, so only the command's real *output* ever contains `DONE_17909`. An unsplit marker would match the echo of your own keystrokes before the command had even run.
 
 #### What's in the box
 
-| File                                                                                        | Contents                                                                                                                               |
-| ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| [`SKILL.md`](skills/codeman/SKILL.md)                                                       | Safety rules, the ready-made fast path (spawn N workers, task them, collect), and the verb index. Always loaded.                       |
-| [`reference/verbs.md`](skills/codeman/reference/verbs.md)                                   | The 14 verbs in detail: readiness, send-and-wait, markers, interrupts, cleanup. On demand.                                             |
-| [`reference/recipes.md`](skills/codeman/reference/recipes.md)                               | 8 worked flows: claude, DeepSeek Harness and shell workers, fan-out, blocked-worker watch, messaging fan-out. On demand.               |
-| [`reference/endpoints.md`](skills/codeman/reference/endpoints.md)                           | Full endpoint tables, error codes, per-mode signal table, capacity limits. On demand.                                                  |
-| [`reference/messaging.md`](skills/codeman/reference/messaging.md)                           | Talking to claude workers directly via Claude Code cross-session messaging. On demand.                                                 |
-| [`reference/history.md`](skills/codeman/reference/history.md)                               | Reading saved Codex conversations offline with `codeman history read`: selectors, filters, forks, budgets. On demand.                  |
-| [`reference/extensions.md`](skills/codeman/reference/extensions.md)                         | Importing and removing plugins and skills for every agent CLI with `codeman extension`. On demand.                                     |
+| File                                                                | Contents                                                                                    |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [`SKILL.md`](skills/codeman/SKILL.md)                               | Safety rules, the ready-made fast path (spawn N workers, task them, collect), and the verb index. Always loaded. |
+| [`reference/verbs.md`](skills/codeman/reference/verbs.md)           | The 14 verbs in detail: readiness, send-and-wait, markers, interrupts, cleanup. On demand.   |
+| [`reference/recipes.md`](skills/codeman/reference/recipes.md)       | 8 worked flows: claude, DeepSeek Harness and shell workers, fan-out, blocked-worker watch, messaging fan-out. On demand. |
+| [`reference/endpoints.md`](skills/codeman/reference/endpoints.md)   | Full endpoint tables, error codes, per-mode signal table, capacity limits. On demand.        |
+| [`reference/messaging.md`](skills/codeman/reference/messaging.md)   | Talking to claude workers directly via Claude Code cross-session messaging. On demand.       |
+| [`reference/history.md`](skills/codeman/reference/history.md)       | Reading saved Codex conversations offline with `codeman history read`: selectors, filters, forks, budgets. On demand. |
+| [`reference/extensions.md`](skills/codeman/reference/extensions.md) | Importing and removing plugins and skills for every agent CLI with `codeman extension`. On demand. |
 | [`reference/inspection-and-staging.md`](skills/codeman/reference/inspection-and-staging.md) | Experimental and opt-in: bounded pane inspection and guarded submission with `codeman agent inspect`, `stage` and `submit`. On demand. |
 
 Every recipe in there was verified against a live server, and the comments record the failure modes that were measured rather than guessed.
@@ -866,7 +866,7 @@ When a CLI runs in a Codeman-managed session, these environment variables are se
 5. **`/api/v1/*`** is a stable alias of `/api/*`.
 6. **Wait instead of polling, and don't treat a timeout as an error.** The wait endpoints answer with HTTP `200` and `wait.timedOut: true` when nothing happened in time, so loop over short waits (60s is the default) rather than issuing one long call, because tunnels cut idle connections. `wait.timeoutMs` tells you the timeout the server actually applied after clamping (600s ceiling).
 7. **Only `claude` and `deepseek` sessions emit `stop`; `codex` emits `blocked` too.** Those come from hooks (Claude Code's own, and the DeepSeek Harness status bridge), except codex's `blocked`, which Codeman reads off its screen while an approval, question or trust dialog is up (answer it in the terminal). `shell` and the other external CLIs (opencode/gemini/antigravity/pi/grok/omp) accept only `idle`, `working` and `exit`, and codex adds `blocked`. Asking for `stop` explicitly on those is a `400`; omitting `until` is always safe. ⚠️ On a `shell` session `idle` fires **once**, at startup, and never again, so send-and-wait there can only time out; synchronize hook-less sessions with a `wait-output` marker.
-8. **Nothing reports "ready", so wait for it explicitly.** A new session answers `{"signal":"exit","immediate":true}` (that means _not started_, not _crashed_) until its PID exists, and a `claude` worker in a fresh case then sits on the CLI's trust dialog. Prompt it there and the wait resolves on `idle` in ~2s looking exactly like a finished turn, while the text sits stuck in the dialog. Recipe 2b below is the sequence that avoids it.
+8. **Nothing reports "ready", so wait for it explicitly.** A new session answers `{"signal":"exit","immediate":true}` (that means *not started*, not *crashed*) until its PID exists, and a `claude` worker in a fresh case then sits on the CLI's trust dialog. Prompt it there and the wait resolves on `idle` in ~2s looking exactly like a finished turn, while the text sits stuck in the dialog. Recipe 2b below is the sequence that avoids it.
 
 ### Recipes
 
@@ -984,7 +984,7 @@ codeman tui 3                            #      attach to session 3 of that list
 
 ### `codeman agent` — session-to-session verbs in every CLI mode
 
-The skill above drives the API with `curl` and `jq` from a preamble Codeman seeds per session. Where it does not reach (a `pi` or `shell` session, a machine without `jq`), the same environment is still there (`CODEMAN_MUX=1`, `CODEMAN_SESSION_ID`, `CODEMAN_API_URL` are exported into every pane), so `codeman agent` packages the same verbs as commands. It is a thin client over the endpoints listed under [API](#api): auth and ownership apply to every endpoint, including bounded inspection and guarded input. The `inspect`, `stage` and `submit` commands and their HTTP routes are **experimental** and **opt-in**: turn on **Experimental agent coordination** in App Settings (`agentCoordinationEnabled`, synced, off by default; until then the routes answer `403 FORBIDDEN` naming it). Their commands, flags, paths, payloads and behavior may change or be removed in minor or patch releases, so pin a compatible version when automating them; see [Experimental agent coordination](docs/versioning-policy.md#experimental-agent-coordination). One line in a case's `AGENTS.md` is enough: _"other sessions: `codeman agent --help`"_.
+The skill above drives the API with `curl` and `jq` from a preamble Codeman seeds per session. Where it does not reach (a `pi` or `shell` session, a machine without `jq`), the same environment is still there (`CODEMAN_MUX=1`, `CODEMAN_SESSION_ID`, `CODEMAN_API_URL` are exported into every pane), so `codeman agent` packages the same verbs as commands. It is a thin client over the endpoints listed under [API](#api): auth and ownership apply to every endpoint, including bounded inspection and guarded input. The `inspect`, `stage` and `submit` commands and their HTTP routes are **experimental** and **opt-in**: turn on **Experimental agent coordination** in App Settings (`agentCoordinationEnabled`, synced, off by default; until then the routes answer `403 FORBIDDEN` naming it). Their commands, flags, paths, payloads and behavior may change or be removed in minor or patch releases, so pin a compatible version when automating them; see [Experimental agent coordination](docs/versioning-policy.md#experimental-agent-coordination). One line in a case's `AGENTS.md` is enough: *"other sessions: `codeman agent --help`"*.
 
 ```bash
 codeman agent ls                                          # sessions; * marks this one
@@ -1094,18 +1094,18 @@ tool_timeout_sec = 120
 
 The JSON form is what Claude Desktop, Cursor and Gemini CLI take. Add `"CODEMAN_PASSWORD"` to `env` when the server has a password (or let it read the data dir's `.env`). Without the `codeman` command on PATH (a git checkout run without the installer), use `node /path/to/Codeman/dist/index.js mcp`.
 
-| Tool                | Does                                                                                                                        |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `list_sessions`     | Every session you can see, with its run mode, status, folder, and whether these tools may prompt it                         |
-| `start_session`     | A new worker in a case (a fresh scratch folder, or an existing case) in any installed CLI; waits until it can take a prompt |
-| `send_prompt`       | Types a one-line prompt and presses Enter; optionally waits for the end of the turn                                         |
-| `wait_for_session`  | Waits for a signal (`stop`, `blocked`, `idle`, `working`, `exit`) or a literal marker in the output                         |
-| `read_output`       | The last answer, the whole conversation, or the last bytes of the terminal                                                  |
-| `interrupt_session` | One Escape: stops the current turn, keeps the conversation                                                                  |
-| `delete_session`    | Closes a worker (its case folder stays)                                                                                     |
-| `list_extensions`   | Plugins and skills Codeman has imported, with the id `remove_extension` takes                                               |
-| `import_extension`  | Imports a GitHub repository or an absolute path (directory, zip, tar.gz, or SKILL.md) for every agent CLI                   |
-| `remove_extension`  | Uninstalls one imported plugin or skill. Directories Codeman did not import stay                                            |
+| Tool | Does |
+| ---- | ---- |
+| `list_sessions` | Every session you can see, with its run mode, status, folder, and whether these tools may prompt it |
+| `start_session` | A new worker in a case (a fresh scratch folder, or an existing case) in any installed CLI; waits until it can take a prompt |
+| `send_prompt` | Types a one-line prompt and presses Enter; optionally waits for the end of the turn |
+| `wait_for_session` | Waits for a signal (`stop`, `blocked`, `idle`, `working`, `exit`) or a literal marker in the output |
+| `read_output` | The last answer, the whole conversation, or the last bytes of the terminal |
+| `interrupt_session` | One Escape: stops the current turn, keeps the conversation |
+| `delete_session` | Closes a worker (its case folder stays) |
+| `list_extensions` | Plugins and skills Codeman has imported, with the id `remove_extension` takes |
+| `import_extension` | Imports a GitHub repository or an absolute path (directory, zip, tar.gz, or SKILL.md) for every agent CLI |
+| `remove_extension` | Uninstalls one imported plugin or skill. Directories Codeman did not import stay |
 
 Rules the server enforces rather than documents:
 
@@ -1128,22 +1128,22 @@ REST over Fastify — **~230 handlers across 25 route modules**, plus an SSE str
 
 ### Sessions
 
-| Method         | Endpoint                          | Description                                                                                                                                          |
-| -------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`          | `/api/sessions`                   | List all                                                                                                                                             |
-| `POST`         | `/api/quick-start`                | Create case + start session (`{caseName?, mode?, effort?, envOverrides?}`)                                                                           |
-| `POST`         | `/api/sessions/:id/input`         | Send input (`{input, useMux?, clientId?, seq?, wait?, waitTimeout?}`: `clientId`+`seq` = exactly-once; `wait` blocks until the turn ends)            |
-| `GET`          | `/api/sessions/:id/terminal`      | Read terminal output (`?tail=<bytes>`, `?full=1`); the read path for interactive sessions                                                            |
-| `GET`          | `/api/sessions/:id/output`        | Parsed one-shot output (`textOutput` is empty for tmux-backed sessions)                                                                              |
-| `GET`          | `/api/sessions/:id/last-response` | The last answer as clean text, read from the transcript (claude, codex, deepseek)                                                                    |
-| `GET`          | `/api/sessions/:id/wait`          | Block until a signal fires (`?until=stop,idle,exit&timeout=&fresh=`); a timeout is a `200`                                                           |
-| `GET`          | `/api/sessions/:id/wait-output`   | Block until a literal string appears (`?match=&nocase=&from=now\|buffer&timeout=`)                                                                   |
-| `POST` / `GET` | `/api/sessions/:id/inbox`         | Agent inbox: post `{text}` / read every pending message (`?wait=` blocks while nothing is new); `POST …/inbox/ack {ids}` removes them, receiver only |
-| `GET`          | `/api/sessions/unified`           | Unified live + history list (Session Manager) — `?q=&limit=`                                                                                         |
-| `POST`         | `/api/sessions/:id/pin`           | Pin/unpin in the Session Manager (`{pinned}`)                                                                                                        |
-| `PUT`          | `/api/session-order`              | Sync tab order across devices (`{order: [ids]}`)                                                                                                     |
-| `POST`         | `/api/sessions/:id/custom-model`  | Restart the session's CLI on a saved custom endpoint (`{endpointId, modelId}`; `{clear: true}` returns to the native backend)                        |
-| `DELETE`       | `/api/sessions/:id`               | Delete session                                                                                                                                       |
+| Method   | Endpoint                   | Description                                                                        |
+| -------- | -------------------------- | ---------------------------------------------------------------------------------- |
+| `GET`    | `/api/sessions`            | List all                                                                           |
+| `POST`   | `/api/quick-start`         | Create case + start session (`{caseName?, mode?, effort?, envOverrides?}`)         |
+| `POST`   | `/api/sessions/:id/input`  | Send input (`{input, useMux?, clientId?, seq?, wait?, waitTimeout?}`: `clientId`+`seq` = exactly-once; `wait` blocks until the turn ends) |
+| `GET`    | `/api/sessions/:id/terminal` | Read terminal output (`?tail=<bytes>`, `?full=1`); the read path for interactive sessions |
+| `GET`    | `/api/sessions/:id/output` | Parsed one-shot output (`textOutput` is empty for tmux-backed sessions)             |
+| `GET`    | `/api/sessions/:id/last-response` | The last answer as clean text, read from the transcript (claude, codex, deepseek) |
+| `GET`    | `/api/sessions/:id/wait`   | Block until a signal fires (`?until=stop,idle,exit&timeout=&fresh=`); a timeout is a `200` |
+| `GET`    | `/api/sessions/:id/wait-output` | Block until a literal string appears (`?match=&nocase=&from=now\|buffer&timeout=`) |
+| `POST` / `GET` | `/api/sessions/:id/inbox` | Agent inbox: post `{text}` / read every pending message (`?wait=` blocks while nothing is new); `POST …/inbox/ack {ids}` removes them, receiver only |
+| `GET`    | `/api/sessions/unified`    | Unified live + history list (Session Manager) — `?q=&limit=`                       |
+| `POST`   | `/api/sessions/:id/pin`    | Pin/unpin in the Session Manager (`{pinned}`)                                      |
+| `PUT`    | `/api/session-order`       | Sync tab order across devices (`{order: [ids]}`)                                   |
+| `POST`   | `/api/sessions/:id/custom-model` | Restart the session's CLI on a saved custom endpoint (`{endpointId, modelId}`; `{clear: true}` returns to the native backend) |
+| `DELETE` | `/api/sessions/:id`        | Delete session                                                                     |
 
 ### Respawn
 
@@ -1183,16 +1183,16 @@ REST over Fastify — **~230 handlers across 25 route modules**, plus an SSE str
 
 ### System
 
-| Method         | Endpoint                        | Description                                                                                             |
-| -------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `GET`          | `/api/events`                   | SSE stream                                                                                              |
-| `GET`          | `/api/status`                   | Full app state                                                                                          |
-| `POST`         | `/api/hook-event`               | Hook callbacks                                                                                          |
-| `GET`          | `/api/system/update/check`      | Check for a new release                                                                                 |
-| `POST`         | `/api/system/update`            | Self-update (git-clone installs)                                                                        |
-| `POST`         | `/api/clipboard`                | Push text to all connected browsers (`{text}`)                                                          |
-| `GET` / `POST` | `/api/model-endpoints`          | List / save custom OpenAI-compatible endpoints (`PUT` / `DELETE` `/:id`; admin-only in multi-user mode) |
-| `GET`          | `/api/sessions/:id/run-summary` | Timeline + stats                                                                                        |
+| Method | Endpoint                        | Description                                    |
+| ------ | ------------------------------- | ---------------------------------------------- |
+| `GET`  | `/api/events`                   | SSE stream                                     |
+| `GET`  | `/api/status`                   | Full app state                                 |
+| `POST` | `/api/hook-event`               | Hook callbacks                                 |
+| `GET`  | `/api/system/update/check`      | Check for a new release                        |
+| `POST` | `/api/system/update`            | Self-update (git-clone installs)               |
+| `POST` | `/api/clipboard`                | Push text to all connected browsers (`{text}`) |
+| `GET` / `POST` | `/api/model-endpoints`  | List / save custom OpenAI-compatible endpoints (`PUT` / `DELETE` `/:id`; admin-only in multi-user mode) |
+| `GET`  | `/api/sessions/:id/run-summary` | Timeline + stats                               |
 
 > **Building something on top of Codeman?** [`docs/extending-codeman.md`](docs/extending-codeman.md) is the integration guide: render your own UI as a tab, subscribe to the SSE event stream to react when an agent needs you, drive Codeman from a script, and the traps worth knowing before you start. Codeman has no plugin runtime on purpose, so an integration is just your own process talking HTTP.
 
