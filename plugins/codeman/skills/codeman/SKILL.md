@@ -18,6 +18,19 @@ description: >-
 
 # Driving Codeman from inside a session
 
+To **check a Mermaid diagram**, run
+`codeman mermaid render diagram.mmd -o diagram.png`, then inspect the PNG with your
+image viewer. Use `.svg` for vector output, or `-` as the input for stdin.
+This local command works from every agent CLI without a server or §0.
+It requires Chromium headless shell and its Linux libraries. The Chromium sandbox
+is on by default. The instance's optional `mermaid-runtime.json` can supply private
+Linux libraries and an approved sandbox opt-out. `--sandbox` and `--no-sandbox`
+override that choice for one command.
+On Ubuntu 24.04 x64, `codeman mermaid setup` restores the versioned native
+bundle for this instance without system packages. Only add `--no-sandbox` with
+the owner's approval for that host. Setup refuses conflicting configuration.
+Existing output files are never overwritten.
+
 For **saved Codex conversation history**, use `codeman history read` and
 [reference/history.md](reference/history.md). This is a read-only local command:
 route to it **before §0**, including outside a managed session. It needs no API

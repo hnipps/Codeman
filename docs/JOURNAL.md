@@ -2,6 +2,66 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-09 - Recover the native renderer from Git
+
+**Type:** intent-refinement
+**Touches:** `src/mermaid-runtime/`, `src/mermaid-runtime-setup.ts`, `scripts/vendor-mermaid-runtime.mjs`
+**Why:** A working machine-local runtime is not enough to recover the instance after losing its disk.
+**Links:** [Mermaid intent](../intent/2026-11-09-mermaid-renderer.md)
+
+The owner chose to preserve the small native library closure in Git while
+allowing normal pinned npm and Chromium downloads during recovery. The bundle
+keeps official Ubuntu package provenance, per-file checksums, license notices,
+and matching upstream/distribution source archives for its LGPL libraries.
+It is versioned outside public assets and copied into the published package.
+
+`mermaid setup` restores only the tested Ubuntu 24.04 x64 target, verifies all
+assets first, and copies libraries to stable instance storage. Repeats verify
+instead of overwrite; conflicting configuration and symlinks are refused.
+Sandbox policy is still an explicit instance choice, never inherited blindly
+from this VM. The library bytes and restoration mechanism now travel with the
+feature; a fully offline backup and session-state backup remain out of scope.
+
+## 2026-11-09 - Provision the Mermaid runtime without system changes
+
+**Type:** intent-refinement
+**Touches:** `src/mermaid-renderer.ts`, `src/cli-mermaid.ts`
+**Why:** All agents need the normal render command to work without session-local environment overrides.
+**Links:** [Mermaid intent](../intent/2026-11-09-mermaid-renderer.md)
+
+The smaller Chromium headless shell still has native shared-library dependencies.
+Those cannot be removed by tree-shaking the Mermaid JavaScript. A private copy of
+the missing library closure avoids installing system packages or a desktop stack.
+The renderer reads an optional instance-local `mermaid-runtime.json` for that
+library directory and an explicit sandbox opt-out. Only the browser child gets
+the private library path. The default elsewhere remains sandboxed, and
+`--sandbox` overrides a saved opt-out. No failure triggers a weaker retry.
+
+The owner approves the opt-out inside this VM. The UI's opaque iframe, network
+restrictions, input bounds, and output bounds remain unchanged.
+
+## 2026-11-09 - Mermaid uses one isolated renderer
+
+**Type:** intent-refinement
+**Touches:** `scripts/mermaid-frame.js`, `src/mermaid-renderer.ts`, `src/web/public/mermaid-render.js`
+**Why:** Agents need to inspect actual diagram images, and Markdown readers need the same rendering behavior without running diagram code in the dashboard origin.
+**Links:** [Mermaid intent](../intent/2026-11-09-mermaid-renderer.md)
+
+The UI and offline agent command share one bundled Mermaid document. An opaque
+iframe renders diagrams for Markdown readers, which display the SVG as an image.
+The command writes new PNG or SVG files through Chromium and needs no server.
+Source stays available when rendering fails. Chromium's OS sandbox is enabled
+unless the caller explicitly disables it. This host lacks Chromium libraries and
+usable OS sandbox support, so verification uses session-local libraries and an
+explicit sandbox opt-out for local verification. No system libraries or live
+server are changed.
+
+Puppeteer is a runtime dependency so an installed command can provision its
+browser without a separate renderer service. This adds a browser download during
+installation. `puppeteer-core` would avoid that download but require every host
+to supply a compatible browser. Rendering itself stays offline. The UI needs no
+Chromium installation, and headless Linux hosts still need its system libraries.
+
 ## 2026-11-08 — Respawn lifecycle has a real-process check
 
 **Type:** propagated-discovery

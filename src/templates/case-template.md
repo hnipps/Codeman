@@ -55,6 +55,7 @@ This session is managed by Codeman and runs inside tmux (`CODEMAN_MUX=1` confirm
 
 - NEVER kill your own session: no `tmux kill-session`, `pkill tmux`, or `pkill claude`.
 - The session persists across disconnects — your work is safe.
+- Check Mermaid diagrams with `codeman mermaid render diagram.mmd -o diagram.png`, then inspect the PNG. The command also writes `.svg` and accepts `-` for stdin. It needs no server and never overwrites an existing output.
 - Hooks may auto-format or validate after writes; unexpected tool behavior usually means a hook ran. Keep working.
 - After creating a file, write out its full absolute path in your final reply, e.g. `/home/me/project/docs/report.md`. Codeman makes absolute paths in the terminal clickable and opens them in its file viewer; a relative path (`docs/report.md`), a `~/` path or a markdown link (`[report](...)`) cannot be clicked.
 - To show a web page or app you built, start it with `codeman agent preview add <name> --cmd "python3 -m http.server {port} --bind 127.0.0.1"`, where Codeman fills in `{port}`; this is the way to preview inside Codeman. Codeman runs the server for this session and stops it when the session ends or the preview is removed, and `preview add` prints the URL to give the user, who can also open it under the session's Terminal / Preview switch.

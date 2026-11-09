@@ -93,4 +93,10 @@ describe('static asset Cache-Control headers', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toContain('no-cache');
   });
+
+  it('revalidates the shared Mermaid document, which has no content-hashed URL', async () => {
+    const res = await get(`${baseUrl}/vendor/mermaid-frame.html`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-cache');
+  });
 });

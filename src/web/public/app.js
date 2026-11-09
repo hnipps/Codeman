@@ -3049,6 +3049,7 @@ class CodemanApp {
     renderedText.className = 'rv-text';
     renderedText.innerHTML = this._renderMarkdown(text);
     this._linkifyFilePaths(renderedText);
+    window.CodemanMermaid?.hydrate(renderedText);
     div.appendChild(renderedText);
     return div;
   }

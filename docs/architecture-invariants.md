@@ -561,6 +561,47 @@ Tests: `test/file-editing-policy.test.ts` (pure policy), `test/routes/file-write
 
 Tests: `test/file-preview-markdown.test.ts` (jsdom-in-vm, pins every rule above), `test/routes/file-routes.test.ts` (avif).
 
+### Mermaid diagrams
+
+`scripts/mermaid-frame.js` owns the Mermaid configuration and image geometry for
+both `codeman mermaid render` and Markdown readers. `prepare-mermaid-assets.mjs`
+bundles the pinned engine into a self-contained, network-disabled HTML document.
+Postinstall prepares dev assets. The production build prepares the same document
+inside `dist`. The fixed-name HTML response uses `no-cache`.
+
+The dashboard creates one lazy iframe with `sandbox="allow-scripts"`, never
+`allow-same-origin`, and serializes at most 32 queued diagrams. Replies must match
+the frame window, opaque origin, and request id. SVG enters the dashboard only as
+an image. The sanitizer still refuses inline SVG. A source disclosure retains
+the original code and copy action. Invalid diagrams keep that disclosure open.
+
+The frame refuses configuration directives, empty source, source above 50,000
+characters, more than 500 edges, and output above 4 million characters.
+Consumers cap image area at 16 million pixels and time out rendering at 15 seconds.
+The CLI intercepts its synthetic document navigation and aborts all other browser
+requests. It writes PNG or SVG with exclusive creation, never overwriting an
+existing file. The CLI uses Chromium's smaller headless shell. Its OS sandbox
+is on unless the caller explicitly disables it with `--no-sandbox` or the
+instance's `mermaid-runtime.json`. `--sandbox` overrides a saved opt-out.
+That file is read only when rendering, through `dataPath()`. Its optional
+Linux `libraryPath` prepends one absolute private library directory to the
+browser child's `LD_LIBRARY_PATH`, never changing the parent environment.
+Invalid configuration fails closed. Nothing retries with a weaker sandbox.
+Remote and Docker agents need their own local installation.
+
+The versioned `src/mermaid-runtime/` bundle is copied outside public web assets
+into `dist/mermaid-runtime/`, including notices and the matching LGPL source.
+`codeman mermaid setup` supports only its tested Ubuntu 24.04 x64 platform,
+verifies all file hashes before touching runtime configuration, and installs
+native libraries into stable instance storage through `dataPath()`, never a
+prunable release directory. Existing mismatched files, symlinks and configuration
+are refused, not overwritten. Identical repeats are idempotent.
+Setup saves a sandbox opt-out only with an explicit `--no-sandbox`.
+Chromium and npm dependencies still require their normal pinned downloads.
+
+Tests: `test/mermaid-renderer.test.ts`, `test/mermaid-renderer.browser.test.ts`,
+and `test/static-cache-headers.test.ts`.
+
 ### Case rename
 
 **Case rename** (`POST /api/cases/:name/rename`, `src/case-rename.ts`; `docs/wiki/Core-Concepts.md#case`): a case under the cases dir is its folder name and always moves; a linked case renames its alias and moves its real folder only with `renameFolder`; remote and Docker cases are refused. ⚠️ A folder that sessions have open is the hazard: live sessions at or under it make the route answer `409 requiresStop` with their names, and only `stopSessions: true` ends them (via `ctx.cleanupSession`: closed like a tab close, uploads included, nothing is restarted); the free-target pre-check runs before that and refuses a dangling symlink too (`lstat`, as `moveCaseFolder` does), so no session is ended for a move that cannot happen. `withCaseLock` holds the old and new paths for the whole operation (`isCasePathLocked`; the `Session` constructor throws for a working directory inside a held path, so nothing is constructed mid-move). ⚠️ A create awaits the owner's layout lock and a settings read between `new Session` and the server's map, where the rename looks for open sessions, so the constructor also records the session (`noteCaseSessionStarting`) until `registerSessionWithLayout()` or `stop()` settles it (30 s TTL for one that never registers), and a folder move refuses `409` with `renameCode: "BUSY"` while one is recorded at or under the folder (`isCaseSessionStarting`, checked in the same tick that takes the lock); an alias-only rename is not refused. A create whose path was validated before the move but whose `Session` is constructed after it is not covered (the plain check-then-use race of any create path), `moveCaseFolder` refuses an existing target itself (POSIX `rename` would silently replace an EMPTY directory) and retries `EBUSY`/`EPERM`/`EACCES` before answering `423 LOCKED`. If the registries (`linked-cases.json`, `caseOrder`, `lastUsedCase`) fail after the move, `settings.json` and the folder are put back (a failed move-back says the folder is now at the new path), and an error after `stopSessions` carries `stoppedSessions`. Claude Code keys history by path (`claudeProjectDirName`: every non-alphanumeric becomes `-`), so `<claude config>/projects/<old>` is renamed too, or merged entry by entry, never overwriting, into one already at the new key (case delete never removes history, so an earlier case of the new name leaves one); other CLIs' history, Docker bind mounts, `git worktree` links, cron jobs' `workingDir`, Claude history of subfolder sessions and Claude Code's per-project entry in `~/.claude.json` (local-scope `mcpServers`, `allowedTools`, trust; writing another CLI's config is the opt-in MCP sync's job) are NOT migrated. The history scanner prefers the decoded project key over a transcript's `cwd` that no longer exists, so Resume follows a rename. Only an admin's rename touches the server-wide `settings.json` (`caseOrder`, `lastUsedCase`); the owner's default session group is carried across with `TabLayoutService`. `settings.json` is written before `linked-cases.json`, and both are restored if the registry write fails.
