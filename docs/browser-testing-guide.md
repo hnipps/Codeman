@@ -2,6 +2,8 @@
 
 This guide documents the browser testing infrastructure, framework comparison results, and best practices for testing the Codeman web UI.
 
+Headless Chromium does not reproduce iOS Safari's native selection, keyboard or toolbar behaviour. To test those on a real iPhone, see [Testing on a real iPhone](ios-device-testing.md).
+
 ## Quick Start
 
 ```bash
