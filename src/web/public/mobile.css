@@ -2347,6 +2347,30 @@ html.mobile-init .file-browser-panel {
     font-size: 16px;
   }
 
+  /* Document review (doc-review.js). The window is --app-height tall, so its
+     bars already sit above the keyboard; these keep them short enough to leave
+     the document some room there (the footer below them pads for the home
+     indicator). */
+  .doc-review-input,
+  .doc-review-overall {
+    font-size: 16px;
+  }
+
+  .doc-review-list {
+    max-height: 6.5rem;
+  }
+
+  /* Writing the overall note: the keyboard is up, so the list gives its rows back. */
+  .doc-review-bar:has(.doc-review-overall:focus) .doc-review-list {
+    display: none;
+  }
+
+  .doc-review-btn,
+  .doc-review-float {
+    min-height: 36px;
+    font-size: 0.85rem;
+  }
+
   /* Notification drawer - full width on mobile, includes safe area padding */
   .notification-drawer {
     width: 100%;
