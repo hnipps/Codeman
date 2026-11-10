@@ -146,7 +146,7 @@ describe('refreshStaleCodemanHooks', () => {
 
     const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(JSON.stringify(after.hooks)).toContain(SECRET_HEADER);
-    expect(JSON.stringify(after.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V3');
+    expect(JSON.stringify(after.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V4');
     expect(JSON.stringify(after.hooks.Stop)).toContain('./notify-user.sh');
     expect(after.hooks.PostToolUse).toEqual(expect.arrayContaining([customPostToolUse]));
     expect(after.hooks.CustomEvent).toEqual(customEvent);

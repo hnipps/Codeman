@@ -18,6 +18,67 @@ and a 251 ms tunnel round trip per request. Taps aim at CSS selectors through
 one swallowed calibration touch, because accessibility-tree queries in Safari
 were slow and once stalled WebDriverAgent.
 
+## 2026-11-10 - Background rewake waits only on a Claude transcript
+
+**Type:** intent-refinement
+**Touches:** `src/hooks-config.ts`, `docs/claude-code-hooks-reference.md`
+**Why:** A cancelled PostToolUse hook blocked the turn. The helper was polling for a Claude `queue-operation` line in a transcript that never gets one.
+**Links:** [Background rewake intent](../intent/2026-11-10-background-rewake-claude-only.md)
+
+The helper still watches Claude transcripts and still exits 2 when the matching
+background command finishes. It returns at once unless the transcript path has a
+`.claude` directory segment. `asyncRewake` stays, because Claude is the client
+that honours it. The marker is `CODEMAN_BACKGROUND_REWAKE_V4` so an installed
+copy of the previous script is replaced in place.
+
+## 2026-11-10 - Desktop Cmd+V must not focus a paste trap
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/image-input.js`, `src/web/public/terminal-ui.js`, `src/web/public/terminal-tile.js`
+**Why:** Cmd+V on a desktop focused a hidden contenteditable and left it focused, which pops the platform editing toolbar and can insert the clipboard twice.
+**Links:** [Desktop paste intent](../intent/2026-11-10-desktop-paste-once.md)
+
+A fine primary pointer arms a one-shot listener on the paste the browser already
+delivers to the terminal. A coarse pointer and Android keep the contenteditable
+trap and `execCommand('paste')`, because those engines were the reason the trap
+exists. Linux Meta+V is not the paste chord, so that press inserts nothing and
+must not move focus.
+
+## 2026-11-10 - Verify inline links through the real terminal transport
+
+**Type:** retraction
+**Touches:** `src/tmux-manager.ts`, `test/terminal-local-links.browser.test.ts`
+**Why:** The previous link fix verified direct xterm input but missed the transport used by the real Copilot session.
+**Links:** [intent](../intent/2026-11-10-copilot-inline-targets.md)
+
+The real tmux capture retained the report destination. Attached clients omitted it because they did not advertise hyperlink support, and snapshot formatting stripped it independently. Local attach clients now advertise the feature where supported. Snapshot filtering retains well-formed OSC 8 sequences and closes clipped links. Regression tests pass captured output through the formatter before clicking the rendered label. The saved Copilot row reproduced the missing target before the fix and opened its intended report after it.
+
+## 2026-11-10 - Review a document inside the file preview
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/doc-review.js`, `src/web/public/panels-ui.js`, `src/web/public/index.html`
+**Why:** Marking up an agent's doc needed either hand-quoted prompts or a third-party page in a trusted frame on Codeman's origin.
+**Links:** [Document review intent](../intent/2026-11-10-doc-review.md), [architecture invariants](architecture-invariants.md#document-review)
+
+Review is a mode of the existing rendered Markdown preview, not a web tab. It
+adds no route: the feedback file rides the prompt-upload route and the prompt
+rides the input route. Three choices are worth knowing later. Anchors are
+text quotes with context, not DOM positions, so a draft survives the agent
+rewriting the file, and a comment whose text is gone is sent marked as such
+instead of being dropped. The prompt is sent without `useMux`, because the
+route's automatic plain-prompt branch is the one that waits for Enter and can
+report a failure. Drafts are keyed by session and path in `localStorage`, so
+a review belongs to the agent that will receive it and is pruned with it.
+A send owns the draft snapshot present when the user pressed Send. Its
+completion clears only that snapshot, so notes written while the upload or
+prompt is pending remain a draft, even if Review was closed and reopened.
+
+Testing on a real iPhone exposed a keyboard layout bug. The window followed
+the visual viewport, but its full-height overlay centered the shorter window
+below the top of the visible area and hid the Add button. The phone overlay
+now follows the same `--app-height` as its window. This also keeps the file
+editor's actions above the keyboard.
+
 ## 2026-11-09 - Publish the Agentic Canvas source documents
 
 **Type:** intent-refinement

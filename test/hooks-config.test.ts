@@ -333,7 +333,7 @@ describe('writeHooksConfig', () => {
 
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(parsed.hooks.PostToolUse).toHaveLength(1);
-    expect(JSON.stringify(parsed.hooks.PostToolUse)).toContain('CODEMAN_BACKGROUND_REWAKE_V3');
+    expect(JSON.stringify(parsed.hooks.PostToolUse)).toContain('CODEMAN_BACKGROUND_REWAKE_V4');
     expect(JSON.stringify(parsed.hooks.SubagentStop)).toContain('CODEMAN_SUBAGENT_STOP_GUARD_V1');
   });
 
@@ -366,7 +366,7 @@ describe('writeHooksConfig', () => {
     const serialized = JSON.stringify(parsed.hooks.PostToolUse);
     expect(parsed.hooks.PostToolUse).toHaveLength(1);
     expect(parsed.hooks.PostToolUse[0].hooks).toHaveLength(1);
-    expect(serialized).toContain('CODEMAN_BACKGROUND_REWAKE_V3');
+    expect(serialized).toContain('CODEMAN_BACKGROUND_REWAKE_V4');
     expect(serialized).not.toContain('CODEMAN_BACKGROUND_REWAKE_V1');
   });
 
@@ -408,7 +408,7 @@ describe('writeHooksConfig', () => {
     const settingsPath = join(claudeDir, 'settings.local.json');
     mkdirSync(claudeDir, { recursive: true });
     const oldSettings = JSON.stringify({ hooks: generateHooksConfig().hooks }, null, 2).replaceAll(
-      'CODEMAN_BACKGROUND_REWAKE_V3',
+      'CODEMAN_BACKGROUND_REWAKE_V4',
       'CODEMAN_BACKGROUND_REWAKE_V2'
     );
     writeFileSync(settingsPath, oldSettings);
@@ -418,7 +418,7 @@ describe('writeHooksConfig', () => {
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     const postToolUse = JSON.stringify(parsed.hooks.PostToolUse);
     expect(parsed.hooks.PostToolUse).toHaveLength(1);
-    expect(postToolUse).toContain('CODEMAN_BACKGROUND_REWAKE_V3');
+    expect(postToolUse).toContain('CODEMAN_BACKGROUND_REWAKE_V4');
     expect(postToolUse).not.toContain('CODEMAN_BACKGROUND_REWAKE_V2');
   });
 
@@ -468,7 +468,7 @@ describe('writeHooksConfig', () => {
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(parsed.permissions).toEqual({ allow: ['Read'] });
     expect(parsed.hooks.PostToolUse).toEqual(expect.arrayContaining(userHooks.PostToolUse));
-    expect(JSON.stringify(parsed.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V3');
+    expect(JSON.stringify(parsed.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V4');
     expect(JSON.stringify(parsed.hooks)).toContain('CODEMAN_SUBAGENT_STOP_GUARD_V1');
   });
 
@@ -547,7 +547,8 @@ describe('background task rewake helper', () => {
   });
 
   it('exits 2 when the matching background command completes', async () => {
-    const transcriptPath = join(testDir, 'transcript.jsonl');
+    const transcriptPath = join(testDir, '.claude', 'transcript.jsonl');
+    mkdirSync(join(testDir, '.claude'), { recursive: true });
     writeFileSync(transcriptPath, '');
 
     const resultPromise = runHelper({
@@ -578,7 +579,7 @@ describe('background task rewake helper', () => {
 
   it('rewakes a subagent when Claude queues completion in the parent transcript', async () => {
     const sessionId = '7148e9de-7673-48b8-bf38-6799e52c346a';
-    const sessionDir = join(testDir, sessionId);
+    const sessionDir = join(testDir, '.claude', sessionId);
     const subagentDir = join(sessionDir, 'subagents');
     const parentTranscriptPath = `${sessionDir}.jsonl`;
     const subagentTranscriptPath = join(subagentDir, 'agent-afacts-class2.jsonl');
@@ -614,7 +615,8 @@ describe('background task rewake helper', () => {
   });
 
   it('includes a marked background report in the wake feedback', async () => {
-    const transcriptPath = join(testDir, 'transcript.jsonl');
+    const transcriptPath = join(testDir, '.claude', 'transcript.jsonl');
+    mkdirSync(join(testDir, '.claude'), { recursive: true });
     const tasksDir = join(testDir, 'tasks');
     const outputPath = join(tasksDir, 'bg-report-1.output');
     mkdirSync(tasksDir, { recursive: true });
@@ -654,6 +656,29 @@ describe('background task rewake helper', () => {
     expect(result.stderr).toContain('<codeman-background-result>');
     expect(result.stderr).toContain('Summary line');
     expect(result.stderr).toContain('Detail after the old 30-line preview boundary');
+  });
+
+  it('returns immediately for a background task whose transcript is not under .claude', async () => {
+    const transcriptPath = join(testDir, '.grok', 'sessions', 'transcript.jsonl');
+    mkdirSync(join(testDir, '.grok', 'sessions'), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: 'queue-operation',
+        operation: 'enqueue',
+        content: '<task-notification>\n<task-id>bg-grok-1</task-id>\n<status>completed</status>\n</task-notification>',
+      }) + '\n'
+    );
+
+    const started = Date.now();
+    const result = await runHelper({
+      transcript_path: transcriptPath,
+      tool_response: { backgroundTaskId: 'bg-grok-1' },
+    });
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
   });
 });
 

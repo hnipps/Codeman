@@ -63,6 +63,10 @@ interface Harness {
   toasts: string[];
   /** How many trap divs are still attached to the fake body. */
   attachedTraps: () => number;
+  /** How many times document.execCommand ran. The desktop path must stay at 0. */
+  execCommandCalls: () => number;
+  /** Fire a paste on the document capture listener the desktop path arms. */
+  fireDocumentPaste: (payload: { text?: string; images?: string[]; target?: unknown }) => void;
   runTimers: () => void;
 }
 
@@ -73,13 +77,19 @@ interface PasteHarnessOptions {
   localEchoPending?: string;
   /** Terminal the Ctrl+V came from, when it is not the primary pane. */
   terminal?: TargetTerminal;
+  /** Primary pointer. Omit it and the sandbox keeps the contenteditable trap. */
+  pointer?: 'fine' | 'coarse';
+  /** userAgent seen by the trap-vs-desktop split. */
+  userAgent?: string;
 }
 
 function loadPasteHarness(options: PasteHarnessOptions = {}): Harness {
   const traps: FakeTrap[] = [];
   const listeners: TrapListener[] = [];
+  const documentPaste: TrapListener[] = [];
   const attached = new Set<FakeTrap>();
   const timers: Array<() => void> = [];
+  let execCommandCalls = 0;
 
   const documentObj = {
     createElement: (): FakeTrap => {
@@ -105,15 +115,32 @@ function loadPasteHarness(options: PasteHarnessOptions = {}): Harness {
         el.parentNode = null;
       },
     },
+    addEventListener: (ev: string, fn: TrapListener, capture?: boolean) => {
+      if (ev === 'paste' && capture) documentPaste.push(fn);
+    },
     // A browser that honours the command fires the trap's paste listener from
     // here as well; the tests model that by firing the listener twice.
-    execCommand: () => true,
+    execCommand: () => {
+      execCommandCalls += 1;
+      return true;
+    },
     getElementById: () => null,
   };
 
+  const windowObj: {
+    matchMedia?: (query: string) => { matches: boolean; media: string };
+  } = {};
+  if (options.pointer) {
+    windowObj.matchMedia = (query: string) => ({
+      matches: query === `(pointer: ${options.pointer})`,
+      media: query,
+    });
+  }
+
   const context = vm.createContext({
-    window: {},
+    window: windowObj,
     document: documentObj,
+    navigator: { userAgent: options.userAgent || '' },
     setTimeout: (fn: () => void) => {
       timers.push(fn);
       return timers.length;
@@ -211,6 +238,20 @@ function loadPasteHarness(options: PasteHarnessOptions = {}): Harness {
     uploadedBatches,
     toasts,
     attachedTraps: () => attached.size,
+    execCommandCalls: () => execCommandCalls,
+    fireDocumentPaste({ text = '', images = [], target }) {
+      const items = images.map((type) => ({ type, getAsFile: () => ({ type }) }));
+      const event = {
+        target,
+        clipboardData: {
+          items,
+          getData: () => text,
+        },
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      };
+      for (const fn of documentPaste) fn(event);
+    },
     runTimers: () => {
       const pending = timers.splice(0, timers.length);
       for (const fn of pending) fn();
@@ -377,6 +418,59 @@ describe('Ctrl+V paste trap', () => {
 
     h.runTimers();
     expect(h.attachedTraps()).toBe(0);
+  });
+
+  it('on a fine pointer, Cmd+V inserts the document paste once and never focuses a contenteditable', () => {
+    const h = loadPasteHarness({ pointer: 'fine' });
+
+    expect(h.attachedTraps()).toBe(0);
+    expect(h.execCommandCalls()).toBe(0);
+
+    h.fireDocumentPaste({ text: 'once' });
+    h.fireDocumentPaste({ text: 'once' });
+
+    expect(h.inputted).toEqual(['\x1b[200~once\x1b[201~']);
+    expect(h.pastedText).toEqual([]);
+    expect(h.sentInputs).toEqual([]);
+    expect(h.attachedTraps()).toBe(0);
+    expect(h.execCommandCalls()).toBe(0);
+  });
+
+  it('on a fine pointer, a paste after the arm expires is not stolen', () => {
+    const h = loadPasteHarness({ pointer: 'fine' });
+
+    h.runTimers();
+    h.fireDocumentPaste({ text: 'later' });
+
+    expect(h.inputted).toEqual([]);
+    expect(h.attachedTraps()).toBe(0);
+  });
+
+  it('on a fine pointer, a paste aimed at another field is left alone', () => {
+    const outside = {};
+    const terminal: TargetTerminal & { element: { contains: (node: unknown) => boolean } } = {
+      element: { contains: (node) => node !== outside },
+      input: () => {
+        throw new Error('input() must not run');
+      },
+      focus: () => {},
+    };
+    const h = loadPasteHarness({ pointer: 'fine', terminal });
+
+    h.fireDocumentPaste({ text: 'settings', target: outside });
+
+    expect(h.inputted).toEqual([]);
+    expect(h.attachedTraps()).toBe(0);
+  });
+
+  it('a coarse pointer still uses the trap, and so does Android with a fine pointer', () => {
+    const coarse = loadPasteHarness({ pointer: 'coarse' });
+    expect(coarse.attachedTraps()).toBe(1);
+    expect(coarse.execCommandCalls()).toBe(1);
+
+    const android = loadPasteHarness({ pointer: 'fine', userAgent: 'Mozilla/5.0 (Linux; Android 14)' });
+    expect(android.attachedTraps()).toBe(1);
+    expect(android.execCommandCalls()).toBe(1);
   });
 });
 

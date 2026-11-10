@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
+import { formatPaneSnapshot } from '../src/tmux-manager.js';
 
 const require = createRequire(import.meta.url);
 const xtermScript = require.resolve('@xterm/xterm');
@@ -82,6 +83,34 @@ function opened() {
 }
 
 describe('local links in agent terminal responses', () => {
+  it.each(['\x07', '\x1b\\'])(
+    'opens the Copilot report label after snapshot replay with terminator %j',
+    async (end) => {
+      const capturedLine = `   \x1b[4m\x1b[36m\x1b]8;id=md-svbhjq;/tmp/report.md${end}Read the report\x1b[0m\x1b]8;;${end}.`;
+      const snapshot = formatPaneSnapshot([capturedLine], { cols: 90, rows: 20, cursorX: 0, cursorY: 1 });
+      await write(snapshot);
+      await clickCell(8, 0);
+      await expect.poll(opened).toEqual([{ kind: 'file', file: '/tmp/report.md', session: 'primary-session' }]);
+    }
+  );
+
+  it('keeps a clipped report label clickable without linking the following snapshot row', async () => {
+    const capturedLine =
+      '\x1b]8;id=md-svbhjq;/tmp/report.md\x1b\\Read the report ' + 'x'.repeat(100) + '\x1b]8;;\x1b\\';
+    const snapshot = formatPaneSnapshot([capturedLine, 'Unlinked text'], {
+      cols: 90,
+      rows: 20,
+      cursorX: 0,
+      cursorY: 2,
+    });
+    await write(snapshot);
+    await clickCell(5, 0);
+    await expect.poll(opened).toEqual([{ kind: 'file', file: '/tmp/report.md', session: 'primary-session' }]);
+    await page.evaluate('window.opened.length = 0');
+    await clickCell(5, 1);
+    expect(await opened()).toEqual([]);
+  });
+
   it.each(['/tmp/report.md', 'file:///tmp/report.md'])('opens the hidden local destination of %s', async (uri) => {
     await write(`\x1b]8;;${uri}\x07Open the report\x1b]8;;\x07\r\n`);
     await clickCell(5, 0);
