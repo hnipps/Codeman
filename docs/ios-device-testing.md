@@ -197,3 +197,23 @@ A target (`at`, `from`, `to`) is one of:
   selector. Use screen points read off a screenshot.
 - Each touch costs about 0.6 s inside XCTest, so a scenario with many taps
   stays in seconds, not milliseconds.
+
+## Upkeep
+
+Two things stop working on a schedule:
+
+- **WebDriverAgent's signing expires.** A free Apple developer account signs
+  for 7 days. After that, sessions fail to start. Check the date on the Mac
+  (the app is under WebDriverAgent's DerivedData, in
+  `Build/Products/Debug-iphoneos/`) with
+  `security cms -D -i WebDriverAgentRunner-Runner.app/embedded.mobileprovision | grep -A1 ExpirationDate`.
+  Rebuild and re-sign it in Xcode at the Mac (signing over SSH fails with
+  `errSecInternalComponent`), then trust the developer certificate on the phone
+  under Settings > General > VPN & Device Management. A paid account signs for
+  a year.
+- **The test instance does not survive a reboot of its host.** Start it again
+  with the same command and folder as before:
+  `IOS_TEST_ALLOWED_HOSTS=<host the phone uses> scripts/ios-test-instance.sh start <CODE_DIR>`.
+  Its data and password are kept, and the Mac's launchd tunnel reconnects by
+  itself. If Safari's 24-hour cookie has lapsed too, run the login scenario
+  again.
