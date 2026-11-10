@@ -2,6 +2,22 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Run real-iPhone tests as one scenario
+
+**Type:** propagated-discovery
+**Touches:** `scripts/ios-device.mjs`, `docs/ios-device-testing.md`
+**Why:** A real-device test pass took 118 agent tool calls in 28 minutes, and the device was not the bottleneck.
+**Links:** [iOS device runner intent](../intent/2026-11-10-ios-device-runner.md)
+
+Measured on the Mac next to Appium, a tap costs about 0.63 s, a page JS call
+0.02 s and a screenshot 0.14 s. Talking to WebDriverAgent directly instead of
+through Appium, and avoiding context switches, saved nothing there, so the
+runner keeps Appium for page JS and sends touches to WebDriverAgent only to
+skip the context switch. The cost was one agent turn per step (about 14 s)
+and a 251 ms tunnel round trip per request. Taps aim at CSS selectors through
+one swallowed calibration touch, because accessibility-tree queries in Safari
+were slow and once stalled WebDriverAgent.
+
 ## 2026-11-10 - Background rewake waits only on a Claude transcript
 
 **Type:** intent-refinement
