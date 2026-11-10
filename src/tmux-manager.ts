@@ -618,7 +618,7 @@ function sanitizePaneLineStyles(line: string): string {
 
     const end = findEscapeEnd(line, i);
     const sequence = line.slice(i, end + 1);
-    if (isSgrSequence(sequence)) {
+    if (classifyPaneSequence(sequence) !== null) {
       result += sequence;
     }
     i = end;
@@ -634,6 +634,23 @@ function isSgrSequence(sequence: string): boolean {
     sequence.endsWith('m') &&
     /^[0-9;:]*$/.test(sequence.slice(2, -1))
   );
+}
+
+type PaneSequenceKind = 'sgr' | 'link-open' | 'link-close';
+
+function classifyPaneSequence(sequence: string): PaneSequenceKind | null {
+  if (isSgrSequence(sequence)) return 'sgr';
+  if (!sequence.startsWith('\x1b]8;')) return null;
+  const terminatorLength = sequence.endsWith('\x07') ? 1 : sequence.endsWith('\x1b\\') ? 2 : 0;
+  if (terminatorLength === 0) return null;
+  const payload = sequence.slice(4, -terminatorLength);
+  const separator = payload.indexOf(';');
+  if (separator < 0) return null;
+  for (const char of payload) {
+    const code = char.charCodeAt(0);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return null;
+  }
+  return payload.length > separator + 1 ? 'link-open' : 'link-close';
 }
 
 function isZeroWidthCodePoint(codePoint: number): boolean {
@@ -751,14 +768,17 @@ function truncatePaneLineByVisibleColumns(line: string, maxColumns: number): str
   let result = '';
   let visibleColumns = 0;
   let sawSgr = false;
+  let linkOpen = false;
 
   for (let i = 0; i < line.length; i++) {
     if (line[i] === '\x1b') {
       const end = findEscapeEnd(line, i);
       const sequence = line.slice(i, end + 1);
-      if (isSgrSequence(sequence)) {
+      const kind = classifyPaneSequence(sequence);
+      if (kind !== null) {
         result += sequence;
-        sawSgr = true;
+        if (kind === 'sgr') sawSgr = true;
+        else linkOpen = kind === 'link-open';
       }
       i = end;
       continue;
@@ -780,6 +800,7 @@ function truncatePaneLineByVisibleColumns(line: string, maxColumns: number): str
     }
   }
 
+  if (linkOpen) result += '\x1b]8;;\x1b\\';
   if (sawSgr) {
     result += '\x1b[0m';
   }
@@ -956,7 +977,7 @@ export function queryPaneCursor(run: () => string): PaneCursorGeometry | null {
   return geometry;
 }
 
-/** SGR attributes, which is all `capture-pane -e` emits. */
+/** SGR attributes in captured text. */
 // eslint-disable-next-line no-control-regex
 const CAPTURE_STYLE_SEQUENCE = /\x1b\[[0-9;:]*m/g;
 
@@ -2055,8 +2076,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
   private saveChain: Promise<void> = Promise.resolve();
 
   private trueColorConfigured = false;
-  /** tmux 3.7+ can resize pane history after creation; older releases cannot. */
-  private liveHistoryResizeSupported: boolean | null = null;
+  private tmuxVersion: { major: number; minor: number } | null | undefined;
 
   constructor() {
     super();
@@ -2075,24 +2095,22 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
     return tmuxCommand(this.tmuxSocket);
   }
 
-  private supportsLiveHistoryResize(): boolean {
-    if (this.liveHistoryResizeSupported !== null) return this.liveHistoryResizeSupported;
-
-    try {
-      const output = execSync(`${this.tmux()} -V`, {
-        encoding: 'utf8',
-        timeout: EXEC_TIMEOUT_MS,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      const match = output.match(/(?:^|\D)(\d+)\.(\d+)/);
-      const major = match ? Number(match[1]) : 0;
-      const minor = match ? Number(match[2]) : 0;
-      this.liveHistoryResizeSupported = major > 3 || (major === 3 && minor >= 7);
-    } catch {
-      // Unknown versions take the legacy path required by tmux <3.7.
-      this.liveHistoryResizeSupported = false;
+  private supportsTmuxVersion(major: number, minor: number): boolean {
+    if (this.tmuxVersion === undefined) {
+      try {
+        const output = execSync(`${this.tmux()} -V`, {
+          encoding: 'utf8',
+          timeout: EXEC_TIMEOUT_MS,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        const match = output.match(/(?:^|\D)(\d+)\.(\d+)/);
+        this.tmuxVersion = match ? { major: Number(match[1]), minor: Number(match[2]) } : null;
+      } catch {
+        this.tmuxVersion = null;
+      }
     }
-    return this.liveHistoryResizeSupported;
+    const version = this.tmuxVersion;
+    return version !== null && (version.major > major || (version.major === major && version.minor >= minor));
   }
 
   // Load saved sessions from disk (never at construction in test mode)
@@ -2588,7 +2606,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       // global option can resize (and when lowered, trim) unrelated live panes.
       const safeHistoryLimit =
         Number.isSafeInteger(historyLimit) && historyLimit > 0 ? Math.trunc(historyLimit) : DEFAULT_TMUX_HISTORY_LIMIT;
-      const createSessionCommand = this.supportsLiveHistoryResize()
+      const createSessionCommand = this.supportsTmuxVersion(3, 7)
         ? `${this.tmux()} new-session -ds "${muxName}" -c ${TMUX_LAUNCH_CWD} \\; set-option -t "${muxName}" history-limit ${safeHistoryLimit}`
         : `${this.tmux()} set-option -g history-limit ${safeHistoryLimit} \\; new-session -ds "${muxName}" -c ${TMUX_LAUNCH_CWD} \\; set-option -t "${muxName}" history-limit ${safeHistoryLimit}`;
       execSync(createSessionCommand, {
@@ -3981,7 +3999,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       return;
     }
 
-    if (this.supportsLiveHistoryResize()) {
+    if (this.supportsTmuxVersion(3, 7)) {
       const updates = Array.from(this.sessions.values()).map((session) =>
         execAsync(`${this.tmux()} set-option -t ${shellescape(session.muxName)} history-limit ${safeLimit}`, {
           timeout: EXEC_TIMEOUT_MS,
@@ -4552,7 +4570,8 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
   }
 
   getAttachArgs(muxName: string): string[] {
-    return ['-L', this.tmuxSocket, 'attach-session', '-t', muxName];
+    const terminalFeatures = this.supportsTmuxVersion(3, 2) ? ['-T', 'hyperlinks'] : [];
+    return ['-L', this.tmuxSocket, ...terminalFeatures, 'attach-session', '-t', muxName];
   }
 
   setManualWindowSize(muxName: string): boolean {
