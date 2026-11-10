@@ -2,6 +2,32 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Review a document inside the file preview
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/doc-review.js`, `src/web/public/panels-ui.js`, `src/web/public/index.html`
+**Why:** Marking up an agent's doc needed either hand-quoted prompts or a third-party page in a trusted frame on Codeman's origin.
+**Links:** [Document review intent](../intent/2026-11-10-doc-review.md), [architecture invariants](architecture-invariants.md#document-review)
+
+Review is a mode of the existing rendered Markdown preview, not a web tab. It
+adds no route: the feedback file rides the prompt-upload route and the prompt
+rides the input route. Three choices are worth knowing later. Anchors are
+text quotes with context, not DOM positions, so a draft survives the agent
+rewriting the file, and a comment whose text is gone is sent marked as such
+instead of being dropped. The prompt is sent without `useMux`, because the
+route's automatic plain-prompt branch is the one that waits for Enter and can
+report a failure. Drafts are keyed by session and path in `localStorage`, so
+a review belongs to the agent that will receive it and is pruned with it.
+A send owns the draft snapshot present when the user pressed Send. Its
+completion clears only that snapshot, so notes written while the upload or
+prompt is pending remain a draft, even if Review was closed and reopened.
+
+Testing on a real iPhone exposed a keyboard layout bug. The window followed
+the visual viewport, but its full-height overlay centered the shorter window
+below the top of the visible area and hid the Add button. The phone overlay
+now follows the same `--app-height` as its window. This also keeps the file
+editor's actions above the keyboard.
+
 ## 2026-11-09 - Publish the Agentic Canvas source documents
 
 **Type:** intent-refinement
