@@ -488,6 +488,10 @@ The escape hatch is the synced `workspaceHooksEnabled` setting (App Settings →
 
 ### File-path links (terminal + response viewer)
 
+Native OSC 8 local links open the file preview after confirmation of the full target. The handler resolves the session at activation time, including in tiles. Local file URLs accept an empty host or `localhost`, decode the pathname once, and reject credentials, queries, fragments, and control characters. Other schemes remain inert. Touch lookup consults the native hyperlink provider before text detection, matching desktop precedence.
+
+Copilot paths wrapped inside a consistent vertical gutter use physical row segments. Each segment opens the complete path and excludes the gutter. Reconstruction stays bounded and requires aligned continuation rows at the same wrap edge. Ordinary table paths retain their conservative continuation rules, and selection keeps the original terminal text.
+
 A file path an agent prints is a link on both surfaces it can appear on, and clicking it opens the file-preview overlay. Three things make that work and each has bitten:
 
 **One pattern, two consumers.** `FILE_PATH_LINK_PATTERN` / `absoluteFilePathPattern()` live in `constants.js`; the xterm link provider (`registerFilePathLinkProvider`, terminal-ui.js) and the response viewer's `_linkifyFilePaths()` (app.js) both reach it through `findFilePathLinks()` (below), which builds a fresh instance per call. ⚠️ Fresh per call, never one shared object: `lastIndex` is per-object state on a `/g` regex. The pattern is anchored on a known absolute root and terminated by a known extension, so a fraction (`3/4`) or a date can't match and trailing punctuation stays out. Roots include `Users` and `mnt`, without which nothing was clickable on macOS or WSL. The linear-time guard and the "terminal-ui builds from the factory" structural check are in `test/link-provider-regex.test.ts`.

@@ -245,7 +245,12 @@
         allowTransparency: true,
         allowProposedApi: true,
         // OSC 8 hyperlinks open through the primary pane's opener (terminal-ui.js).
-        linkHandler: global.app?._terminalOsc8LinkHandler?.(),
+        linkHandler: global.app?._terminalOsc8LinkHandler?.(
+          () => this.sessionId,
+          (hovered) => {
+            this._linkHovered = hovered;
+          }
+        ),
       });
 
       this.fitAddon = new FitAddon.FitAddon();

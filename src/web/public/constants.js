@@ -3070,9 +3070,48 @@ function terminalCellWrappedPaths(buffer, row, maxRows) {
     return found;
   };
 
+  const fromFramedStart = (startRow) => {
+    const first = rowText(startRow);
+    const gutter = /^(\s*[│┃║|] +)/.exec(first || '')?.[0];
+    if (!gutter) return [];
+    const content = first.slice(gutter.length).replace(/ +[│┃║|]$/, '').trimEnd();
+    // Interior borders belong to table columns, not the surrounding TUI gutter.
+    if (/[│┃║|]/.test(content)) return [];
+    const root = new RegExp(`\\/(?:${FILE_LINK_ROOT_GROUP})\\/`).exec(content);
+    if (!root || (root.index > 0 && !/[\s(\[{"'`<]/.test(content[root.index - 1]))) return [];
+    let joined = content.slice(root.index);
+    if (!joined || [...joined].some((ch) => !isPathChar(ch))) return [];
+    const alone = absoluteFilePathPattern().exec(joined);
+    if (alone && alone[0].length === joined.length) return [];
+    const wrapCol = gutter.length + content.length;
+    let filledEdge = wrapCol >= (buffer.getLine(startRow)?.translateToString(false) || '').length;
+    const segments = [{ row: startRow, startCol: gutter.length + root.index, endCol: wrapCol }];
+    for (let r = startRow + 1; r < startRow + bound; r++) {
+      const line = buffer.getLine(r);
+      const text = rowText(r);
+      if (!line || line.isWrapped || !text?.startsWith(gutter)) break;
+      const rest = text.slice(gutter.length).replace(/ +[│┃║|]$/, '').trimEnd();
+      if (!rest || /[│┃║|]/.test(rest) || PATH_TOKEN_STARTS_NEW_PATH.test(rest)) break;
+      const token = /^[^\s"'<>|;&│┃║]+/.exec(rest)?.[0];
+      if (!token || !pathContinuation(joined, token) || gutter.length + rest.length > wrapCol) break;
+      const candidate = joined + token;
+      const match = absoluteFilePathPattern().exec(candidate);
+      if (match && match.index === 0 && match[0].length > joined.length) {
+        if (!filledEdge) break;
+        segments.push({ row: r, startCol: gutter.length, endCol: gutter.length + match[0].length - joined.length });
+        return [{ path: match[0], segments }];
+      }
+      if (token !== rest || gutter.length + rest.length !== wrapCol) break;
+      segments.push({ row: r, startCol: gutter.length, endCol: wrapCol });
+      filledEdge = true;
+      joined = candidate;
+    }
+    return [];
+  };
+
   const results = [];
   for (let s = row; s >= 0 && row - s < bound; s--) {
-    for (const hit of fromStart(s)) {
+    for (const hit of [...fromStart(s), ...fromFramedStart(s)]) {
       if (hit.segments.some((seg) => seg.row === row)) results.push(hit);
     }
   }
