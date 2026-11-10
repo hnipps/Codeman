@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Verify inline links through the real terminal transport
+
+**Type:** retraction
+**Touches:** `src/tmux-manager.ts`, `test/terminal-local-links.browser.test.ts`
+**Why:** The previous link fix verified direct xterm input but missed the transport used by the real Copilot session.
+**Links:** [intent](../intent/2026-11-10-copilot-inline-targets.md)
+
+The real tmux capture retained the report destination. Attached clients omitted it because they did not advertise hyperlink support, and snapshot formatting stripped it independently. Local attach clients now advertise the feature where supported. Snapshot filtering retains well-formed OSC 8 sequences and closes clipped links. Regression tests pass captured output through the formatter before clicking the rendered label. The saved Copilot row reproduced the missing target before the fix and opened its intended report after it.
+
 ## 2026-11-10 - Review a document inside the file preview
 
 **Type:** intent-refinement
