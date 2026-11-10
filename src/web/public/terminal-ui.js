@@ -921,7 +921,9 @@ Object.assign(CodemanApp.prototype, {
       }
 
       // Ctrl+V / Cmd+V: intercept before xterm sends ^V to PTY.
-      // Route through our paste trap which handles both images and text.
+      // Fine pointer: one-shot on the paste the browser delivers to this
+      // textarea. Coarse pointer: the contenteditable trap. Both handle images
+      // and text. Return false without preventDefault so the browser still pastes.
       if ((ev.ctrlKey || ev.metaKey) && ev.key === 'v' && ev.type === 'keydown') {
         if (this.activeSessionId && this._handleImagePaste) {
           this._handleImagePaste();

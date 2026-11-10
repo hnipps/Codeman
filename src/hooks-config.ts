@@ -113,7 +113,7 @@ const BACKGROUND_WAKE_MARKER_PREFIX = 'CODEMAN_BACKGROUND_REWAKE_V';
  * changes: `refreshStaleCodemanHooks` treats the absence of the CURRENT marker as
  * stale, so healed cases pick up the new script on next launch.
  */
-const BACKGROUND_WAKE_MARKER = `${BACKGROUND_WAKE_MARKER_PREFIX}3`;
+const BACKGROUND_WAKE_MARKER = `${BACKGROUND_WAKE_MARKER_PREFIX}4`;
 const SUBAGENT_STOP_GUARD_MARKER_PREFIX = 'CODEMAN_SUBAGENT_STOP_GUARD_V';
 const SUBAGENT_STOP_GUARD_MARKER = `${SUBAGENT_STOP_GUARD_MARKER_PREFIX}1`;
 const BACKGROUND_WAKE_TIMEOUT_SECONDS = 6 * 60 * 60;
@@ -133,6 +133,12 @@ const BACKGROUND_WAKE_TIMEOUT_SECONDS = 6 * 60 * 60;
  * rely on it. It exits on its own deadline (same budget) and when orphaned
  * (`ppid === 1`), so a dead session cannot leave a poller stat-ing the transcript
  * forever. The ppid check misses subreaper setups; the deadline is the backstop.
+ *
+ * Claude Code is the only host that writes the `queue-operation` completion and
+ * the only one that honours `asyncRewake`. Other CLIs load this same settings
+ * file, ignore `asyncRewake`, and run the helper in the foreground. A background
+ * shell there would block the turn until the deadline. The helper therefore
+ * returns at once unless the transcript path has a `.claude` directory segment.
  */
 export function generateBackgroundWakeScript(): string {
   return [
@@ -167,6 +173,9 @@ export function generateBackgroundWakeScript(): string {
     'const taskId = findTaskId(input.tool_response);',
     "const transcriptPath = typeof input.transcript_path === 'string' ? input.transcript_path : '';",
     'if (!taskId || !transcriptPath) process.exit(0);',
+    '// Only Claude Code transcripts live under a `.claude` directory. Anywhere else',
+    '// there is no queue-operation to wait for, and waiting blocks the caller.',
+    "if (!transcriptPath.split(path.sep).includes('.claude')) process.exit(0);",
     'const transcriptPaths = [transcriptPath];',
     'const sessionDir = path.dirname(path.dirname(transcriptPath));',
     "if (typeof input.agent_id === 'string' && path.basename(path.dirname(transcriptPath)) === 'subagents' &&",

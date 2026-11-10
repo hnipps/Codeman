@@ -2,6 +2,32 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Background rewake waits only on a Claude transcript
+
+**Type:** intent-refinement
+**Touches:** `src/hooks-config.ts`, `docs/claude-code-hooks-reference.md`
+**Why:** A cancelled PostToolUse hook blocked the turn. The helper was polling for a Claude `queue-operation` line in a transcript that never gets one.
+**Links:** [Background rewake intent](../intent/2026-11-10-background-rewake-claude-only.md)
+
+The helper still watches Claude transcripts and still exits 2 when the matching
+background command finishes. It returns at once unless the transcript path has a
+`.claude` directory segment. `asyncRewake` stays, because Claude is the client
+that honours it. The marker is `CODEMAN_BACKGROUND_REWAKE_V4` so an installed
+copy of the previous script is replaced in place.
+
+## 2026-11-10 - Desktop Cmd+V must not focus a paste trap
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/image-input.js`, `src/web/public/terminal-ui.js`, `src/web/public/terminal-tile.js`
+**Why:** Cmd+V on a desktop focused a hidden contenteditable and left it focused, which pops the platform editing toolbar and can insert the clipboard twice.
+**Links:** [Desktop paste intent](../intent/2026-11-10-desktop-paste-once.md)
+
+A fine primary pointer arms a one-shot listener on the paste the browser already
+delivers to the terminal. A coarse pointer and Android keep the contenteditable
+trap and `execCommand('paste')`, because those engines were the reason the trap
+exists. Linux Meta+V is not the paste chord, so that press inserts nothing and
+must not move focus.
+
 ## 2026-11-10 - Verify inline links through the real terminal transport
 
 **Type:** retraction
