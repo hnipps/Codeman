@@ -283,9 +283,13 @@ describe('TmuxManager (unit)', () => {
   });
 
   describe('getAttachArgs', () => {
+    beforeEach(() => {
+      mockedExecSync.mockReturnValue('tmux 3.4\n');
+    });
+
     it('should attach every session through the dedicated Codeman socket', () => {
       const args = manager.getAttachArgs('codeman-abc12345');
-      expect(args).toEqual(['-L', 'codeman', 'attach-session', '-t', 'codeman-abc12345']);
+      expect(args).toEqual(['-L', 'codeman', '-T', 'hyperlinks', 'attach-session', '-t', 'codeman-abc12345']);
     });
 
     it('should attach registered sessions on the same dedicated socket (no per-session socket)', () => {
@@ -300,7 +304,46 @@ describe('TmuxManager (unit)', () => {
       });
 
       const args = manager.getAttachArgs('codeman-abc12345');
-      expect(args).toEqual(['-L', 'codeman', 'attach-session', '-t', 'codeman-abc12345']);
+      expect(args).toEqual(['-L', 'codeman', '-T', 'hyperlinks', 'attach-session', '-t', 'codeman-abc12345']);
+    });
+
+    it.each([
+      ['tmux 3.1\n', false],
+      ['tmux 3.2a\n', true],
+      ['tmux 3.4\n', true],
+      ['tmux 4.0\n', true],
+      ['unknown', false],
+    ])('advertises client features only when supported by %s', (version, supported) => {
+      mockedExecSync.mockReturnValue(version);
+      expect(manager.getAttachArgs('codeman-abc12345')).toEqual([
+        '-L',
+        'codeman',
+        ...(supported ? ['-T', 'hyperlinks'] : []),
+        'attach-session',
+        '-t',
+        'codeman-abc12345',
+      ]);
+    });
+
+    it('keeps legacy attach arguments when the version probe fails', () => {
+      mockedExecSync.mockImplementation(() => {
+        throw new Error('tmux version unavailable');
+      });
+      expect(manager.getAttachArgs('codeman-abc12345')).toEqual([
+        '-L',
+        'codeman',
+        'attach-session',
+        '-t',
+        'codeman-abc12345',
+      ]);
+    });
+
+    it('probes the tmux version once across attach requests', () => {
+      manager.getAttachArgs('codeman-abc12345');
+      manager.getAttachArgs('codeman-def67890');
+      expect(mockedExecSync.mock.calls.filter(([cmd]) => typeof cmd === 'string' && cmd.endsWith(' -V'))).toHaveLength(
+        1
+      );
     });
   });
 
@@ -414,6 +457,54 @@ describe('TmuxManager (unit)', () => {
       expect(snapshot).not.toContain('\x1b[2K');
       expect(snapshot).not.toContain('\x1b[10;20H');
     });
+
+    it.each(['\x07', '\x1b\\'])('preserves Copilot hyperlink targets terminated with %j', (terminator) => {
+      const opener = `\x1b]8;id=report;/tmp/report.md${terminator}`;
+      const closer = `\x1b]8;;${terminator}`;
+      const snapshot = formatPaneSnapshot([`\x1b[4m\x1b[36m${opener}Read the report\x1b[0m${closer}.`], {
+        cols: 90,
+        rows: 2,
+        cursorX: 0,
+        cursorY: 1,
+      });
+
+      expect(snapshot).toContain(`${opener}Read the report\x1b[0m${closer}.`);
+    });
+
+    it('closes a hyperlink clipped at the pane edge before repainting the next row', () => {
+      const opener = '\x1b]8;id=report;/tmp/report.md\x1b\\';
+      const closer = '\x1b]8;;\x1b\\';
+      const snapshot = formatPaneSnapshot([`${opener}Read the report${closer}`, 'next'], {
+        cols: 4,
+        rows: 2,
+        cursorX: 0,
+        cursorY: 1,
+      });
+
+      expect(snapshot).toBe(`\x1b[1;1H${opener}Read${closer}\x1b[2;1Hnext\x1b[2;1H`);
+    });
+
+    it('strips other OSC controls and malformed hyperlink sequences', () => {
+      const snapshot = formatPaneSnapshot(
+        ['\x1b]52;c;clipboard\x07\x1b]8;missing-separator\x07before\x1b]8;id=bad;/tmp/\tfile.md\x07after'],
+        { cols: 90, rows: 1, cursorX: 0, cursorY: 0 }
+      );
+
+      expect(snapshot).toBe('\x1b[1;1Hbeforeafter\x1b[1;1H');
+    });
+
+    it.each(['\x80', '\x85', '\x9b', '\x9c', '\x9f', '\x9c\x9b2J'])(
+      'rejects C1 controls inside hyperlink targets',
+      (control) => {
+        const snapshot = formatPaneSnapshot([`before\x1b]8;;/tmp/report.md${control}\x1b\\after`], {
+          cols: 90,
+          rows: 1,
+          cursorX: 0,
+          cursorY: 0,
+        });
+        expect(snapshot).toBe('\x1b[1;1Hbeforeafter\x1b[1;1H');
+      }
+    );
 
     it('truncates styled rows by visible columns without cutting SGR escapes', () => {
       const snapshot = formatPaneSnapshot(['\x1b[31mabcdef\x1b[0m'], {
