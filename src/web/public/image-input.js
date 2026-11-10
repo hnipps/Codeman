@@ -1,9 +1,13 @@
 /**
  * Image Input Mixin - Clipboard paste and drag-and-drop image support
  *
- * For paste: intercepts Ctrl+V at the xterm keyboard level, creates a temporary
- * hidden contenteditable div ("paste trap"), lets the browser's native paste fill
- * it, then checks for image data. This works on HTTP (no secure context needed).
+ * For paste: intercepts Ctrl+V / Cmd+V at the xterm keyboard level. A coarse
+ * pointer (phones, and a desktop measurement cannot speak for those engines)
+ * still focuses a hidden contenteditable ("paste trap") and reads the paste
+ * event that lands there. A fine primary pointer does not: focusing that trap
+ * is what pops the platform editing toolbar on Cmd+V, and the key's own paste
+ * already arrives on the terminal textarea. Both paths read image blobs off
+ * the paste event, so neither needs the Clipboard API. Works on HTTP.
  *
  * For drag-and-drop: listens on the terminal container for file drops.
  *
@@ -190,72 +194,145 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
-  // Called from customKeyEventHandler in terminal-ui.js on Ctrl+V keydown.
-  // Creates a hidden paste trap, lets the browser paste into it, then inspects
-  // the result for images. Works on plain HTTP (no Clipboard API needed).
-  // `target` names the terminal the Ctrl+V came from and its session; both
-  // default to the primary pane. A second terminal (the split pane) passes its
-  // own. Images upload to THAT session. Plain text goes to that pane's session
-  // as a Codeman-built bracketed-paste frame: the terminal is only refocused
-  // and receives input(framed). onData delivers the frame; it is not written
-  // into the xterm buffer.
+  // Called from customKeyEventHandler in terminal-ui.js and terminal-tile.js
+  // on Ctrl+V / Cmd+V keydown. `target` names the terminal the chord came from
+  // and its session; both default to the primary pane. A second terminal (the
+  // split pane, a grid tile) passes its own. Images upload to THAT session.
+  // Plain text goes to that pane as a Codeman-built bracketed-paste frame via
+  // terminal.input(framed). onData delivers the frame; it is not written into
+  // the xterm buffer.
+  //
+  // A fine primary pointer never focuses a contenteditable. Cmd+V on a desktop
+  // is not always the platform paste chord (Linux Chromium), execCommand('paste')
+  // dispatches nothing there, and the trap then stays focused. That focused
+  // editable is what pops the platform editing toolbar. The key handler still
+  // returns false, so the browser's own paste, when the chord is the platform
+  // shortcut, lands on the terminal textarea that already has focus. This arms
+  // a one-shot capture listener for that event and moves nothing.
+  //
+  // A coarse pointer, and any engine this cannot classify (the unit sandbox,
+  // mobile WebViews), keeps the trap. Some of those engines only deliver the
+  // clipboard through execCommand('paste') into the focused editable, and the
+  // trap is where image blobs are read when the key's default action targets
+  // the element focused at keydown start.
   _handleImagePaste(target = {}) {
+    if (this._pasteUsesContentEditableTrap()) {
+      this._handleImagePasteTrap(target);
+      return;
+    }
+    this._armDesktopPaste(target);
+  },
+
+  // True when Ctrl+V / Cmd+V must focus the hidden contenteditable. A fine
+  // primary pointer that is not Android is the desktop path. Android keeps the
+  // trap even when a stylus or mouse is the fine pointer, same split as the
+  // keyCode-229 recovery. No matchMedia (tests, old engines) keeps the trap.
+  _pasteUsesContentEditableTrap() {
+    try {
+      var nav = typeof navigator !== 'undefined' ? navigator : null;
+      if (nav && /Android/i.test(nav.userAgent || '')) return true;
+      if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+      var coarse = window.matchMedia('(pointer: coarse)');
+      if (coarse && coarse.matches) return true;
+      var fine = window.matchMedia('(pointer: fine)');
+      if (fine && fine.matches === true) return false;
+      return true;
+    } catch (e) {
+      return true;
+    }
+  },
+
+  // One-shot for the paste the browser will deliver to the already-focused
+  // terminal. Extras inside the window are swallowed so a second event cannot
+  // reach xterm's own paste handler. The window is short so a later right-click
+  // Paste is not eaten. A paste that does not hit this terminal is left alone.
+  _armDesktopPaste(target = {}) {
+    var self = this;
+    var terminal = target.terminal || this.terminal;
+    var sessionId = target.sessionId || this.activeSessionId;
+    if (!this._desktopPasteCapture) {
+      this._desktopPasteCapture = function(e) {
+        var armed = self._desktopPasteArmed;
+        if (!armed) return;
+        if (!self._desktopPasteHitsArmedTerminal(e, armed.terminal)) return;
+        e.stopPropagation();
+        e.preventDefault();
+        if (armed.consumed) return;
+        armed.consumed = true;
+        self._applyClipboardPaste(e, armed.terminal, armed.sessionId);
+      };
+      document.addEventListener('paste', this._desktopPasteCapture, true);
+    }
+    if (this._desktopPasteTimer) clearTimeout(this._desktopPasteTimer);
+    this._desktopPasteArmed = { terminal: terminal, sessionId: sessionId, consumed: false };
+    this._desktopPasteTimer = setTimeout(function() {
+      self._desktopPasteArmed = null;
+      self._desktopPasteTimer = null;
+    }, 300);
+  },
+
+  _desktopPasteHitsArmedTerminal(event, terminal) {
+    if (!terminal || !terminal.element) return true;
+    var target = event.target;
+    if (!target) return true;
+    if (target === terminal.element) return true;
+    if (typeof terminal.element.contains === 'function' && terminal.element.contains(target)) return true;
+    var textarea = terminal.textarea;
+    if (textarea && target === textarea) return true;
+    return false;
+  },
+
+  _applyClipboardPaste(e, terminal, sessionId) {
+    var pastedFiles = [];
+    var items = e.clipboardData && e.clipboardData.items;
+    if (items) {
+      for (var i = 0; i < items.length; i++) {
+        var blob = items[i].getAsFile();
+        if (blob) pastedFiles.push(blob);
+      }
+    }
+    var text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+    var imageFiles = this._admitPromptAttachments(pastedFiles, { textPasted: !!text });
+    if (imageFiles.length > 0) {
+      this._uploadAndInsertImages(imageFiles, { sessionId: sessionId });
+    } else if (text && terminal) {
+      this._inputPastedText(terminal, text);
+    }
+  },
+
+  // Hidden contenteditable trap. One Ctrl+V can deliver TWO paste events here.
+  // execCommand('paste') fires one wherever the browser honours that command,
+  // and the key's own default action fires another, because xterm's custom key
+  // handler returns false without cancelling the keydown. Handling both sends
+  // the clipboard to the PTY twice. The context-menu paste has no keydown, so
+  // it only ever produces one event and never comes through here. The trap
+  // accepts the first paste and drops every later one.
+  _handleImagePasteTrap(target = {}) {
     const self = this;
     const terminal = target.terminal || this.terminal;
     const sessionId = target.sessionId || this.activeSessionId;
 
-    // Create a hidden contenteditable div to receive the paste
     const trap = document.createElement('div');
     trap.contentEditable = 'true';
     trap.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;overflow:hidden';
     document.body.appendChild(trap);
     trap.focus();
 
-    // One Ctrl+V can deliver TWO paste events to this trap. The
-    // execCommand('paste') below fires one wherever the browser honours that
-    // command, and the key's own default action fires another, because xterm's
-    // custom key handler returns false without cancelling the keydown. Handling
-    // both sends the clipboard text to the PTY twice, which is the "Ctrl+V
-    // pastes twice, right-click Paste does not" report: the context-menu paste
-    // has no keydown, so it only ever produces one event. The trap therefore
-    // accepts the first paste and drops every later one.
     var pasteConsumed = false;
-
-    // Listen for the paste event on our trap
     trap.addEventListener('paste', function(e) {
       e.stopPropagation();
       e.preventDefault();
       if (pasteConsumed) return;
       pasteConsumed = true;
 
-      // Check for images, videos or documents in clipboard items
-      var pastedFiles = [];
-      var items = e.clipboardData && e.clipboardData.items;
-      if (items) {
-        for (var i = 0; i < items.length; i++) {
-          var blob = items[i].getAsFile();
-          if (blob) pastedFiles.push(blob);
-        }
-      }
-      var text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
-      var imageFiles = self._admitPromptAttachments(pastedFiles, { textPasted: !!text });
-
-      // Clean up the trap
       setTimeout(function() {
         if (trap.parentNode) trap.parentNode.removeChild(trap);
-        // Refocus the terminal
         if (terminal) terminal.focus();
       }, 0);
 
-      if (imageFiles.length > 0) {
-        self._uploadAndInsertImages(imageFiles, { sessionId: sessionId });
-      } else if (text && terminal) {
-        self._inputPastedText(terminal, text);
-      }
+      self._applyClipboardPaste(e, terminal, sessionId);
     });
 
-    // Trigger the browser's native paste via execCommand
-    // (this fires the paste event on our focused trap element)
     document.execCommand('paste');
   },
 
