@@ -525,6 +525,7 @@ describe('native OSC 8 terminal URLs', () => {
     const confirm = vi.fn(() => true);
     const context = vm.createContext({
       console,
+      URL: globalThis.URL,
       CodemanApp: class CodemanApp {},
       document: { addEventListener: vi.fn() },
       window: { addEventListener: vi.fn(), removeEventListener: vi.fn(), confirm },
@@ -544,11 +545,66 @@ describe('native OSC 8 terminal URLs', () => {
     handler.activate(null, 'http://localhost:3000/private');
     expect(confirm).toHaveBeenLastCalledWith('Open this link?\n\nhttp://localhost:3000/private');
     expect(open).toHaveBeenCalledTimes(1);
-    for (const unsafe of ['javascript:alert(1)', 'data:text/html,hello', 'file:///etc/passwd']) {
+    for (const unsafe of ['javascript:alert(1)', 'data:text/html,hello', 'file://remote/tmp/report.md']) {
       handler.activate(null, unsafe);
     }
     expect(open).toHaveBeenCalledTimes(1);
     expect(confirm).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('native OSC 8 local files', () => {
+  it('opens local paths against the pane session at activation time and rejects unsafe targets', () => {
+    const confirm = vi.fn(() => true);
+    const context = vm.createContext({
+      console,
+      URL: globalThis.URL,
+      CodemanApp: class CodemanApp {},
+      document: { addEventListener: vi.fn() },
+      window: { confirm },
+    });
+    vm.runInContext(`${CONSTANTS}\n${TERMINAL_UI}\nglobalThis.__proto = CodemanApp.prototype;`, context);
+    const proto = (
+      context as unknown as {
+        __proto: {
+          _terminalOsc8LinkHandler: (getSessionId: () => string) => {
+            allowNonHttpProtocols: boolean;
+            activate: (event: unknown, target: string) => void;
+          };
+        };
+      }
+    ).__proto;
+    const preview = vi.fn();
+    let session = 'pane-before';
+    const handler = proto._terminalOsc8LinkHandler.call(
+      { openFilePreview: preview, _resolveLinkedFilePath: (path: string) => path },
+      () => session
+    );
+    expect(handler.allowNonHttpProtocols).toBe(true);
+    session = 'pane-after';
+    for (const target of ['/tmp/report.md', 'file:///tmp/report%20one.md', 'file://localhost/tmp/report.md'])
+      handler.activate(null, target);
+    expect(preview.mock.calls).toEqual([
+      ['/tmp/report.md', 'pane-after'],
+      ['/tmp/report one.md', 'pane-after'],
+      ['/tmp/report.md', 'pane-after'],
+    ]);
+    for (const unsafe of [
+      'file://remote/tmp/report.md',
+      'file:///tmp/%00.md',
+      'file:///tmp/%xx.md',
+      'file:///tmp/report.md?q=1',
+      'file:///tmp/report.md#x',
+      '//remote/tmp/report.md',
+      'javascript:alert(1)',
+      'data:text/html,hello',
+    ])
+      handler.activate(null, unsafe);
+    expect(preview).toHaveBeenCalledTimes(3);
+    expect(confirm).toHaveBeenCalledTimes(3);
+    confirm.mockReturnValue(false);
+    handler.activate(null, '/tmp/rejected.md');
+    expect(preview).toHaveBeenCalledTimes(3);
   });
 });
 

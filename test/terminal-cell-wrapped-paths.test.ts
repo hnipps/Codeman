@@ -115,6 +115,46 @@ const AFTER = '/tmp/demo-check/docs/review/BLDMESH-243/after-overview.png';
 describe('terminalCellWrappedPaths', () => {
   const find = loadPure();
 
+  it.each(['┃', '│', '|'])('joins arbitrary path splits inside a %s TUI gutter', (border) => {
+    const path =
+      '/tmp/agent-link-fixtures/.copilot/session-state/00000000-0000-4000-8000-000000000000/files/temporal-actionable-contribution/TEMPORAL-REPORT.md';
+    const rows = [path.slice(0, 58), path.slice(58, 116), path.slice(116)].map((part) => ({
+      text: `${border}   ${part}`,
+    }));
+    for (let row = 0; row < rows.length; row++) {
+      const hits = find(fakeBuffer(rows, COLS), row, 12);
+      expect(hits.map((hit) => hit.path)).toEqual([path]);
+      expect(hits[0].segments.map((seg) => rows[seg.row].text.slice(seg.startCol, seg.endCol)).join('')).toBe(path);
+    }
+  });
+
+  it('joins two bordered rows only when the first fills the terminal width', () => {
+    const path = '/home/user/project/long-directory/report.md';
+    const rows = [{ text: `┃   ${path.slice(0, 26)}` }, { text: `┃   ${path.slice(26)}` }];
+    for (const row of [0, 1]) expect(find(fakeBuffer(rows, 30), row, 12).map((hit) => hit.path)).toEqual([path]);
+  });
+
+  it('does not cross a changed gutter, a new path, or an incomplete short row', () => {
+    for (const rows of [
+      ['┃   /home/user/project', '┃   notes.md'],
+      ['┃   /home/u/long-directory/frag', '│   ment/report.md'],
+      ['┃   /home/u/long-directory/frag', '┃   /tmp/report.md'],
+      ['┃   /home/u/long-directory/frag', '┃   ment', '┃   report.md'],
+    ]) {
+      for (let row = 0; row < rows.length; row++)
+        expect(
+          find(
+            fakeBuffer(
+              rows.map((text) => ({ text })),
+              COLS
+            ),
+            row,
+            12
+          )
+        ).toEqual([]);
+    }
+  });
+
   it('joins each column’s path with its own continuation, from either row', () => {
     for (const row of [1, 2]) {
       const hits = find(fakeBuffer(TABLE, COLS), row);

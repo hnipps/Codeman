@@ -123,6 +123,15 @@ needs the detector's prompt glyph and a short command delay after delivery.
 Restart observations extend beyond the two-minute restore grace period.
 This is not a CI gate or coverage of simultaneous first lease acquisition.
 
+## 2026-11-10 — Terminal links retain local targets across Copilot rows
+
+**Type:** propagated-discovery
+**Touches:** `src/web/public/constants.js`, `src/web/public/terminal-ui.js`, `src/web/public/terminal-tile.js`
+**Why:** Copilot's inline report links were inert, and its vertical gutter split long file paths into links to unrelated folders or relative files.
+**Links:** [intent](../intent/2026-11-10-agent-response-links.md)
+
+Local OSC 8 targets use the guarded file preview with the originating terminal's session. Bordered paths use mapped row segments so every fragment opens the complete target without changing selection text. Real browser clicks reproduced the failures before the fix.
+
 ## 2026-11-08 — Idle respawn has two usage backstops
 
 **Type:** intent-refinement

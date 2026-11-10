@@ -2243,7 +2243,7 @@ Object.assign(CodemanApp.prototype, {
         // linear stitch above cannot do for a multi-column table, so they are
         // found from the buffer directly and claim their cells over the rest.
         const cellWrappedPaths = (
-          window.CodemanTerminalLines?.terminalCellWrappedPaths?.(buffer, bufferLineNumber - 1, 4) ?? []
+          window.CodemanTerminalLines?.terminalCellWrappedPaths?.(buffer, bufferLineNumber - 1, MAX_STITCHED_ROWS) ?? []
         ).filter((hit) => !/(^|\/)\.\.(\/|$)/.test(hit.path));
 
         // A path needs a `/` or an extension's `.`; a line with neither has no link.
@@ -2477,17 +2477,36 @@ Object.assign(CodemanApp.prototype, {
     return provider;
   },
 
-  /**
-   * xterm's handler for OSC 8 hyperlinks (a program's own `ESC ]8;;url` links),
-   * which take precedence over the text link provider. Routed through the same
-   * opener after confirming the real target (the label may hide it), and only
-   * for web URLs: any other scheme a program sends is ignored.
-   */
-  _terminalOsc8LinkHandler() {
+  /** Confirm hidden OSC 8 targets before opening a web tab or guarded file preview. */
+  _terminalOsc8LinkHandler(
+    getSessionId = () => this.activeSessionId,
+    setHovered = (hovered) => { this._linkHovered = hovered; }
+  ) {
     return {
+      allowNonHttpProtocols: true,
+      hover: () => setHovered(true),
+      leave: () => setHovered(false),
       activate: (_event, text) => {
-        if (!/^https?:\/\/[^\s\x00-\x1f]+$/i.test(text)) return;
-        if (window.confirm(`Open this link?\n\n${text}`)) this._openTerminalUrl(text);
+        if (typeof text !== 'string' || /[\x00-\x1f\x7f]/.test(text)) return;
+        if (/^https?:\/\/[^\s]+$/i.test(text)) {
+          if (window.confirm(`Open this link?\n\n${text}`)) this._openTerminalUrl(text);
+          return;
+        }
+        let path = text;
+        if (/^file:/i.test(text)) {
+          try {
+            const url = new URL(text);
+            if ((url.hostname && url.hostname !== 'localhost') || url.username || url.password || url.search || url.hash)
+              return;
+            path = decodeURIComponent(url.pathname);
+          } catch {
+            return;
+          }
+        }
+        if (!/^\/(?!\/)/.test(path) || /[\x00-\x1f\x7f]/.test(path)) return;
+        if (!window.confirm(`Open this link?\n\n${text}`)) return;
+        const sessionId = getSessionId();
+        this.openFilePreview(this._resolveLinkedFilePath(path, sessionId), sessionId);
       },
     };
   },
@@ -2517,33 +2536,33 @@ Object.assign(CodemanApp.prototype, {
    * that made `window.open` permissible is gone.
    */
   _terminalLinkAtPoint(clientX, clientY) {
-    const provider = this._terminalLinkProvider;
     const buffer = this.terminal?.buffer?.active;
-    if (!provider || !buffer) return null;
+    if (!buffer) return null;
     const pos = this._clientPointToCell(clientX, clientY);
     if (!pos) return null;
-    // Link ranges are 1-based ABSOLUTE buffer lines (xterm adds ydisp to the
-    // viewport row before asking), which is what the provider's coordAt() emits.
     const y = (buffer.viewportY || 0) + pos.row;
-    let links = null;
-    try {
-      provider.provideLinks(y, (result) => {
-        links = result || [];
-      });
-    } catch {
-      return null;
-    }
-    if (!links || links.length === 0) return null;
     const cols = Math.max(1, this.terminal.cols || 1);
     const current = y * cols + pos.col;
-    return (
-      links.find((link) => {
+    // xterm has no public lookup for OSC 8 targets. Its native provider owns
+    // hidden labels and takes the same precedence here as it does for a mouse.
+    const native = this.terminal?._core?._linkProviderService?.linkProviders?.[0];
+    for (const provider of [native, this._terminalLinkProvider]) {
+      if (!provider) continue;
+      let links = null;
+      try {
+        provider.provideLinks(y, (result) => { links = result || []; });
+      } catch {
+        continue;
+      }
+      const found = links?.find((link) => {
         const start = link?.range?.start;
         const end = link?.range?.end;
         if (!start || !end) return false;
         return start.y * cols + start.x <= current && current <= end.y * cols + end.x;
-      }) || null
-    );
+      });
+      if (found) return found;
+    }
+    return null;
   },
 
   /**
