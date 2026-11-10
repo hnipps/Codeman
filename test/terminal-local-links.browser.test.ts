@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 const xtermScript = require.resolve('@xterm/xterm');
 const publicRoot = resolve(import.meta.dirname, '../src/web/public');
 const reportPath =
-  '/home/codeman/.copilot/session-state/dccb5cea-61ce-4355-a343-6e2e92836ff8/files/temporal-actionable-contribution/TEMPORAL-REPORT.md';
+  '/tmp/agent-link-fixtures/.copilot/session-state/00000000-0000-4000-8000-000000000000/files/temporal-actionable-contribution/TEMPORAL-REPORT.md';
 
 type Opened = { kind: 'file' | 'log' | 'folder'; file: string; session: string } | { kind: 'url'; url: string };
 

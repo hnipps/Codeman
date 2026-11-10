@@ -117,7 +117,7 @@ describe('terminalCellWrappedPaths', () => {
 
   it.each(['┃', '│', '|'])('joins arbitrary path splits inside a %s TUI gutter', (border) => {
     const path =
-      '/home/codeman/.copilot/session-state/dccb5cea-61ce-4355-a343-6e2e92836ff8/files/temporal-actionable-contribution/TEMPORAL-REPORT.md';
+      '/tmp/agent-link-fixtures/.copilot/session-state/00000000-0000-4000-8000-000000000000/files/temporal-actionable-contribution/TEMPORAL-REPORT.md';
     const rows = [path.slice(0, 58), path.slice(58, 116), path.slice(116)].map((part) => ({
       text: `${border}   ${part}`,
     }));
