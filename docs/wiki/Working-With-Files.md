@@ -14,7 +14,7 @@ It renders what it can:
 | Kind                     | Behaviour                                                                 |
 | ------------------------ | ------------------------------------------------------------------------- |
 | Text and code            | Plain preview with Lines (line numbers) and Wrap toggles in the header. Long files are truncated in plain preview. |
-| Markdown                 | Rendered by default: headings, tables, code blocks with copy buttons, images and links relative to the file (root-relative ones resolve from the workspace root, as on GitHub). Links to another heading of the same file (`[Install](#installation)`) scroll to it, with GitHub's heading names (lower-case, punctuation dropped, repeats numbered `-1`, `-2`), and never leave the page. Opened from an attachment card, where the file's folder is unknown, relative images show their alt text and relative links show as plain text. The MD pill in the header flips to source. |
+| Markdown                 | Rendered by default: headings, tables, code blocks with copy buttons, images and links relative to the file (root-relative ones resolve from the workspace root, as on GitHub). Links to another heading of the same file (`[Install](#installation)`) scroll to it, with GitHub's heading names (lower-case, punctuation dropped, repeats numbered `-1`, `-2`), and never leave the page. Opened from an attachment card, where the file's folder is unknown, relative images show their alt text and relative links show as plain text. The MD pill in the header flips to source. The Review pill lets you comment on it for the agent (see [Reviewing a document](#reviewing-a-document)). |
 | Images                   | Inline.                                                                    |
 | Audio and video          | Inline with a working scrub bar, because range requests are supported.     |
 | Spreadsheets (`.xlsx`)   | Read-only grid, parsed in your browser (never on the server), up to 10 MB. `.xls` and `.ods` are download only. |
@@ -59,6 +59,15 @@ convenient:
 - **`.git/` is denied outright.** Hooks are executable code, and a corrupted index looks
   unrecoverable to someone who wanted to fix a typo.
 - **Non-UTF-8 content is refused**, verified by a round-trip comparison.
+
+## Reviewing a document
+
+Open a Markdown file from a session and press **Review** in the header. Select some text and press
+**Comment** to attach a note to it; your comments are highlighted in the document and listed
+underneath, and tapping one lets you change or delete it. **Send feedback** saves your comments as a
+file in the session's upload folder and tells the agent to read it, and **Approve** does the same
+with your approval. Nothing is sent until you press one of the two. An unsent review is kept on
+that device, and it is not available for a remote (SSH) session.
 
 ## Attachments
 
