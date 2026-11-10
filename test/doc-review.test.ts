@@ -1,28 +1,4 @@
-/**
- * @fileoverview Document review: comments on a rendered Markdown preview, sent
- * to the preview's session as a feedback file plus a one-line prompt.
- *
- * What is pinned, and why:
- * - The pure core (`CodemanDocReview` in doc-review.js): an anchor made from
- *   offsets locates the same text again, a repeated quote is told apart by its
- *   surrounding text, and a quote that is gone locates nowhere (the comment is
- *   then sent marked as stale, never dropped and never attached elsewhere).
- * - Limits refuse; nothing is shortened to fit.
- * - `parseDraft` is the boundary: malformed storage reads as no draft.
- * - `promptLine` is one line of printable text whatever the paths hold, so
- *   with its `\r` it is the plain prompt the server pastes and then submits.
- * - The DOM half never builds markup from text: no `innerHTML` in the module,
- *   and a comment or quote that looks like markup stays text.
- * - Highlights wrap text without changing it, skip viewer chrome, and are
- *   gone again when the view changes; the draft outlives that.
- * - Sending goes to the PREVIEW's session, clears the draft only after the
- *   upload and the prompt both succeeded, and a retry does not upload twice.
- * - A bare attachment name and a remote session cannot be reviewed.
- *
- * The real module runs in a `vm` context over a JSDOM window.
- *
- * Port: none.
- */
+/** Document review behavior using the real module in JSDOM. */
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -239,8 +215,6 @@ describe('doc-review.js (static)', () => {
   });
 });
 
-// ─────────────────────────────── DOM half ───────────────────────────────
-
 const DOC_HTML =
   '<h1>Plan</h1><p>Flush the cache first, then <strong>restart</strong> the server.</p>' +
   '<div class="rv-code-wrap"><div class="rv-code-actions"><button class="rv-copy-btn">Copy</button></div>' +
@@ -301,7 +275,6 @@ function mount(opts: { stored?: Draft; remote?: boolean; filePath?: string; atta
   return { app, core, window, document, root, key, fetchMock, q };
 }
 
-/** Select `needle` inside the document and let the debounced handler see it. */
 function selectText(m: ReturnType<typeof mount>, needle: string) {
   const walker = m.document.createTreeWalker(m.root, m.window.NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -468,6 +441,16 @@ describe('document review in the file preview', () => {
     expect(m.app.showToast).toHaveBeenCalledWith(expect.stringContaining('text changed'), 'info');
   });
 
+  it('opens restored comments whose ids contain selector characters', () => {
+    const m = mount({
+      stored: { v: 1, contentHash: 'h', overall: '', comments: [comment({ id: 'quote"[id]' })] },
+    });
+    m.app.toggleDocReview();
+    m.q('.doc-review-item')!.click();
+    expect((m.q('.doc-review-input') as HTMLTextAreaElement).value).toBe('Which cache?');
+    expect(m.q('.doc-review-composer')!.hidden).toBe(false);
+  });
+
   it('tears down when the view changes and keeps the draft', () => {
     const m = mount();
     m.app.toggleDocReview();
@@ -518,6 +501,55 @@ describe('document review in the file preview', () => {
     expect(m.app._docReview).toBeNull();
     expect(m.root.querySelector('mark')).toBeNull();
     expect(m.app.showToast).toHaveBeenLastCalledWith(expect.stringContaining('sent'), 'success');
+  });
+
+  it('keeps edits made while feedback uploads and sends the original snapshot', async () => {
+    const m = mount();
+    m.app.toggleDocReview();
+    addComment(m, 'the cache', 'Which cache?');
+    const upload = Promise.withResolvers<string>();
+    m.app._uploadPasteImage.mockReturnValueOnce(upload.promise);
+    const sending = m.app._sendDocReview('changes');
+    const overall = m.q('.doc-review-overall') as HTMLTextAreaElement;
+    overall.value = 'One more point after Send.';
+    overall.dispatchEvent(new m.window.Event('input'));
+    upload.resolve('/work/app/.codeman-uploads/review-plan.md');
+    await sending;
+
+    const uploaded = await m.app._uploadPasteImage.mock.calls[0][1].text();
+    expect(uploaded).not.toContain('One more point after Send.');
+    expect(m.core.parseDraft(m.window.localStorage.getItem(m.key))!.overall).toBe('One more point after Send.');
+    expect(m.q('.doc-review-bar')).not.toBeNull();
+    expect((m.document.querySelector('.doc-review-bar .doc-review-btn--primary') as HTMLButtonElement).disabled).toBe(
+      false
+    );
+    expect(m.app.showToast).toHaveBeenLastCalledWith(expect.stringContaining('newer edits were kept'), 'success');
+
+    await m.app._sendDocReview('changes');
+    expect(m.app._uploadPasteImage).toHaveBeenCalledTimes(2);
+    expect(await m.app._uploadPasteImage.mock.calls[1][1].text()).toContain('One more point after Send.');
+    expect(m.window.localStorage.getItem(m.key)).toBeNull();
+  });
+
+  it('keeps a reopened draft changed while the previous prompt is pending', async () => {
+    const m = mount();
+    m.app.toggleDocReview();
+    addComment(m, 'the cache', 'Which cache?');
+    const response = Promise.withResolvers<Awaited<ReturnType<typeof m.fetchMock>>>();
+    m.fetchMock.mockReturnValueOnce(response.promise);
+    const sending = m.app._sendDocReview('changes');
+    await vi.waitFor(() => expect(m.fetchMock).toHaveBeenCalledTimes(1));
+    m.app.toggleDocReview();
+    m.app.toggleDocReview();
+    addComment(m, 'restart', 'Can this wait?');
+    response.resolve({ ok: true, status: 200, json: async () => ({}) });
+    await sending;
+
+    const uploaded = await m.app._uploadPasteImage.mock.calls[0][1].text();
+    expect(uploaded).not.toContain('Can this wait?');
+    const stored = m.core.parseDraft(m.window.localStorage.getItem(m.key))!;
+    expect(stored.comments.map((entry) => entry.body)).toEqual(['Which cache?', 'Can this wait?']);
+    expect(m.document.querySelectorAll('.doc-review-item')).toHaveLength(2);
   });
 
   it('keeps the draft when the prompt fails, and a retry does not upload again', async () => {

@@ -23,6 +23,7 @@ Nothing new runs. The document is rendered by the existing sanitised Markdown pi
 - The document, its quotes and the comments reach the DOM through the existing sanitiser or `textContent`. Highlights are built with DOM range calls, never from an HTML string.
 - Feedback is sent only by the user's own press. Nothing sends itself.
 - The prompt is one line of printable text, so it takes the verified plain-prompt path.
+- A successful send clears only the draft snapshot it sent. Edits made during upload or prompt delivery stay as an unsent draft, including after closing and reopening Review.
 - An unsent draft survives a reload on that device. It is per-device `localStorage`, keyed by session and file, never a synced setting. A draft is removed once its session is gone.
 - A remote session cannot take a prompt upload, so Review is refused there with a message.
 - A preview opened from an attachment card under a bare file name has no path to name, so Review is not offered there.

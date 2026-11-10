@@ -5200,8 +5200,6 @@ Object.assign(CodemanApp.prototype, {
     set('filePreviewPageBtn', view === 'page' || htmlSource, view === 'page');
     set('filePreviewLinesBtn', view === 'text', this._filePreviewPref('lineNumbers'));
     set('filePreviewWrapBtn', view === 'text', this._filePreviewPref('wrap'));
-    // Review (doc-review.js) is offered on a rendered document only, and any
-    // other view tears an open review down.
     this._syncDocReviewToolbar?.(view);
   },
 

@@ -18,6 +18,9 @@ instead of being dropped. The prompt is sent without `useMux`, because the
 route's automatic plain-prompt branch is the one that waits for Enter and can
 report a failure. Drafts are keyed by session and path in `localStorage`, so
 a review belongs to the agent that will receive it and is pruned with it.
+A send owns the draft snapshot present when the user pressed Send. Its
+completion clears only that snapshot, so notes written while the upload or
+prompt is pending remain a draft, even if Review was closed and reopened.
 
 ## 2026-11-09 - Publish the Agentic Canvas source documents
 

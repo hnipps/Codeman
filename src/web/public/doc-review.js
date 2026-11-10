@@ -1,31 +1,4 @@
-/**
- * @fileoverview Document review: comment on a rendered Markdown preview and
- * send the feedback to the session that owns the file.
- *
- * Two halves. `window.CodemanDocReview` is a pure core with no DOM (anchors,
- * the draft's boundary parse, the feedback file's text, the prompt line),
- * loaded on its own by test/doc-review.test.ts. The mixin below it is the DOM
- * half: the Review toggle in the file preview header, the selection control,
- * the composer, the highlights and the review bar.
- *
- * Rules the DOM half keeps:
- * - Nothing here builds markup from text. Highlights are text-node splits
- *   wrapped in a `<mark>`; every quote and comment reaches the page through
- *   `textContent` or `.value`.
- * - An anchor is a text-quote selector over the document's review text (its
- *   text nodes minus viewer chrome, see DOC_REVIEW_SKIP), never a DOM path, so
- *   a draft survives a re-render.
- * - Feedback is sent by the user's press only, to the PREVIEW's session
- *   (`filePreviewText.sessionId`), never `activeSessionId`.
- * - Every exit from the rendered view runs through `_updateFilePreviewToolbar`
- *   (panels-ui.js), which calls `_syncDocReviewToolbar`: that is the one
- *   teardown hook.
- *
- * @mixin Extends CodemanApp.prototype via Object.assign
- * @dependency app.js (CodemanApp), panels-ui.js (file preview, showToast),
- *   image-input.js (_uploadPasteImage)
- * @loadorder after image-input.js
- */
+/** Document review for rendered Markdown previews. */
 
 (function () {
   const LIMITS = Object.freeze({
@@ -57,10 +30,6 @@
     return { v: 1, contentHash: String(contentHash ?? ''), overall: '', comments: [] };
   }
 
-  /**
-   * The anchor for `text.slice(start, end)`, trimmed of surrounding whitespace.
-   * Null for a range that is out of bounds or holds nothing but whitespace.
-   */
   function anchorFromOffsets(text, start, end) {
     if (typeof text !== 'string' || !Number.isInteger(start) || !Number.isInteger(end)) return null;
     if (start < 0 || end > text.length || start >= end) return null;
@@ -74,11 +43,6 @@
     };
   }
 
-  /**
-   * Where the anchor's quote sits in `text`, or null when the quote is gone.
-   * Among several occurrences the one whose surrounding text agrees most with
-   * the stored prefix and suffix wins; the earliest wins a tie.
-   */
   function locate(text, anchor) {
     const quote = anchor?.quote;
     if (typeof text !== 'string' || typeof quote !== 'string' || !quote) return null;
@@ -100,10 +64,6 @@
     return best;
   }
 
-  /**
-   * Why a comment cannot be stored, or '' when it can. `isNew` counts it
-   * against the comment cap. Nothing is ever shortened to fit.
-   */
   function commentRefusal(draft, { quote, body, isNew }) {
     if (isNew && draft.comments.length >= LIMITS.MAX_COMMENTS) {
       return `A review holds at most ${LIMITS.MAX_COMMENTS} comments`;
@@ -121,10 +81,6 @@
 
   const isBoundedString = (value, max) => typeof value === 'string' && value.length <= max;
 
-  /**
-   * Boundary parse for a stored draft: a fresh, valid ReviewDraft, or null for
-   * anything else. Code past this point trusts the shape.
-   */
   function parseDraft(raw) {
     let data = raw;
     if (typeof raw === 'string') {
@@ -157,7 +113,6 @@
     return `${STORAGE_PREFIX}${sessionId}:${filePath}`;
   }
 
-  /** The session id a storage key was made for, or null for a foreign key. */
   function storageKeySession(key) {
     if (typeof key !== 'string' || !key.startsWith(STORAGE_PREFIX)) return null;
     const rest = key.slice(STORAGE_PREFIX.length);
@@ -176,10 +131,6 @@
       .map((line) => (line ? `> ${line}` : '>'))
       .join('\n');
 
-  /**
-   * The Markdown feedback file. `staleIds` names the comments whose quoted text
-   * is no longer in the document; they are sent all the same, and say so.
-   */
   function formatFeedback({ filePath, verdict, draft, staleIds }) {
     const stale = new Set(staleIds || []);
     const out = [`# Review of ${oneLine(filePath)}`, ''];
@@ -200,7 +151,6 @@
     return out.join('\n');
   }
 
-  /** A path for the prompt line: one line, and its TAIL when it is too long. */
   function promptPath(value) {
     const path = oneLine(value);
     return path.length > LIMITS.PROMPT_PATH_CHARS ? `...${path.slice(-(LIMITS.PROMPT_PATH_CHARS - 3))}` : path;
@@ -390,7 +340,6 @@ if (typeof CodemanApp !== 'undefined') {
       }
     },
 
-    /** Leave Review mode. The draft stays in localStorage unless the caller cleared it. */
     _exitDocReview() {
       const state = this._docReview;
       if (!state) return;
@@ -498,9 +447,6 @@ if (typeof CodemanApp !== 'undefined') {
       });
     },
 
-    // ───────────────────────── anchors and highlights ─────────────────────────
-
-    /** The document's review text and where each of its text nodes starts in it. */
     _docReviewIndex(root) {
       const nodes = [];
       let text = '';
@@ -513,7 +459,6 @@ if (typeof CodemanApp !== 'undefined') {
       return { nodes, text };
     },
 
-    /** A DOM range as offsets into the review text, or null when it covers none of it. */
     _docReviewOffsets(range, index) {
       let start = -1;
       let end = -1;
@@ -527,7 +472,6 @@ if (typeof CodemanApp !== 'undefined') {
       return start === -1 || end <= start ? null : { start, end };
     },
 
-    /** The text of the nearest heading before the range, for the agent's benefit. */
     _docReviewHeading(root, range) {
       const max = window.CodemanDocReview.LIMITS.MAX_HEADING_CHARS;
       let found = '';
@@ -584,8 +528,6 @@ if (typeof CodemanApp !== 'undefined') {
       }
     },
 
-    // ───────────────────────── selection control ─────────────────────────
-
     _onDocReviewSelection() {
       const state = this._docReview;
       if (!state) return;
@@ -633,9 +575,6 @@ if (typeof CodemanApp !== 'undefined') {
       state.float.style.left = `${Math.round(left - host.left)}px`;
     },
 
-    // ───────────────────────── composer ─────────────────────────
-
-    /** Open the composer for a new comment (`{ anchor, heading }`) or an existing one (`{ id }`). */
     _openDocReviewComposer(target) {
       const state = this._docReview;
       if (!state || state.sending) return;
@@ -695,7 +634,6 @@ if (typeof CodemanApp !== 'undefined') {
       this._closeDocReviewComposer();
     },
 
-    /** After the comment list changed: store, repaint the highlights, redraw the bar. */
     _commitDocReviewDraft() {
       const state = this._docReview;
       if (!state) return;
@@ -713,8 +651,6 @@ if (typeof CodemanApp !== 'undefined') {
       this._paintDocReviewMarks();
       this._renderDocReviewBar();
     },
-
-    // ───────────────────────── review bar and draft ─────────────────────────
 
     _renderDocReviewBar() {
       const state = this._docReview;
@@ -737,8 +673,8 @@ if (typeof CodemanApp !== 'undefined') {
         row.append(quote, body);
         if (state.stale.has(comment.id)) row.append(el('span', 'doc-review-item-stale', 'text changed'));
         row.addEventListener('click', () => {
-          state.root
-            .querySelector(`mark.doc-review-mark[data-comment-id="${comment.id}"]`)
+          [...state.root.querySelectorAll('mark.doc-review-mark')]
+            .find((mark) => mark.dataset.commentId === comment.id)
             ?.scrollIntoView({ block: 'center' });
           this._openDocReviewComposer({ id: comment.id });
         });
@@ -764,7 +700,6 @@ if (typeof CodemanApp !== 'undefined') {
       }
     },
 
-    /** Drop the drafts of sessions that are gone; they could never be sent. */
     _pruneDocReviewDrafts() {
       if (!this.sessions?.size) return;
       try {
@@ -793,14 +728,6 @@ if (typeof CodemanApp !== 'undefined') {
       this._exitDocReview();
     },
 
-    // ───────────────────────── send ─────────────────────────
-
-    /**
-     * Upload the feedback file, then submit the one-line prompt naming it.
-     * Called from the Send feedback and Approve buttons only. The draft is
-     * cleared after BOTH steps succeeded; a failure keeps it, and a retry
-     * reuses the file an earlier attempt already uploaded.
-     */
     async _sendDocReview(verdict) {
       const state = this._docReview;
       if (!state || state.sending) return;
@@ -814,6 +741,8 @@ if (typeof CodemanApp !== 'undefined') {
         this.showToast('That session is no longer open; the review was kept', 'error');
         return;
       }
+      const sentDraft = JSON.stringify(draft);
+      const count = draft.comments.length;
       state.sending = true;
       for (const btn of [state.sendBtn, state.approveBtn, state.discardBtn]) btn.disabled = true;
       try {
@@ -827,7 +756,7 @@ if (typeof CodemanApp !== 'undefined') {
           filePath: state.filePath,
           feedbackPath: state.uploaded.path,
           verdict,
-          count: draft.comments.length,
+          count,
         });
         await this._submitDocReviewPrompt(state.sessionId, `${line}\r`);
       } catch (err) {
@@ -839,12 +768,19 @@ if (typeof CodemanApp !== 'undefined') {
         return;
       }
       try {
-        localStorage.removeItem(state.key);
+        if (localStorage.getItem(state.key) === sentDraft) localStorage.removeItem(state.key);
       } catch {
         /* storage blocked */
       }
-      if (this._docReview === state) this._exitDocReview();
-      this.showToast(verdict === 'approved' ? 'Approval sent to the agent' : 'Feedback sent to the agent', 'success');
+      const current = this._docReview;
+      const newerDraft = current?.key === state.key && JSON.stringify(current.draft) !== sentDraft;
+      if (current === state) {
+        state.sending = false;
+        for (const btn of [state.sendBtn, state.approveBtn, state.discardBtn]) btn.disabled = false;
+        if (!newerDraft) this._exitDocReview();
+      }
+      const message = verdict === 'approved' ? 'Approval sent to the agent' : 'Feedback sent to the agent';
+      this.showToast(newerDraft ? `${message}. Your newer edits were kept as a draft.` : message, 'success');
     },
 
     /**
