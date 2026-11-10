@@ -78,6 +78,8 @@ describe('xterm private-API dependency guard', () => {
       '_dataAlreadySent',
       'coreMouseService',
       'activeEncoding',
+      '_linkProviderService',
+      'linkProviders',
     ]) {
       expect(
         bundle,

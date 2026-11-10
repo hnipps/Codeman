@@ -60,6 +60,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/chat-view.browser.test.ts',
   'test/fullscreen-tab-switch-capture.browser.test.ts',
   'test/terminal-touch-swipe-axis.browser.test.ts',
+  'test/terminal-local-links.browser.test.ts',
 ];
 
 /**
