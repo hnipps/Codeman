@@ -490,6 +490,8 @@ The escape hatch is the synced `workspaceHooksEnabled` setting (App Settings →
 
 ### File-path links (terminal + response viewer)
 
+Local tmux attach clients advertise `hyperlinks` with `-T` where the installed tmux supports that flag. Snapshot formatting preserves complete OSC 8 open and close sequences alongside SGR, while stripping other terminal commands. A clipped hyperlink closes before the next snapshot row or final cursor move. Browser link regressions pass captured rows through `formatPaneSnapshot()` before rendering them, so they cover the transport boundary as well as the click handler.
+
 Native OSC 8 local links open the file preview after confirmation of the full target. The handler resolves the session at activation time, including in tiles. Local file URLs accept an empty host or `localhost`, decode the pathname once, and reject credentials, queries, fragments, and control characters. Other schemes remain inert. Touch lookup consults the native hyperlink provider before text detection, matching desktop precedence.
 
 Copilot paths wrapped inside a consistent vertical gutter use physical row segments. Each segment opens the complete path and excludes the gutter. Reconstruction stays bounded and requires aligned continuation rows at the same wrap edge. Ordinary table paths retain their conservative continuation rules, and selection keeps the original terminal text.
