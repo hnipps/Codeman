@@ -2307,10 +2307,11 @@ html.mobile-init .file-browser-panel {
     bottom: calc(44px + 2rem + var(--safe-area-bottom));
   }
 
-  /* File preview window: full screen on phones. --app-height tracks the visual
-     viewport (KeyboardHandler), so the edit textarea + Save bar stay above the
-     OS keyboard instead of hiding behind it. Footer/edit bar pad for the home
-     indicator. */
+  /* The centering overlay must shrink with the window when the keyboard opens. */
+  .file-preview-overlay {
+    height: var(--app-height, 100vh);
+  }
+
   .file-preview-window {
     width: 100vw;
     max-width: 100vw;
@@ -2347,10 +2348,6 @@ html.mobile-init .file-browser-panel {
     font-size: 16px;
   }
 
-  /* Document review (doc-review.js). The window is --app-height tall, so its
-     bars already sit above the keyboard; these keep them short enough to leave
-     the document some room there (the footer below them pads for the home
-     indicator). */
   .doc-review-input,
   .doc-review-overall {
     font-size: 16px;

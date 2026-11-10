@@ -25,6 +25,7 @@ Nothing new runs. The document is rendered by the existing sanitised Markdown pi
 - The prompt is one line of printable text, so it takes the verified plain-prompt path.
 - A successful send clears only the draft snapshot it sent. Edits made during upload or prompt delivery stay as an unsent draft, including after closing and reopening Review.
 - An unsent draft survives a reload on that device. It is per-device `localStorage`, keyed by session and file, never a synced setting. A draft is removed once its session is gone.
+- On phones, the preview overlay and window both follow the visual viewport height so the native keyboard leaves the comment and feedback actions visible.
 - A remote session cannot take a prompt upload, so Review is refused there with a message.
 - A preview opened from an attachment card under a bare file name has no path to name, so Review is not offered there.
 - The feedback goes to the session the preview belongs to, which is not always the selected tab.

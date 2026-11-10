@@ -22,6 +22,12 @@ A send owns the draft snapshot present when the user pressed Send. Its
 completion clears only that snapshot, so notes written while the upload or
 prompt is pending remain a draft, even if Review was closed and reopened.
 
+Testing on a real iPhone exposed a keyboard layout bug. The window followed
+the visual viewport, but its full-height overlay centered the shorter window
+below the top of the visible area and hid the Add button. The phone overlay
+now follows the same `--app-height` as its window. This also keeps the file
+editor's actions above the keyboard.
+
 ## 2026-11-09 - Publish the Agentic Canvas source documents
 
 **Type:** intent-refinement
