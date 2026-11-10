@@ -5200,6 +5200,7 @@ Object.assign(CodemanApp.prototype, {
     set('filePreviewPageBtn', view === 'page' || htmlSource, view === 'page');
     set('filePreviewLinesBtn', view === 'text', this._filePreviewPref('lineNumbers'));
     set('filePreviewWrapBtn', view === 'text', this._filePreviewPref('wrap'));
+    this._syncDocReviewToolbar?.(view);
   },
 
   /** Mint the sandboxed page URL for an HTML file; null when the server refuses. */

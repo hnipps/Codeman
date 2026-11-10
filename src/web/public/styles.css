@@ -12755,6 +12755,202 @@ html:is([data-skin="paper-gray"], [data-skin="solarized-light"], [data-skin="cat
   cursor: default;
 }
 
+/* ---- Document review (doc-review.js): comments on a rendered Markdown file ----
+   Everything lives inside .file-preview-window, so it shares the overlay's
+   layer (5100) and needs no z-index against the rest of the app. */
+
+.file-preview-md mark.doc-review-mark {
+  background: color-mix(in srgb, var(--yellow) 30%, transparent);
+  color: inherit;
+  border-bottom: 2px solid var(--yellow);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.file-preview-md mark.doc-review-mark:hover {
+  background: color-mix(in srgb, var(--yellow) 45%, transparent);
+}
+
+.doc-review-float {
+  position: absolute;
+  z-index: 2;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink, #fff);
+  box-shadow: var(--elevated-shadow);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.doc-review-float[hidden],
+.doc-review-composer[hidden],
+.doc-review-list[hidden],
+.doc-review-btn[hidden] {
+  display: none;
+}
+
+.doc-review-composer,
+.doc-review-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-input);
+  flex-shrink: 0;
+}
+
+.doc-review-bar {
+  max-height: 55%;
+  overflow-y: auto;
+}
+
+/* While a comment is being written the bar steps aside, so the document and
+   the composer share what the on-screen keyboard leaves. */
+.file-preview-window.doc-review-composing .doc-review-bar {
+  display: none;
+}
+
+.doc-review-composer-quote {
+  max-height: 3.2em;
+  overflow: hidden;
+  padding-left: 0.5rem;
+  border-left: 3px solid var(--yellow);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.doc-review-input,
+.doc-review-overall {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--bg-dark);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.doc-review-input:focus,
+.doc-review-overall:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.doc-review-count {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.doc-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 8.5rem;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.doc-review-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  flex-shrink: 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--control-border);
+  border-left: 3px solid var(--yellow);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.doc-review-item:hover {
+  background: var(--bg-hover);
+}
+
+.doc-review-item-quote {
+  color: var(--text-dim);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-review-item-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.doc-review-item-stale {
+  align-self: flex-start;
+  font-size: 0.65rem;
+  color: var(--notice-ink, var(--yellow));
+}
+
+.doc-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.doc-review-spacer {
+  flex: 1;
+}
+
+.doc-review-btn {
+  padding: 0.3rem 0.9rem;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--control-border);
+  background: var(--bg-input);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.doc-review-btn:hover {
+  background: var(--bg-hover);
+}
+
+.doc-review-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink, #fff);
+}
+
+.doc-review-btn--primary:hover {
+  background: var(--accent-hover);
+}
+
+.doc-review-btn--danger {
+  color: var(--red);
+}
+
+.doc-review-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* ========== Log Viewer Windows (Floating) ========== */
 
 .log-viewer-window {
