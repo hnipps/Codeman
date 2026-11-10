@@ -29,11 +29,19 @@ You need a Mac with Xcode, the iPhone connected by USB with Developer Mode and
 Safari's Web Inspector turned on, and Appium with the XCUITest driver, its
 WebDriverAgent signed for your team. Follow the
 [XCUITest driver's real-device guide](https://appium.github.io/appium-xcuitest-driver/latest/preparation/real-device-config/).
-Start Appium on the Mac. Its defaults (`127.0.0.1:4723`, WebDriverAgent
-forwarded on `127.0.0.1:8100`) are what the runner expects. Override them with
-`APPIUM_URL` and `WDA_URL`.
+The runner expects Appium on `127.0.0.1:4723` and WebDriverAgent forwarded on
+`127.0.0.1:8100` (Appium's defaults). Override them with `APPIUM_URL` and
+`WDA_URL`. Keep Appium bound to loopback.
 
-Write the capabilities to a file the first run can create a session from:
+Run Appium as a launchd job (`~/Library/LaunchAgents/dev.codeman.appium.plist`
+with `KeepAlive`), not from an SSH command. An Appium started inside an SSH
+session dies with that session, and every later run fails with `fetch failed`.
+
+Write the capabilities to `~/.config/codeman-ios-device/caps.json` on the Mac
+(mode 600). The runner reuses the session id it saved in
+`~/.cache/codeman-ios-device/session.json` while that session is alive, and
+creates a new one from this file when it is gone. `--caps` points at another
+file.
 
 ```json
 {
@@ -49,16 +57,66 @@ Write the capabilities to a file the first run can create a session from:
 }
 ```
 
-The runner saves the session id in `~/.cache/codeman-ios-device/session.json`
-on the Mac and reuses it while it is alive. It creates a session only when the
-saved one is gone and `--caps` was passed.
+Creating a session takes a few seconds, ends any other Appium session on the
+device, and leaves the phone's data alone (`noReset`).
+
+## A disposable Codeman for the phone
+
+Point the phone at a throwaway instance, never at your real one.
+`scripts/ios-test-instance.sh` runs one under `CODEMAN_INSTANCE=iphone` with its
+own data dir (`~/.codeman-iphone`), tmux socket, cases folder and generated
+password. It clears every inherited `CODEMAN_*` variable first, so it cannot
+pick up your real password, data dir or socket. It listens on `127.0.0.1` only.
+
+```bash
+IOS_TEST_ALLOWED_HOSTS=<host the phone uses> scripts/ios-test-instance.sh start [CODE_DIR]
+scripts/ios-test-instance.sh status | stop | password
+```
+
+`CODE_DIR` is the build to test: a checkout (run through `tsx`) or a built
+release with `dist/`. `status` and `stop` reuse the folder `start` was given.
+The server is detached, so it outlives your shell but not a reboot.
+
+What this protects: a test that taps the wrong thing hits throwaway sessions,
+and your real login never sits in the phone's browser. What it does not: the
+instance's shell sessions run as your OS user, so page JS that opens a shell
+there can reach anything that user can. It also reads that user's agent
+history, so the home screen's Past Sessions lists your real Claude, Codex and
+OMP transcripts by title, and **resume** on one continues that real
+conversation. Use a container or a separate OS user when you need a real
+boundary.
+
+The phone reaches the instance through an SSH tunnel the Mac opens, kept up by
+launchd (`dev.codeman.ios-tunnel`, `ssh -N -L 0.0.0.0:3190:127.0.0.1:3190`).
+Authorize the Mac's tunnel key on the Codeman host with
+`restrict,port-forwarding,permitopen="127.0.0.1:3190",command="/usr/bin/false"`
+in front of it, so the key can forward to the test instance and nothing else.
+The phone then opens `http://<mac LAN address>:3190/`. That host goes in
+`IOS_TEST_ALLOWED_HOSTS`, or the host guard answers 403.
+
+Log the phone in once. Safari keeps the cookie for 24 hours and extends it
+while you use it:
+
+```bash
+scripts/ios-test-instance.sh login-scenario http://<mac LAN address>:3190/ > login.json
+node scripts/ios-device.mjs login.json --ssh you@mac ...
+rm login.json
+```
+
+The scenario opens Safari at that address and types the generated username and
+password into the login dialog. The report never contains typed text.
+
+Create the Appium session while Safari has a page open. A session created
+before that can keep a stale Web Inspector link: page steps then fail with
+"Appium sees no Safari pages" while the page is plainly on screen. Delete
+`~/.cache/codeman-ios-device/session.json` on the Mac and rerun.
 
 ## Running a scenario
 
 On the Mac:
 
 ```bash
-node scripts/ios-device.mjs scenario.json --caps caps.json --out ./ios-run
+node scripts/ios-device.mjs scenario.json --out ./ios-run
 ```
 
 From another machine (paths are on your side; `--remote-node` is the Mac's
@@ -92,9 +150,11 @@ step passed, 1 when a step failed, and 2 when the run could not start.
 }
 ```
 
-`page` picks an already open Safari tab whose URL contains that text. Without
-it, the runner uses the most recent page. `url` then navigates that tab, so
-open the tab first when you set both. Step names are checked before the run
+`url` opens that address in Safari before the first step. `page` picks the
+Safari tab whose URL contains that text, waiting up to 10 s for it. Without it,
+the runner uses the most recent page. The page is looked up the first time a
+step needs it, so native-only steps (screen points, `type`, `shot`) run with no
+page open. Step names are checked before the run
 starts, so a typo fails without touching the phone.
 
 | Step        | Fields                                       | What it does                                                             |

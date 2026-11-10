@@ -15,7 +15,7 @@
  *   node scripts/ios-device.mjs scenario.json --ssh user@mac [--ssh-key KEY] [--remote-node PATH]
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 const APPIUM = process.env.APPIUM_URL || 'http://127.0.0.1:4723';
 const WDA = process.env.WDA_URL || 'http://127.0.0.1:8100';
 const STATE_FILE = join(homedir(), '.cache', 'codeman-ios-device', 'session.json');
+const DEFAULT_CAPS = join(homedir(), '.config', 'codeman-ios-device', 'caps.json');
 
 function parseArgs(argv) {
   const opts = { scenario: null, out: null, caps: null, ssh: null, sshKey: null, remoteNode: 'node' };
@@ -57,14 +58,49 @@ async function http(base, method, path, body) {
 }
 
 class Device {
-  constructor(appiumSession, wdaSession) {
+  constructor(appiumSession, wdaSession, page) {
     this.appium = (m, p, b) => http(APPIUM, m, `/session/${appiumSession}${p}`, b);
     this.wda = (m, p, b) => http(WDA, m, `/session/${wdaSession}${p}`, b);
+    this.page = page;
+    this.webContext = null;
     this.calibration = null;
   }
 
   async js(source, args = []) {
+    if (!this.webContext) this.webContext = await this.enterWebContext();
     return this.appium('POST', '/execute/sync', { script: source, args });
+  }
+
+  async enterWebContext() {
+    const end = Date.now() + 10_000;
+    for (;;) {
+      const contexts = (await this.appium('GET', '/contexts')).filter((c) => c !== 'NATIVE_APP');
+      for (const name of contexts.reverse()) {
+        await this.appium('POST', '/context', { name });
+        const href = await this.appium('POST', '/execute/sync', { script: 'return location.href', args: [] });
+        if (!this.page || href.includes(this.page)) return name;
+      }
+      if (Date.now() >= end && contexts.length === 0) {
+        throw new Error(
+          'Appium sees no Safari pages. Check Settings > Safari > Advanced > Web Inspector. If Safari shows a page anyway, ' +
+            `the session's Web Inspector link is stale: delete ${STATE_FILE} on the Mac and rerun.`
+        );
+      }
+      if (Date.now() >= end) {
+        throw new Error(this.page ? `no Safari page whose URL contains ${this.page}` : 'no Safari page is open');
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  async open(url) {
+    await this.appium('POST', '/context', { name: 'NATIVE_APP' });
+    await this.appium('POST', '/execute/sync', {
+      script: 'mobile: deepLink',
+      args: [{ url, bundleId: 'com.apple.mobilesafari' }],
+    });
+    this.webContext = null;
+    this.calibration = null;
   }
 
   async touch(actions) {
@@ -175,8 +211,7 @@ async function poll(read, timeoutMs, intervalMs = 100) {
 
 const STEPS = {
   async open(d, s) {
-    await d.appium('POST', '/url', { url: s.url });
-    d.calibration = null;
+    await d.open(s.url);
   },
   async calibrate(d) {
     return d.calibrate();
@@ -233,7 +268,15 @@ const STEPS = {
   },
 };
 
-async function liveSession(capsPath) {
+async function wdaSessionId() {
+  return fetch(`${WDA}/status`, { signal: AbortSignal.timeout(10_000) })
+    .then((r) => r.json())
+    .then((status) => status.sessionId ?? null)
+    .catch(() => null);
+}
+
+async function liveSession(capsArg) {
+  const capsPath = capsArg ?? (existsSync(DEFAULT_CAPS) ? DEFAULT_CAPS : null);
   let saved = null;
   try {
     saved = JSON.parse(readFileSync(STATE_FILE, 'utf8')).appiumSession ?? null;
@@ -241,15 +284,16 @@ async function liveSession(capsPath) {
     saved = null;
   }
   if (saved) {
-    const alive = await http(APPIUM, 'GET', `/session/${saved}/contexts`).then(
+    const appiumAlive = await http(APPIUM, 'GET', `/session/${saved}/contexts`).then(
       () => true,
       () => false
     );
-    if (alive) return saved;
+    if (appiumAlive && (await wdaSessionId())) return saved;
+    if (appiumAlive) await http(APPIUM, 'DELETE', `/session/${saved}`).catch(() => {});
   }
   if (!capsPath) {
     throw new Error(
-      `no live Appium session${saved ? ` (saved ${saved} is gone)` : ''}; pass --caps <capabilities.json> to create one`
+      `no live Appium session${saved ? ` (saved ${saved} is gone)` : ''}; pass --caps <capabilities.json> or write ${DEFAULT_CAPS} to create one`
     );
   }
   const caps = JSON.parse(readFileSync(capsPath, 'utf8'));
@@ -259,29 +303,17 @@ async function liveSession(capsPath) {
   return created.sessionId;
 }
 
-async function enterWebContext(d, match) {
-  const contexts = (await d.appium('GET', '/contexts')).filter((c) => c !== 'NATIVE_APP');
-  for (const name of contexts.reverse()) {
-    await d.appium('POST', '/context', { name });
-    if (!match || (await d.js('return location.href')).includes(match)) return name;
-  }
-  throw new Error(match ? `no Safari page whose URL contains ${match}` : 'no Safari web context; is Safari open?');
-}
-
 export async function runScenario(scenario, { out, caps }) {
   const unknown = scenario.steps.map((step) => step.do).filter((name) => !Object.hasOwn(STEPS, name));
   if (unknown.length) throw new Error(`unknown step ${unknown.join(', ')}; known: ${Object.keys(STEPS).join(', ')}`);
   mkdirSync(out, { recursive: true });
   const started = Date.now();
   const appiumSession = await liveSession(caps);
-  const { sessionId: wdaSession } = await fetch(`${WDA}/status`, { signal: AbortSignal.timeout(10_000) }).then((r) =>
-    r.json()
-  );
-  if (!wdaSession) throw new Error(`WebDriverAgent at ${WDA} has no session`);
-  const device = new Device(appiumSession, wdaSession);
+  const wdaSession = await wdaSessionId();
+  if (!wdaSession) throw new Error(`WebDriverAgent at ${WDA} is not answering with a session`);
+  const device = new Device(appiumSession, wdaSession, scenario.page);
   await device.wda('POST', '/appium/settings', { settings: { waitForIdleTimeout: 0, animationCoolOffTimeout: 0 } });
-  const context = await enterWebContext(device, scenario.page);
-  if (scenario.url) await STEPS.open(device, { url: scenario.url });
+  if (scenario.url) await device.open(scenario.url);
 
   const results = [];
   let index = 0;
@@ -308,7 +340,7 @@ export async function runScenario(scenario, { out, caps }) {
   const report = {
     ok: results.length === scenario.steps.length && results.every((r) => r.ok),
     ms: Date.now() - started,
-    context,
+    context: device.webContext,
     calibration: device.calibration,
     steps: results,
   };
