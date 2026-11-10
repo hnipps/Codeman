@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Background rewake waits only on a Claude transcript
+
+**Type:** intent-refinement
+**Touches:** `src/hooks-config.ts`, `docs/claude-code-hooks-reference.md`
+**Why:** A cancelled PostToolUse hook blocked the turn. The helper was polling for a Claude `queue-operation` line in a transcript that never gets one.
+**Links:** [Background rewake intent](../intent/2026-11-10-background-rewake-claude-only.md)
+
+The helper still watches Claude transcripts and still exits 2 when the matching
+background command finishes. It returns at once unless the transcript path has a
+`.claude` directory segment. `asyncRewake` stays, because Claude is the client
+that honours it. The marker is `CODEMAN_BACKGROUND_REWAKE_V4` so an installed
+copy of the previous script is replaced in place.
+
 ## 2026-11-10 - Desktop Cmd+V must not focus a paste trap
 
 **Type:** intent-refinement

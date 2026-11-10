@@ -153,6 +153,9 @@ the background task ID from the Bash result, watches the originating transcript
 and, for subagents, the top-level parent transcript for the matching completion
 notification, and exits 2. Claude records a subagent's Bash result in its
 `subagents/agent-*.jsonl` file but queues completion in the lead session JSONL.
+The helper returns immediately unless that transcript path contains a `.claude`
+directory. Other CLIs load the same settings file, ignore `asyncRewake`, and
+would otherwise sit in the foreground until the six-hour deadline.
 The task ID keeps each wake targeted. The helper does not send terminal input,
 so it cannot submit a user's partially written prompt.
 
