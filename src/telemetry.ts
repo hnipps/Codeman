@@ -10,8 +10,9 @@
  *
  * Every line is passed through `redactLogLine` before it joins the queue, so a crash
  * flush cannot write a secret the async flush would have masked. The hook secret is
- * read from disk and never created here. A miss is not remembered, so a secret
- * created a moment later is visible to the next line.
+ * read from disk with a capped read and never created here. A miss is not
+ * remembered, so a secret created a moment later is visible to the next line.
+ * Once a usable secret is known, later lines do not read the file again.
  *
  * Writes never throw into a caller and never block: lines queue in memory (bounded) and
  * one async append per stream flushes them. Rotation is by size, checked against the file
@@ -24,7 +25,7 @@
  * @module telemetry
  */
 
-import { accessSync, appendFileSync, constants, lstatSync, mkdirSync, readFileSync } from 'node:fs';
+import { accessSync, appendFileSync, closeSync, constants, lstatSync, mkdirSync, openSync, readSync } from 'node:fs';
 import { appendFile, rename, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
@@ -88,10 +89,21 @@ interface StreamRecords {
 }
 
 let cachedHookSecret: string | undefined;
+/** Bytes of the hook-secret file taken by the last disk read. Zero when the cache answered. */
+let hookSecretReadBytes = 0;
+
+/** A hook secret is a short file. The read never asks for more than this. */
+export const HOOK_SECRET_READ_CAP = 512;
 
 /** Drop the cached hook secret. Tests use this so a file written mid-process is visible. */
 export function resetTelemetryRedactionCache(): void {
   cachedHookSecret = undefined;
+  hookSecretReadBytes = 0;
+}
+
+/** How many bytes the last hook-secret disk read took. Zero when the cache answered. */
+export function lastHookSecretReadBytes(): number {
+  return hookSecretReadBytes;
 }
 
 /**
@@ -112,18 +124,29 @@ export function noteHookSecretForRedaction(value: string): void {
  * or carrying a newline is ignored.
  */
 export function readHookSecretForRedaction(): string | undefined {
-  if (cachedHookSecret !== undefined) return cachedHookSecret;
+  if (cachedHookSecret !== undefined) {
+    hookSecretReadBytes = 0;
+    return cachedHookSecret;
+  }
+  let fd: number | undefined;
   try {
     const path = dataPath('hook-secret');
     const info = lstatSync(path);
-    if (!info.isFile() || info.size > 512 || info.size < 16) return undefined;
-    const text = readFileSync(path, 'utf8').trim();
-    if (text.length < 16 || text.length > 256) return undefined;
-    if (text.includes('\n') || text.includes('\r') || text.includes('\0')) return undefined;
-    cachedHookSecret = text;
-    return text;
+    if (!info.isFile()) return undefined;
+    fd = openSync(path, constants.O_RDONLY);
+    const buf = Buffer.alloc(HOOK_SECRET_READ_CAP);
+    const n = readSync(fd, buf, 0, HOOK_SECRET_READ_CAP, 0);
+    hookSecretReadBytes = n;
+    const firstLine = buf.subarray(0, n).toString('utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+    if (firstLine.length < 16 || firstLine.length > 256) return undefined;
+    if (firstLine.includes('\0')) return undefined;
+    cachedHookSecret = firstLine;
+    return firstLine;
   } catch {
+    hookSecretReadBytes = 0;
     return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 

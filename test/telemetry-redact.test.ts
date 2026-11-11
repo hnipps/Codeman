@@ -10,7 +10,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SECRET_KEY_RE as CONFIG_BACKUP_SECRET_KEY_RE } from '../src/config-backup.js';
 import { getHookSecret } from '../src/config/hook-secret.js';
 import { dataPath } from '../src/config/instance.js';
-import { Telemetry, resetTelemetryRedactionCache } from '../src/telemetry.js';
+import {
+  HOOK_SECRET_READ_CAP,
+  Telemetry,
+  lastHookSecretReadBytes,
+  readHookSecretForRedaction,
+  resetTelemetryRedactionCache,
+} from '../src/telemetry.js';
 import { isTelemetrySecretKey, redactLogLine } from '../src/telemetry-redact.js';
 import { queryLogs } from '../src/telemetry-query.js';
 
@@ -57,20 +63,58 @@ describe('redactLogLine', () => {
     expect(CONFIG_BACKUP_SECRET_KEY_RE.test('authorization')).toBe(true);
     expect(CONFIG_BACKUP_SECRET_KEY_RE.test('keyboard')).toBe(false);
 
-    for (const key of ['author', 'authored', 'authUser', 'authorId', 'auth_user']) {
-      expect(isTelemetrySecretKey(key)).toBe(false);
+    for (const key of [
+      'author',
+      'authors',
+      'authored',
+      'authoredBy',
+      'authored_by',
+      'authored-by',
+      'authorId',
+      'author_id',
+      'author-id',
+      'authorName',
+      'author_name',
+      'author-name',
+      'authUser',
+      'auth_user',
+      'auth-user',
+    ]) {
+      expect(isTelemetrySecretKey(key), key).toBe(false);
       expect(JSON.parse(redactLogLine(JSON.stringify({ [key]: 'agent-a' })))[key]).toBe('agent-a');
     }
     expect(JSON.parse(redactLogLine(JSON.stringify({ author: { name: 'agent-a' } }))).author).toEqual({
       name: 'agent-a',
     });
 
-    for (const key of ['auth', 'authorization', 'auth_token', 'authToken', 'x-auth-token', 'proxy-authorization']) {
-      expect(isTelemetrySecretKey(key)).toBe(true);
+    const credentialKeys = [
+      'auth',
+      'authorization',
+      'auth_token',
+      'authToken',
+      'x-auth-token',
+      'proxy-authorization',
+      'authentication',
+      'Authentication',
+      'AUTHENTICATION',
+      'authenticate',
+      'AUTHENTICATE',
+      'oauth',
+      'OAuth',
+      'OAUTH',
+      'oauth2',
+      'xauth',
+      'httpauth',
+      'authheader',
+      'HTTPAuth',
+      `${'a'.repeat(81)}password`,
+    ];
+    for (const key of credentialKeys) {
+      expect(isTelemetrySecretKey(key), key).toBe(true);
       expect(JSON.parse(redactLogLine(JSON.stringify({ [key]: TOKEN })))[key]).toBe('[redacted]');
     }
     expect(isTelemetrySecretKey('x-auth-user')).toBe(true);
-    expect(isTelemetrySecretKey('keyboard')).toBe(false);
+    expect(isTelemetrySecretKey('keyboard')).toBe(true);
   });
 
   it('masks bearer tokens and URL userinfo', () => {
@@ -89,6 +133,25 @@ describe('redactLogLine', () => {
       'clone https://[redacted]@example.invalid/repo.git'
     );
     expect(redactLogLine('https://github.com/org/repo')).toBe('https://github.com/org/repo');
+    expect(redactLogLine('clone https://user@example.invalid/repo.git')).toBe(
+      'clone https://[redacted]@example.invalid/repo.git'
+    );
+    expect(redactLogLine('clone https://us%3Aer:p%40ss@example.invalid/repo.git')).toBe(
+      'clone https://[redacted]@example.invalid/repo.git'
+    );
+    expect(redactLogLine('clone git+https://user:p4ss@example.invalid/repo.git')).toBe(
+      'clone git+https://[redacted]@example.invalid/repo.git'
+    );
+    expect(redactLogLine('clone custom.v1://user:p4ss@example.invalid/repo.git')).toBe(
+      'clone custom.v1://[redacted]@example.invalid/repo.git'
+    );
+    expect(redactLogLine('https://example.invalid/a@b?q=@c#@d')).toBe('https://example.invalid/a@b?q=@c#@d');
+    expect(redactLogLine(`request BEARER abc1234`)).toBe('request Bearer [redacted]');
+    const user = 'u'.repeat(256);
+    const password = `${TOKEN}pad`.padEnd(256, 'p');
+    const longUrl = redactLogLine(`https://${user}:${password}@example.invalid/repo`);
+    expect(longUrl).toBe('https://[redacted]@example.invalid/repo');
+    expect(longUrl).not.toContain(TOKEN);
   });
 
   it('masks a secret-shaped JSON pair and an assignment buried in a string', () => {
@@ -98,6 +161,15 @@ describe('redactLogLine', () => {
     expect(JSON.parse(out).msg).toContain('[redacted]');
     expect(redactLogLine("password: 'hunter2'")).toBe('password: [redacted]');
     expect(redactLogLine('password=hunter2')).not.toContain('hunter2');
+    expect(redactLogLine(`auth-header=${TOKEN}`)).toBe('auth-header= [redacted]');
+    expect(redactLogLine(`auth.header=${TOKEN}`)).toBe('auth.header= [redacted]');
+    expect(redactLogLine(`client-secret-value=${TOKEN}`)).toBe('client-secret-value= [redacted]');
+    const nested = redactLogLine(format({ authorization: { value: TOKEN } }));
+    expect(nested).not.toContain(TOKEN);
+    expect(nested).not.toContain('] value');
+    const longValue = redactLogLine(`password: '${'x'.repeat(8200)}${TOKEN}'`);
+    expect(longValue).not.toContain(TOKEN);
+    expect(longValue).toContain('[redacted]');
   });
 
   it('replaces a hook secret as a literal, and ignores one that is too short', () => {
@@ -125,6 +197,27 @@ describe('redactLogLine', () => {
       if (redactLogLine(line) !== line) throw new Error('a clean line was rewritten');
     }
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it('finishes a 1 MiB adversarial line within a generous bound', () => {
+    const patterns = ['://', '\'"{}auth', 'auth', `${'a.'.repeat(40)}://host/path`];
+    for (const pattern of patterns) {
+      const line = pattern.repeat(Math.ceil((1024 * 1024) / pattern.length)).slice(0, 1024 * 1024);
+      const started = performance.now();
+      const out = redactLogLine(line);
+      const elapsed = performance.now() - started;
+      expect(elapsed).toBeLessThan(10_000);
+      expect(typeof out).toBe('string');
+      expect(out.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('does not throw on lone surrogates or NUL bytes', () => {
+    const lone = 'before \uD800 after \uDE00 end';
+    expect(typeof redactLogLine(lone)).toBe('string');
+    const withNul = redactLogLine(`password=\u0000${TOKEN}`);
+    expect(withNul).not.toContain(TOKEN);
+    expect(typeof redactLogLine(`auth\u0000${'\uD800'.repeat(100)}`)).toBe('string');
   });
 });
 
@@ -252,6 +345,106 @@ describe('redaction before the queue', () => {
     expect(queried.lines).toHaveLength(1);
     expect(queried.lines[0]).not.toContain(secret);
     expect(queried.lines[0]).toContain('[redacted]');
+  });
+
+  it('masks credential keys from the second audit on disk and in the query', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const keys = [
+      'authentication',
+      'Authentication',
+      'AUTHENTICATION',
+      'authenticate',
+      'AUTHENTICATE',
+      'oauth',
+      'OAuth',
+      'OAUTH',
+      'oauth2',
+      'xauth',
+      'httpauth',
+      'authheader',
+      'HTTPAuth',
+      `${'a'.repeat(81)}password`,
+    ];
+    const telemetry = sink();
+    const record: Record<string, unknown> = { level: 'error', buildId: 'b', pid: 1, msg: 'kept' };
+    for (const key of keys) record[key] = cred;
+    telemetry.write('server', record as never);
+    const longKey = `${'a'.repeat(81)}password`;
+    telemetry.write('server', {
+      level: 'error',
+      buildId: 'b',
+      pid: 1,
+      msg: JSON.stringify({ [longKey]: cred }),
+    });
+    telemetry.write('server', {
+      level: 'error',
+      buildId: 'b',
+      pid: 1,
+      msg: 'names',
+      author: 'agent-a',
+      authored: 'agent-a',
+      authUser: 'agent-a',
+      authorId: 'agent-a',
+      auth_user: 'agent-a',
+    } as never);
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    expect(raw).toContain('agent-a');
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const named = await queryLogs({ dir, stream: 'server', text: 'agent-a' });
+    expect(named.lines).toHaveLength(1);
+    const row = JSON.parse(named.lines[0]) as Record<string, string>;
+    for (const key of ['author', 'authored', 'authUser', 'authorId', 'auth_user']) {
+      expect(row[key]).toBe('agent-a');
+    }
+  });
+
+  it('masks a long URL userinfo, separator keys, a whole object and a long quoted value', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const user = 'u'.repeat(256);
+    const password = cred.padEnd(256, 'p');
+    const messages = [
+      `https://${user}:${password}@example.invalid/repo`,
+      `auth-header=${cred}`,
+      `auth.header=${cred}`,
+      `client-secret-value=${cred}`,
+      format({ authorization: { value: cred } }),
+      `password: '${'x'.repeat(8200)}${cred}'`,
+      `request BEARER abc1234`,
+    ];
+    const telemetry = sink();
+    for (const msg of messages) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    expect(raw).not.toContain('abc1234');
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const short = await queryLogs({ dir, stream: 'server', text: 'abc1234' });
+    expect(short.lines).toEqual([]);
+  });
+
+  it('reads at most 512 bytes of an oversized hook-secret file', async () => {
+    const secret = 'ab12cd34ef56ab12cd34ef56ab12cd34';
+    writeFileSync(dataPath('hook-secret'), `${secret}\n${'x'.repeat(1024 * 1024)}`, { mode: 0o600 });
+    resetTelemetryRedactionCache();
+    expect(readHookSecretForRedaction()).toBe(secret);
+    expect(lastHookSecretReadBytes()).toBe(HOOK_SECRET_READ_CAP);
+    expect(lastHookSecretReadBytes()).toBeLessThanOrEqual(512);
+    expect(readHookSecretForRedaction()).toBe(secret);
+    expect(lastHookSecretReadBytes()).toBe(0);
+    const telemetry = sink();
+    telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg: `hook failed: ${secret}` });
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(secret);
+    const queried = await queryLogs({ dir, stream: 'server', text: 'hook failed' });
+    expect(queried.lines).toHaveLength(1);
+    expect(queried.lines[0]).not.toContain(secret);
   });
 
   it('masks a hook secret minted by getHookSecret after a miss', async () => {

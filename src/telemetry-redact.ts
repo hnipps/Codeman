@@ -1,11 +1,14 @@
 /**
  * @fileoverview Pure redaction of one telemetry line, before it is queued for disk.
  *
- * One function, no I/O, no caller-supplied pattern. It masks values under
- * credential keys, bearer tokens in any capitalization, URL userinfo with or
- * without a password, and a hook secret passed in as a literal string. Odd
- * input returns a placeholder instead of throwing. Attribution keys such as
- * `author` keep their values. Config backup keeps its own key rule.
+ * One function, no I/O, no caller-supplied pattern. A key that contains a
+ * credential word is masked, at any length, except a short exact allowlist of
+ * attribution keys. The masked span is the whole value: a quoted string, a
+ * bracketed object or array, or an unquoted token. When that end is not found,
+ * the span runs to the end of the line. Bearer tokens have no minimum length.
+ * URL userinfo is masked at any length. A hook secret is removed as a literal.
+ * Odd input returns a placeholder instead of throwing. A secret with no key and
+ * no known shape is not detected. Config backup keeps its own key rule.
  *
  * @module telemetry-redact
  */
@@ -15,13 +18,15 @@ const HOOK_SECRET_MIN = 16;
 const HOOK_SECRET_MAX = 256;
 /** Skip the scanners when a line cannot hold a secret we know how to mask. */
 const NEEDS_SCAN = /bearer|:\/\/|token|secret|passw|credential|auth|key/i;
-const BEARER_RE = /\bbearer\s+[A-Za-z0-9._~+/=_-]{8,}/gi;
-const CREDENTIAL_FRAGMENT = /token|secret|passw|credential/i;
-const KEY_SUFFIX = /key$/i;
-const AUTHORIZATION_WORD = /authorization/i;
-const X_AUTH_PREFIX = /(^|[^a-z0-9])x[-_]auth[-_]/i;
-/** The word after a bare `auth` stem when the key is naming a person, not a credential. */
-const AUTH_ATTRIBUTION_NEXT = new Set(['user', 'username', 'name']);
+const BEARER_RE = /\bbearer\s+\S+/gi;
+/** Credential words. `key` is a substring, so an ordinary word such as `keyboard` matches. */
+const CREDENTIAL_MARK = /token|secret|passw|credential|auth|key/i;
+
+/**
+ * Attribution keys, after case and `-`/`_` are removed. Nothing else is exempt.
+ * `authoredBy`, `authored_by` and `authored-by` share one entry.
+ */
+const ATTRIBUTION_KEYS = new Set(['author', 'authors', 'authored', 'authoredby', 'authorid', 'authorname', 'authuser']);
 
 function usableSecret(hookSecret: string | undefined): string | undefined {
   if (typeof hookSecret !== 'string') return undefined;
@@ -59,44 +64,34 @@ function isIdent(code: number): boolean {
   return isIdentStart(code) || (code >= 48 && code <= 57);
 }
 
+function isKeyChar(code: number): boolean {
+  return isIdent(code) || code === 45 || code === 46;
+}
+
 function isWs(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v';
 }
 
-function splitKeyWords(key: string): string[] {
-  const words: string[] = [];
-  let cur = '';
+function normalizeKey(key: string): string {
+  let out = '';
   for (let i = 0; i < key.length; i++) {
-    const ch = key[i];
-    const prev = i > 0 ? key[i - 1] : '';
-    const sep = !/[A-Za-z0-9]/.test(ch);
-    const camel = /[a-z0-9]/.test(prev) && ch >= 'A' && ch <= 'Z';
-    if (sep || camel) {
-      if (cur) words.push(cur);
-      cur = sep ? '' : ch;
-      continue;
-    }
-    cur += ch;
+    const code = key.charCodeAt(i);
+    if (code === 45 || code === 95) continue;
+    if (code >= 65 && code <= 90) out += String.fromCharCode(code + 32);
+    else out += key[i];
   }
-  if (cur) words.push(cur);
-  return words;
+  return out;
 }
 
 /**
- * A telemetry key names a credential. `author`, `authored`, `authUser` and
- * `authorId` do not. Config backup's `SECRET_KEY_RE` is a different rule.
+ * A telemetry key names a credential when it contains one, at any length.
+ * Attribution keys in `ATTRIBUTION_KEYS` do not. Config backup's `SECRET_KEY_RE`
+ * is a different rule and still matches `author`.
  */
 export function isTelemetrySecretKey(key: string): boolean {
-  if (key.length === 0 || key.length > 80) return false;
-  if (CREDENTIAL_FRAGMENT.test(key) || KEY_SUFFIX.test(key) || AUTHORIZATION_WORD.test(key)) return true;
-  if (X_AUTH_PREFIX.test(key)) return true;
-  const words = splitKeyWords(key);
-  for (let i = 0; i < words.length; i++) {
-    if (words[i].toLowerCase() !== 'auth') continue;
-    const next = words[i + 1]?.toLowerCase();
-    if (next === undefined || !AUTH_ATTRIBUTION_NEXT.has(next)) return true;
-  }
-  return false;
+  if (key.length === 0) return false;
+  if (ATTRIBUTION_KEYS.has(normalizeKey(key))) return false;
+  return CREDENTIAL_MARK.test(key);
 }
 
 function hexDigit(ch: string): boolean {
@@ -104,8 +99,14 @@ function hexDigit(ch: string): boolean {
   return (code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
 }
 
-/** A quoted key or value. Escapes follow JSON, plus `\'` for Node's single quotes. */
-function decodeQuoted(text: string, open: number, maxChars: number): { value: string; end: number } | null {
+interface Quoted {
+  value: string;
+  end: number;
+  closed: boolean;
+}
+
+/** A quoted span. An unclosed quote runs to the end of the text, which is the line. */
+function readQuoted(text: string, open: number): Quoted | null {
   const quote = text[open];
   if (quote !== '"' && quote !== "'") return null;
   let j = open + 1;
@@ -113,13 +114,15 @@ function decodeQuoted(text: string, open: number, maxChars: number): { value: st
   while (j < text.length) {
     const ch = text[j];
     if (ch === '\\') {
-      if (j + 1 >= text.length) return null;
+      if (j + 1 >= text.length) return { value, end: text.length, closed: false };
       const n = text[j + 1];
       if (n === 'u') {
-        if (j + 5 >= text.length) return null;
+        if (j + 5 >= text.length) return { value, end: text.length, closed: false };
         const hex = text.slice(j + 2, j + 6);
         if (hex.length < 4 || !hexDigit(hex[0]) || !hexDigit(hex[1]) || !hexDigit(hex[2]) || !hexDigit(hex[3])) {
-          return null;
+          value += n;
+          j += 2;
+          continue;
         }
         value += String.fromCharCode(Number.parseInt(hex, 16));
         j += 6;
@@ -142,98 +145,34 @@ function decodeQuoted(text: string, open: number, maxChars: number): { value: st
         value += '\t';
         j += 2;
       } else {
-        return null;
+        value += n;
+        j += 2;
       }
     } else if (ch === quote) {
-      return { value, end: j + 1 };
+      return { value, end: j + 1, closed: true };
     } else {
       value += ch;
       j++;
     }
-    if (value.length > maxChars) return null;
   }
-  return null;
+  return { value, end: text.length, closed: false };
 }
 
-function endOfQuoted(text: string, open: number): number {
-  const decoded = decodeQuoted(text, open, 8192);
-  return decoded ? decoded.end : Math.min(text.length, open + 8192);
-}
-
-function endOfJsonValue(text: string, i: number): number {
+/**
+ * End of a value that is already being masked. The closer is a quote, a matching
+ * bracket, or the next delimiter. When it is not found, the value runs to the
+ * end of the text.
+ */
+function endOfValue(text: string, i: number): number {
   if (i >= text.length) return text.length;
   const ch = text[i];
-  if (ch === '"') return endOfQuoted(text, i);
-  if (ch === '{' || ch === '[') {
-    const close = ch === '{' ? '}' : ']';
-    let depth = 0;
-    let j = i;
-    while (j < text.length) {
-      const c = text[j];
-      if (c === '"') {
-        j = endOfQuoted(text, j);
-        continue;
-      }
-      if (c === ch) depth++;
-      else if (c === close) {
-        depth--;
-        if (depth === 0) return j + 1;
-      }
-      j++;
-    }
-    return text.length;
+  if (ch === '"' || ch === "'") {
+    const quoted = readQuoted(text, i);
+    return quoted ? quoted.end : text.length;
   }
+  if (ch === '{' || ch === '[') return endOfBracketed(text, i);
   let j = i;
-  while (j < text.length && text[j] !== ',' && text[j] !== '}' && text[j] !== ']') j++;
-  return j;
-}
-
-function skipWs(text: string, i: number): number {
-  while (i < text.length && isWs(text[i])) i++;
-  return i;
-}
-
-function parseJsonKeyAt(text: string, quote: number): { key: string; valueStart: number } | null {
-  if (text[quote] !== '"') return null;
-  const decoded = decodeQuoted(text, quote, 80);
-  if (!decoded || decoded.value.length === 0) return null;
-  let j = skipWs(text, decoded.end);
-  if (text[j] !== ':') return null;
-  j = skipWs(text, j + 1);
-  return { key: decoded.value, valueStart: j };
-}
-
-/** `"password": "hunter2"` and `"\u0070assword":"..."` inside a string. */
-function maskJsonPairs(text: string): string {
-  let out = '';
-  let i = 0;
-  while (i < text.length) {
-    const quote = text.indexOf('"', i);
-    if (quote === -1) {
-      out += text.slice(i);
-      break;
-    }
-    const parsed = parseJsonKeyAt(text, quote);
-    if (!parsed || !isTelemetrySecretKey(parsed.key)) {
-      out += text.slice(i, quote + 1);
-      i = quote + 1;
-      continue;
-    }
-    const valueEnd = endOfJsonValue(text, parsed.valueStart);
-    out += text.slice(i, quote);
-    out += `"${parsed.key}": "${REDACTED}"`;
-    i = valueEnd > quote ? valueEnd : quote + 1;
-  }
-  return out;
-}
-
-function endOfPlainValue(text: string, i: number): number {
-  if (i >= text.length) return i;
-  const q = text[i];
-  if (q === '"' || q === "'") return Math.min(endOfQuoted(text, i), i + 8192);
-  let j = i;
-  const limit = Math.min(text.length, i + 8192);
-  while (j < limit) {
+  while (j < text.length) {
     const c = text[j];
     if (isWs(c) || c === ',' || c === '}' || c === ']') break;
     j++;
@@ -241,52 +180,145 @@ function endOfPlainValue(text: string, i: number): number {
   return j;
 }
 
+function endOfBracketed(text: string, open: number): number {
+  const stack: string[] = [];
+  let j = open;
+  while (j < text.length) {
+    const c = text[j];
+    if (c === '"' || c === "'") {
+      const quoted = readQuoted(text, j);
+      const next = quoted ? quoted.end : text.length;
+      if (next <= j) return text.length;
+      j = next;
+      continue;
+    }
+    if (c === '{' || c === '[') {
+      stack.push(c === '{' ? '}' : ']');
+      j++;
+      continue;
+    }
+    if (stack.length > 0 && c === stack[stack.length - 1]) {
+      stack.pop();
+      j++;
+      if (stack.length === 0) return j;
+      continue;
+    }
+    j++;
+  }
+  return text.length;
+}
+
+function skipWs(text: string, i: number): number {
+  while (i < text.length && isWs(text[i])) i++;
+  return i;
+}
+
+/** `"password": "hunter2"` and `"\u0070assword":"..."` inside a string. */
+function maskJsonPairs(text: string): string {
+  const parts: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const quote = text.indexOf('"', i);
+    if (quote === -1) {
+      parts.push(text.slice(i));
+      break;
+    }
+    const quoted = readQuoted(text, quote);
+    if (!quoted || !quoted.closed) {
+      parts.push(text.slice(i));
+      break;
+    }
+    let j = skipWs(text, quoted.end);
+    if (text[j] !== ':' || !isTelemetrySecretKey(quoted.value)) {
+      parts.push(text.slice(i, quoted.end));
+      i = quoted.end;
+      continue;
+    }
+    j = skipWs(text, j + 1);
+    const valueEnd = endOfValue(text, j);
+    parts.push(text.slice(i, quote));
+    parts.push(`${JSON.stringify(quoted.value)}: "${REDACTED}"`);
+    i = valueEnd > j ? valueEnd : quoted.end;
+  }
+  return parts.join('');
+}
+
 interface Assignment {
+  keyStart: number;
   key: string;
   sep: number;
   valueEnd: number;
 }
 
-/** An identifier or a quoted key, then `:` or `=`, as `util.format` prints it. */
-function parseAssignment(text: string, i: number): Assignment | null {
-  let keyEnd = i;
-  let key = '';
+function keyAt(text: string, i: number): { key: string; end: number } | null {
   const ch = text[i];
   if (ch === '"' || ch === "'") {
-    const decoded = decodeQuoted(text, i, 80);
-    if (!decoded || decoded.value.length === 0) return null;
-    key = decoded.value;
-    keyEnd = decoded.end;
-  } else {
-    if (!isIdentStart(text.charCodeAt(i))) return null;
-    if (i > 0 && isIdent(text.charCodeAt(i - 1))) return null;
-    keyEnd = i + 1;
-    while (keyEnd < text.length && isIdent(text.charCodeAt(keyEnd))) keyEnd++;
-    if (keyEnd - i > 80) return null;
-    key = text.slice(i, keyEnd);
+    const quoted = readQuoted(text, i);
+    if (!quoted || !quoted.closed || quoted.value.length === 0) return null;
+    return { key: quoted.value, end: quoted.end };
   }
-  const sep = skipWs(text, keyEnd);
-  if (text[sep] !== ':' && text[sep] !== '=') return null;
-  const valueStart = skipWs(text, sep + 1);
-  return { key, sep, valueEnd: endOfPlainValue(text, valueStart) };
+  if (!isIdentStart(text.charCodeAt(i))) return null;
+  if (i > 0 && isKeyChar(text.charCodeAt(i - 1))) return null;
+  let end = i + 1;
+  while (end < text.length && isKeyChar(text.charCodeAt(end))) end++;
+  return { key: text.slice(i, end), end };
 }
 
-/** `password: 'hunter2'`, `'api-key': '...'` and `password:\\tsecret`. */
+/**
+ * An identifier, a separator-bearing word, or a quoted key, then `:` or `=`.
+ * The value is scanned only after the key is known to be a credential, so a
+ * line of ordinary `scheme:` pairs does not rescan its tail.
+ */
+function parseAssignment(text: string, i: number): Assignment | null {
+  const key = keyAt(text, i);
+  if (!key) return null;
+  const sep = skipWs(text, key.end);
+  if (text[sep] !== ':' && text[sep] !== '=') return null;
+  if (!isTelemetrySecretKey(key.key)) return null;
+  const valueStart = skipWs(text, sep + 1);
+  const valueEnd = endOfValue(text, valueStart);
+  return { keyStart: i, key: key.key, sep, valueEnd: valueEnd > valueStart ? valueEnd : valueStart };
+}
+
+/** `password: 'hunter2'`, `auth-header=...` and `{ authorization: { value: '...' } }`. */
 function maskAssignments(text: string): string {
-  let out = '';
+  const parts: string[] = [];
   let i = 0;
   while (i < text.length) {
-    const parsed = parseAssignment(text, i);
-    if (!parsed || !isTelemetrySecretKey(parsed.key)) {
-      out += text[i];
+    const ch = text[i];
+    const maybeKey =
+      ch === '"' || ch === "'" || (isIdentStart(text.charCodeAt(i)) && (i === 0 || !isKeyChar(text.charCodeAt(i - 1))));
+    if (!maybeKey) {
+      const start = i;
       i++;
+      while (i < text.length) {
+        const c = text[i];
+        if (c === '"' || c === "'" || isIdentStart(text.charCodeAt(i))) break;
+        i++;
+      }
+      parts.push(text.slice(start, i));
       continue;
     }
-    out += text.slice(i, parsed.sep + 1);
-    out += ` ${REDACTED}`;
+    if (ch === '"' || ch === "'") {
+      const quoted = readQuoted(text, i);
+      if (!quoted || !quoted.closed) {
+        parts.push(text.slice(i));
+        break;
+      }
+    }
+    const parsed = parseAssignment(text, i);
+    if (!parsed || !isTelemetrySecretKey(parsed.key)) {
+      const key = keyAt(text, i);
+      const end = key && key.end > i ? key.end : i + 1;
+      parts.push(text.slice(i, end));
+      i = end;
+      continue;
+    }
+    parts.push(text.slice(i, parsed.sep + 1));
+    parts.push(` ${REDACTED}`);
     i = parsed.valueEnd > parsed.sep ? parsed.valueEnd : parsed.sep + 1;
   }
-  return out;
+  return parts.join('');
 }
 
 function isSchemeChar(code: number, first: boolean): boolean {
@@ -295,47 +327,65 @@ function isSchemeChar(code: number, first: boolean): boolean {
   return (code >= 48 && code <= 57) || code === 43 || code === 45 || code === 46;
 }
 
-/** `scheme://userinfo@host`, password optional, scheme letters any case. */
+function isUserinfoStop(code: number): boolean {
+  return code <= 32 || code === 47 || code === 63 || code === 35 || code === 92;
+}
+
+/**
+ * `scheme://userinfo@host`, password optional, any userinfo length. When `@`
+ * is not found before a delimiter, the span is not userinfo. When the scan
+ * cannot decide, the rest of the line is masked.
+ */
 function maskUrlUserinfo(text: string): string {
-  let out = '';
+  const parts: string[] = [];
   let i = 0;
   while (i < text.length) {
     const colon = text.indexOf('://', i);
     if (colon === -1) {
-      out += text.slice(i);
+      parts.push(text.slice(i));
       break;
     }
     let scheme = colon - 1;
     while (scheme >= i && isSchemeChar(text.charCodeAt(scheme), false)) scheme--;
     scheme++;
     if (scheme >= colon || !isSchemeChar(text.charCodeAt(scheme), true)) {
-      out += text.slice(i, colon + 3);
+      parts.push(text.slice(i, colon + 3));
       i = colon + 3;
       continue;
     }
     const authStart = colon + 3;
     let j = authStart;
     let at = -1;
-    const limit = Math.min(text.length, authStart + 512);
-    while (j < limit) {
+    let stopped = false;
+    while (j < text.length) {
       const code = text.charCodeAt(j);
       if (code === 64) {
         at = j;
         break;
       }
-      if (code <= 32 || code === 47 || code === 63 || code === 35 || code === 92) break;
+      if (isUserinfoStop(code)) {
+        stopped = true;
+        break;
+      }
       j++;
     }
-    if (at <= authStart) {
-      out += text.slice(i, authStart);
-      i = authStart;
+    if (at > authStart) {
+      parts.push(text.slice(i, authStart));
+      parts.push(`${REDACTED}@`);
+      i = at + 1;
       continue;
     }
-    out += text.slice(i, authStart);
-    out += `${REDACTED}@`;
-    i = at + 1;
+    // A `user:secret` cut off before `@` has no delimiter. Mask through the end of the line.
+    if (!stopped && text.slice(authStart, j).includes(':')) {
+      parts.push(text.slice(i, authStart));
+      parts.push(REDACTED);
+      break;
+    }
+    const next = j > authStart ? j : authStart + 1;
+    parts.push(text.slice(i, next));
+    i = next;
   }
-  return out;
+  return parts.join('');
 }
 
 function redactPlain(text: string, secret: string | undefined): string {
