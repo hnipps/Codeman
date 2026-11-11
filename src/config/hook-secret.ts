@@ -21,6 +21,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { noteHookSecretForRedaction } from '../telemetry.js';
 import { getDataDir, dataPath } from './instance.js';
 
 /** HTTP header local hooks use to present the shared secret. */
@@ -36,7 +37,10 @@ let cachedSecret: string | null = null;
  * Stable across restarts. Cached in-process after the first read.
  */
 export function getHookSecret(): string {
-  if (cachedSecret) return cachedSecret;
+  if (cachedSecret) {
+    noteHookSecretForRedaction(cachedSecret);
+    return cachedSecret;
+  }
 
   const secretFile = dataPath('hook-secret');
 
@@ -45,6 +49,7 @@ export function getHookSecret(): string {
       const raw = readFileSync(secretFile, 'utf-8').trim();
       if (raw) {
         cachedSecret = raw;
+        noteHookSecretForRedaction(cachedSecret);
         return cachedSecret;
       }
       // Empty/whitespace file — fall through and regenerate.
@@ -63,5 +68,6 @@ export function getHookSecret(): string {
     // secret for this process so hooks/middleware agree within this run.
   }
   cachedSecret = secret;
+  noteHookSecretForRedaction(cachedSecret);
   return cachedSecret;
 }

@@ -21,6 +21,8 @@ tests=(
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts
+  test/telemetry-redact.test.ts
+  test/telemetry-query.test.ts
   test/build-reload.test.ts
   test/deploy-healthcheck.test.ts
   test/deploy-role.test.ts

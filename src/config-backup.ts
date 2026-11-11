@@ -797,7 +797,8 @@ const REDACT_ALL_FILES: ReadonlySet<string> = new Set([
   'intents.json',
 ]);
 /** Elsewhere a value is hidden when its own key looks like a credential. */
-const SECRET_KEY_RE = /(token|secret|passw|credential|auth|key$)/i;
+/** Credential-shaped key. `auth` is unanchored, so `author` matches. Telemetry does not use this. */
+export const SECRET_KEY_RE = /(token|secret|passw|credential|auth|key$)/i;
 
 type Leaves = Map<string, string>;
 
