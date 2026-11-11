@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Mask the whole value when the key merely contains a credential word
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`, `src/telemetry.ts`, `src/telemetry-query.ts`
+**Why:** The second audit showed that an exact-word key rule, a capped value, and a tail window that always skipped to the next newline still left secrets out of the mask or dropped a complete row.
+**Links:** [Intent](../intent/2026-11-10-pc8-log-redaction-fix-round2.md)
+
+The key rule is a substring match again (`auth`, `password`, `secret`, `token`, `key`, `credential`), at any length, minus an exact allowlist of attribution keys after case and separators are removed. `keyboard` is therefore a credential key. That is the over-mask the rule accepts. Config backup's `SECRET_KEY_RE` is unchanged and still matches `author`. A masked value runs to its quote, bracket, or delimiter, or to the end of the line when the closer is not in the line. The hook secret is read with a 512-byte cap and, once known, is not read again; a miss is still not cached. A query window keeps its first row when the byte before the window is a newline. A secret with no credential key and no known shape is not detected.
+
 ## 2026-11-10 - Mask the secret shapes the first log audit still found
 
 **Type:** intent-refinement
