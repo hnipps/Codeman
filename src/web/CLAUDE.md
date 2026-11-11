@@ -6,6 +6,8 @@
 
 ## Frontend key patterns
 
+Container readers omit empty body sections and their divider, and disclose live direct-child counts (or Empty). Outline search reserves a separate clear-control area. Plain text uses one inherited prose face and weight; review fixtures must not stack identical objects.
+
 **Mermaid diagrams** (`mermaid-render.js`, `scripts/mermaid-frame.js`): Chat, the Response Viewer, and Markdown file previews hydrate Mermaid fences through ONE shared renderer document, also used by `codeman mermaid render`. Keep the Markdown sanitizer unchanged. The renderer iframe has `sandbox="allow-scripts"` without `allow-same-origin`; its document forbids network requests. Accept messages only from that frame with its request id and opaque origin. Display the returned SVG as an image, never inline dashboard SVG. Preserve source and copy on failure. `prepare-mermaid-assets.mjs` bundles the pinned engine for dev and production. The fixed-name renderer HTML must revalidate, never cache as immutable.
 
 The authenticated parent fetches that HTML and assigns it to the frame's `srcdoc`. Never navigate the sandbox to the asset URL: authenticated installations intercept that HTML navigation with lost-frame recovery. Keep the asset protected, credentials in the parent, and the frame opaque. Browser regressions must exercise authentication.
@@ -104,4 +106,10 @@ Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. L
 
 ## Canvas API notifications
 
-`CanvasChanged` / `CANVAS_CHANGED` names `canvas:changed` in the backend/frontend SSE registries. Its payload contains the workspace ID, committed sequence and trusted resource owner; `deriveSseHint()` routes it to that owner and admins. The synced `canvasEnabled` setting defaults off and survives saving the existing Settings form. PC1 adds no canvas tab or controls.
+`CanvasChanged` / `CANVAS_CHANGED` names `canvas:changed` in the backend/frontend SSE registries. Its payload contains the workspace ID, committed sequence and trusted resource owner; `deriveSseHint()` routes it to that owner and admins. The synced `canvasEnabled` setting defaults off and survives saving the existing Settings form. The canvas document and case-picker entry are implemented in PC3.
+
+## Canvas document
+
+The read-only canvas has its own document and scoped tokens, not dashboard markup. `packages/canvas` is the source and `scripts/build-canvas-bundle.mjs` generates the ignored module in dev and production. Canvas controls use one typed view command layer. Selection is neutral; keyboard focus is amber. Text entry, native controls and IME retain their keys. The outline is 192px; the 320px nonmodal rail overlays the board and removes completely. Panel visibility never changes the camera. Phone panels occupy the full viewport with visible close controls. Managed canvas tabs use direct same-origin navigation so login cookies and base paths work without proxying the app back into itself.
+
+Canvas pointer reading uses consecutive pointer taps because cancelling pointerdown suppresses compatibility double-click events. Normal pointer capture release must preserve the current Space hold; any pointer gesture during that hold suppresses tap-to-select on keyup. Container selection uses secondary text color, a 1px boundary and 1.5px brackets at screen scale in both themes.

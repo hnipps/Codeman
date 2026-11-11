@@ -135,7 +135,8 @@ export const sameAuthor = (a: Author, b: Author): boolean =>
   a.kind === 'human' && b.kind === 'human'
     ? a.userId === b.userId
     : a.kind === 'agent' && b.kind === 'agent' && a.sessionId === b.sessionId;
-export const isContainer = (o: CanvasObject): boolean => ['group', 'frame', 'section', 'subcanvas'].includes(o.type);
+export const isContainer = (o: Pick<CanvasObject, 'type'>): boolean =>
+  ['group', 'frame', 'section', 'subcanvas'].includes(o.type);
 
 export const MAX_HIERARCHY_DEPTH = 256;
 export const MAX_HIERARCHY_NODES = 10_000;

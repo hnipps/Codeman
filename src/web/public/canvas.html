@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-canvas>
+  <head>
+    <meta charset="utf-8" />
+    <base href="/" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Canvas</title>
+    <link rel="stylesheet" href="canvas.css" />
+    <script type="module" src="canvas.js"></script>
+  </head>
+  <body>
+    <main id="board" tabindex="0" aria-label="Canvas workspace"><div id="layer"></div></main>
+    <aside id="outline" aria-label="Workspace outline">
+      <div class="panel-head">
+        <span id="workspaceName">Canvas</span
+        ><button id="closeOutline" aria-label="Close outline" title="Close outline"></button>
+      </div>
+      <div class="search-wrap">
+        <label class="sr" for="search">Search canvas</label
+        ><input id="search" type="search" placeholder="Search canvas" autocomplete="off" /><button
+          id="clearSearch"
+          aria-label="Clear search"
+        >
+          ×</button
+        ><kbd class="search-hint" aria-hidden="true">/</kbd>
+      </div>
+      <nav id="tree" aria-label="Canvas objects"></nav>
+      <div class="outline-foot">
+        <button id="outlineKeys">Keys <kbd>?</kbd></button>
+      </div>
+    </aside>
+    <button id="openOutline" aria-label="Open outline" title="Open outline"></button>
+    <div id="notice" role="status" hidden></div>
+    <section id="state" role="status">
+      <h1>Opening your canvas</h1>
+      <p>Loading the workspace…</p>
+      <button id="retry" hidden>Try again</button>
+    </section>
+    <span id="addDescription" class="sr">Adding objects arrives with editing</span>
+    <span id="commentDescription" class="sr">Comments arrive with conversations</span>
+    <div class="dock-area">
+      <div id="dock" role="toolbar" aria-label="Canvas tools">
+        <button id="selectTool" aria-label="Select" title="Select · V"></button>
+        <button id="panTool" aria-label="Pan" title="Pan · H"></button>
+        <button
+          id="addTool"
+          aria-disabled="true"
+          aria-label="Add objects"
+          aria-describedby="addDescription"
+          title="Adding objects arrives with editing"
+        ></button>
+        <button
+          id="chatTool"
+          aria-disabled="true"
+          aria-label="Comment"
+          aria-describedby="commentDescription"
+          title="Comments arrive with conversations"
+        ></button>
+        <button id="keys" aria-label="Keys" title="Keys · ? or F1"></button>
+      </div>
+      <button id="fit" title="Fit selection or canvas">Fit</button>
+    </div>
+    <aside id="rail" aria-label="Canvas reader and Keys" hidden>
+      <div class="panel-head">
+        <span id="railTitle">Keys</span
+        ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
+      </div>
+      <div id="keysView" class="rail-body" hidden>
+        <p class="secondary">Use these while the canvas has focus. Text fields keep their own keys.</p>
+        <label class="sr" for="keysSearch">Find a shortcut</label
+        ><input id="keysSearch" type="search" placeholder="Find a shortcut…" />
+        <div id="keyRows"></div>
+        <button id="letters" role="switch" aria-checked="true">
+          <span>Single-letter shortcuts</span><span class="switch-track" aria-hidden="true"><span></span></span>
+        </button>
+      </div>
+      <div id="readerView" class="rail-body" hidden>
+        <p id="readerText"></p>
+        <p id="readerCount" class="secondary" hidden></p>
+        <dl id="readerMeta"></dl>
+        <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button
+        ><button id="children" class="quiet">Explore children <kbd role="img" aria-label="Right arrow">→</kbd></button>
+      </div>
+    </aside>
+    <span id="announcement" class="sr" role="status" aria-live="polite"></span>
+  </body>
+</html>

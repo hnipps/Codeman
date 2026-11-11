@@ -2,6 +2,33 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
+
+**Type:** propagated-discovery
+**Touches:** canvas reader, outline search and browser review fixtures
+**Why:** Design review found an empty divider, crowded clear control and apparently bold inert text.
+**Links:** [intent](../intent/2026-11-11-canvas-pc3-visual-round3.md)
+
+Containers show live direct-child counts above metadata without an empty body
+separator. Search uses a separate clear button with reserved input padding.
+The heavy text was multiple identical live-test objects at the same coordinates,
+not a different font: browser tests now clean up their live writes between tests
+and capture one markup-looking text object with matching computed typography.
+
+## 2026-11-11 — Recover canvas readers across future operation records
+
+**Type:** propagated-discovery
+**Touches:** canvas browser model, synchronization and pointer input
+**Why:** The audit reproduced a permanent catch-up stall on a header-only future operation and hidden subcanvas children.
+**Links:** [intent](../intent/2026-11-11-canvas-pc3-audit-round2.md)
+
+The read boundary preserves extensions and skips unknown kinds even when they
+supply after-images. Unreadable catch-ups recover through one fresh snapshot.
+The browser shares the pure server container predicate. Reader activation uses
+consecutive pointer taps because cancelling pointerdown suppresses mouse double
+clicks; pointer capture loss ends a gesture without ending a held Space key.
+
+
 ## 2026-11-11 - Classify canvas records at the state boundary
 
 **Type:** intent-refinement
@@ -35,6 +62,26 @@ This deliberately accepts repeated replay instead of writing an inaccurately
 advanced checkpoint. The same rule applies to shutdown and handoff flushes.
 Existing checkpoints and all log records stay unchanged for a future reader.
 
+## 2026-11-10 — Make read-only canvas affordances truthful
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/`, `src/web/public/canvas.css`, `src/web/public/canvas.html`
+**Why:** PC3 review found resizing-like selection squares and unavailable actions that looked live.
+**Links:** [intent](../intent/2026-11-10-canvas-pc3-review.md)
+
+Selection follows the existing container edge with corner brackets; amber belongs
+to keyboard focus and selected-tool strokes. Add and Comment remain reachable
+with aria-disabled and activation announcements, so keyboard readers can discover
+when those actions arrive. Comments name the later conversation slice; the empty
+state directs the owner to an agent in the case until hand editing ships.
+
+## 2026-11-10 - Keep canvas view commands independent of rendering
+
+**Type:** implementation-decision
+**Touches:** `packages/canvas/`, canvas document and managed web tabs
+**Why:** PC3 needs a read-only first screen whose view actions can later be driven by both editing controls and agent adapters.
+
+The client uses a pure typed command reducer and exposes a cloned state query plus dispatcher. Keyed nested DOM remains the first renderer; only the world layer transforms while panning. Canvas tabs use the existing trusted direct managed mode, which carries normal same-origin login cookies and avoids proxying the application into itself. This requires an additive `canvas` managed-origin discriminator. Reader and Keys share a removable overlay rail; unsupported media and future object types remain inert. The coordinator retains independent live/performance comparison and final design-review ownership.
 ## 2026-11-10 - Preserve future canvas data across code-only rollback
 
 **Type:** intent-refinement

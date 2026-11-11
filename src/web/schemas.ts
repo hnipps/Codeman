@@ -2376,7 +2376,7 @@ const WebviewBaseSchema = z.object({
  */
 const WebviewOriginInputSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user') }),
-  z.object({ kind: z.literal('managed'), managed: z.enum(['deepseek-web']) }),
+  z.object({ kind: z.literal('managed'), managed: z.enum(['deepseek-web', 'canvas']) }),
   z.object({ kind: z.literal('session'), sessionId: z.string().min(1).max(200) }),
 ]);
 
@@ -2386,7 +2386,7 @@ const SESSION_ORIGIN_TRUSTED_MESSAGE = 'A web tab owned by a session cannot be t
 export const WebviewCreateSchema = WebviewBaseSchema.extend({
   origin: WebviewOriginInputSchema.optional(),
   /** Deprecated `/api/v1` spelling of `origin: {kind:"managed", managed}`. */
-  managed: z.enum(['deepseek-web']).optional(),
+  managed: z.enum(['deepseek-web', 'canvas']).optional(),
 })
   .refine(
     (input) =>
@@ -2403,7 +2403,7 @@ export const WebviewCreateSchema = WebviewBaseSchema.extend({
 /** PATCH /api/webviews/:id, partial update. */
 export const WebviewUpdateSchema = WebviewBaseSchema.partial().extend({
   /** Deprecated `/api/v1` field: sets `origin {kind:"managed", managed}` on a non-session row. */
-  managed: z.enum(['deepseek-web']).optional(),
+  managed: z.enum(['deepseek-web', 'canvas']).optional(),
 });
 
 /** The PATCH-side half of the rules above: the route applies it once it has read the stored origin. */

@@ -386,6 +386,34 @@ Object.assign(CodemanApp.prototype, {
     list?.classList.add('hidden');
   },
 
+  casePickerActions() {
+    return this.loadAppSettingsFromStorage?.().canvasEnabled === true
+      ? [...CASE_PICKER_ACTIONS, { id: 'canvas', icon: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h14v14H3zM3 8h14M8 8v9"/></svg>', label: 'Open canvas', run: (app) => app.openCaseCanvas() }]
+      : CASE_PICKER_ACTIONS;
+  },
+
+  async openCaseCanvas() {
+    const caseName = document.getElementById('quickStartCase')?.value;
+    if (!caseName) return;
+    try {
+      const response = await fetch(CodemanBase.url('/api/canvas/workspaces'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseName }) });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Canvas could not open');
+      const workspace = result.data.workspace;
+      const url = new URL(CodemanBase.url(`/canvas/${encodeURIComponent(workspace.id)}`), location.origin).href;
+      await this.refreshWebviews();
+      let record = [...this.webviews.values()].find(w => w.origin?.kind === 'managed' && w.origin.managed === 'canvas' && w.url === url);
+      if (!record) {
+        const saved = await fetch(CodemanBase.url('/api/webviews'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: caseName.slice(0, 60), url, trusted: true, embedMode: 'direct', origin: { kind: 'managed', managed: 'canvas' } }) });
+        const data = await saved.json();
+        if (!saved.ok || !data.success) throw new Error(data.error || 'Canvas tab could not open');
+        record = data.data.webview || data.data;
+      }
+      await this.refreshWebviews();
+      await this.openWebview(record.id);
+    } catch (error) { this.showToast?.(error.message, 'error'); }
+  },
+
   renderCasePickerList() {
     const input = document.getElementById('quickStartCaseSearch');
     const list = document.getElementById('quickStartCaseList');
@@ -395,10 +423,10 @@ Object.assign(CodemanApp.prototype, {
     const options = this.filterCasePickerOptions(this.getCasePickerOptions(), this._casePickerFilter || '');
     const selectedName = select.value || 'testcase';
     // The arrow keys walk the cases, then the action rows under them.
-    const maxIndex = options.length + CASE_PICKER_ACTIONS.length - 1;
+    const maxIndex = options.length + this.casePickerActions().length - 1;
     this._casePickerActiveIndex = Math.min(Math.max(this._casePickerActiveIndex || 0, 0), maxIndex);
 
-    const actionRows = CASE_PICKER_ACTIONS.map((action, i) => {
+    const actionRows = this.casePickerActions().map((action, i) => {
       const index = options.length + i;
       const active = index === this._casePickerActiveIndex;
       return `
@@ -449,7 +477,7 @@ Object.assign(CodemanApp.prototype, {
 
   /** Run a case picker action row (`CASE_PICKER_ACTIONS`): close the list first, then act. */
   runCasePickerAction(id) {
-    const action = CASE_PICKER_ACTIONS.find((a) => a.id === id);
+    const action = this.casePickerActions().find((a) => a.id === id);
     if (!action) return;
     const select = document.getElementById('quickStartCase');
     if (select) this.updateCasePickerInput(select.value);
@@ -502,7 +530,7 @@ Object.assign(CodemanApp.prototype, {
         event.preventDefault();
         this._casePickerActiveIndex = Math.min(
           (this._casePickerActiveIndex || 0) + 1,
-          options.length + CASE_PICKER_ACTIONS.length - 1
+          options.length + this.casePickerActions().length - 1
         );
         this._casePickerOpen ? this.renderCasePickerList() : this.openCasePicker(input.value);
       } else if (event.key === 'ArrowUp') {
@@ -512,7 +540,7 @@ Object.assign(CodemanApp.prototype, {
       } else if (event.key === 'Enter') {
         const index = this._casePickerActiveIndex || 0;
         const option = options[index];
-        const action = this._casePickerOpen ? CASE_PICKER_ACTIONS[index - options.length] : undefined;
+        const action = this._casePickerOpen ? this.casePickerActions()[index - options.length] : undefined;
         if (option) {
           event.preventDefault();
           this.selectQuickStartCase(option.name);
@@ -5432,6 +5460,13 @@ Object.assign(CodemanApp.prototype, {
     }
 
     listContainer.innerHTML = html;
+    if (this.loadAppSettingsFromStorage?.().canvasEnabled === true) {
+      const open = document.createElement('button');
+      open.className = 'mobile-case-item';
+      open.textContent = 'Open canvas';
+      open.onclick = () => { this.closeMobileCasePicker(); void this.openCaseCanvas(); };
+      listContainer.append(open);
+    }
     // Every open starts unfiltered. The search box is not focused on purpose:
     // that would raise the phone keyboard over a list most opens just tap.
     const search = document.getElementById('mobileCaseSearch');
