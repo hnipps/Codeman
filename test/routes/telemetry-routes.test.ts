@@ -4,7 +4,7 @@
  * Uses app.inject(); the WebSocket route is exercised against a real WebServer in
  * test/telemetry-server.test.ts. Port: N/A.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -178,5 +178,86 @@ describe('POST /api/client-errors', () => {
     const res = await post({ message: 'nobody is listening' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ success: true });
+  });
+
+  it('writes a canvas event to ui-events and leaves the client-error stream alone', async () => {
+    await setup();
+    const res = await post({ kind: 'ui', surface: 'canvas', action: 'select', target: 'node-1' });
+    expect(res.statusCode).toBe(200);
+    await telemetry!.flush();
+    expect(() => clientErrorLines()).toThrow();
+    const line = JSON.parse(readFileSync(join(dir, 'ui-events.jsonl'), 'utf8')) as { surface: string; action: string };
+    expect(line).toMatchObject({ surface: 'canvas', action: 'select', target: 'node-1', buildId: 'route-build' });
+  });
+
+  it('refuses a ui event that does not match the small schema', async () => {
+    await setup();
+    const res = await post({ kind: 'ui', surface: 'canvas', action: 'Select' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ success: false, errorCode: 'INVALID_INPUT' });
+    await telemetry!.flush();
+    expect(() => readFileSync(join(dir, 'ui-events.jsonl'), 'utf8')).toThrow();
+  });
+
+  it('does not spend the client-error budget on a ui event', async () => {
+    await setup();
+    for (let i = 0; i < 30; i++) expect((await post({ message: `e${i}` })).statusCode).toBe(200);
+    const res = await post({ kind: 'ui', surface: 'tab-strip', action: 'focus' });
+    expect(res.statusCode).toBe(200);
+    await telemetry!.flush();
+    expect(clientErrorLines()).toHaveLength(30);
+  });
+});
+
+describe('GET /api/logs', () => {
+  it('returns an empty list and a reason when no log directory is configured', async () => {
+    await setup({ withTelemetry: false });
+    const res = await harness.app.inject({ method: 'GET', url: '/api/logs?stream=nope&raw=1' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      success: true,
+      data: { lines: [], truncated: false, reason: 'No log directory is configured' },
+    });
+  });
+
+  it('is admin-only in multi-user mode, before the empty body', async () => {
+    vi.stubEnv('CODEMAN_MULTIUSER', '1');
+    try {
+      await setup({ withTelemetry: false, authUser: { username: 'ada', role: 'user' } });
+      const denied = await harness.app.inject({ method: 'GET', url: '/api/logs' });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json()).toMatchObject({ success: false, errorCode: 'FORBIDDEN' });
+      await harness.app.close();
+
+      await setup({ withTelemetry: false, authUser: { username: 'ada', role: 'admin' } });
+      const allowed = await harness.app.inject({ method: 'GET', url: '/api/logs' });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json().data.reason).toBe('No log directory is configured');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('returns matching redacted lines and refuses a raw field', async () => {
+    await setup();
+    writeFileSync(
+      join(dir, 'server.jsonl'),
+      `${JSON.stringify({
+        ts: '2026-11-10T00:00:00.000Z',
+        level: 'error',
+        msg: 'deploy Authorization: Bearer abcdefghijklmnop',
+      })}\n`
+    );
+    const res = await harness.app.inject({ method: 'GET', url: '/api/logs?stream=server&text=deploy' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { success: boolean; data: { lines: string[] } };
+    expect(body.success).toBe(true);
+    expect(body.data.lines).toHaveLength(1);
+    expect(body.data.lines[0]).toContain('[redacted]');
+    expect(body.data.lines[0]).not.toContain('abcdefghijklmnop');
+
+    const raw = await harness.app.inject({ method: 'GET', url: '/api/logs?stream=server&raw=1' });
+    expect(raw.statusCode).toBe(400);
+    expect(raw.json()).toMatchObject({ success: false, errorCode: 'INVALID_INPUT' });
   });
 });

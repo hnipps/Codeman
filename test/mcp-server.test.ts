@@ -1,6 +1,6 @@
 /**
  * @fileoverview `codeman mcp` (src/mcp-server.ts): the dual-era MCP protocol core, the
- * ten tools against a recording fake transport, and one end-to-end run of the real
+ * eleven tools against a recording fake transport, and one end-to-end run of the real
  * CLI over stdio against a local fake Codeman.
  *
  * Pinned invariants: no guessed URL (unconfigured = tools answer how to configure, list
@@ -165,7 +165,7 @@ describe('protocol: both eras', () => {
     expect(out[0]).toMatchObject({ id: 4, error: { code: RPC_ERROR.invalidParams } });
   });
 
-  it('lists the same ten tools in a fixed order, decorated for the era', async () => {
+  it('lists the same eleven tools in a fixed order, decorated for the era', async () => {
     const { out, send } = server();
     await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: MODERN_META } });
@@ -182,6 +182,7 @@ describe('protocol: both eras', () => {
       'list_extensions',
       'import_extension',
       'remove_extension',
+      'logs_query',
     ];
     expect(legacy.tools.map((t) => t.name)).toEqual(names);
     expect(modern.tools.map((t) => t.name)).toEqual(names);
@@ -273,7 +274,7 @@ describe('tool definitions', () => {
       expect(tool.annotations.openWorldHint, tool.name).toBe(tool.name === 'import_extension');
     }
     const byName = Object.fromEntries(buildToolDefinitions(['claude']).map((t) => [t.name, t]));
-    for (const readOnly of ['list_sessions', 'wait_for_session', 'read_output', 'list_extensions']) {
+    for (const readOnly of ['list_sessions', 'wait_for_session', 'read_output', 'list_extensions', 'logs_query']) {
       expect(byName[readOnly].annotations.readOnlyHint, readOnly).toBe(true);
     }
     expect(byName.delete_session.annotations.destructiveHint).toBe(true);
@@ -544,6 +545,30 @@ describe('codeman mcp over real stdio', () => {
       await new Promise<void>((resolve) => api.close(() => resolve()));
     }
   }, 40_000);
+});
+
+describe('logs_query', () => {
+  it('returns the route data as text and does not add structuredContent', async () => {
+    const data = { lines: ['{"msg":"deploy"}'], truncated: false };
+    const fake = fakeCodeman([], {
+      'GET /api/v1/logs': () => ok(data),
+    });
+    const { out, send } = server(config(), fake);
+    await send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'logs_query', arguments: { stream: 'server', text: 'deploy' } },
+    });
+    const result = (out[0] as { result: { content: Array<{ text: string }>; structuredContent?: unknown } }).result;
+    expect(JSON.parse(result.content[0].text)).toEqual(data);
+    expect(result.structuredContent).toBeUndefined();
+    expect(fake.calls[0]).toMatchObject({
+      method: 'GET',
+      path: '/api/v1/logs',
+      query: { stream: 'server', text: 'deploy' },
+    });
+  });
 });
 
 describe('the MCP registry manifest (config/mcp-registry/server.json)', () => {
