@@ -1516,6 +1516,7 @@ export const SettingsUpdateSchema = z
      * broadcast and /api/search, which is the user's choice to make.
      */
     autoNameSessions: z.boolean().optional(),
+    canvasEnabled: z.boolean().optional(),
     /** Prompt-cache keep-warm default for sessions that have not chosen (Session Options overrides it). */
     promptCacheKeepWarm: z.boolean().optional(),
     /** Hours after the last real prompt during which keep-alives are sent (default 2, DEFAULT_KEEP_WARM_MAX_HOURS). */
@@ -2375,7 +2376,7 @@ const WebviewBaseSchema = z.object({
  */
 const WebviewOriginInputSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user') }),
-  z.object({ kind: z.literal('managed'), managed: z.enum(['deepseek-web']) }),
+  z.object({ kind: z.literal('managed'), managed: z.enum(['deepseek-web', 'canvas']) }),
   z.object({ kind: z.literal('session'), sessionId: z.string().min(1).max(200) }),
 ]);
 
@@ -2385,7 +2386,7 @@ const SESSION_ORIGIN_TRUSTED_MESSAGE = 'A web tab owned by a session cannot be t
 export const WebviewCreateSchema = WebviewBaseSchema.extend({
   origin: WebviewOriginInputSchema.optional(),
   /** Deprecated `/api/v1` spelling of `origin: {kind:"managed", managed}`. */
-  managed: z.enum(['deepseek-web']).optional(),
+  managed: z.enum(['deepseek-web', 'canvas']).optional(),
 })
   .refine(
     (input) =>
@@ -2402,7 +2403,7 @@ export const WebviewCreateSchema = WebviewBaseSchema.extend({
 /** PATCH /api/webviews/:id, partial update. */
 export const WebviewUpdateSchema = WebviewBaseSchema.partial().extend({
   /** Deprecated `/api/v1` field: sets `origin {kind:"managed", managed}` on a non-session row. */
-  managed: z.enum(['deepseek-web']).optional(),
+  managed: z.enum(['deepseek-web', 'canvas']).optional(),
 });
 
 /** The PATCH-side half of the rules above: the route applies it once it has read the stored origin. */
@@ -2537,3 +2538,13 @@ export const AgentStageSchema = z.object({ message: z.string().min(1).max(8192) 
 export const AgentSubmitSchema = z
   .object({ stageId: z.string().uuid(), confirmSha: z.string().regex(/^[a-f0-9]{64}$/) })
   .strict();
+
+export async function loadCanvasSchemas() {
+  const { AuthorSchema } = await import('../canvas/model.js');
+  const { CommandSchema } = await import('../canvas/operations.js');
+  return {
+    CanvasBatchSchema: z.object({ operations: z.array(CommandSchema).min(1).max(1000) }).strict(),
+    CanvasRevertSchema: z.object({ author: AuthorSchema }).strict(),
+  };
+}
+export const CanvasWorkspaceSchema = z.object({ caseName: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/) }).strict();

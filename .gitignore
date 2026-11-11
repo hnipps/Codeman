@@ -137,3 +137,6 @@ readme-preview.mjs
 # Local-LLM harness smoke-test config (real IPs/keys) — see the .example.json
 # alongside it in scripts/, which IS tracked as the template.
 scripts/local-llm-test.config.json
+
+# Generated canvas module (packages/canvas is the source).
+src/web/public/canvas.js

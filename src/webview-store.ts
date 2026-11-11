@@ -52,7 +52,7 @@ function isOrigin(value: unknown): value is WebviewOrigin {
     case 'user':
       return true;
     case 'managed':
-      return origin.managed === 'deepseek-web';
+      return origin.managed === 'deepseek-web' || origin.managed === 'canvas';
     default:
       return false;
   }

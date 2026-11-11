@@ -541,3 +541,10 @@ console.log(colors.dim('    • ') + colors.cyan('codeman web --host 0.0.0.0') +
 console.log(colors.dim('  A non-loopback bind without a password still starts, but warns loudly.'));
 console.log(colors.dim('  Details: docs/security-architecture.md'));
 console.log('');
+
+// Keep the development canvas document in step with its typed source.
+try {
+  execSync(`node "${join(import.meta.dirname, 'build-canvas-bundle.mjs')}"`, { stdio: 'inherit' });
+} catch (error) {
+  console.error('ERROR: Canvas bundle build failed. Run npm run build:canvas before opening a canvas.', error.message);
+}

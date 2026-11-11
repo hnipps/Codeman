@@ -3012,6 +3012,7 @@ Object.assign(CodemanApp.prototype, {
       showRedrawButton: document.getElementById('appSettingsShowRedrawButton').checked,
       mobileOverviewEnabled: document.getElementById('appSettingsMobileOverview').checked,
       sessionLineageLines: document.getElementById('appSettingsLineageLines').checked,
+      canvasEnabled: _prev.canvasEnabled === true,
       autoNameSessions: document.getElementById('appSettingsAutoNameSessions').checked,
       spawnedTabsFollowParent: document.getElementById('appSettingsSpawnedTabsFollowParent').checked,
       showSessionButton: document.getElementById('appSettingsShowSessionButton').checked,
