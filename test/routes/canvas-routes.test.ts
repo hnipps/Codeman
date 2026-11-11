@@ -84,7 +84,19 @@ describe('canvas routes', () => {
                 });
         }
         expect(forward.statusCode).toBe(200);
-        expect(store.append([create('y', 'g')], agent).ok).toBe(true);
+        port.sessions.set('session-a', {
+          id: 'session-a',
+          owner: 'user-a',
+          workingDir: join(resolveCasesDir({ username: 'user-a', role: 'user' }), 'dependents-' + variant),
+        });
+        const added = await app.inject({
+          method: 'POST',
+          url: '/api/canvas/current/command',
+          headers: { 'x-codeman-parent-session': 'session-a' },
+          payload: { tool: 'canvas_create', arguments: { operations: [create('y', 'g')] } },
+        });
+        expect(added.statusCode, added.body).toBe(200);
+        expect(store.read().objects.y.author).toEqual(agent);
         const before = store.read();
         const log = readFileSync(store.logPath, 'utf8');
         const broadcasts = port.broadcast.mock.calls.length;
