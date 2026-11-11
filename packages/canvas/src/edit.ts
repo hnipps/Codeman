@@ -1,3 +1,5 @@
+import { CanvasUndo } from './undo.js';
+import { parseSnapshot } from './edit-queue.js';
 import { z } from 'zod';
 import { EditQueue, sendEdits, type Edit, type QueueStatus, type Acknowledged } from './edit-queue.js';
 import { container, type Snapshot, type ViewObject } from './model.js';
@@ -17,6 +19,8 @@ const DraftSchema = z.object({ base: z.string(), value: z.string(), revision: z.
 type Draft = z.infer<typeof DraftSchema> & { sent?: string };
 export class DesktopEditor {
   readonly queue: EditQueue;
+  private history = new CanvasUndo();
+  private submittedFocus = new Map<string, string | null>();
   private drafts = new Map<string, Draft>();
   private currentId: string | null = null;
   private authoritative: ViewObject[] = [];
@@ -79,9 +83,12 @@ export class DesktopEditor {
       }
     };
     btn('deleteSelection').onclick = () => this.remove();
+    btn('undoEdit').onclick = () => void this.undo('undo');
+    btn('redoEdit').onclick = () => void this.undo('redo');
     btn('retryEdit').onclick = () => this.queue.retry();
     btn('discardEdit').onclick = () => {
       this.queue.discard();
+      this.history.refused();
       this.paintStatus();
     };
     btn('useServer').onclick = () => this.resolve(false);
@@ -166,7 +173,10 @@ export class DesktopEditor {
     return false;
   }
   submit(operations: Edit[]): boolean {
-    return this.available() && this.queue.enqueue(operations);
+    if (!this.available()) return false;
+    const focusId = this.options.view().focusId;
+    for (const op of operations) this.submittedFocus.set(op.opId, focusId);
+    return this.queue.enqueue(operations);
   }
   private create(type: string): void {
     if (!this.available()) return;
@@ -196,7 +206,7 @@ export class DesktopEditor {
         content,
       },
     };
-    if (!this.queue.enqueue([this.parse(operation)])) return;
+    if (!this.submit([this.parse(operation)])) return;
     node('addMenu').hidden = true;
     btn('addTool').setAttribute('aria-expanded', 'false');
     this.options.dispatch({ kind: 'selection', ids: [id] });
@@ -266,6 +276,15 @@ export class DesktopEditor {
       delete draft.sent;
   }
   private acknowledge(operations: Acknowledged[]): void {
+    const focusId = this.history.acknowledge(
+      operations,
+      this.submittedFocus.get(operations[0]?.opId ?? '') ?? operations[0]?.objectId ?? null
+    );
+    for (const op of operations) this.submittedFocus.delete(op.opId);
+    if (focusId) {
+      this.options.dispatch({ kind: 'focus', id: focusId });
+      node('board').focus({ preventScroll: true });
+    }
     for (const op of operations) {
       const draft = this.drafts.get(op.objectId);
       const after = op.prev.find((c) => c.objectId === op.objectId)?.after;
@@ -329,6 +348,25 @@ export class DesktopEditor {
     this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
   }
+  private async undo(direction: 'undo' | 'redo'): Promise<void> {
+    if (!this.available()) return;
+    if (this.queue.busy) {
+      node('announcement').textContent = 'Wait for pending edits to save before changing history.';
+      return;
+    }
+    try {
+      const response = await fetch(
+        this.options.url(`/api/canvas/${this.options.workspace}/objects?includeDeleted=true`)
+      );
+      if (!response.ok) throw new Error('History could not load the latest objects.');
+      const snapshot = parseSnapshot(await response.json());
+      const action = this.history.prepare(direction, snapshot.objects);
+      if (action && !this.submit(action.operations)) this.history.refused();
+    } catch (error) {
+      this.history.refused();
+      node('announcement').textContent = error instanceof Error ? error.message : 'History could not be changed.';
+    }
+  }
   private key(e: KeyboardEvent): void {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape' && !node('addMenu').hidden) {
@@ -346,6 +384,12 @@ export class DesktopEditor {
       this.options.mobile.matches
     )
       return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat) void this.undo(e.shiftKey ? 'redo' : 'undo');
+      return;
+    }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
       e.stopImmediatePropagation();

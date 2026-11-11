@@ -433,3 +433,5 @@ Container readers omit empty body sections and their divider, and disclose live 
 Canvas edits use `packages/canvas/src/edit-queue.ts`: persist operation IDs before sending, keep one batch in flight, and recover acknowledgements from history. Refused writes leave the optimistic display and remain available for retry or discard.
 
 Desktop Add, soft delete and focused plain-text/name editing use the queue. Reader drafts persist separately, retain concurrent same-field changes for explicit resolution, and show inline save state. Phone layouts omit edit controls.
+
+Canvas undo records only this browser’s acknowledged writes, appends inverse commands, checks changed fields against current state and uses expected revisions. Subtree inverses include atomic revision guards for affected descendants; a later added child prevents a destructive inverse. Text entry and composition keep native undo.

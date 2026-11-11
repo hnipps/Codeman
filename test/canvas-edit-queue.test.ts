@@ -1,3 +1,4 @@
+import { CanvasUndo } from '../packages/canvas/src/undo.js';
 import { describe, it, expect, vi } from 'vitest';
 import { EditQueue, Refused, type Edit, type Acknowledged } from '../packages/canvas/src/edit-queue.js';
 import type { ViewObject } from '../packages/canvas/src/model.js';
@@ -154,5 +155,35 @@ describe('durable canvas edit queue', () => {
     expect(f.display()[0].position.x).toBe(70);
     expect(f.display()[0].content.text).toBe('Agent text');
     f.queue.stop();
+  });
+});
+
+describe('safe acknowledged history', () => {
+  it('undoes only acknowledged fields and refuses later conflicting edits', () => {
+    const undo = new CanvasUndo();
+    undo.acknowledge([ack(move(10))], 'note');
+    const current = {
+      ...object,
+      position: { x: 10, y: 0 },
+      content: { type: 'text', text: 'Agent update' },
+      revision: 3,
+    };
+    const action = undo.prepare('undo', [current]);
+    expect(action?.operations[0]).toMatchObject({
+      kind: 'revert',
+      expectedRevision: 3,
+      patch: { position: { x: 0, y: 0 } },
+    });
+    expect(action?.operations[0]).not.toHaveProperty('patch.content');
+    undo.refused();
+    expect(() => undo.prepare('undo', [{ ...current, position: { x: 15, y: 0 } }])).toThrow('later change');
+  });
+  it('refuses to undo container creation when another author added a child', () => {
+    const undo = new CanvasUndo();
+    undo.acknowledge(
+      [{ ...ack(move(10)), kind: 'create', prev: [{ objectId: 'note', before: null, after: object }] }],
+      'note'
+    );
+    expect(() => undo.prepare('undo', [object, { ...object, id: 'child', parentId: 'note' }])).toThrow('later work');
   });
 });

@@ -638,3 +638,5 @@ Per-change intent files are in `intent/`. That directory is separate from Read M
 ## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
 
 The desktop queue uses existing operation IDs for retries and recovers an acknowledgement from history when an SSE snapshot arrived before the POST response. A server refusal quarantines pending edits and rolls back their optimistic display. Explicit reparenting uses the existing `reparent` kind rather than adding a parent field to `move`.
+
+PC4 history aggregates a gesture’s changes per object before inversion, so resize position and size undo together. Existing empty `revert` patches serve as revision guards for descendants in the same atomic inverse batch; no server command kind is added.
