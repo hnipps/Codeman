@@ -1,4 +1,4 @@
-import { container, label, readable, type ViewObject } from './model.js';
+import { container, label, readable, searchText, type ViewObject } from './model.js';
 import { localBounds, outline } from './tree.js';
 import type { ViewState } from './commands.js';
 export class Renderer {
@@ -66,7 +66,7 @@ export class Renderer {
       const body = el.querySelector<HTMLElement>('.object-body'),
         title = el.querySelector<HTMLElement>('.object-title');
       if (body) {
-        body.hidden = container(o);
+        body.hidden = container(o) && o.content.type === o.type;
         if (body.textContent !== readable(o)) body.textContent = readable(o);
       }
       if (title) {
@@ -99,6 +99,7 @@ export class Renderer {
       const row = this.rows.get(o.id);
       if (row) {
         row.textContent = label(o);
+        row.dataset.searchText = searchText(o).toLowerCase();
         row.title = label(o);
         row.classList.toggle('root', depth === 0);
         row.style.paddingLeft = `${8 + depth * 12}px`;
@@ -123,6 +124,6 @@ export class Renderer {
     }
   }
   filter(query: string): void {
-    for (const row of this.rows.values()) row.hidden = !row.textContent?.toLowerCase().includes(query.toLowerCase());
+    for (const row of this.rows.values()) row.hidden = !row.dataset.searchText?.includes(query.toLowerCase());
   }
 }

@@ -2,6 +2,20 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 — Recover canvas readers across future operation records
+
+**Type:** propagated-discovery
+**Touches:** canvas browser model, synchronization and pointer input
+**Why:** The audit reproduced a permanent catch-up stall on a header-only future operation and hidden subcanvas children.
+**Links:** [intent](../intent/2026-11-11-canvas-pc3-audit-round2.md)
+
+The read boundary preserves extensions and skips unknown kinds even when they
+supply after-images. Unreadable catch-ups recover through one fresh snapshot.
+The browser shares the pure server container predicate. Reader activation uses
+consecutive pointer taps because cancelling pointerdown suppresses mouse double
+clicks; pointer capture loss ends a gesture without ending a held Space key.
+
+
 ## 2026-11-11 - Classify canvas records at the state boundary
 
 **Type:** intent-refinement
@@ -34,6 +48,7 @@ A store with unknown operation kinds fsyncs its log but skips new snapshots.
 This deliberately accepts repeated replay instead of writing an inaccurately
 advanced checkpoint. The same rule applies to shutdown and handoff flushes.
 Existing checkpoints and all log records stay unchanged for a future reader.
+
 ## 2026-11-10 — Make read-only canvas affordances truthful
 
 **Type:** intent-refinement

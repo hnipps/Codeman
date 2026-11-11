@@ -13,7 +13,9 @@ import {
 import { command, initialView } from '../packages/canvas/src/commands.js';
 import { nextFocus, outline, worldBounds } from '../packages/canvas/src/tree.js';
 import { shortcutAllowed } from '../packages/canvas/src/shortcuts.js';
-import { SnapshotSchema, readable, type ViewObject } from '../packages/canvas/src/model.js';
+import { SnapshotSchema, readable, searchText, type ViewObject } from '../packages/canvas/src/model.js';
+import { replayCatchUp, viewOperationKinds } from '../packages/canvas/src/sync.js';
+import { knownKinds } from '../src/canvas/operations.js';
 const object = (id: string, parentId: string | null = null, order = 0): ViewObject => ({
   id,
   parentId,
@@ -111,5 +113,59 @@ describe('read view commands and hierarchy', () => {
       ],
     });
     expect(readable(data.objects[0])).toBe('Unsupported object · diagram');
+  });
+  it('shares container and operation coverage with the server and includes subcanvas descendants', () => {
+    expect(viewOperationKinds).toEqual(knownKinds);
+    const parent = { ...object('subcanvas'), type: 'subcanvas', content: { type: 'subcanvas', label: 'Nested' } };
+    expect(outline([parent, object('child', 'subcanvas')]).map(({ object: o }) => o.id)).toEqual([
+      'subcanvas',
+      'child',
+    ]);
+  });
+  it('preserves extensions throughout snapshots and known catch-up records while skipping future kinds', () => {
+    const extended = {
+      ...object('created'),
+      lock: null,
+      revision: 4,
+      deletionOpId: null,
+      future: { keep: ['all'] },
+      position: { x: 10, y: 20, z: 30 },
+      size: { width: 100, height: 80, unit: 'px' },
+      author: { kind: 'human', userId: 'reader', future: true },
+      content: { type: 'text', text: 'Title\nfindme [a.*]', future: { keep: ['all'] } },
+    };
+    expect(SnapshotSchema.parse({ seq: 1, objects: [extended] }).objects[0]).toEqual(extended);
+    const future = { seq: 3, opId: 'future-op', kind: 'future-operation', futurePayload: { keep: ['all'] } };
+    const result = replayCatchUp(
+      { seq: 1, objects: [] },
+      {
+        seq: 5,
+        operations: [
+          future,
+          { ...future, seq: 4, prev: [{ objectId: 'ignored', after: object('ignored') }] },
+          { seq: 5, kind: 'create', prev: [{ objectId: 'created', after: extended, future: true }], future: true },
+        ],
+      }
+    );
+    expect(result).toEqual({ state: { seq: 5, objects: [extended] }, unreadable: false });
+    expect(searchText(result.state.objects[0]).toLowerCase()).toContain('findme [a.*]');
+    expect(readable({ ...object('content'), content: { type: 'future-content', script: '<script>' } })).toBe(
+      'Unsupported content · future-content'
+    );
+  });
+  it('keeps readable records on either side of a malformed operation and requests snapshot recovery', () => {
+    const result = replayCatchUp(
+      { seq: 1, objects: [] },
+      {
+        seq: 4,
+        operations: [
+          { seq: 2, kind: 'create', prev: [{ objectId: 'before', after: object('before') }] },
+          { seq: 3, kind: 'create', prev: [{ after: null }] },
+          { seq: 4, kind: 'create', prev: [{ objectId: 'after', after: object('after') }] },
+        ],
+      }
+    );
+    expect(result.unreadable).toBe(true);
+    expect(result.state.objects.map((o) => o.id)).toEqual(['before', 'after']);
   });
 });

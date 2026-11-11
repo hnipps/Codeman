@@ -1,12 +1,52 @@
 import { z } from 'zod';
 import { SnapshotSchema, ViewObjectSchema, type Snapshot } from './model.js';
-const envelope = <T extends z.ZodType>(data: T) => z.object({ success: z.literal(true), data });
-const OpsSchema = z.object({
-  seq: z.number().int().nonnegative(),
-  operations: z.array(
-    z.object({ seq: z.number(), prev: z.array(z.object({ objectId: z.string(), after: ViewObjectSchema })) })
-  ),
-});
+const envelope = <T extends z.ZodType>(data: T) => z.object({ success: z.literal(true), data }).passthrough();
+const OpsSchema = z
+  .object({
+    seq: z.number().int().nonnegative(),
+    operations: z.array(z.unknown()),
+  })
+  .passthrough();
+const HeaderSchema = z.object({ seq: z.number().int().nonnegative(), kind: z.string() }).passthrough();
+const ChangesSchema = z
+  .object({
+    prev: z.array(z.object({ objectId: z.string(), after: ViewObjectSchema }).passthrough()),
+  })
+  .passthrough();
+export const viewOperationKinds = new Set([
+  'create',
+  'update',
+  'move',
+  'reparent',
+  'reorder',
+  'lock',
+  'unlock',
+  'delete',
+  'restore',
+  'comment',
+  'remove-comment',
+  'revert',
+]);
+export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snapshot; unreadable: boolean } {
+  const data = OpsSchema.parse(payload);
+  const objects = new Map(state.objects.map((o) => [o.id, o]));
+  let unreadable = false;
+  for (const record of data.operations) {
+    const header = HeaderSchema.safeParse(record);
+    if (!header.success) {
+      unreadable = true;
+      continue;
+    }
+    if (!viewOperationKinds.has(header.data.kind)) continue;
+    const operation = ChangesSchema.safeParse(record);
+    if (!operation.success) {
+      unreadable = true;
+      continue;
+    }
+    for (const change of operation.data.prev) objects.set(change.objectId, change.after);
+  }
+  return { state: { seq: data.seq, objects: [...objects.values()].filter((o) => o.deletedAt === null) }, unreadable };
+}
 export class CanvasSync {
   private state: Snapshot = { seq: 0, objects: [] };
   private source: EventSource | null = null;
@@ -31,9 +71,7 @@ export class CanvasSync {
     window.addEventListener('offline', this.offline);
     this.status('loading');
     try {
-      const response = await fetch(this.url(`/api/canvas/${this.workspaceId}/objects`), { signal: this.abort.signal });
-      if (!response.ok) throw new Error('Load failed');
-      this.state = envelope(SnapshotSchema).parse(await response.json()).data;
+      await this.snapshot();
       if (this.stopped) return;
       this.receive(this.state);
       this.status('ready');
@@ -41,6 +79,11 @@ export class CanvasSync {
     } catch {
       if (!this.stopped) this.status('error');
     }
+  }
+  private async snapshot(): Promise<void> {
+    const response = await fetch(this.url(`/api/canvas/${this.workspaceId}/objects`), { signal: this.abort.signal });
+    if (!response.ok) throw new Error('Load failed');
+    this.state = envelope(SnapshotSchema).parse(await response.json()).data;
   }
   private connect(): void {
     this.source?.close();
@@ -64,10 +107,17 @@ export class CanvasSync {
           signal: this.abort.signal,
         });
         if (!response.ok) throw new Error('Reconnect failed');
-        const data = envelope(OpsSchema).parse(await response.json()).data;
-        const objects = new Map(this.state.objects.map((o) => [o.id, o]));
-        for (const op of data.operations) for (const change of op.prev) objects.set(change.objectId, change.after);
-        this.state = { seq: data.seq, objects: [...objects.values()].filter((o) => o.deletedAt === null) };
+        const payload = envelope(z.unknown()).parse(await response.json()).data;
+        let replay;
+        try {
+          replay = replayCatchUp(this.state, payload);
+        } catch {
+          await this.snapshot();
+        }
+        if (replay) {
+          if (replay.unreadable) await this.snapshot();
+          else this.state = replay.state;
+        }
         if (!this.stopped) {
           this.receive(this.state);
           this.status('ready');
