@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - An Authorization bearer is one placeholder
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** `Authorization: Bearer …` was stored as `Authorization: [redacted]]`. The bearer shape and the header rule both rewrote the same span, and the `]` inside the placeholder ended the header value early.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round7.md)
+
+The assignment is measured on the original text, before any placeholder is written. A credential header that holds a bearer token gets one `[redacted]`. A `]` that was already in the input, such as the closer of `headers: [Authorization: Bearer …]`, stays. Free-standing bearer tokens are unchanged.
+
 ## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
 
 **Type:** propagated-discovery

@@ -9,7 +9,10 @@
  * the whole value: a quoted string, a bracketed object or array, or everything
  * up to the newline for any other value. The inside of a quote that is not
  * itself a secret value is scanned for the same shapes, up to a fixed depth.
- * Bearer tokens have no minimum length. Known token shapes (`sk-`, `ghp_`,
+ * Bearer tokens have no minimum length. A credential header and a bearer
+ * shape that cover the same span write the placeholder once; the assignment
+ * is measured before any placeholder exists, because `[redacted]` contains
+ * `]`. Known token shapes (`sk-`, `ghp_`,
  * `github_pat_`, `xox*-`, `AKIA`, a three-part `eyJ` JWT) are masked with no
  * key. URL userinfo is masked through the last `@` in the authority. A hook
  * secret is removed as a literal. Odd input returns a placeholder instead of
@@ -768,15 +771,27 @@ function scanInterior(interior: string, depth: number): string {
   return redactPlainOnce(interior, depth + 1);
 }
 
-function redactPlainOnce(text: string, depth: number): string {
+/**
+ * `bearer <token>` of any length, including a one-character token. The
+ * replacement is exactly `Bearer [redacted]`. Run this after assignment
+ * masking: the placeholder's `]` would otherwise end the header value and
+ * leave a second `]`.
+ */
+function maskBearer(text: string): string {
   BEARER_RE.lastIndex = 0;
-  let bearer = text;
-  if (BEARER_RE.test(text)) {
+  if (!BEARER_RE.test(text)) {
     BEARER_RE.lastIndex = 0;
-    bearer = text.replace(BEARER_RE, `Bearer ${REDACTED}`);
+    return text;
   }
   BEARER_RE.lastIndex = 0;
-  return maskUrlUserinfo(maskSecrets(maskCurlUser(maskKnownTokens(bearer)), depth));
+  const out = text.replace(BEARER_RE, `Bearer ${REDACTED}`);
+  BEARER_RE.lastIndex = 0;
+  return out;
+}
+
+function redactPlainOnce(text: string, depth: number): string {
+  const assigned = maskSecrets(text, depth);
+  return maskUrlUserinfo(maskBearer(maskCurlUser(maskKnownTokens(assigned))));
 }
 
 /** Up to three passes so a mask that uncovers a later shape still settles. */
