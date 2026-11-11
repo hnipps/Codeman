@@ -1643,15 +1643,22 @@ directory and the owner-scoped workspace registry. An agent request cannot selec
 another workspace or provide an author. The server stamps the full agent session
 ID. A session outside a registered canvas case receives setup guidance (400).
 Human requests omit the header and use the workspace ID with the same commands.
+Write envelopes may include an optional UUID `requestId`. A retry with the same
+author, tool and arguments returns the original sequence IDs without expansion or
+append, even after later edits. Reusing that identity with different input is a 409. Compound request identities are encoded in native operation IDs; no new disk
+record kind is introduced. No-op compounds append an empty native revert guard
+when a request identity is supplied, so their acknowledgement is durable too.
 
 Create/update/delete take `{ operations: [...] }` using native PC1 command schemas;
 update also accepts move/reparent/reorder/lock/unlock/restore/comment operations.
 Arrange takes an `action`: group, ungroup, nest, reparent, order, align, distribute
-or duplicate. Transform declares target IDs, local/world space, anchor,
+or duplicate. Group accepts optional `containerType` (`group` by default,
+`frame` or `section` to wrap in explicit padded world bounds). Reparent/nest accept
+optional world `translation` to place and change membership atomically. Transform declares target IDs, local/world space, anchor,
 translation, positive width/height scale factors and rotation in degrees.
 Groups support uniform subtree scaling; fixed containers resize their bounds.
 Lock takes target IDs and mode subtree/background/unlock (background only on
-frames/sections). No implicit unlock or half-applied batch is allowed.
+frames/sections). No implicit unlock or half-applied batch is allowed. Create/duplicate commands stage new copied locks after creating the complete hierarchy; source locks stay unchanged.
 
 History read takes `{ action: "read", since: 0 }`. Undo takes
 `{ action: "undo", sequences: [42,43] }`, restricted to the caller's own author and

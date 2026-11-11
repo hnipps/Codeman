@@ -1,6 +1,6 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
 import type { Command } from '../../canvas/operations.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
@@ -20,6 +20,7 @@ import {
   capabilities,
   commandFailure,
   normalizeTargets,
+  deferCreatedLocks,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
 import { IdSchema, type Author } from '../../canvas/model.js';
@@ -145,12 +146,33 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
         { bodyLimit: 2 * 1024 * 1024 },
         async (req, reply) => {
           const envelope = z
-            .object({ tool: z.enum(canvasToolNames), arguments: z.unknown() })
+            .object({ tool: z.enum(canvasToolNames), arguments: z.unknown(), requestId: z.uuid().optional() })
             .strict()
             .parse(req.body);
           const store = (await ctx.canvasStores()).get(req.params.workspaceId);
           const state = store.read();
           const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
+          const prefix = envelope.requestId ? `request_${envelope.requestId}_` : null;
+          const fingerprint = createHash('sha256')
+            .update(JSON.stringify([author, envelope.tool, envelope.arguments]))
+            .digest('hex')
+            .slice(0, 24);
+          const previous = prefix ? store.operations().filter((o) => o.opId.startsWith(prefix)) : [];
+          if (previous.length) {
+            if (!previous.every((o) => o.opId.startsWith(`${prefix}${fingerprint}_`)))
+              return reply
+                .code(409)
+                .send(
+                  createErrorResponse(
+                    ApiErrorCode.CONFLICT,
+                    'Request identity was already used for a different command'
+                  )
+                );
+            return {
+              success: true,
+              data: { seq: state.seq, sequences: previous.map((o) => o.seq), hierarchy: boundedCanvasData([]) },
+            };
+          }
           const args = envelope.arguments;
           let operations: Command[] | undefined;
           let revert = false;
@@ -208,6 +230,17 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               else operations = historyCommands(state, store.operations(), input.sequences, author);
               break;
             }
+          }
+          if (operations) operations = deferCreatedLocks(operations);
+          if (prefix && operations) {
+            if (!operations.length) {
+              const input = z.object({ targetIds: z.array(z.string()).min(1) }).parse(args);
+              operations = [{ kind: 'revert', objectId: input.targetIds[0], opId: randomUUID(), patch: {} }];
+            }
+            operations = operations.map((operation, index) => ({
+              ...operation,
+              opId: `${prefix}${fingerprint}_${index}`,
+            }));
           }
           const result = revert ? store.revert(author, author) : store.appendExpanded(operations ?? [], author);
           if (!result.ok)

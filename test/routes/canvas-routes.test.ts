@@ -49,6 +49,35 @@ async function harness(username = 'user-a', role: 'user' | 'admin' = 'user') {
 }
 
 describe('canvas routes', () => {
+  it('deduplicates a compound request after changed state and refuses identity reuse with different arguments', async () => {
+    const workspace = workspaceForCase('compound-retry', 'user-a');
+    const { app, port } = await harness();
+    try {
+      const store = (await port.canvasStores()).get(workspace.id);
+      store.append([create('a'), create('b')], human);
+      const payload = {
+        requestId: crypto.randomUUID(),
+        tool: 'canvas_arrange',
+        arguments: { action: 'group', targetIds: ['a', 'b'], groupId: 'g', label: 'Group', parentId: null },
+      };
+      const first = await app.inject({ method: 'POST', url: `/api/canvas/${workspace.id}/command`, payload });
+      expect(first.statusCode).toBe(200);
+      const log = store.operations();
+      const replay = await app.inject({ method: 'POST', url: `/api/canvas/${workspace.id}/command`, payload });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().data.sequences).toEqual(first.json().data.sequences);
+      expect(store.operations()).toEqual(log);
+      const reused = await app.inject({
+        method: 'POST',
+        url: `/api/canvas/${workspace.id}/command`,
+        payload: { ...payload, arguments: { ...payload.arguments, label: 'Changed' } },
+      });
+      expect(reused.statusCode).toBe(409);
+      expect(store.operations()).toEqual(log);
+    } finally {
+      await app.close();
+    }
+  });
   it.each(['group', 'restore', 'redo'] as const)(
     'refuses %s history with later agent descendants atomically',
     async (variant) => {

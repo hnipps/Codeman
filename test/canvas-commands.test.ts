@@ -22,6 +22,48 @@ function apply(state: CanvasState, commands: Command[]) {
 const seed = () =>
   apply(emptyState(), [create('section', null, 'section'), create('a', 'section'), create('b', 'section')]).state;
 describe('shared compound canvas commands', () => {
+  it.each(['frame', 'section'] as const)('wraps in a %s and reparents with placement in one batch', (containerType) => {
+    let state = seed();
+    const before = worldTransform(state, 'a');
+    state = apply(
+      state,
+      arrange(state, {
+        action: 'group',
+        targetIds: ['a', 'b'],
+        groupId: 'wrapper',
+        label: 'Wrapper',
+        parentId: null,
+        containerType,
+      })
+    ).state;
+    expect(state.objects.wrapper.type).toBe(containerType);
+    expect(state.objects.wrapper.size).not.toBeNull();
+    expect(worldTransform(state, 'a')).toEqual(before);
+    state = apply(
+      state,
+      arrange(state, { action: 'reparent', targetIds: ['a'], parentId: 'section', translation: { x: 40, y: -20 } })
+    ).state;
+    expect(worldTransform(state, 'a')).toEqual({ x: before.x + 40, y: before.y - 20, rotation: before.rotation });
+  });
+  it('duplicates a locked subtree without editing the source or losing locks', () => {
+    let state = seed();
+    state = apply(state, [
+      { kind: 'lock', opId: 'lock-child', objectId: 'a', patch: { mode: 'subtree' } },
+      { kind: 'lock', opId: 'lock-parent', objectId: 'section', patch: { mode: 'subtree' } },
+    ]).state;
+    const copied = apply(
+      state,
+      arrange(state, { action: 'duplicate', targetIds: ['section'], offset: { x: 24, y: 24 } })
+    ).state;
+    expect(copied.objects.section).toEqual(state.objects.section);
+    const clone = Object.values(copied.objects).find((o) => o.type === 'section' && o.id !== 'section');
+    expect(clone?.lock).toBe('subtree');
+    expect(
+      Object.values(copied.objects).find(
+        (o) => o.parentId === clone?.id && o.content.text === state.objects.a.content.text
+      )?.lock
+    ).toBe('subtree');
+  });
   it('rejects ignored snap fields and describes browser pointer snapping in capabilities', () => {
     for (const action of ['align', 'distribute']) {
       const args = { action, targetIds: ['a', 'b'], axis: 'x', ...(action === 'align' ? { anchor: 'start' } : {}) };
