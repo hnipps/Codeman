@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
+
+**Type:** propagated-discovery
+**Touches:** canvas reader, outline search and browser review fixtures
+**Why:** Design review found an empty divider, crowded clear control and apparently bold inert text.
+**Links:** [intent](../intent/2026-11-11-canvas-pc3-visual-round3.md)
+
+Containers show live direct-child counts above metadata without an empty body
+separator. Search uses a separate clear button with reserved input padding.
+The heavy text was multiple identical live-test objects at the same coordinates,
+not a different font: browser tests now clean up their live writes between tests
+and capture one markup-looking text object with matching computed typography.
+
 ## 2026-11-11 — Recover canvas readers across future operation records
 
 **Type:** propagated-discovery

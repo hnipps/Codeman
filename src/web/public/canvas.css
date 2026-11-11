@@ -282,7 +282,21 @@ kbd {
   padding: 12px;
 }
 #search {
-  padding-right: 32px;
+  padding-right: 48px;
+}
+#search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+#clearSearch {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  padding: 0;
+}
+.search-wrap:has(input:placeholder-shown) #clearSearch {
+  display: none;
 }
 .search-hint {
   position: absolute;
@@ -407,9 +421,11 @@ kbd {
   line-height: 1.45;
   max-width: 44ch;
 }
-#readerMeta {
+#readerText:not([hidden]) ~ #readerMeta {
   border-top: 1px solid var(--divider);
   padding-top: 12px;
+}
+#readerMeta {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 8px 12px;
@@ -468,6 +484,9 @@ dd {
   input,
   select {
     min-height: 44px;
+  }
+  #search {
+    padding-right: 60px;
   }
   #outline,
   #rail {

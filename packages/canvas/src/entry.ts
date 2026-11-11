@@ -171,8 +171,17 @@ function readObject(): void {
   const o = objects.find((o) => o.id === state.focusId);
   readerObject = o;
   readerFocus = state.focusId;
-  node('readerText').textContent = o ? readable(o) : 'This object was removed from the workspace.';
-  node('readerText').hidden = !!o && container(o) && o.content.type === o.type;
+  const body =
+    o && container(o) && o.content.type === o.type
+      ? ''
+      : o
+        ? readable(o)
+        : 'This object was removed from the workspace.';
+  node('readerText').textContent = body;
+  node('readerText').hidden = !body;
+  const count = o ? siblings(objects, o.id).length : 0;
+  node('readerCount').hidden = !o || !container(o);
+  node('readerCount').textContent = count ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Empty';
   node('readerMeta').replaceChildren();
   if (o) {
     const dates: [string, number][] = [['Created', o.createdAt]];
@@ -246,6 +255,11 @@ input('keysSearch').oninput = () => {
       row.hidden = !row.textContent?.toLowerCase().includes(input('keysSearch').value.toLowerCase());
 };
 input('search').oninput = () => renderer.filter(input('search').value);
+button('clearSearch').onclick = () => {
+  input('search').value = '';
+  renderer.filter('');
+  input('search').focus();
+};
 button('openOutline').onclick = () => {
   dispatch({ kind: 'outline', open: true });
   input('search').focus();

@@ -6,6 +6,8 @@
 
 ## Frontend key patterns
 
+Container readers omit empty body sections and their divider, and disclose live direct-child counts (or Empty). Outline search reserves a separate clear-control area. Plain text uses one inherited prose face and weight; review fixtures must not stack identical objects.
+
 **Mermaid diagrams** (`mermaid-render.js`, `scripts/mermaid-frame.js`): Chat, the Response Viewer, and Markdown file previews hydrate Mermaid fences through ONE shared renderer document, also used by `codeman mermaid render`. Keep the Markdown sanitizer unchanged. The renderer iframe has `sandbox="allow-scripts"` without `allow-same-origin`; its document forbids network requests. Accept messages only from that frame with its request id and opaque origin. Display the returned SVG as an image, never inline dashboard SVG. Preserve source and copy on failure. `prepare-mermaid-assets.mjs` bundles the pinned engine for dev and production. The fixed-name renderer HTML must revalidate, never cache as immutable.
 
 The authenticated parent fetches that HTML and assigns it to the frame's `srcdoc`. Never navigate the sandbox to the asset URL: authenticated installations intercept that HTML navigation with lost-frame recovery. Keep the asset protected, credentials in the parent, and the frame opaque. Browser regressions must exercise authentication.

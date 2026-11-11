@@ -18,11 +18,12 @@
       </div>
       <div class="search-wrap">
         <label class="sr" for="search">Search canvas</label
-        ><input id="search" type="search" placeholder="Search canvas" autocomplete="off" /><kbd
-          class="search-hint"
-          aria-hidden="true"
-          >/</kbd
+        ><input id="search" type="search" placeholder="Search canvas" autocomplete="off" /><button
+          id="clearSearch"
+          aria-label="Clear search"
         >
+          ×</button
+        ><kbd class="search-hint" aria-hidden="true">/</kbd>
       </div>
       <nav id="tree" aria-label="Canvas objects"></nav>
       <div class="outline-foot">
@@ -76,6 +77,7 @@
       </div>
       <div id="readerView" class="rail-body" hidden>
         <p id="readerText"></p>
+        <p id="readerCount" class="secondary" hidden></p>
         <dl id="readerMeta"></dl>
         <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button
         ><button id="children" class="quiet">Explore children <kbd role="img" aria-label="Right arrow">→</kbd></button>

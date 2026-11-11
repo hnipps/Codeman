@@ -40,6 +40,7 @@ const item = (
 describe('read-only canvas document', () => {
   let server: WebServer, browser: Browser, page: Page, origin: string, workspace: string;
   let increment = 0;
+  const liveIds: string[] = [];
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc3-owner');
     writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
@@ -108,6 +109,12 @@ describe('read-only canvas document', () => {
     await page?.unroute('**/api/canvas/*/objects');
     await page?.unroute('**/api/canvas/*/ops?*');
     await page?.context().setOffline(false);
+    for (const id of liveIds.splice(0)) {
+      const response = await page.request.post(`${origin}/x/api/canvas/${workspace}/ops`, {
+        data: { operations: [{ kind: 'delete', opId: `cleanup-${id}`, objectId: id }] },
+      });
+      expect(response.ok()).toBe(true);
+    }
   });
   afterAll(async () => {
     await browser?.close();
@@ -124,6 +131,7 @@ describe('read-only canvas document', () => {
       data: { operations: [item(id, 'research', 'text', 616, 380, 200, 70, '<img onerror="alert(1)">')] },
     });
     expect(response.ok()).toBe(true);
+    liveIds.push(id);
   }
   it('renders nested objects in the authenticated base-path document and captures the board', async () => {
     await open();
@@ -497,6 +505,34 @@ describe('read-only canvas document', () => {
     await context.close();
     if (video) await video.saveAs(resolve(MEDIA, `pc3-review-${stamp}-interaction.webm`));
   }, 60000);
+  it('omits empty reader bodies and describes an empty container', async () => {
+    await open();
+    await page.route('**/api/canvas/*/objects', async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      snapshot.data.objects = snapshot.data.objects
+        .map((o: ViewObject) => (o.id === 'brief' ? { ...o, content: { type: 'text', text: '' } } : o))
+        .filter((o: ViewObject) => o.id !== 'nested-text');
+      await route.fulfill({ json: snapshot });
+    });
+    await open();
+    for (const id of ['brief', 'nested-group']) {
+      await page.evaluate((id) => {
+        window.canvasView.dispatch({ kind: 'focus', id });
+        window.canvasView.dispatch({ kind: 'rail', view: 'reader' });
+      }, id);
+      await page.waitForFunction(
+        (title) => document.getElementById('railTitle')?.textContent === title,
+        id === 'brief' ? 'Text' : 'Archive'
+      );
+      await page.waitForFunction(() => document.getElementById('readerText')?.hidden);
+      expect(await page.locator('#readerText').evaluate((el) => getComputedStyle(el).display)).toBe('none');
+      expect(await page.locator('#readerMeta').evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe('0px');
+    }
+    expect(await page.locator('#readerCount').textContent()).toBe('Empty');
+    expect(await page.locator('#readerCount').isVisible()).toBe(true);
+    expect(await page.locator('#children').isVisible()).toBe(false);
+  });
   it('follows the app light skin and themes native surfaces', async () => {
     await open();
     await page.evaluate(() => {
@@ -526,6 +562,8 @@ describe('read-only canvas document', () => {
     });
   });
   it('verifies the review states in both themes at desktop and phone sizes', async () => {
+    await open();
+    await createLive('review-markup');
     const evidence: unknown[] = [];
     for (const theme of ['dark', 'light']) {
       for (const viewport of [
@@ -560,6 +598,18 @@ describe('read-only canvas document', () => {
         });
         expect(boundary.color).toBe(theme === 'dark' ? 'rgb(178, 181, 188)' : 'rgb(80, 82, 79)');
         expect(boundary.width).toBeCloseTo(1, 0);
+        const typography = await page.locator('[data-type="text"] > .object-body').evaluateAll((nodes) =>
+          nodes.map((el) => {
+            const css = getComputedStyle(el);
+            return [el.tagName, css.fontFamily, css.fontWeight, css.fontSize];
+          })
+        );
+        expect(typography.every((value) => JSON.stringify(value) === JSON.stringify(typography[0]))).toBe(true);
+        expect(await page.locator('[data-object-id="review-markup"] > .object-body').textContent()).toBe(
+          '<img onerror="alert(1)">'
+        );
+        expect(await page.locator('[data-object-id="review-markup"] img').count()).toBe(0);
+        expect(await page.locator('[data-object-id="research"] > [data-type="text"]').count()).toBe(2);
         await shot(page, `${slug}-selection-focus`);
         if (viewport.width === 390) await page.locator('#openOutline').click();
         await page.locator('#board').focus();
@@ -568,11 +618,24 @@ describe('read-only canvas document', () => {
         expect(await page.locator('.search-hint').isVisible()).toBe(false);
         await page.locator('#search').fill('Reading');
         expect(await page.locator('.search-hint').isVisible()).toBe(false);
-        await page.locator('#search').fill('USEFUL EXCERPT');
+        await page
+          .locator('#search')
+          .fill('A USEFUL EXCERPT AND A NOTE IN YOUR OWN WORDS. KEEP THE REASON YOU WANTED TO RETURN.');
         expect(await page.locator('#tree button:visible').allTextContents()).toEqual([
           'What a saved page should remember',
         ]);
+        const searchGap = await page.locator('#search').evaluate((el) => {
+          const css = getComputedStyle(el),
+            rect = el.getBoundingClientRect();
+          const clear = document.getElementById('clearSearch')!.getBoundingClientRect();
+          return clear.left - (rect.right - parseFloat(css.borderRightWidth) - parseFloat(css.paddingRight));
+        });
+        expect(searchGap).toBeGreaterThanOrEqual(8);
+        expect(await page.getByRole('button', { name: 'Clear search', exact: true }).isVisible()).toBe(true);
         await shot(page, `${slug}-outline-search`);
+        await page.getByRole('button', { name: 'Clear search', exact: true }).click();
+        expect(await page.locator('#search').inputValue()).toBe('');
+        expect(await page.evaluate(() => document.activeElement?.id)).toBe('search');
         await page.locator('#search').fill('');
         await page.locator('#board').focus();
         expect(await page.locator('#tree .keyboard-focus').textContent()).toBe('Reading patterns');
@@ -669,6 +732,9 @@ describe('read-only canvas document', () => {
             );
             expect(await page.locator('#readerText').isVisible()).toBe(false);
             expect(await page.locator('#children').isVisible()).toBe(true);
+            expect(await page.locator('#readerCount').textContent()).toBe('4 items');
+            expect(await page.locator('#readerText').evaluate((el) => getComputedStyle(el).display)).toBe('none');
+            expect(await page.locator('#readerMeta').evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe('0px');
             await shot(page, `${slug}-container-reader`);
           }
           if (view === 'error') {

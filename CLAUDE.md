@@ -420,4 +420,6 @@ Other key scripts: `scripts/tmux-manager.sh` (safe tmux mgmt), `scripts/tunnel.s
 
 ## Canvas read view
 
+Container readers omit empty body sections and their divider, and disclose live direct-child counts (or Empty). Outline search reserves a separate clear-control area. Plain text uses one inherited prose face and weight; review fixtures must not stack identical objects.
+
 `packages/canvas/src` owns the read-only canvas client; `canvas.js` is generated and ignored. `npm run typecheck` includes its DOM-aware project. `/canvas/:workspaceId` is authenticated, owner-scoped and default-off behind `canvasEnabled`. The case picker opens a trusted direct managed web tab, preserving the existing tab layout. Every view change passes through the typed `command()` reducer; `window.canvasView` exposes the same dispatcher and a cloned state query for later agent adapters. SSE changes update keyed content without moving the camera, selection or ID-based focus. Render object content as text only; media is inert until supported. Selected tools use a raised neutral surface and amber icon. Selection follows object edges with corner brackets; keyboard focus is a separate amber outline on the board and outline. Unavailable dock actions stay keyboard reachable with `aria-disabled`, descriptions and an activation announcement.
