@@ -432,23 +432,28 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
             (end - start - entries.reduce((n, e) => n + e.box[extent], 0)) / Math.max(1, entries.length - 1))
           : 0;
       let cursor = start;
-      return entries.map(({ o, box, world }) => {
-        const target =
-          input.action === 'align'
-            ? input.anchor === 'start'
-              ? start
-              : input.anchor === 'end'
-                ? end - box[extent]
-                : (start + end - box[extent]) / 2
-            : cursor;
-        cursor += box[extent] + gap;
-        return moveWorld(
-          state,
-          o,
-          world.x + (axis === 'x' ? target - box.x : 0),
-          world.y + (axis === 'y' ? target - box.y : 0)
-        );
-      });
+      return entries
+        .map(({ o, box, world }) => {
+          const target =
+            input.action === 'align'
+              ? input.anchor === 'start'
+                ? start
+                : input.anchor === 'end'
+                  ? end - box[extent]
+                  : (start + end - box[extent]) / 2
+              : cursor;
+          cursor += box[extent] + gap;
+          return moveWorld(
+            state,
+            o,
+            world.x + (axis === 'x' ? target - box.x : 0),
+            world.y + (axis === 'y' ? target - box.y : 0)
+          );
+        })
+        .filter((move) => {
+          const current = state.objects[move.objectId].position;
+          return move.patch.position.x !== current.x || move.patch.position.y !== current.y;
+        });
     }
   }
 }

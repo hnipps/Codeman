@@ -157,7 +157,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             .update(JSON.stringify([author, envelope.tool, envelope.arguments]))
             .digest('hex')
             .slice(0, 24);
-          const previous = prefix ? store.operations().filter((o) => o.opId.startsWith(prefix)) : [];
+          const previous = prefix ? store.sequencesWithPrefix(prefix) : [];
           if (previous.length) {
             if (!previous.every((o) => o.opId.startsWith(`${prefix}${fingerprint}_`)))
               return reply
@@ -175,7 +175,6 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           }
           const args = envelope.arguments;
           let operations: Command[] | undefined;
-          let revert = false;
           switch (envelope.tool) {
             case 'canvas_capabilities':
               toolSchemas.canvas_capabilities.parse(args);
@@ -226,23 +225,27 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               const input = toolSchemas.canvas_history.parse(args);
               if (input.action === 'read')
                 return { success: true, data: boundedCanvasData(store.operations(input.since)) };
-              if (input.action === 'revert') revert = true;
-              else operations = historyCommands(state, store.operations(), input.sequences, author);
+              operations =
+                input.action === 'revert'
+                  ? store.revertCommands(author)
+                  : historyCommands(state, store.records(input.sequences), input.sequences, author);
               break;
             }
           }
-          if (operations) operations = deferCreatedLocks(operations);
-          if (prefix && operations) {
-            if (!operations.length) {
-              const input = z.object({ targetIds: z.array(z.string()).min(1) }).parse(args);
-              operations = [{ kind: 'revert', objectId: input.targetIds[0], opId: randomUUID(), patch: {} }];
-            }
+          if (!operations?.length)
+            // Nothing to write: no log line, no revision. A retry evaluates to the same no-op.
+            return {
+              success: true,
+              data: { seq: state.seq, sequences: [], noop: true, hierarchy: boundedCanvasData([]) },
+            };
+          operations = deferCreatedLocks(operations);
+          if (prefix) {
             operations = operations.map((operation, index) => ({
               ...operation,
               opId: `${prefix}${fingerprint}_${index}`,
             }));
           }
-          const result = revert ? store.revert(author, author) : store.appendExpanded(operations ?? [], author);
+          const result = store.appendExpanded(operations, author);
           if (!result.ok)
             return reply.code(409).send({
               ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
@@ -319,10 +322,16 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           data: { seq: state.seq, objects, comments: state.comments.filter((c) => ids.has(c.objectId)) },
         };
       });
-      workspaceScope.get<{ Params: { workspaceId: string } }>('/api/canvas/:workspaceId/ops', async (req) => {
+      workspaceScope.get<{ Params: { workspaceId: string } }>('/api/canvas/:workspaceId/ops', async (req, reply) => {
         const { since } = z.object({ since: z.coerce.number().int().nonnegative().default(0) }).parse(req.query);
         const store = (await ctx.canvasStores()).get(req.params.workspaceId);
-        return { success: true, data: { seq: store.read().seq, operations: store.operations(since) } };
+        const page = store.page(since);
+        // A capped page omits `seq`: a cursor-unaware client fails its parse and refetches the snapshot
+        // instead of adopting a sequence it has not replayed up to.
+        const tail = page.more ? `"more":true,"next":${page.next}` : `"seq":${store.seq},"more":false`;
+        return reply
+          .type('application/json; charset=utf-8')
+          .send(`{"success":true,"data":{${tail},"operations":[${page.records.join(',')}]}}`);
       });
       for (const action of ['ops', 'revert'] as const) {
         workspaceScope.post<{ Params: { workspaceId: string } }>(
@@ -355,7 +364,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                 owner: workspace?.owner,
               });
             }
-            return { success: true, data: { seq } };
+            return { success: true, data: { seq, sequences: result.sequences } };
           }
         );
       }
