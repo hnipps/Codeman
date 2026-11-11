@@ -1648,8 +1648,22 @@ an optional UUID `requestId`. A retry with the same author, tool and arguments
 returns the original sequence IDs without expansion or append, even after later
 edits. Reusing that identity with different input is a 409. Compound request
 identities are encoded in native operation IDs; no new disk
-record kind is introduced. No-op compounds append an empty native revert guard
-when a request identity is supplied, so their acknowledgement is durable too.
+record kind is introduced. `canvas_history` with `action: "revert"` takes the
+same request identity. A command that expands to nothing (Send backward on the
+backmost object, a drag that snaps back to its start) appends nothing and changes
+no revision: it answers `200` with `{ seq, sequences: [], noop: true }`, and a
+retry with the same identity evaluates to the same no-op. A plain `update` or
+`revert` whose patch is empty is refused (`409 INVALID`) rather than written.
+
+`POST /api/canvas/:workspaceId/ops` answers `{ seq, sequences }`: the sequences
+it wrote, or the original ones for a resent batch. `GET
+/api/canvas/:workspaceId/ops?since=<seq>` returns at most 500 records and 1 MB
+per answer (a single larger record is still returned alone). A capped answer
+carries `more: true` and `next` (the cursor for the next `since`) and omits
+`seq`; the last page carries `seq` and `more: false`. A client that predates the
+cursor fails to read a capped page and refetches `GET .../objects`, so it still
+converges. Clients acknowledge a write by reading from just before the
+sequences it returned, never from `since=0`.
 
 Create/update/delete take `{ operations: [...] }` using native PC1 command schemas;
 update also accepts move/reparent/reorder/lock/unlock/restore/comment operations.

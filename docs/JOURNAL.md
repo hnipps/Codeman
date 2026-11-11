@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 — A canvas refusal drops one submission, and acknowledgement reads only what it wrote
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/edit-queue.ts`, `packages/canvas/src/edit.ts`, `src/canvas/canvas-store.ts`, `src/web/routes/canvas-routes.ts`
+**Why:** The round-one audit found a refusal that froze every later save, a no-op compound that bumped a revision through an empty revert, and a compound acknowledgement that downloaded and cloned the whole log.
+**Links:** [Intent](../intent/2026-11-11-canvas-pc4-audit-round1.md)
+
+A refusal is now a notice, not a lock. The queue removes the refused batch and later batches that provably depend on it, then keeps sending. A draft's sent marker names its operation id and is cleared by `saveText` whenever the queue no longer holds that id. A no-op answers `noop: true` with no log line, which replaces the empty revert guard; a retry of the same request id evaluates to the same no-op. `GET /ops` is paged at 500 records and 1 MB with a `more`/`next` cursor, and a capped page omits `seq` so an older client refetches the snapshot instead of adopting a sequence it never replayed. Local canvas storage is keyed by viewer. Undo after a reload is left out: the log keeps neither batch grouping nor redo state, and rebuilding either would mean storing something new.
+
 ## 2026-11-11 — Canvas Arrange becomes a compact menu; refusals become product copy
 
 **Type:** intent-refinement
@@ -21,6 +30,41 @@ Arrange keeps only layout: align and distribute icons, order with Mod+] / Mod+[ 
 An optional UUID request identity plus an author/payload fingerprint becomes deterministic native operation IDs. Retry recovers the original sequences directly from the existing log before expansion; mismatched reuse refuses. No-op compounds append an empty native revert guard so their acknowledgements survive retries too. Disk kinds stay unchanged. Copies stage their new locks after all creates, preserving locked subtree structure without unlocking the source. Wrapping reuses group with an optional fixed-container type, and reparent accepts world translation for one atomic placed drop.
 
 Browser history now selects acknowledged sequences and asks the server to invert them. Its stricter revision and dependent rules supersede the earlier field-scoped browser inverse. Typed internal clipboard data keeps hierarchy and world placement; new identities are allocated before one create command. Compound UI actions wait for earlier writes rather than expanding against speculative state.
+
+## 2026-11-11 — Separate canvas selection chrome from content and history
+
+**Type:** intent-refinement
+**Touches:** canvas renderer, dock, reader and browser checks
+**Why:** PC4 design review found handles covering text and repeated across multi-selection.
+**Links:** [intent](../intent/2026-11-11-canvas-pc4-design-review.md)
+
+Selection chrome uses six screen pixels of outward clearance at every zoom;
+resize still measures pointer deltas against true stored geometry. Boundaries
+and focus rings counter-scale with zoom to avoid fractional CSS outline rounding.
+Multi-selection shows individual corner marks and one combined boundary without resize handles
+until part 2. Marquee and lasso previews reuse those boundaries rather than
+stacking outlines; pointer focus-mode changes schedule a paint immediately.
+Auto-bounded groups retain their real hit region between children independently
+of the outward selection chrome.
+Unselected, unfocused boundaries stay out of rendering after a
+500-object comparison exposed the cost of empty chrome. History belongs in the
+dock and stays available without selection.
+Conflict attribution comes from replayed operations, because an object's author
+identifies its creator rather than the writer who changed the text. Missing
+operation attribution uses “Someone” instead of naming the creator.
+
+## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
+
+**Type:** intent-refinement
+**Touches:** canvas edit queue, reader and history
+**Why:** PC4 needs recoverable writes and safe inverse batches using the existing API.
+**Links:** [intent](../intent/2026-11-11-canvas-pc4-edit.md)
+
+The desktop queue persists each submitted batch boundary because the server rejects mixed duplicate/new batches. It uses existing operation IDs for retries and recovers an acknowledgement from history when an SSE snapshot arrived before the POST response. A server refusal quarantines pending edits and rolls back their optimistic display. Explicit reparenting uses the existing `reparent` kind rather than adding a parent field to `move`.
+
+PC4 history aggregates a gesture’s changes per object before inversion, so resize position and size undo together. Existing empty `revert` patches serve as revision guards for descendants in the same atomic inverse batch; no server command kind is added.
+
+Alt-drag selects with a freehand lasso; Q remains reserved for future chat context capture. Named container headings stay above child content so an explicit drop cannot make its destination heading unreachable.
 
 ## 2026-11-11 - Screenshot cleanup is bounded and answers stay path-free
 
@@ -91,41 +135,6 @@ Read/search/query/history use text-only JSON capped at 60,000 UTF-8 bytes with a
 truncation flag and omit records that do not fit. Case scope follows the longest
 registered case path containing the visible caller session's working directory;
 body workspace and author fields are forbidden.
-## 2026-11-11 — Separate canvas selection chrome from content and history
-
-**Type:** intent-refinement
-**Touches:** canvas renderer, dock, reader and browser checks
-**Why:** PC4 design review found handles covering text and repeated across multi-selection.
-**Links:** [intent](../intent/2026-11-11-canvas-pc4-design-review.md)
-
-Selection chrome uses six screen pixels of outward clearance at every zoom;
-resize still measures pointer deltas against true stored geometry. Boundaries
-and focus rings counter-scale with zoom to avoid fractional CSS outline rounding.
-Multi-selection shows individual corner marks and one combined boundary without resize handles
-until part 2. Marquee and lasso previews reuse those boundaries rather than
-stacking outlines; pointer focus-mode changes schedule a paint immediately.
-Auto-bounded groups retain their real hit region between children independently
-of the outward selection chrome.
-Unselected, unfocused boundaries stay out of rendering after a
-500-object comparison exposed the cost of empty chrome. History belongs in the
-dock and stays available without selection.
-Conflict attribution comes from replayed operations, because an object's author
-identifies its creator rather than the writer who changed the text. Missing
-operation attribution uses “Someone” instead of naming the creator.
-
-## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
-
-**Type:** intent-refinement
-**Touches:** canvas edit queue, reader and history
-**Why:** PC4 needs recoverable writes and safe inverse batches using the existing API.
-**Links:** [intent](../intent/2026-11-11-canvas-pc4-edit.md)
-
-The desktop queue persists each submitted batch boundary because the server rejects mixed duplicate/new batches. It uses existing operation IDs for retries and recovers an acknowledgement from history when an SSE snapshot arrived before the POST response. A server refusal quarantines pending edits and rolls back their optimistic display. Explicit reparenting uses the existing `reparent` kind rather than adding a parent field to `move`.
-
-PC4 history aggregates a gesture’s changes per object before inversion, so resize position and size undo together. Existing empty `revert` patches serve as revision guards for descendants in the same atomic inverse batch; no server command kind is added.
-
-Alt-drag selects with a freehand lasso; Q remains reserved for future chat context capture. Named container headings stay above child content so an explicit drop cannot make its destination heading unreachable.
-
 
 ## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
 
@@ -152,7 +161,6 @@ supply after-images. Unreadable catch-ups recover through one fresh snapshot.
 The browser shares the pure server container predicate. Reader activation uses
 consecutive pointer taps because cancelling pointerdown suppresses mouse double
 clicks; pointer capture loss ends a gesture without ending a held Space key.
-
 
 ## 2026-11-11 - Classify canvas records at the state boundary
 
@@ -207,6 +215,7 @@ state directs the owner to an agent in the case until hand editing ships.
 **Why:** PC3 needs a read-only first screen whose view actions can later be driven by both editing controls and agent adapters.
 
 The client uses a pure typed command reducer and exposes a cloned state query plus dispatcher. Keyed nested DOM remains the first renderer; only the world layer transforms while panning. Canvas tabs use the existing trusted direct managed mode, which carries normal same-origin login cookies and avoids proxying the application into itself. This requires an additive `canvas` managed-origin discriminator. Reader and Keys share a removable overlay rail; unsupported media and future object types remain inert. The coordinator retains independent live/performance comparison and final design-review ownership.
+
 ## 2026-11-10 - Preserve future canvas data across code-only rollback
 
 **Type:** intent-refinement
@@ -261,6 +270,7 @@ Normal replay records avoid constructing failed envelope-schema parses.
 Appends reach the OS synchronously; snapshot and handoff flushes fsync the log.
 This covers process restart recovery, with no per-append power-loss guarantee.
 The smoke probe is not the program's independent live or performance verdict.
+
 ## 2026-11-11 - A token count is a whole number
 
 **Type:** intent-refinement
