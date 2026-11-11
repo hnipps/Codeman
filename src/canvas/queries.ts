@@ -6,6 +6,8 @@ import {
   effectiveLock,
   walkHierarchy,
   requireHierarchy,
+  hierarchyCycles,
+  HierarchyError,
   type CanvasState,
   type CanvasObject,
 } from './model.js';
@@ -13,7 +15,23 @@ import { QuerySchema, ReadSchema, SearchSchema, CanvasCommandError } from './com
 
 export const MAX_CANVAS_TEXT_BYTES = 60_000;
 type Point = { x: number; y: number };
-type TreeNode = { object: CanvasObject; effectiveLock: ReturnType<typeof effectiveLock>; children: TreeNode[] };
+type TreeNode = {
+  object: CanvasObject;
+  effectiveLock: ReturnType<typeof effectiveLock>;
+  children: TreeNode[];
+  hierarchy?: 'cycle' | 'limit';
+};
+export function cycleDiagnostics(state: CanvasState) {
+  const ids = [...hierarchyCycles(state).cycles];
+  const objectIds: string[] = [];
+  let bytes = 0;
+  for (const id of ids) {
+    bytes += Buffer.byteLength(JSON.stringify(id)) + 1;
+    if (bytes > MAX_CANVAS_TEXT_BYTES / 4) break;
+    objectIds.push(id);
+  }
+  return ids.length ? [{ code: 'CYCLE' as const, objectIds, truncated: objectIds.length !== ids.length }] : [];
+}
 function onSegment(p: Point, a: Point, b: Point): boolean {
   return (
     Math.abs((p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)) < 1e-8 &&
@@ -74,7 +92,10 @@ function readTargets(state: CanvasState, root?: string) {
   return root ? descendants(state, root, true) : Object.values(state.objects);
 }
 export function queryObjects(state: CanvasState, input: z.infer<typeof QuerySchema>) {
-  const objects = readTargets(state, input.root);
+  const cycles = hierarchyCycles(state);
+  const objects = readTargets(state, input.root).sort(
+    (a, b) => Number(cycles.affected.has(a.id)) - Number(cycles.affected.has(b.id))
+  );
   const poly =
     input.shape === 'point'
       ? []
@@ -106,8 +127,14 @@ export function queryObjects(state: CanvasState, input: z.infer<typeof QuerySche
   }
   return objects
     .filter((o) => o.deletedAt === null)
-    .map((o) => ({ id: o.id, bounds: bounds(state, o.id) }))
-    .filter(({ bounds: b }) => {
+    .map((o) => {
+      if (cycles.affected.has(o.id)) return { id: o.id, object: o, hierarchy: 'cycle' as const };
+      const box = bounds(state, o.id);
+      return 'hierarchy' in box ? { id: o.id, object: o, hierarchy: box.hierarchy } : { id: o.id, bounds: box };
+    })
+    .filter((record) => {
+      if ('hierarchy' in record) return true;
+      const b = record.bounds;
       if (input.shape === 'point')
         return (
           input.point.x >= b.x &&
@@ -129,40 +156,54 @@ export function queryObjects(state: CanvasState, input: z.infer<typeof QuerySche
       );
     });
 }
-export function boundedCanvasData(data: unknown): unknown {
-  const full = JSON.stringify({ data, truncated: false });
-  if (Buffer.byteLength(full) <= MAX_CANVAS_TEXT_BYTES) return { data, truncated: false };
+export function boundedCanvasData(data: unknown, diagnostics?: ReturnType<typeof cycleDiagnostics>): unknown {
+  const metadata = diagnostics ? { diagnostics } : {};
+  const truncated = diagnostics?.some((diagnostic) => diagnostic.truncated) ?? false;
+  const full = JSON.stringify({ data, truncated, ...metadata });
+  if (Buffer.byteLength(full) <= MAX_CANVAS_TEXT_BYTES) return { data, truncated, ...metadata };
   if (Array.isArray(data)) {
     const kept: unknown[] = [];
-    let used = 100;
+    let used = 100 + Buffer.byteLength(JSON.stringify(metadata));
     for (const item of data) {
       const size = Buffer.byteLength(JSON.stringify(item)) + 1;
       if (used + size > MAX_CANVAS_TEXT_BYTES) break;
       kept.push(item);
       used += size;
     }
-    return { data: kept, truncated: true };
+    return { data: kept, truncated: true, ...metadata };
   }
-  return { data: null, truncated: true };
+  return { data: null, truncated: true, ...metadata };
 }
 export function readTree(state: CanvasState, input: z.infer<typeof ReadSchema>) {
   const selected = readTargets(state, input.root)
     .filter((o) => input.includeDeleted || o.deletedAt === null)
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-  const scoped = { ...state, objects: Object.fromEntries(selected.map((o) => [o.id, o])) };
-  const roots = selected.filter((o) => o.parentId === null || !scoped.objects[o.parentId]);
-  const objects = requireHierarchy(
-    walkHierarchy(
-      scoped,
-      [...roots, ...selected].map((o) => o.id),
-      'children'
-    )
-  );
+  const cycles = hierarchyCycles(state);
+  const diagnostics = cycleDiagnostics(state);
+  const healthy = selected.filter((object) => !cycles.affected.has(object.id));
+  const scoped = { ...state, objects: Object.fromEntries(healthy.map((object) => [object.id, object])) };
+  const roots = healthy.filter((object) => object.parentId === null || !scoped.objects[object.parentId]);
+  const ordered = walkHierarchy(
+    scoped,
+    roots.map((object) => object.id),
+    'children'
+  ).objects;
+  const visited = new Set(ordered.map((object) => object.id));
+  const objects = [...ordered, ...selected.filter((object) => !visited.has(object.id))];
   const nodes = new Map<string, TreeNode>();
-  let used = 200,
-    truncated = false;
+  let used = 200 + Buffer.byteLength(JSON.stringify(diagnostics)),
+    truncated = diagnostics.some((d) => d.truncated);
   for (const object of objects) {
-    const node = { object, effectiveLock: effectiveLock(state, object.id), children: [] };
+    const node: TreeNode = { object, effectiveLock: null, children: [] };
+    if (cycles.affected.has(object.id)) node.hierarchy = 'cycle';
+    else {
+      try {
+        node.effectiveLock = effectiveLock(state, object.id);
+      } catch (error) {
+        if (!(error instanceof HierarchyError)) throw error;
+        node.hierarchy = 'limit';
+      }
+    }
     const size = Buffer.byteLength(JSON.stringify(node)) + 2;
     if (used + size > MAX_CANVAS_TEXT_BYTES - 2000) {
       truncated = true;
@@ -174,11 +215,11 @@ export function readTree(state: CanvasState, input: z.infer<typeof ReadSchema>) 
   const tree: TreeNode[] = [];
   for (const node of nodes.values()) {
     const parent = nodes.get(node.object.parentId ?? '');
-    if (parent) parent.children.push(node);
+    if (parent && !node.hierarchy && !parent.hierarchy) parent.children.push(node);
     else tree.push(node);
   }
   const comments = state.comments.filter((c) => nodes.has(c.objectId));
-  const result = { seq: state.seq, tree, comments: [] as typeof comments, truncated };
+  const result = { seq: state.seq, tree, comments: [] as typeof comments, diagnostics, truncated };
   for (const comment of comments) {
     const size = Buffer.byteLength(JSON.stringify(comment)) + 1;
     if (used + size > MAX_CANVAS_TEXT_BYTES - 100) {
@@ -191,16 +232,20 @@ export function readTree(state: CanvasState, input: z.infer<typeof ReadSchema>) 
   return result;
 }
 export function searchObjects(state: CanvasState, input: z.infer<typeof SearchSchema>) {
+  const cycles = hierarchyCycles(state);
   const objects = readTargets(state, input.root);
   return objects
     .filter(
       (o) =>
         o.deletedAt === null && JSON.stringify(o.content).toLocaleLowerCase().includes(input.text.toLocaleLowerCase())
     )
-    .map((object) => ({
-      object,
-      path: requireHierarchy(walkHierarchy(state, [object.id], 'parents'))
-        .reverse()
-        .map((p) => ({ id: p.id, label: p.content.label ?? p.id })),
-    }));
+    .map((object) => {
+      if (cycles.affected.has(object.id)) return { object, path: [], hierarchy: 'cycle' as const };
+      return {
+        object,
+        path: requireHierarchy(walkHierarchy(state, [object.id], 'parents'))
+          .reverse()
+          .map((p) => ({ id: p.id, label: p.content.label ?? p.id })),
+      };
+    });
 }

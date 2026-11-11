@@ -6,7 +6,6 @@ import {
   PositionSchema,
   SizeSchema,
   ContentSchema,
-  descendants,
   walkHierarchy,
   requireHierarchy,
   worldTransform,
@@ -21,6 +20,8 @@ import {
 } from './model.js';
 import {
   CommandSchema,
+  MAX_CALLER_OPERATIONS,
+  MAX_EXPANDED_OPERATIONS,
   OperationSchema,
   knownKinds,
   invertOperation,
@@ -30,7 +31,7 @@ import {
   type Rejection,
 } from './operations.js';
 
-const targets = z.array(IdSchema).min(1).max(1000);
+const targets = z.array(IdSchema).min(1).max(MAX_CALLER_OPERATIONS);
 export const ArrangeSchema = z.discriminatedUnion('action', [
   z
     .object({
@@ -56,7 +57,6 @@ export const ArrangeSchema = z.discriminatedUnion('action', [
       targetIds: targets,
       axis: z.enum(['x', 'y']),
       anchor: z.enum(['start', 'center', 'end']),
-      snap: z.literal(false).optional(),
     })
     .strict(),
   z
@@ -65,7 +65,6 @@ export const ArrangeSchema = z.discriminatedUnion('action', [
       targetIds: targets,
       axis: z.enum(['x', 'y']),
       spacing: z.number().finite().optional(),
-      snap: z.literal(false).optional(),
     })
     .strict(),
   z.object({ action: z.literal('duplicate'), targetIds: targets, offset: PositionSchema }).strict(),
@@ -86,7 +85,10 @@ export const LockCommandSchema = z
 export const HistorySchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read'), since: z.number().int().nonnegative().default(0) }).strict(),
   z
-    .object({ action: z.enum(['undo', 'redo']), sequences: z.array(z.number().int().positive()).min(1).max(1000) })
+    .object({
+      action: z.enum(['undo', 'redo']),
+      sequences: z.array(z.number().int().positive()).min(1).max(MAX_EXPANDED_OPERATIONS),
+    })
     .strict(),
   z.object({ action: z.literal('revert') }).strict(),
 ]);
@@ -112,7 +114,8 @@ export const QuerySchema = z.discriminatedUnion('shape', [
     })
     .strict(),
 ]);
-const batch = (schema: z.ZodType) => z.object({ operations: z.array(schema).min(1).max(1000) }).strict();
+const batch = <Schema extends z.ZodType>(schema: Schema) =>
+  z.object({ operations: z.array(schema).min(1).max(MAX_CALLER_OPERATIONS) }).strict();
 export const toolSchemas = {
   canvas_read: ReadSchema,
   canvas_search: SearchSchema,
@@ -172,7 +175,7 @@ export function capabilities() {
     geometry: {
       coordinates: ['local', 'world'],
       scale: 'Positive factors; explicit containers resize bounds only; groups scale descendants. Flip is unsupported.',
-      snapping: 'No automatic snapping; arrange accepts explicit snap:false',
+      snapping: 'Snapping is a pointer aid in the browser, not a stored command',
       spatial:
         'Queries test world axis-aligned bounds, including edges; polygons must be simple. Containment includes the whole bounds; intersection includes touching edges.',
     },
@@ -283,7 +286,9 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
         ];
       });
     case 'duplicate': {
-      const all = roots.flatMap((o) => descendants(state, o.id, true)).filter((o) => o.deletedAt === null);
+      const all = roots
+        .flatMap((o) => requireHierarchy(walkHierarchy(state, [o.id], 'children')))
+        .filter((o) => o.deletedAt === null);
       const ids = new Map(all.map((o) => [o.id, randomUUID()]));
       for (const o of all) if (!isKnownObject(o)) refuse(o.id, 'INVALID', 'Unknown object type is read-only');
       return all.map((o) =>
@@ -339,7 +344,11 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
       const axis = input.axis;
       const extent = axis === 'x' ? 'width' : 'height';
       const entries = roots
-        .map((o) => ({ o, box: bounds(state, o.id), world: worldTransform(state, o.id) }))
+        .map((o) => {
+          const box = bounds(state, o.id);
+          if ('hierarchy' in box) return refuse(o.id, 'CYCLE', 'Cyclic hierarchy is read-only');
+          return { o, box, world: worldTransform(state, o.id) };
+        })
         .sort((a, b) => a.box[axis] - b.box[axis] || a.o.id.localeCompare(b.o.id));
       const start = Math.min(...entries.map((e) => e.box[axis]));
       const end = Math.max(...entries.map((e) => e.box[axis] + e.box[extent]));
@@ -440,23 +449,39 @@ export function historyCommands(
   }
   for (const [id, revision] of latest)
     if (state.objects[id]?.revision !== revision) return refuse(id, 'REVISION', 'Object revision changed');
-  let staged = state;
-  const commands: Command[] = [];
-  for (const operation of chosen) {
+  const historyRemovals = new Set(
+    chosen.flatMap((operation) =>
+      operation.prev
+        .filter(
+          (change) =>
+            (operation.kind === 'create' && change.before === null) ||
+            (change.before !== null && change.before.deletedAt !== null && change.after.deletedAt === null)
+        )
+        .map((change) => change.objectId)
+    )
+  );
+  const comments = new Map(state.comments.map((comment) => [comment.id, comment]));
+  const commands: Command[] = chosen.flatMap((operation) => {
     if (operation.comment) {
-      const current = staged.comments.find((c) => c.id === operation.comment?.id);
+      const current = comments.get(operation.comment.id);
       if (!current || !sameAuthor(current.author, operation.comment.author) || current.text !== operation.comment.text)
         return refuse(operation.objectId, 'REVISION', 'Comment changed');
+      comments.delete(operation.comment.id);
     }
-    for (const inverse of invertOperation(operation)) {
-      const command = { ...inverse, expectedRevision: staged.objects[inverse.objectId]?.revision };
-      const result = validateBatch(staged, [command], author);
-      if (!result.ok) throw new CanvasCommandError(result.reasons);
-      staged = result.state;
-      commands.push(command);
-    }
-  }
-  return commands;
+    if (operation.removedComment) comments.set(operation.removedComment.id, { ...operation.removedComment, author });
+    return invertOperation(operation).map((inverse) => {
+      // Intermediate revision preconditions are derived from the validated batch below.
+      const { expectedRevision: _expectedRevision, ...command } = inverse;
+      return command;
+    });
+  });
+  const result = validateBatch(state, commands, author, 0, historyRemovals);
+  if (!result.ok) throw new CanvasCommandError(result.reasons);
+  return commands.map((command, index) => ({
+    ...command,
+    expectedRevision: result.operations[index].prev.find((change) => change.objectId === command.objectId)?.before
+      ?.revision,
+  }));
 }
 export function commandFailure(error: unknown): Rejection[] | null {
   return error instanceof CanvasCommandError ? error.reasons : error instanceof HierarchyError ? [error.reason] : null;

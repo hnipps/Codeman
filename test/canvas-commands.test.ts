@@ -6,9 +6,10 @@ import {
   normalizeTargets,
   ArrangeSchema,
   TransformSchema,
+  capabilities,
 } from '../src/canvas/commands.js';
 import { queryObjects, readTree, MAX_CANVAS_TEXT_BYTES } from '../src/canvas/queries.js';
-import { emptyState, worldTransform, type CanvasState } from '../src/canvas/model.js';
+import { emptyState, worldTransform, descendants, bounds, type CanvasState } from '../src/canvas/model.js';
 import { validateBatch, CommandSchema, type Command } from '../src/canvas/operations.js';
 import { create, human, agent } from './canvas-fixtures.js';
 
@@ -21,6 +22,26 @@ function apply(state: CanvasState, commands: Command[]) {
 const seed = () =>
   apply(emptyState(), [create('section', null, 'section'), create('a', 'section'), create('b', 'section')]).state;
 describe('shared compound canvas commands', () => {
+  it('rejects ignored snap fields and describes browser pointer snapping in capabilities', () => {
+    for (const action of ['align', 'distribute']) {
+      const args = { action, targetIds: ['a', 'b'], axis: 'x', ...(action === 'align' ? { anchor: 'start' } : {}) };
+      expect(ArrangeSchema.safeParse(args).success).toBe(true);
+      expect(ArrangeSchema.safeParse({ ...args, snap: false }).success).toBe(false);
+      expect(ArrangeSchema.safeParse({ ...args, snap: true }).success).toBe(false);
+    }
+    expect(JSON.stringify(capabilities().compoundCommands)).not.toContain('"snap"');
+    expect(capabilities().geometry.snapping).toContain('pointer aid in the browser');
+  });
+  it.each([2, 300])('reads complete descendants and omits bounds for a %i-node cycle', (count) => {
+    const state = seed();
+    for (let i = 0; i < count; i++) {
+      const id = 'cycle-' + i;
+      state.objects[id] = { ...state.objects.section, id, parentId: 'cycle-' + ((i + 1) % count) };
+    }
+    expect(descendants(state, 'cycle-0', true)).toHaveLength(count);
+    expect(bounds(state, 'cycle-0')).toEqual({ hierarchy: 'cycle' });
+    expect(bounds(state, 'section')).toMatchObject({ x: 10, y: 20, width: 100, height: 80 });
+  });
   it('groups, nests, reparents and ungroups without ID loss or world movement', () => {
     let state = seed();
     const before = worldTransform(state, 'a');
@@ -124,6 +145,41 @@ describe('shared compound canvas commands', () => {
     expect(worldTransform(state, 'b').x - worldTransform(state, 'a').x).toBe(125);
     state = apply(state, arrange(state, { action: 'order', targetIds: ['a'], placement: 'front' })).state;
     expect(state.objects.a.order).toBeGreaterThan(state.objects.b.order);
+  });
+  it('refuses undo when a comment ID was reused for a later author', () => {
+    const first = apply(seed(), [
+      { kind: 'comment', opId: 'comment-first', objectId: 'a', patch: { id: 'c', text: 'first' } },
+    ]);
+    const removed = apply(first.state, [
+      { kind: 'remove-comment', opId: 'comment-remove', objectId: 'a', patch: { id: 'c' } },
+    ]);
+    const later = validateBatch(
+      removed.state,
+      [{ kind: 'comment', opId: 'comment-later', objectId: 'a', patch: { id: 'c', text: 'later' } }],
+      agent
+    );
+    if (!later.ok) throw new Error('fixture rejected');
+    expect(() => historyCommands(later.state, first.operations, [first.state.seq], human)).toThrow();
+    const undoneTogether = apply(
+      removed.state,
+      historyCommands(
+        removed.state,
+        [...first.operations, ...removed.operations],
+        [first.state.seq, removed.state.seq],
+        human
+      )
+    );
+    expect(undoneTogether.state.comments).toEqual([]);
+  });
+  it('retains revision checks when an inverse batch is applied after another edit', () => {
+    const forward = apply(seed(), [
+      { kind: 'move', opId: 'first', objectId: 'a', patch: { position: { x: 50, y: 60 } } },
+    ]);
+    const inverse = historyCommands(forward.state, forward.operations, [forward.state.seq], human);
+    const later = apply(forward.state, [
+      { kind: 'move', opId: 'later', objectId: 'a', patch: { position: { x: 90, y: 80 } } },
+    ]);
+    expect(validateBatch(later.state, inverse, human)).toMatchObject({ ok: false, reasons: [{ code: 'REVISION' }] });
   });
   it('undoes and redoes own operations and refuses another author or intervening revision', () => {
     const result = apply(seed(), [{ kind: 'move', objectId: 'a', opId: 'm', patch: { position: { x: 50, y: 60 } } }]);

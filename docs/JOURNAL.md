@@ -2,6 +2,27 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - Bound canvas expansion separately and preserve later descendants
+
+**Type:** propagated-discovery
+**Touches:** canvas history, validation, model reads and command routes
+**Why:** The PC2 audit reproduced undo deleting another author's later child,
+maximum-target history exceeding caller limits, and cycles hiding healthy objects.
+**Links:** [Audit fix intent](../intent/2026-11-11-canvas-audit-fixes.md)
+
+History checks the staged subtree against identities created/restored by the
+selected sequences, refusing later dependents before append. An existing `revert`
+restores reparent geometry in one operation, keeping undo/redo size stable.
+Caller operation arrays retain their 1,000 limit; server expansions and history
+sequence lists use 10,000, ten caller batches and the hierarchy node bound.
+A CPU profile of maximum-target ungroup found repeated whole-state child scans;
+validation now maintains a batch-local child index as staged parents change.
+The final maximum-target probe still exceeds the literal PC1 5 ms whole-append
+rule; this audit round records that limit rather than normalizing time per object.
+Cycle classification is independent of the write depth bound, so even long
+loaded cycles remain flat and diagnosed while healthy discovery works. Browser
+pointer snapping is described separately from deterministic stored arrangement.
+
 ## 2026-11-11 - Keep canvas MCP compact and share native commands
 
 **Type:** intent-refinement

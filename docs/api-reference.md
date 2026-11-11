@@ -1650,16 +1650,31 @@ frames/sections). No implicit unlock or half-applied batch is allowed.
 
 History read takes `{ action: "read", since: 0 }`. Undo takes
 `{ action: "undo", sequences: [42,43] }`, restricted to the caller's own author and
-unchanged revisions. Redo inverts sequences returned by undo. Select all sequence
+unchanged revisions. Undo and redo also refuse a container deletion when live
+descendants were not created or restored by the selected sequences: 409
+`DEPENDENTS`, with `objectId` and `dependents: [{ objectId, author }]`; nothing is
+written. Redo inverts sequences returned by undo. Select all sequence
 IDs returned by a compound command to undo it as one atomic batch. Revert takes
 `{ action: "revert" }` and uses the existing field-aware author revert.
 Writes return `{ success: true, data: { seq, sequences, hierarchy } }`; hierarchy
 contains capped changed-object ID/parent/order/revision/deletion relationships. Rejected validation
 returns 409 with `reasons` unchanged (LOCKED, CYCLE, REVISION, NOT_FOUND, etc.).
+Caller operation arrays are limited to 1,000. Server-expanded compound batches
+and history sequence lists are limited to 10,000 (ten caller batches), so all
+accepted expansions can be undone and redone without increasing their size.
+Reparent history uses the existing `revert` operation kind. Align/distribute
+reject `snap`; snapping is a pointer aid in the browser, not a stored command.
 Only the live deploy colour may write.
 
-Read returns `{ seq, tree, comments, truncated }` under `data`. Each tree node has
-`object`, `effectiveLock` and `children`. Search takes text and optional root,
+Read returns `{ seq, tree, comments, diagnostics, truncated }` under `data`. Each tree node has
+`object`, `effectiveLock` and `children`. Records in or below a loaded parent cycle
+are returned flat with `hierarchy: "cycle"`, empty children and no derived lock
+or bounds. Diagnostics name cycle member IDs, including cycles longer than the
+write depth bound. Healthy records remain usable. Query includes cyclic records
+flat as `{ id, object, hierarchy: "cycle" }` independently of the spatial filter,
+and adds `diagnostics` beside its bounded data array. Search similarly returns
+matching cyclic records with an empty path and a cycle marker plus diagnostics. Cyclic writes remain 409
+`CYCLE`. Search takes text and optional root,
 returning objects with ancestor paths. Query takes shape point/rectangle/polygon,
 world coordinates and, for rectangle/polygon, containment/intersection semantics.
 Queries test inclusive world axis-aligned bounds, including edge contact; polygon

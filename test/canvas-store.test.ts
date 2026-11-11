@@ -268,7 +268,7 @@ describe('canvas durable store', () => {
       expect(store.read()).toEqual(state);
       expect(
         store.append([{ kind: 'move', opId: 'long-cycle', objectId: 'n0', patch: { position: { x: 0, y: 0 } } }], human)
-      ).toMatchObject({ ok: false, reasons: [{ code: 'HIERARCHY_LIMIT' }] });
+      ).toMatchObject({ ok: false, reasons: [{ code: 'CYCLE' }] });
     } finally {
       warn.mockRestore();
     }

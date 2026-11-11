@@ -903,7 +903,12 @@ Create/update/delete use native operation batches. `canvas_arrange` groups,
 ungroups, reparents, nests, duplicates, aligns, distributes or orders targets.
 `canvas_transform` uses explicit coordinate space, anchor and positive scale
 factors; group scaling is uniform. `canvas_lock` requires an explicit unlock before
-protected edits. `canvas_history` reads the log or undoes the caller's own sequences;
+protected edits. Caller batches allow 1,000 operations; server expansions and
+history sequence lists allow 10,000. Undo/redo reject later container dependents
+atomically with `DEPENDENTS` IDs/authors. Loaded cyclic records remain readable
+flat with `hierarchy: "cycle"` and diagnostics; geometry that depends on a cycle
+is omitted. Align/distribute reject `snap`: snapping is a pointer aid in the
+browser, not a stored command. `canvas_history` reads the log or undoes the caller's own sequences;
 redo takes the sequences returned by undo. Retain all returned sequences to undo a
 compound command atomically. Revert author is a distinct field-aware history action.
 

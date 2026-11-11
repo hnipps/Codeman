@@ -1,6 +1,6 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
+import type { Command } from '../../canvas/operations.js';
 import { randomUUID } from 'node:crypto';
-import { CommandSchema } from '../../canvas/operations.js';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
@@ -21,7 +21,7 @@ import {
   commandFailure,
   normalizeTargets,
 } from '../../canvas/commands.js';
-import { readTree, searchObjects, queryObjects, boundedCanvasData } from '../../canvas/queries.js';
+import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
 import type { Author } from '../../canvas/model.js';
 import { SseEvent } from '../sse-events.js';
 
@@ -150,7 +150,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           const state = store.read();
           const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
           const args = envelope.arguments;
-          let operations;
+          let operations: Command[] | undefined;
           let revert = false;
           switch (envelope.tool) {
             case 'canvas_capabilities':
@@ -161,12 +161,18 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             case 'canvas_search':
               return {
                 success: true,
-                data: boundedCanvasData(searchObjects(state, toolSchemas.canvas_search.parse(args))),
+                data: boundedCanvasData(
+                  searchObjects(state, toolSchemas.canvas_search.parse(args)),
+                  cycleDiagnostics(state)
+                ),
               };
             case 'canvas_query':
               return {
                 success: true,
-                data: boundedCanvasData(queryObjects(state, toolSchemas.canvas_query.parse(args))),
+                data: boundedCanvasData(
+                  queryObjects(state, toolSchemas.canvas_query.parse(args)),
+                  cycleDiagnostics(state)
+                ),
               };
             case 'canvas_create':
               operations = toolSchemas.canvas_create.parse(args).operations;
@@ -201,9 +207,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               break;
             }
           }
-          const result = revert
-            ? store.revert(author, author)
-            : store.append(z.array(CommandSchema).max(1000).parse(operations), author);
+          const result = revert ? store.revert(author, author) : store.appendExpanded(operations ?? [], author);
           if (!result.ok)
             return reply.code(409).send({
               ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),

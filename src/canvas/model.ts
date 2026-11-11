@@ -147,15 +147,41 @@ export class HierarchyError extends Error {
   }
 }
 
+/** Classify loaded parent cycles without the write traversal's depth cutoff. */
+export function hierarchyCycles(state: CanvasState): { cycles: Set<string>; affected: Set<string> } {
+  const cycles = new Set<string>();
+  const affected = new Set<string>();
+  const done = new Set<string>();
+  for (const root of Object.keys(state.objects)) {
+    const path: string[] = [];
+    const active = new Map<string, number>();
+    let id: string | null = root;
+    while (id !== null && state.objects[id] && !done.has(id) && !active.has(id)) {
+      active.set(id, path.length);
+      path.push(id);
+      id = state.objects[id].parentId;
+    }
+    const start = id === null ? undefined : active.get(id);
+    if (start !== undefined) for (const member of path.slice(start)) cycles.add(member);
+    const unsafe = start !== undefined || (id !== null && affected.has(id));
+    for (const member of path) {
+      done.add(member);
+      if (unsafe) affected.add(member);
+    }
+  }
+  return { cycles, affected };
+}
+
 /** Every hierarchy consumer shares the same iterative, bounded traversal. */
 export function walkHierarchy(
   state: CanvasState,
   roots: Iterable<string>,
   direction: 'parents' | 'children',
-  geometryOnly = false
+  geometryOnly = false,
+  childrenIndex?: ReadonlyMap<string, ReadonlySet<string>>
 ): { objects: CanvasObject[]; cycles: Set<string>; issue: HierarchyIssue | null } {
   const children = new Map<string, string[]>();
-  if (direction === 'children') {
+  if (direction === 'children' && !childrenIndex) {
     for (const o of Object.values(state.objects)) {
       if (o.parentId === null || (geometryOnly && o.deletedAt !== null)) continue;
       const siblings = children.get(o.parentId) ?? [];
@@ -187,7 +213,10 @@ export function walkHierarchy(
       }
       if (seen.has(step.id)) continue;
       if (path.length >= MAX_HIERARCHY_DEPTH || seen.size >= MAX_HIERARCHY_NODES) {
-        issue ??= { code: 'HIERARCHY_LIMIT', objectId: step.id, message: 'Hierarchy traversal limit exceeded' };
+        issue ??=
+          direction === 'parents' && hierarchyCycles(state).affected.has(root)
+            ? { code: 'CYCLE', objectId: root, message: 'Cyclic hierarchy is read-only' }
+            : { code: 'HIERARCHY_LIMIT', objectId: step.id, message: 'Hierarchy traversal limit exceeded' };
         return { objects, cycles, issue };
       }
       seen.add(step.id);
@@ -204,7 +233,9 @@ export function walkHierarchy(
             : [o.parentId]
           : geometryOnly && o.size
             ? []
-            : (children.get(o.id) ?? []);
+            : childrenIndex
+              ? [...(childrenIndex.get(o.id) ?? [])]
+              : (children.get(o.id) ?? []);
       for (let i = next.length - 1; i >= 0; i--) stack.push({ id: next[i], exit: false });
     }
   }
@@ -218,7 +249,36 @@ export function requireHierarchy(walk: ReturnType<typeof walkHierarchy>): Canvas
 
 export function descendants(state: CanvasState, id: string, complete = false): CanvasObject[] {
   const walk = walkHierarchy(state, [id], 'children');
-  return complete ? requireHierarchy(walk) : walk.objects;
+  if (complete && walk.issue?.code === 'HIERARCHY_LIMIT' && hierarchyCycles(state).cycles.has(id))
+    walk.issue = { code: 'CYCLE', objectId: id, message: 'Cyclic hierarchy is read-only' };
+  if (!complete || !walk.issue) return walk.objects;
+  if (walk.issue.code !== 'CYCLE') return requireHierarchy(walk);
+  const children = new Map<string, CanvasObject[]>();
+  for (const object of Object.values(state.objects)) {
+    if (object.parentId === null) continue;
+    const siblings = children.get(object.parentId) ?? [];
+    siblings.push(object);
+    children.set(object.parentId, siblings);
+  }
+  const objects: CanvasObject[] = [];
+  const seen = new Set<string>();
+  const pending = [id];
+  while (pending.length) {
+    const next = pending.pop();
+    if (!next || seen.has(next)) continue;
+    if (seen.size >= MAX_HIERARCHY_NODES)
+      throw new HierarchyError({
+        code: 'HIERARCHY_LIMIT',
+        objectId: next,
+        message: 'Hierarchy traversal limit exceeded',
+      });
+    seen.add(next);
+    const object = state.objects[next];
+    if (!object) continue;
+    objects.push(object);
+    for (const child of [...(children.get(next) ?? [])].reverse()) pending.push(child.id);
+  }
+  return objects;
 }
 
 export function effectiveLock(
@@ -283,7 +343,10 @@ export function bounds(
   state: CanvasState,
   id: string,
   space: 'local' | 'world' = 'world'
-): { x: number; y: number; width: number; height: number } {
+): { x: number; y: number; width: number; height: number } | { hierarchy: 'cycle' } {
+  const hierarchy = walkHierarchy(state, [id], 'parents');
+  if (hierarchy.issue?.code === 'CYCLE') return { hierarchy: 'cycle' };
+  requireHierarchy(hierarchy);
   const o = state.objects[id];
   if (!o) throw new Error('Unknown object');
   const parent =
