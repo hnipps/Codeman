@@ -114,6 +114,8 @@ import { PushSubscriptionStore } from '../push-store.js';
 import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
+import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import type { CanvasStores } from '../canvas/canvas-store.js';
 import { deriveWebviewSseHint } from './webview-sse.js';
 import {
   type SessionListenerRefs,
@@ -1357,6 +1359,11 @@ export class WebServer extends EventEmitter {
     registerStatusTelemetryRoutes(this.app, ctx);
     registerSystemRoutes(this.app, ctx);
     registerCaseRoutes(this.app, ctx);
+    registerCanvasRoutes(this.app, {
+      canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
+      canvasStores: () => this.getCanvasStores(),
+      broadcast: (event, data) => this.broadcast(event, data),
+    });
     registerWorktreeRoutes(this.app, ctx);
     // The registry's lifetime is the server's: it drops per-session wake state on every
     // cleanup path and resolves in-flight wakes on shutdown.
@@ -2370,6 +2377,16 @@ export class WebServer extends EventEmitter {
   // callers that must observe a just-saved value (e.g. renderIndexHtml on a
   // post-save reload) pass forceFresh=true to bypass the cache.
   private _settingsCache: { data: Record<string, unknown>; ts: number } | null = null;
+  private canvasStoreService?: CanvasStores;
+
+  private async getCanvasStores(): Promise<CanvasStores> {
+    if (!this.canvasStoreService) {
+      const { CanvasStores } = await import('../canvas/canvas-store.js');
+      this.canvasStoreService ??= new CanvasStores();
+    }
+    return this.canvasStoreService;
+  }
+
   private async readSettings(forceFresh = false): Promise<Record<string, unknown>> {
     const now = Date.now();
     if (!forceFresh && this._settingsCache && now - this._settingsCache.ts < 2000) {
@@ -2845,6 +2862,7 @@ export class WebServer extends EventEmitter {
     // Saved-webview invalidations carry the trusted resource owner. Route them to
     // that owner (plus admins), so an admin editing a user's web tab notifies the
     // user, and no other user learns the ids of someone else's web tabs.
+    if (event.startsWith('canvas:')) return deriveWebviewSseHint(data);
     if (event.startsWith('webview:')) {
       return deriveWebviewSseHint(data);
     }
@@ -4337,6 +4355,7 @@ export class WebServer extends EventEmitter {
     this.store.reloadFromDisk();
     this.mux.reloadFromDisk?.();
     intentStore.forget();
+    this.canvasStoreService?.reload();
     this.previews.load();
     agentInboxPersistence.load(await this.getAgentInboxPersistEnabled());
     // The retiring colour flushed its logins; take them over, including any made since boot.
@@ -4377,6 +4396,7 @@ export class WebServer extends EventEmitter {
     for (const session of this.sessions.values()) this._persistSessionStateNow(session);
     if (!this.store.writeAllNow()) throw new Error('state.json could not be written');
     agentInboxPersistence.flush();
+    this.canvasStoreService?.flush();
     this.authSessions?.flush();
     return this.mux.flushNow?.() ?? Promise.resolve();
   }
@@ -4565,6 +4585,7 @@ export class WebServer extends EventEmitter {
     // A post within the debounce window before shutdown would otherwise not reach disk.
     // Flushed again after `app.close()` below, for a post that lands in between.
     agentInboxPersistence.flush();
+    this.canvasStoreService?.flush();
     // Same reason as `cancelEverything` above: an in-flight wake is awaited by a request,
     // and `app.close()` (at the end of this method) does not abort in-flight requests,
     // so without this a restart during a wake waits out the readiness poll.
@@ -4723,6 +4744,7 @@ export class WebServer extends EventEmitter {
       // The routes answer until `app.close()` returns, so a post after the flush above
       // would otherwise sit in an unref'd debounce timer and never reach disk.
       agentInboxPersistence.flush();
+      this.canvasStoreService?.flush();
       await this.telemetry?.close();
     }
   }

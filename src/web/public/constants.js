@@ -1972,6 +1972,7 @@ const SSE_EVENTS = {
   // Web tabs (dashboard URLs)
   WEBVIEW_CHANGED: 'webview:changed',
   TAB_LAYOUT_CHANGED: 'tab:layoutChanged',
+  CANVAS_CHANGED: 'canvas:changed',
 };
 
 // ═══════════════════════════════════════════════════════════════

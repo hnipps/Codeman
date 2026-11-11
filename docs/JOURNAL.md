@@ -2,6 +2,39 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Store canvas commands as atomic attributed transactions
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/`, `src/web/routes/canvas-routes.ts`, `src/case-rename.ts`
+**Why:** Later canvas controls need explicit hierarchy, geometry and locks without changing the meaning of existing log records.
+**Links:** [Canvas store intent](../intent/2026-11-10-canvas-store.md), [Canvas storage invariants](architecture-invariants.md#canvas-storage)
+
+The command vocabulary adds reparent, reorder, lock, unlock and remove-comment.
+A layout move never changes membership. Reparent preserves world placement by
+default. Groups derive their bounds; frames and sections have explicit sizes,
+and resizing those bounds does not scale their children. Every stored change
+uses one validation path, including author revert. Locked targets and affected
+locked descendants reject the entire batch.
+
+A compound batch occupies one versioned JSONL envelope so a torn tail cannot
+replay half a transaction. Single-operation writes remain one operation per
+line. Unknown operation kinds advance the sequence without applying state.
+Snapshots do not truncate history: deduplication and author revert still work
+after restart. Subtree tombstones carry the deletion operation ID, avoiding
+accidental restores of independently deleted children at the same timestamp.
+Workspace IDs survive case renames. Two workspace discovery/creation routes
+supply IDs before a canvas tab exists. The API stamps human authors; future
+agent tools must pass the resolved session identity through the same store.
+The flag remains default off, with no startup replay or background work.
+
+A local 10,000-object smoke probe found full-table copying and a sync of each
+append above the performance limits. Validation now stages touched records and
+materializes a full resulting table only for pure callers that ask for it.
+Normal replay records avoid constructing failed envelope-schema parses.
+Appends reach the OS synchronously; snapshot and handoff flushes fsync the log.
+This covers process restart recovery, with no per-append power-loss guarantee.
+The smoke probe is not the program's independent live or performance verdict.
+
 ## 2026-11-10 - Run the canvas program with Codex, Grok and Copilot workers
 
 **Type:** intent-refinement
