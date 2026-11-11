@@ -1,3 +1,4 @@
+import { wheelFactor } from '../packages/canvas/src/viewport.js';
 import { describe, expect, it } from 'vitest';
 import {
   canvasToScreen,
@@ -168,4 +169,10 @@ describe('read view commands and hierarchy', () => {
     expect(result.unreadable).toBe(true);
     expect(result.state.objects.map((o) => o.id)).toEqual(['before', 'after']);
   });
+});
+
+it('normalizes wheel line/page units to pixels', () => {
+  expect(wheelFactor(3, 1)).toBe(wheelFactor(48, 0));
+  expect(wheelFactor(1, 2, 900)).toBe(wheelFactor(900, 0));
+  expect(wheelFactor(-3, 1)).toBeGreaterThan(1.05);
 });

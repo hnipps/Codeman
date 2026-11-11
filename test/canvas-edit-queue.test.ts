@@ -1,3 +1,5 @@
+import { targets, selectRegion } from '../packages/canvas/src/select.js';
+import { movedPosition, reparentPosition } from '../packages/canvas/src/drag.js';
 import { CanvasUndo } from '../packages/canvas/src/undo.js';
 import { describe, it, expect, vi } from 'vitest';
 import { EditQueue, Refused, type Edit, type Acknowledged } from '../packages/canvas/src/edit-queue.js';
@@ -185,5 +187,57 @@ describe('safe acknowledged history', () => {
       'note'
     );
     expect(() => undo.prepare('undo', [object, { ...object, id: 'child', parentId: 'note' }])).toThrow('later work');
+  });
+});
+
+describe('selection geometry', () => {
+  it('normalizes selected parent/child overlap and keeps explicit containment on ordinary movement', () => {
+    const parent = {
+      ...object,
+      id: 'frame',
+      type: 'frame',
+      position: { x: 100, y: 100 },
+      rotation: 90,
+      content: { type: 'frame', label: 'Frame' },
+    };
+    const child = { ...object, parentId: parent.id, position: { x: 20, y: 30 } };
+    expect(targets([parent, child], [parent.id, child.id]).map((o) => o.id)).toEqual(['frame']);
+    const position = movedPosition([parent, child], child, { x: 10, y: 0 });
+    expect(position.x).toBeCloseTo(20);
+    expect(position.y).toBeCloseTo(20);
+    expect(child.parentId).toBe('frame');
+    const root = reparentPosition([parent, child], child, null);
+    expect(root.x).toBeCloseTo(70);
+    expect(root.y).toBeCloseTo(120);
+  });
+  it('uses enclosure for marquee, centers for polygon and immediate members of the active container', () => {
+    expect(
+      selectRegion([object], { kind: 'rectangle', rect: { x: -1, y: -1, width: 300, height: 200 } }, null)
+    ).toEqual(['note']);
+    expect(selectRegion([object], { kind: 'rectangle', rect: { x: 1, y: 1, width: 10, height: 10 } }, null)).toEqual(
+      []
+    );
+    expect(
+      selectRegion(
+        [object],
+        {
+          kind: 'polygon',
+          points: [
+            { x: 0, y: 0 },
+            { x: 200, y: 0 },
+            { x: 200, y: 100 },
+            { x: 0, y: 100 },
+          ],
+        },
+        null
+      )
+    ).toEqual(['note']);
+    expect(
+      selectRegion(
+        [{ ...object, parentId: 'frame' }],
+        { kind: 'rectangle', rect: { x: -1, y: -1, width: 300, height: 200 } },
+        null
+      )
+    ).toEqual([]);
   });
 });

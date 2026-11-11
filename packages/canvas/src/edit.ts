@@ -1,3 +1,5 @@
+import { targets, selectRegion } from './select.js';
+import { type Point, union } from './viewport.js';
 import { CanvasUndo } from './undo.js';
 import { parseSnapshot } from './edit-queue.js';
 import { z } from 'zod';
@@ -27,6 +29,16 @@ export class DesktopEditor {
   private status: QueueStatus = 'offline';
   private message = '';
   private connected = false;
+  private selectionGesture: {
+    pointerId: number;
+    start: Point;
+    points: Point[];
+    lasso: boolean;
+    toggle: boolean;
+    parentId: string | null;
+  } | null = null;
+  private space = false;
+  private selectionPath: SVGPathElement;
   private debounce: ReturnType<typeof setTimeout> | undefined;
   private editor: HTMLTextAreaElement;
   constructor(
@@ -40,6 +52,27 @@ export class DesktopEditor {
       display: (objects: ViewObject[]) => void;
     }
   ) {
+    const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    overlay.id = 'selectionGesture';
+    overlay.setAttribute('aria-hidden', 'true');
+    this.selectionPath = document.createElementNS(overlay.namespaceURI, 'path');
+    overlay.append(this.selectionPath);
+    node('board').append(overlay);
+    node('board').addEventListener('pointerdown', (e) => this.selectionStart(e), true);
+    node('board').addEventListener('pointermove', (e) => this.selectionMove(e), true);
+    node('board').addEventListener('pointerup', (e) => this.selectionEnd(e), true);
+    node('board').addEventListener('pointercancel', () => this.cancelSelection(), true);
+    node('board').addEventListener('lostpointercapture', () => this.cancelSelection(), true);
+    window.addEventListener('blur', () => {
+      this.space = false;
+      this.cancelSelection();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.cancelSelection();
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.key === ' ') this.space = false;
+    });
     const editor = node('textEditor');
     if (!(editor instanceof HTMLTextAreaElement)) throw new Error('Expected text editor');
     this.editor = editor;
@@ -221,8 +254,8 @@ export class DesktopEditor {
   private remove(): void {
     if (!this.available()) return;
     const ids = this.options.view().selected;
-    const targets = this.options.objects().filter((o) => ids.includes(o.id));
-    this.submit(targets.map((o) => ({ kind: 'delete', opId: crypto.randomUUID(), objectId: o.id })));
+    const selected = targets(this.options.objects(), ids);
+    this.submit(selected.map((o) => ({ kind: 'delete', opId: crypto.randomUUID(), objectId: o.id })));
   }
   private field(o: ViewObject): string | null {
     if (o.content.type !== o.type) return null;
@@ -348,6 +381,75 @@ export class DesktopEditor {
     this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
   }
+  private selectionStart(e: PointerEvent): void {
+    if (
+      this.options.mobile.matches ||
+      e.button !== 0 ||
+      e.pointerType === 'touch' ||
+      this.options.view().tool !== 'select' ||
+      this.space
+    )
+      return;
+    if (e.target instanceof Element && e.target.closest('[data-object-id]') && !e.altKey) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const start = { x: e.clientX, y: e.clientY };
+    const focused = this.options.objects().find((o) => o.id === this.options.view().focusId);
+    this.selectionGesture = {
+      pointerId: e.pointerId,
+      start,
+      points: [start],
+      lasso: e.altKey,
+      toggle: e.shiftKey,
+      parentId: focused?.parentId ?? null,
+    };
+    node('board').setPointerCapture(e.pointerId);
+    node('board').focus({ preventScroll: true });
+  }
+  private region() {
+    const gesture = this.selectionGesture;
+    if (!gesture) return null;
+    const points = gesture.points.map((p) => screenToCanvas(this.options.view().viewport, p));
+    return gesture.lasso
+      ? { kind: 'polygon' as const, points }
+      : { kind: 'rectangle' as const, rect: union(points.map((p) => ({ ...p, width: 0, height: 0 }))) };
+  }
+  private selectionMove(e: PointerEvent): void {
+    const gesture = this.selectionGesture;
+    if (!gesture || gesture.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const p = { x: e.clientX, y: e.clientY };
+    if (gesture.lasso) gesture.points.push(p);
+    else gesture.points = [gesture.start, p];
+    const r = union(gesture.points.map((p) => ({ ...p, width: 0, height: 0 })));
+    this.selectionPath.setAttribute(
+      'd',
+      gesture.lasso
+        ? `${gesture.points.map((p, i) => `${i ? 'L' : 'M'}${p.x},${p.y}`).join(' ')} Z`
+        : `M${r.x},${r.y} h${r.width} v${r.height} h${-r.width} Z`
+    );
+    const region = this.region();
+    const ids = region ? selectRegion(this.options.objects(), region, gesture.parentId) : [];
+    for (const el of node('layer').querySelectorAll<HTMLElement>('[data-object-id]'))
+      el.classList.toggle('selection-preview', ids.includes(el.dataset.objectId ?? ''));
+  }
+  private selectionEnd(e: PointerEvent): void {
+    const gesture = this.selectionGesture;
+    if (!gesture || gesture.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const region = this.region();
+    if (region && Math.hypot(e.clientX - gesture.start.x, e.clientY - gesture.start.y) > 4)
+      this.options.dispatch({ kind: 'region', region, parentId: gesture.parentId, toggle: gesture.toggle });
+    else if (!gesture.toggle) this.options.dispatch({ kind: 'selection', ids: [] });
+    this.cancelSelection();
+  }
+  private cancelSelection(): void {
+    this.selectionGesture = null;
+    this.selectionPath.removeAttribute('d');
+    for (const el of node('layer').querySelectorAll('.selection-preview')) el.classList.remove('selection-preview');
+  }
   private async undo(direction: 'undo' | 'redo'): Promise<void> {
     if (!this.available()) return;
     if (this.queue.busy) {
@@ -369,6 +471,12 @@ export class DesktopEditor {
   }
   private key(e: KeyboardEvent): void {
     if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape' && this.selectionGesture) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.cancelSelection();
+      return;
+    }
     if (e.key === 'Escape' && !node('addMenu').hidden) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -384,6 +492,7 @@ export class DesktopEditor {
       this.options.mobile.matches
     )
       return;
+    if (e.key === ' ') this.space = true;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       e.stopImmediatePropagation();
