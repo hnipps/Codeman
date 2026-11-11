@@ -3,12 +3,16 @@
  *
  * One function, no I/O, no caller-supplied pattern. A key that contains a
  * credential word is masked, at any length, except a short exact allowlist of
- * attribution keys. The masked span is the whole value: a quoted string, a
- * bracketed object or array, or an unquoted token. When that end is not found,
- * the span runs to the end of the line. Bearer tokens have no minimum length.
- * URL userinfo is masked at any length. A hook secret is removed as a literal.
- * Odd input returns a placeholder instead of throwing. A secret with no key and
- * no known shape is not detected. Config backup keeps its own key rule.
+ * attribution keys. A key longer than the classifier cap is secret too, and is
+ * not copied or normalised. A key may start with a digit. The masked span is
+ * the whole value: a quoted string, a bracketed object or array, or an
+ * unquoted token. When that end is not found, the span runs to the end of the
+ * line. The inside of a quote that is not itself a secret value is scanned for
+ * the same shapes, up to a fixed depth. Bearer tokens have no minimum length.
+ * URL userinfo is masked through the last `@` in the authority. A hook secret
+ * is removed as a literal. Odd input returns a placeholder instead of throwing.
+ * A secret with no key and no known shape is not detected. Config backup keeps
+ * its own key rule.
  *
  * @module telemetry-redact
  */
@@ -16,11 +20,22 @@
 const REDACTED = '[redacted]';
 const HOOK_SECRET_MIN = 16;
 const HOOK_SECRET_MAX = 256;
+/**
+ * Keys longer than this are secret without a second walk. The round-2
+ * regression key (`81` a's plus `password`) is shorter, so it still goes
+ * through the real classifier.
+ */
+const KEY_CAP = 256;
+/** Nested quotes scanned for assignments. Deeper marked text is masked whole. */
+const QUOTE_DEPTH = 4;
 /** Skip the scanners when a line cannot hold a secret we know how to mask. */
 const NEEDS_SCAN = /bearer|:\/\/|token|secret|passw|credential|auth|key/i;
 const BEARER_RE = /\bbearer\s+\S+/gi;
 /** Credential words. `key` is a substring, so an ordinary word such as `keyboard` matches. */
 const CREDENTIAL_MARK = /token|secret|passw|credential|auth|key/i;
+/** `Error:` itself, or `TypeError:` and the same shape. The shorter pattern misses `Error:`. */
+const ERROR_LABEL = /^(?:[A-Za-z][A-Za-z0-9]*)?Error:$/;
+const PATH_LINE = /^\d+(:\d+)*\)?$/;
 
 /**
  * Attribution keys, after case and `-`/`_` are removed. Nothing else is exempt.
@@ -57,15 +72,11 @@ function toText(input: unknown): string {
 }
 
 function isIdentStart(code: number): boolean {
-  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
-}
-
-function isIdent(code: number): boolean {
-  return isIdentStart(code) || (code >= 48 && code <= 57);
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
 }
 
 function isKeyChar(code: number): boolean {
-  return isIdent(code) || code === 45 || code === 46;
+  return isIdentStart(code) || code === 45 || code === 46;
 }
 
 function isWs(ch: string): boolean {
@@ -85,11 +96,13 @@ function normalizeKey(key: string): string {
 
 /**
  * A telemetry key names a credential when it contains one, at any length.
- * Attribution keys in `ATTRIBUTION_KEYS` do not. Config backup's `SECRET_KEY_RE`
+ * A key longer than `KEY_CAP` is secret without normalisation. Attribution
+ * keys in `ATTRIBUTION_KEYS` do not match. Config backup's `SECRET_KEY_RE`
  * is a different rule and still matches `author`.
  */
 export function isTelemetrySecretKey(key: string): boolean {
   if (key.length === 0) return false;
+  if (key.length > KEY_CAP) return true;
   if (ATTRIBUTION_KEYS.has(normalizeKey(key))) return false;
   return CREDENTIAL_MARK.test(key);
 }
@@ -105,7 +118,31 @@ interface Quoted {
   closed: boolean;
 }
 
-/** A quoted span. An unclosed quote runs to the end of the text, which is the line. */
+interface QuoteEnd {
+  end: number;
+  closed: boolean;
+}
+
+/** Closing quote, ignoring a `\"` or `\'`. An unclosed quote ends at the text. */
+function findQuoteEnd(text: string, open: number): QuoteEnd {
+  const quote = text[open];
+  let j = open + 1;
+  while (j < text.length) {
+    const at = text.indexOf(quote, j);
+    if (at < 0) return { end: text.length, closed: false };
+    let slashes = 0;
+    let p = at - 1;
+    while (p >= open && text.charCodeAt(p) === 92) {
+      slashes++;
+      p--;
+    }
+    if (slashes % 2 === 0) return { end: at + 1, closed: true };
+    j = at + 1;
+  }
+  return { end: text.length, closed: false };
+}
+
+/** A short quoted key. Callers use `findQuoteEnd` for a key past `KEY_CAP`. */
 function readQuoted(text: string, open: number): Quoted | null {
   const quote = text[open];
   if (quote !== '"' && quote !== "'") return null;
@@ -161,15 +198,12 @@ function readQuoted(text: string, open: number): Quoted | null {
 /**
  * End of a value that is already being masked. The closer is a quote, a matching
  * bracket, or the next delimiter. When it is not found, the value runs to the
- * end of the text.
+ * end of the text. The quote closer is an index, not a copied string.
  */
 function endOfValue(text: string, i: number): number {
   if (i >= text.length) return text.length;
   const ch = text[i];
-  if (ch === '"' || ch === "'") {
-    const quoted = readQuoted(text, i);
-    return quoted ? quoted.end : text.length;
-  }
+  if (ch === '"' || ch === "'") return findQuoteEnd(text, i).end;
   if (ch === '{' || ch === '[') return endOfBracketed(text, i);
   let j = i;
   while (j < text.length) {
@@ -186,10 +220,9 @@ function endOfBracketed(text: string, open: number): number {
   while (j < text.length) {
     const c = text[j];
     if (c === '"' || c === "'") {
-      const quoted = readQuoted(text, j);
-      const next = quoted ? quoted.end : text.length;
-      if (next <= j) return text.length;
-      j = next;
+      const found = findQuoteEnd(text, j);
+      if (!found.closed || found.end <= j) return text.length;
+      j = found.end;
       continue;
     }
     if (c === '{' || c === '[') {
@@ -213,112 +246,153 @@ function skipWs(text: string, i: number): number {
   return i;
 }
 
-/** `"password": "hunter2"` and `"\u0070assword":"..."` inside a string. */
-function maskJsonPairs(text: string): string {
-  const parts: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const quote = text.indexOf('"', i);
-    if (quote === -1) {
-      parts.push(text.slice(i));
-      break;
-    }
-    const quoted = readQuoted(text, quote);
-    if (!quoted || !quoted.closed) {
-      parts.push(text.slice(i));
-      break;
-    }
-    let j = skipWs(text, quoted.end);
-    if (text[j] !== ':' || !isTelemetrySecretKey(quoted.value)) {
-      parts.push(text.slice(i, quoted.end));
-      i = quoted.end;
-      continue;
-    }
-    j = skipWs(text, j + 1);
-    const valueEnd = endOfValue(text, j);
-    parts.push(text.slice(i, quote));
-    parts.push(`${JSON.stringify(quoted.value)}: "${REDACTED}"`);
-    i = valueEnd > j ? valueEnd : quoted.end;
+/**
+ * A path-like key's `file.ts:247:27)` and a `<Word>Error:` label are diagnostics,
+ * not credentials. Anything else after a secret key is masked.
+ */
+function isExemptValue(text: string, valueStart: number, pathLike: boolean): boolean {
+  const ch = text[valueStart];
+  if (!ch || ch === '"' || ch === "'" || ch === '{' || ch === '[') return false;
+  let j = valueStart;
+  let sample = '';
+  while (j < text.length && sample.length < 64) {
+    const c = text[j];
+    if (isWs(c) || c === ',' || c === '}' || c === ']') break;
+    sample += c;
+    j++;
   }
-  return parts.join('');
+  if (j < text.length) {
+    const c = text[j];
+    if (!isWs(c) && c !== ',' && c !== '}' && c !== ']') return false;
+  }
+  if (ERROR_LABEL.test(sample)) return true;
+  return pathLike && PATH_LINE.test(sample);
 }
 
-interface Assignment {
-  keyStart: number;
+interface UnquotedKey {
+  end: number;
   key: string;
-  sep: number;
-  valueEnd: number;
+  overlong: boolean;
+  pathLike: boolean;
 }
 
-function keyAt(text: string, i: number): { key: string; end: number } | null {
-  const ch = text[i];
-  if (ch === '"' || ch === "'") {
-    const quoted = readQuoted(text, i);
-    if (!quoted || !quoted.closed || quoted.value.length === 0) return null;
-    return { key: quoted.value, end: quoted.end };
-  }
+function readUnquotedKey(text: string, i: number): UnquotedKey | null {
   if (!isIdentStart(text.charCodeAt(i))) return null;
   if (i > 0 && isKeyChar(text.charCodeAt(i - 1))) return null;
   let end = i + 1;
-  while (end < text.length && isKeyChar(text.charCodeAt(end))) end++;
-  return { key: text.slice(i, end), end };
+  let overlong = false;
+  let pathLike = false;
+  while (end < text.length && isKeyChar(text.charCodeAt(end))) {
+    if (text.charCodeAt(end) === 46) pathLike = true;
+    end++;
+    if (end - i > KEY_CAP) {
+      overlong = true;
+      while (end < text.length && isKeyChar(text.charCodeAt(end))) {
+        if (text.charCodeAt(end) === 46) pathLike = true;
+        end++;
+      }
+      break;
+    }
+  }
+  return { end, key: overlong ? '' : text.slice(i, end), overlong, pathLike };
+}
+
+function maskValue(
+  parts: string[],
+  text: string,
+  from: number,
+  sep: number,
+  valueStart: number
+): { end: number; changed: boolean } {
+  const valueEnd = endOfValue(text, valueStart);
+  const end = valueEnd > valueStart ? valueEnd : valueStart;
+  const replacement = ` ${REDACTED}`;
+  parts.push(text.slice(from, sep + 1));
+  parts.push(replacement);
+  return { end, changed: text.slice(sep + 1, end) !== replacement };
 }
 
 /**
- * An identifier, a separator-bearing word, or a quoted key, then `:` or `=`.
- * The value is scanned only after the key is known to be a credential, so a
- * line of ordinary `scheme:` pairs does not rescan its tail.
+ * Assignments and the inside of a quote that is not a secret value.
+ * A non-secret key does not pull its value in, so a line of ordinary
+ * `scheme:` pairs does not rescan its tail.
  */
-function parseAssignment(text: string, i: number): Assignment | null {
-  const key = keyAt(text, i);
-  if (!key) return null;
-  const sep = skipWs(text, key.end);
-  if (text[sep] !== ':' && text[sep] !== '=') return null;
-  if (!isTelemetrySecretKey(key.key)) return null;
-  const valueStart = skipWs(text, sep + 1);
-  const valueEnd = endOfValue(text, valueStart);
-  return { keyStart: i, key: key.key, sep, valueEnd: valueEnd > valueStart ? valueEnd : valueStart };
-}
-
-/** `password: 'hunter2'`, `auth-header=...` and `{ authorization: { value: '...' } }`. */
-function maskAssignments(text: string): string {
+function maskSecrets(text: string, depth: number): string {
   const parts: string[] = [];
   let i = 0;
+  let changed = false;
   while (i < text.length) {
     const ch = text[i];
-    const maybeKey =
-      ch === '"' || ch === "'" || (isIdentStart(text.charCodeAt(i)) && (i === 0 || !isKeyChar(text.charCodeAt(i - 1))));
-    if (!maybeKey) {
+    const quote = ch === '"' || ch === "'";
+    const ident = isIdentStart(text.charCodeAt(i)) && (i === 0 || !isKeyChar(text.charCodeAt(i - 1)));
+    if (!quote && !ident) {
       const start = i;
       i++;
       while (i < text.length) {
         const c = text[i];
-        if (c === '"' || c === "'" || isIdentStart(text.charCodeAt(i))) break;
+        if (c === '"' || c === "'" || (isIdentStart(text.charCodeAt(i)) && !isKeyChar(text.charCodeAt(i - 1)))) break;
         i++;
       }
       parts.push(text.slice(start, i));
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      const quoted = readQuoted(text, i);
-      if (!quoted || !quoted.closed) {
-        parts.push(text.slice(i));
-        break;
+    if (quote) {
+      const found = findQuoteEnd(text, i);
+      const interiorEnd = found.closed ? found.end - 1 : text.length;
+      const rawLen = interiorEnd - (i + 1);
+      const sep = found.closed ? skipWs(text, found.end) : text.length;
+      const sepChar = text[sep];
+      const hasSep = sepChar === ':' || sepChar === '=';
+      if (hasSep && found.closed) {
+        let secret = rawLen > KEY_CAP;
+        let pathLike = false;
+        if (!secret && rawLen > 0) {
+          const quoted = readQuoted(text, i);
+          const key = quoted && quoted.closed ? quoted.value : '';
+          pathLike = key.includes('.') || key.includes('/');
+          secret = key.length > 0 && (key.length > KEY_CAP || isTelemetrySecretKey(key));
+        }
+        if (secret) {
+          const valueStart = skipWs(text, sep + 1);
+          if (!isExemptValue(text, valueStart, pathLike)) {
+            const masked = maskValue(parts, text, i, sep, valueStart);
+            if (masked.changed) changed = true;
+            i = masked.end;
+            continue;
+          }
+        }
       }
-    }
-    const parsed = parseAssignment(text, i);
-    if (!parsed || !isTelemetrySecretKey(parsed.key)) {
-      const key = keyAt(text, i);
-      const end = key && key.end > i ? key.end : i + 1;
-      parts.push(text.slice(i, end));
-      i = end;
+      const interior = text.slice(i + 1, interiorEnd);
+      const scanned = scanInterior(interior, depth);
+      if (scanned !== interior) changed = true;
+      parts.push(ch);
+      parts.push(scanned);
+      if (found.closed) parts.push(ch);
+      if (!found.closed) break;
+      i = found.end;
       continue;
     }
-    parts.push(text.slice(i, parsed.sep + 1));
-    parts.push(` ${REDACTED}`);
-    i = parsed.valueEnd > parsed.sep ? parsed.valueEnd : parsed.sep + 1;
+    const key = readUnquotedKey(text, i);
+    if (!key) {
+      parts.push(ch);
+      i++;
+      continue;
+    }
+    const sep = skipWs(text, key.end);
+    const sepChar = text[sep];
+    if ((sepChar === ':' || sepChar === '=') && (key.overlong || isTelemetrySecretKey(key.key))) {
+      const valueStart = skipWs(text, sep + 1);
+      if (!isExemptValue(text, valueStart, key.pathLike)) {
+        const masked = maskValue(parts, text, i, sep, valueStart);
+        if (masked.changed) changed = true;
+        i = masked.end;
+        continue;
+      }
+    }
+    parts.push(text.slice(i, key.end));
+    i = key.end;
   }
-  return parts.join('');
+  return changed ? parts.join('') : text;
 }
 
 function isSchemeChar(code: number, first: boolean): boolean {
@@ -332,13 +406,15 @@ function isUserinfoStop(code: number): boolean {
 }
 
 /**
- * `scheme://userinfo@host`, password optional, any userinfo length. When `@`
- * is not found before a delimiter, the span is not userinfo. When the scan
- * cannot decide, the rest of the line is masked.
+ * `scheme://userinfo@host`. The mask runs through the last `@` before `/`,
+ * `?`, `#`, whitespace, or the end of the authority. A cut-off authority is
+ * masked only when a `:` is followed by a non-digit, so `host:port` stays.
  */
 function maskUrlUserinfo(text: string): string {
+  if (!text.includes('://')) return text;
   const parts: string[] = [];
   let i = 0;
+  let changed = false;
   while (i < text.length) {
     const colon = text.indexOf('://', i);
     if (colon === -1) {
@@ -355,47 +431,69 @@ function maskUrlUserinfo(text: string): string {
     }
     const authStart = colon + 3;
     let j = authStart;
-    let at = -1;
+    let lastAt = -1;
     let stopped = false;
+    let colonThenNonDigit = false;
     while (j < text.length) {
       const code = text.charCodeAt(j);
-      if (code === 64) {
-        at = j;
-        break;
-      }
       if (isUserinfoStop(code)) {
         stopped = true;
         break;
       }
+      if (code === 64) lastAt = j;
+      else if (code === 58) {
+        const next = j + 1 < text.length ? text.charCodeAt(j + 1) : -1;
+        if (next < 48 || next > 57) colonThenNonDigit = true;
+      }
       j++;
     }
-    if (at > authStart) {
+    if (lastAt >= authStart) {
       parts.push(text.slice(i, authStart));
       parts.push(`${REDACTED}@`);
-      i = at + 1;
+      changed = true;
+      i = lastAt + 1;
       continue;
     }
-    // A `user:secret` cut off before `@` has no delimiter. Mask through the end of the line.
-    if (!stopped && text.slice(authStart, j).includes(':')) {
+    if (!stopped && colonThenNonDigit) {
       parts.push(text.slice(i, authStart));
       parts.push(REDACTED);
+      changed = true;
       break;
     }
     const next = j > authStart ? j : authStart + 1;
     parts.push(text.slice(i, next));
     i = next;
   }
-  return parts.join('');
+  return changed ? parts.join('') : text;
 }
 
+function scanInterior(interior: string, depth: number): string {
+  if (interior.length === 0) return interior;
+  if (depth + 1 >= QUOTE_DEPTH) return NEEDS_SCAN.test(interior) ? REDACTED : interior;
+  if (!NEEDS_SCAN.test(interior)) return interior;
+  return redactPlainOnce(interior, depth + 1);
+}
+
+function redactPlainOnce(text: string, depth: number): string {
+  BEARER_RE.lastIndex = 0;
+  let bearer = text;
+  if (BEARER_RE.test(text)) {
+    BEARER_RE.lastIndex = 0;
+    bearer = text.replace(BEARER_RE, `Bearer ${REDACTED}`);
+  }
+  BEARER_RE.lastIndex = 0;
+  return maskUrlUserinfo(maskSecrets(bearer, depth));
+}
+
+/** Up to three passes so a mask that uncovers a later shape still settles. */
 function redactPlain(text: string, secret: string | undefined): string {
   let out = applySecret(text, secret);
   if (!NEEDS_SCAN.test(out)) return out;
-  BEARER_RE.lastIndex = 0;
-  out = out.replace(BEARER_RE, `Bearer ${REDACTED}`);
-  out = maskUrlUserinfo(out);
-  out = maskJsonPairs(out);
-  out = maskAssignments(out);
+  for (let pass = 0; pass < 3; pass++) {
+    const next = redactPlainOnce(out, 0);
+    if (next === out) return out;
+    out = next;
+  }
   return out;
 }
 

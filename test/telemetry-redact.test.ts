@@ -199,6 +199,73 @@ describe('redactLogLine', () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  it('is idempotent on the split-authority witness and 2000 seeded strings', () => {
+    const witness = 'passw://}s://[@';
+    const once = redactLogLine(witness);
+    expect(redactLogLine(once)).toBe(once);
+    expect(once).not.toContain('://[@');
+    // The audit minimised to that witness and did not list the atom set.
+    // These are the characters and words the scanners actually branch on.
+    const atoms = [
+      'a',
+      's',
+      ':',
+      '/',
+      '@',
+      '=',
+      '"',
+      "'",
+      '{',
+      '}',
+      '[',
+      ']',
+      ' ',
+      'passw',
+      'password',
+      'auth',
+      'key',
+      'bearer',
+      'http',
+      'Error',
+      '://',
+      '1',
+      '.',
+      '-',
+      '_',
+      'x',
+    ];
+    let seed = 0xc0de4a11;
+    const next = (): number => {
+      seed |= 0;
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let n = 0; n < 2000; n++) {
+      let sample = '';
+      for (let k = 0; k < 12; k++) sample += atoms[Math.floor(next() * atoms.length)];
+      const redacted = redactLogLine(sample);
+      expect(redactLogLine(redacted), sample).toBe(redacted);
+    }
+  });
+
+  it('redacts a long quoted key without copying it into the classifier', () => {
+    const times: string[] = [];
+    for (const bytes of [1024 * 1024, 4 * 1024 * 1024]) {
+      const line = `"${'a'.repeat(bytes - 16)}password":"abc"`;
+      expect(line.length).toBe(bytes);
+      const started = performance.now();
+      const out = redactLogLine(line);
+      const elapsed = performance.now() - started;
+      times.push(elapsed);
+      expect(out, `${bytes} took ${elapsed.toFixed(2)} ms`).not.toContain(':"abc"');
+      expect(out).toContain('[redacted]');
+      expect(elapsed, `${bytes} took ${elapsed.toFixed(2)} ms`).toBeLessThan(bytes === 1024 * 1024 ? 250 : 1000);
+    }
+    expect(times).toHaveLength(2);
+  });
+
   it('finishes a 1 MiB adversarial line within a generous bound', () => {
     const patterns = ['://', '\'"{}auth', 'auth', `${'a.'.repeat(40)}://host/path`];
     for (const pattern of patterns) {
@@ -426,6 +493,57 @@ describe('redaction before the queue', () => {
     expect(leaked.lines).toEqual([]);
     const short = await queryLogs({ dir, stream: 'server', text: 'abc1234' });
     expect(short.lines).toEqual([]);
+  });
+
+  it('masks a quoted assignment, a repeated @ and a digit key on disk and in the query', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const messages = [
+      `note: "password=${cred}"`,
+      JSON.stringify({ details: `password=${cred}` }),
+      format({ details: `password=${cred}` }),
+      `clone https://user:first@${cred}@example.invalid/repo`,
+      `1password=${cred}`,
+    ];
+    const telemetry = sink();
+    for (const msg of messages) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    expect(raw).toContain('https://[redacted]@example.invalid/repo');
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const url = await queryLogs({ dir, stream: 'server', text: 'example.invalid/repo' });
+    expect(url.lines).toHaveLength(1);
+    expect(url.lines[0]).toContain('https://[redacted]@example.invalid/repo');
+    expect(url.lines[0]).not.toContain(cred);
+  });
+
+  it('keeps a stack frame, a host port and an Error label on disk and in the query', async () => {
+    const frame = 'at readFile (/workspace/src/web/auth-session-store.ts:247:27)';
+    const banner = 'listening on http://example.invalid:4567';
+    const failed = 'Failed to set env override COPILOT_KEYBOARD: Error: command failed';
+    const settings = 'Failed to read settings: Error: EACCES';
+    const telemetry = sink();
+    for (const msg of [frame, banner, failed, settings]) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).toContain('auth-session-store.ts:247:27');
+    expect(raw).toContain('http://example.invalid:4567');
+    expect(raw).toContain('Error: command failed');
+    expect(raw).toContain('Error: EACCES');
+    const queried = await queryLogs({ dir, stream: 'server', text: 'auth-session-store.ts:247:27' });
+    expect(queried.lines).toHaveLength(1);
+    expect(queried.lines[0]).toContain(frame);
+    const port = await queryLogs({ dir, stream: 'server', text: 'example.invalid:4567' });
+    expect(port.lines).toHaveLength(1);
+    expect(port.lines[0]).toContain(banner);
+    const label = await queryLogs({ dir, stream: 'server', text: 'Error: command failed' });
+    expect(label.lines).toHaveLength(1);
+    expect(label.lines[0]).toContain(failed);
   });
 
   it('reads at most 512 bytes of an oversized hook-secret file', async () => {
