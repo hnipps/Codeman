@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
-import { canAccessOwned, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
+import { abortOnClientHangUp, canAccessOwned, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import { deployRole, DeployRoleRefusal } from '../../deploy-role.js';
 import { resolveCasePath } from './case-routes.js';
@@ -22,7 +22,8 @@ import {
   normalizeTargets,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
-import type { Author } from '../../canvas/model.js';
+import { IdSchema, type Author } from '../../canvas/model.js';
+import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
 
 export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): void {
@@ -131,7 +132,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           if (workspaceId !== 'current' && workspaceId !== selected.id)
             return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
           workspaceId = selected.id;
-          req.params = { workspaceId };
+          // Keep :id and every other param. Replacing the object drops them.
+          Object.assign(req.params as Record<string, unknown>, { workspaceId });
           req.canvasAuthor = { kind: 'agent', sessionId: session.id };
         }
         const workspace = readWorkspaces().find((w) => w.id === workspaceId);
@@ -239,6 +241,34 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             success: true,
             data: { seq: result.seq, sequences: result.operations.map((o) => o.seq), hierarchy },
           };
+        }
+      );
+      workspaceScope.get<{ Params: { workspaceId: string; id: string } }>(
+        '/api/canvas/:workspaceId/objects/:id/screenshot',
+        async (req, reply) => {
+          const { id } = z.object({ id: IdSchema }).parse(req.params);
+          const { theme } = z.object({ theme: z.enum(['dark', 'light']).optional() }).parse(req.query);
+          const hangup = abortOnClientHangUp(reply);
+          try {
+            const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
+            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal });
+            return reply
+              .header('Cache-Control', 'no-store')
+              .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))
+              .type('image/png')
+              .send(rendered.png);
+          } catch (error) {
+            if (hangup.signal.aborted || reply.sent) return;
+            const failure = screenshotFailure(error);
+            return reply
+              .code(failure.status)
+              .send(
+                createErrorResponse(
+                  failure.status === 404 ? ApiErrorCode.NOT_FOUND : ApiErrorCode.OPERATION_FAILED,
+                  failure.message
+                )
+              );
+          }
         }
       );
       workspaceScope.get<{ Params: { workspaceId: string } }>('/api/canvas/:workspaceId/objects', async (req) => {

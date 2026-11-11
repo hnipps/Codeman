@@ -140,3 +140,4 @@ scripts/local-llm-test.config.json
 
 # Generated canvas module (packages/canvas is the source).
 src/web/public/canvas.js
+src/web/public/canvas-shot.js

@@ -9,3 +9,12 @@ await build({
   target: 'es2022',
   minify: true,
 });
+await build({
+  entryPoints: [fileURLToPath(new URL('packages/canvas/src/shot.ts', root))],
+  outfile: fileURLToPath(new URL('src/web/public/canvas-shot.js', root)),
+  bundle: true,
+  format: 'iife',
+  globalName: 'CodemanCanvasShot',
+  target: 'es2022',
+  minify: true,
+});

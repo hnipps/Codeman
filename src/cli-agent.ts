@@ -267,6 +267,9 @@ export interface ApiResponse<T = unknown> {
   /** Parsed envelope, or `undefined` when the body was not JSON (auth guards answer in plain text). */
   json?: ApiEnvelope<T>;
   text: string;
+  /** Present when the response is an image. `text` is empty so a PNG is not decoded as UTF-8. */
+  body?: Buffer;
+  headers?: Record<string, string>;
 }
 
 export interface WaitResult {
@@ -344,14 +347,25 @@ export const httpRequest: ApiRequest = (ctx, options) => {
         // promise never settles (and a long-lived `codeman mcp` never answers the call).
         res.on('error', reject);
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf-8');
+          const raw = Buffer.concat(chunks);
+          const headers: Record<string, string> = {};
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (typeof value === 'string') headers[key] = value;
+            else if (Array.isArray(value)) headers[key] = value.join(', ');
+          }
+          const contentType = headers['content-type'] ?? '';
+          if (contentType.startsWith('image/')) {
+            resolve({ status: res.statusCode ?? 0, text: '', body: raw, headers });
+            return;
+          }
+          const text = raw.toString('utf-8');
           let json: ApiEnvelope | undefined;
           try {
             json = JSON.parse(text) as ApiEnvelope;
           } catch {
             json = undefined;
           }
-          resolve({ status: res.statusCode ?? 0, json, text });
+          resolve({ status: res.statusCode ?? 0, json, text, headers });
         });
       }
     );
