@@ -1738,3 +1738,5 @@ canvas operation/store/route tests and `test/mcp-server.test.ts`.
 ## Canvas desktop editing
 
 The browser edit queue persists commands before sending and removes them only on an operation-log acknowledgement. Transport retries reuse operation IDs. One batch is in flight; later commands remain queued. Refused batches are retained but excluded from optimistic rendering until retry or discard. New offline writes are refused. A missing acknowledgement is recovered from history, including history preceding a newer SSE snapshot.
+
+The desktop reader edits text and container names without replacing an active textarea during SSE updates. Drafts persist separately from queued operations; a concurrent field change preserves the draft and requires explicit resolution. New writes are disabled offline and at phone widths. Container headings are selected by pointer-up, without an unreachable click handler. Wheel zoom normalizes pixel, line and page deltas. Removed focused articles return focus to the board.

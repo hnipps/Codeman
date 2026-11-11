@@ -1,3 +1,5 @@
+import { wheelFactor } from './viewport.js';
+import { DesktopEditor } from './edit.js';
 import { joinBasePath } from '../../../src/config/base-path.js';
 import { command, initialView, type ViewCommand, type ViewState } from './commands.js';
 import { container, label, readable, type ViewObject } from './model.js';
@@ -164,6 +166,7 @@ function paint(): void {
     pendingFocus = null;
   }
   railDepth = state.rail.length;
+  editor.paint();
 }
 let readerObject: ViewObject | undefined,
   readerFocus: string | null = null;
@@ -272,7 +275,7 @@ button('closeRail').onclick = () => dispatch({ kind: 'escape' });
 for (const id of ['keys', 'outlineKeys']) button(id).onclick = () => dispatch({ kind: 'rail', view: 'keys' });
 button('letters').onclick = () => dispatch({ kind: 'letters', enabled: !state.letters });
 button('selectTool').onclick = () => dispatch({ kind: 'tool', tool: 'select' });
-for (const id of ['addTool', 'chatTool'])
+for (const id of ['chatTool'])
   button(id).onclick = () => {
     node('announcement').textContent = '';
     requestAnimationFrame(() => {
@@ -472,16 +475,29 @@ board.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
-    dispatch({ kind: 'zoom', anchor: { x: e.clientX, y: e.clientY }, factor: Math.exp(-e.deltaY * 0.0015) });
+    dispatch({
+      kind: 'zoom',
+      anchor: { x: e.clientX, y: e.clientY },
+      factor: wheelFactor(e.deltaY, e.deltaMode, innerHeight),
+    });
   },
   { passive: false }
 );
-const sync = new CanvasSync(
+const editor = new DesktopEditor({
   url,
-  workspaceId,
-  (snapshot) => {
-    objects = snapshot.objects;
+  workspace: workspaceId,
+  mobile,
+  view: () => state,
+  objects: () => objects,
+  dispatch,
+  display: (displayed) => {
+    objects = displayed;
+    const lostFocus =
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.matches('[data-object-id]') &&
+      !objects.some((o) => o.id === document.activeElement?.getAttribute('data-object-id'));
     renderer.objects(objects);
+    if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
     if (initial) {
       initial = false;
@@ -494,11 +510,17 @@ const sync = new CanvasSync(
     if (!objects.length) {
       node('state').querySelector('h1')!.textContent = 'A place for your work';
       node('state').querySelector('p')!.textContent =
-        'This canvas holds the ideas and references for your project. Ask an agent in this case to write to the canvas; editing by hand arrives in a later release.';
+        'A place for the ideas and references for your project. Add an object to get started.';
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
   },
+});
+const sync = new CanvasSync(
+  url,
+  workspaceId,
+  (snapshot) => editor.receive(snapshot),
   (status) => {
+    editor.online(status === 'ready');
     node('notice').hidden = status !== 'offline';
     node('notice').textContent = 'Connection lost. Your canvas is still here; reconnecting…';
     if (status === 'error' || status === 'loading') {

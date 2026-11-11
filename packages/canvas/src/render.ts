@@ -75,10 +75,6 @@ export class Renderer {
         title.style.left = `${o.size ? 0 : r.x}px`;
         title.style.top = `${(o.size ? 0 : r.y) - 36}px`;
         title.style.maxWidth = `${Math.max(160, r.width)}px`;
-        title.onclick = (e) => {
-          e.stopPropagation();
-          this.choose(o.id, e.shiftKey, false);
-        };
       }
       let bounds = el.querySelector<HTMLElement>(':scope > .group-bounds');
       if (!o.size) {

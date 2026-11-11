@@ -289,6 +289,7 @@ describe('read-only canvas document', () => {
     await page.mouse.wheel(0, -150);
     await page.waitForTimeout(100);
     const after = await page.evaluate(() => window.canvasView.read());
+    expect(after.viewport.zoom).toBeGreaterThan(before.viewport.zoom);
     expect((700 - before.viewport.x) / before.viewport.zoom).toBeCloseTo(
       (700 - after.viewport.x) / after.viewport.zoom
     );
