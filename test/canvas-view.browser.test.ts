@@ -99,7 +99,9 @@ describe('read-only canvas document', () => {
       args: ['--no-sandbox'],
     });
     page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
-    await page.addInitScript(() => localStorage.setItem('codeman:skin', 'og'));
+    await page.addInitScript(() => {
+      if (!localStorage.getItem('codeman:skin')) localStorage.setItem('codeman:skin', 'og');
+    });
     mkdirSync(MEDIA, { recursive: true });
   }, 60000);
   afterEach(async () => {
@@ -142,8 +144,8 @@ describe('read-only canvas document', () => {
     await page.locator('#board').focus();
     await page.keyboard.press('k');
     await page.keyboard.press('ArrowRight');
-    await page.waitForSelector('.keyboard-focus', { state: 'attached' });
-    expect(await page.locator('.keyboard-focus').count()).toBe(1);
+    await page.waitForSelector('#layer .keyboard-focus', { state: 'attached' });
+    expect(await page.locator('#layer .keyboard-focus').count()).toBe(1);
     await shot(page, 'keyboard-focus');
     await page.keyboard.press('x');
     const before = await page.evaluate(() => window.canvasView.read());
@@ -399,6 +401,229 @@ describe('read-only canvas document', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: 'codeman:skin' }));
     });
   });
+  it('verifies the review states in both themes at desktop and phone sizes', async () => {
+    const evidence: unknown[] = [];
+    for (const theme of ['dark', 'light']) {
+      for (const viewport of [
+        { width: 1440, height: 900 },
+        { width: 390, height: 844 },
+      ]) {
+        await page.setViewportSize(viewport);
+        await open();
+        await page.evaluate((theme) => {
+          localStorage.setItem('codeman:skin', theme === 'light' ? 'paper-gray' : 'og');
+          window.dispatchEvent(new StorageEvent('storage', { key: 'codeman:skin' }));
+          window.canvasView.dispatch({ kind: 'focus', id: 'research' });
+          window.canvasView.dispatch({ kind: 'selection', ids: ['research'] });
+        }, theme);
+        await page.locator('#fit').click();
+        await page.locator('#board').focus();
+        await page.keyboard.press('ArrowRight');
+        await page.waitForSelector('[data-object-id="frame-one"].keyboard-focus');
+        const slug = `${theme}-${viewport.width}`;
+        expect(await page.locator('[data-object-id="research"]').getAttribute('class')).toContain('selected');
+        expect(
+          await page.locator('[data-object-id="research"]').evaluate((el) => getComputedStyle(el, '::after').content)
+        ).toBe('none');
+        await shot(page, `${slug}-selection-focus`);
+        if (viewport.width === 390) await page.locator('#openOutline').click();
+        await page.locator('#board').focus();
+        expect(await page.locator('.search-hint').isVisible()).toBe(true);
+        await page.locator('#search').focus();
+        expect(await page.locator('.search-hint').isVisible()).toBe(false);
+        await page.locator('#search').fill('Reading');
+        expect(await page.locator('.search-hint').isVisible()).toBe(false);
+        await page.locator('#search').fill('');
+        await page.locator('#board').focus();
+        expect(await page.locator('#tree .keyboard-focus').textContent()).toBe('Reading patterns');
+        expect(await page.locator('#tree [aria-pressed="true"]').textContent()).toBe('Design exploration');
+        const clipping = await page.locator('#tree button').evaluateAll((rows) =>
+          rows.map((row) => ({
+            ellipsis: getComputedStyle(row).textOverflow,
+            nowrap: getComputedStyle(row).whiteSpace,
+            height: row.clientHeight,
+            line: parseFloat(getComputedStyle(row).lineHeight),
+          }))
+        );
+        expect(clipping.every((r) => r.ellipsis === 'ellipsis' && r.nowrap === 'nowrap' && r.height >= r.line)).toBe(
+          true
+        );
+        await shot(page, `${slug}-outline-focus`);
+        if (viewport.width === 390) await page.locator('#closeOutline').click();
+        for (const [id, description] of [
+          ['addTool', 'Adding objects arrives with editing'],
+          ['chatTool', 'Comments arrive with conversations'],
+        ]) {
+          const control = page.locator(`#${id}`);
+          expect(await control.getAttribute('aria-disabled')).toBe('true');
+          expect(await control.getAttribute('disabled')).toBeNull();
+          const contrast = await control.evaluate((el) => {
+            const luminance = (color: string) => {
+              const [r, g, b] = (color.match(/\d+/g) ?? []).slice(0, 3).map((n) => {
+                const c = Number(n) / 255;
+                return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+              });
+              return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            };
+            const foreground = luminance(getComputedStyle(el).color);
+            const background = luminance(getComputedStyle(el.parentElement ?? el).backgroundColor);
+            return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+          });
+          expect(contrast).toBeGreaterThanOrEqual(3);
+          await control.focus();
+          await page.keyboard.press('Enter');
+          await page.waitForFunction(
+            (text) => document.getElementById('announcement')?.textContent === text,
+            description
+          );
+          expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual(['research']);
+        }
+        await page.locator('#keys').click();
+        await page.waitForSelector('#keysView:not([hidden])');
+        expect(await page.locator('#keysView h1').count()).toBe(0);
+        expect(await page.getByRole('img', { name: 'Right arrow', exact: true }).textContent()).toBe('→');
+        expect(await page.locator('#keyRows').textContent()).not.toContain('Ctrl/Cmd');
+        const checked = await page.locator('#letters').getAttribute('aria-checked');
+        await page.locator('#letters').click();
+        await page.waitForFunction(
+          (before) => document.getElementById('letters')?.getAttribute('aria-checked') !== before,
+          checked
+        );
+        await shot(page, `${slug}-keys`);
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('#rail', { state: 'hidden' });
+        await page.evaluate(() => window.canvasView.dispatch({ kind: 'focus', id: 'brief' }));
+        await page.locator('#board').focus();
+        await page.keyboard.press('Enter');
+        await page.waitForSelector('#readerView:not([hidden])');
+        expect(await page.locator('#railTitle').textContent()).toBe('Text');
+        expect(await page.locator('#readerView h1').count()).toBe(0);
+        expect(await page.locator('#readerMeta time').count()).toBe(1);
+        expect(await page.locator('#readerMeta time').getAttribute('title')).toBe(
+          await page.locator('#readerMeta time').getAttribute('datetime')
+        );
+        await shot(page, `${slug}-reader`);
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('#rail', { state: 'hidden' });
+        // Inspect actual rendered controls without firing their actions.
+        const session = await page.context().newCDPSession(page);
+        await session.send('DOM.enable');
+        await session.send('CSS.enable');
+        const states: unknown[] = [];
+        for (const view of ['board', 'outline', 'keys', 'reader', 'container', 'error']) {
+          if (view === 'outline' && viewport.width === 390) await page.locator('#openOutline').click();
+          if (view === 'keys') {
+            if (viewport.width === 390) await page.locator('#closeOutline').click();
+            await page.locator('#keys').click();
+          }
+          if (view === 'reader') {
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('#rail', { state: 'hidden' });
+            await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'reader' }));
+            await page.waitForSelector('#readerView:not([hidden])');
+          }
+          if (view === 'container') {
+            await page.evaluate(() => window.canvasView.dispatch({ kind: 'focus', id: 'research' }));
+            await page.waitForFunction(
+              () => document.getElementById('railTitle')?.textContent === 'Design exploration'
+            );
+            expect(await page.locator('#readerText').isVisible()).toBe(false);
+            expect(await page.locator('#children').isVisible()).toBe(true);
+            await shot(page, `${slug}-container-reader`);
+          }
+          if (view === 'error') {
+            await page.route('**/api/canvas/*/objects', (route) => route.fulfill({ status: 500, body: '{}' }));
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.waitForSelector('#retry:not([hidden])');
+            await shot(page, `${slug}-retry`);
+          }
+          const { root } = await session.send('DOM.getDocument');
+          await page.mouse.move(viewport.width - 1, viewport.height - 1);
+          const { nodeIds } = await session.send('DOM.querySelectorAll', {
+            nodeId: root.nodeId,
+            selector: 'button,input',
+          });
+          for (const nodeId of nodeIds) {
+            const { object } = await session.send('DOM.resolveNode', { nodeId });
+            if (!object.objectId) continue;
+            const readStyle = async () => {
+              const { result } = await session.send('Runtime.callFunctionOn', {
+                objectId: object.objectId,
+                functionDeclaration: `function() { const s = getComputedStyle(this); return { visible: !!this.getClientRects().length, name: this.id || this.className, color: s.color, background: s.backgroundColor, border: s.borderColor, outline: s.outlineColor, outlineWidth: s.outlineWidth, outlineOffset: s.outlineOffset }; }`,
+                returnByValue: true,
+              });
+              return result.value;
+            };
+            await session.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+            const rest = await readStyle();
+            if (!rest.visible) continue;
+            for (const pseudo of ['hover', 'active', 'focus-visible']) {
+              await session.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [pseudo] });
+              const styled = await readStyle();
+              if (pseudo === 'focus-visible') expect(styled.outlineWidth, `${slug} ${rest.name} focus`).toBe('2px');
+              else
+                expect(
+                  styled.background !== rest.background || styled.border !== rest.border || styled.color !== rest.color,
+                  `${slug} ${rest.name} ${pseudo}`
+                ).toBe(true);
+              states.push({ view, name: rest.name, pseudo, rest, styled });
+            }
+            await session.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+          }
+        }
+        await session.detach();
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        expect(
+          await page
+            .locator('*')
+            .evaluateAll((els) =>
+              els.every(
+                (el) =>
+                  getComputedStyle(el).animationName === 'none' &&
+                  parseFloat(getComputedStyle(el).transitionDuration) === 0
+              )
+            )
+        ).toBe(true);
+        const native = await page.locator('#search').evaluate((el) => {
+          const style = getComputedStyle(el),
+            selection = getComputedStyle(el, '::selection');
+          const root = getComputedStyle(document.documentElement);
+          return {
+            caret: style.caretColor,
+            selection: selection.backgroundColor,
+            scrollbars: style.scrollbarColor,
+            accent: root.getPropertyValue('--accent').trim(),
+            muted: root.getPropertyValue('--muted').trim(),
+            panel: root.getPropertyValue('--panel').trim(),
+          };
+        });
+        expect(native.caret).toBe(theme === 'dark' ? 'rgb(245, 138, 69)' : 'rgb(181, 71, 2)');
+        expect(native.selection).toBe(native.caret);
+        expect(native.scrollbars).toBe(
+          theme === 'dark' ? 'rgb(151, 157, 166) rgb(30, 33, 37)' : 'rgb(91, 94, 89) rgb(242, 241, 237)'
+        );
+        evidence.push({ theme, viewport, states, clipping, native, reducedMotion: true });
+        await page.keyboard.press('Escape');
+        await page.waitForSelector('#rail', { state: 'hidden' });
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await page.unroute('**/api/canvas/*/objects');
+        await page.route('**/api/canvas/*/objects', (route) =>
+          route.fulfill({ json: { success: true, data: { seq: 1000, objects: [] } } })
+        );
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.waitForFunction(() => document.querySelector('#state h1')?.textContent === 'A place for your work');
+        const position = await page.locator('#state').evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        });
+        expect(position.x).toBeCloseTo((viewport.width + (viewport.width > 600 ? 192 : 0)) / 2);
+        expect(position.y).toBeCloseTo(viewport.height / 2);
+        await shot(page, `${slug}-empty`);
+        await page.unroute('**/api/canvas/*/objects');
+      }
+    }
+    writeFileSync(resolve(MEDIA, `pc3-review-${stamp}-states.json`), JSON.stringify(evidence, null, 2));
+  }, 120000);
   it('gates the canvas page with the synced setting and normal authentication', async () => {
     await page.request.put(`${origin}/x/api/settings`, { data: { canvasEnabled: false } });
     expect((await page.request.get(`${origin}/x/canvas/${workspace}`)).status()).toBe(404);
