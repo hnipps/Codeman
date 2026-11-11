@@ -1,11 +1,16 @@
 /**
  * @fileoverview File telemetry for supervised (blue-green) deploys.
  *
- * With `CODEMAN_LOG_DIR` set, the server appends three JSONL streams there so an agent
+ * With `CODEMAN_LOG_DIR` set, the server appends four JSONL streams there so an agent
  * or a supervisor can read what the app did without a log shipper: `server.jsonl` (every
- * console line), `requests.jsonl` (one line per HTTP request) and `client-errors.jsonl`
- * (browser errors posted to `/api/client-errors`). With it unset nothing is written and
- * nothing else changes.
+ * console line), `requests.jsonl` (one line per HTTP request), `client-errors.jsonl`
+ * (browser errors posted to `/api/client-errors`) and `ui-events.jsonl` (canvas and
+ * tab-strip events posted to that same route with `kind: "ui"`). With it unset nothing
+ * is written and nothing else changes.
+ *
+ * Every line is passed through `redactLogLine` before it joins the queue, so a crash
+ * flush cannot write a secret the async flush would have masked. The hook secret is
+ * read from disk and never created here.
  *
  * Writes never throw into a caller and never block: lines queue in memory (bounded) and
  * one async append per stream flushes them. Rotation is by size, checked against the file
@@ -18,11 +23,13 @@
  * @module telemetry
  */
 
-import { accessSync, appendFileSync, constants, mkdirSync } from 'node:fs';
+import { accessSync, appendFileSync, constants, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { appendFile, rename, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { format } from 'node:util';
+import { dataPath } from './config/instance.js';
+import { redactLogLine } from './telemetry-redact.js';
 
 const require = createRequire(import.meta.url);
 export const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
@@ -65,10 +72,52 @@ interface ClientErrorLogLine {
   url?: string | null;
 }
 
+interface UiEventLogLine {
+  buildId: string;
+  surface: 'canvas' | 'tab-strip';
+  action: string;
+  target?: string | null;
+}
+
 interface StreamRecords {
   server: ServerLogLine;
   requests: RequestLogLine;
   'client-errors': ClientErrorLogLine;
+  'ui-events': UiEventLogLine;
+}
+
+const HOOK_SECRET_RECHECK_MS = 30_000;
+let cachedHookSecret: string | undefined;
+let hookSecretCheckedAt = 0;
+
+/** Drop the cached hook secret. Tests use this so a file written mid-process is visible. */
+export function resetTelemetryRedactionCache(): void {
+  cachedHookSecret = undefined;
+  hookSecretCheckedAt = 0;
+}
+
+/**
+ * The hook secret already on disk, or undefined. This never creates the file:
+ * `getHookSecret()` would mint one the first time a log line was written.
+ * A miss is retried at most every 30 seconds. A value shorter than 16 characters,
+ * longer than 256, or carrying a newline is ignored.
+ */
+export function readHookSecretForRedaction(now = Date.now()): string | undefined {
+  if (cachedHookSecret !== undefined) return cachedHookSecret;
+  if (hookSecretCheckedAt !== 0 && now - hookSecretCheckedAt < HOOK_SECRET_RECHECK_MS) return undefined;
+  hookSecretCheckedAt = now;
+  try {
+    const path = dataPath('hook-secret');
+    const info = lstatSync(path);
+    if (!info.isFile() || info.size > 512 || info.size < 16) return undefined;
+    const text = readFileSync(path, 'utf8').trim();
+    if (text.length < 16 || text.length > 256) return undefined;
+    if (text.includes('\n') || text.includes('\r') || text.includes('\0')) return undefined;
+    cachedHookSecret = text;
+    return text;
+  } catch {
+    return undefined;
+  }
 }
 
 type TelemetryStream = keyof StreamRecords;
@@ -119,9 +168,16 @@ class StreamWriter {
   ) {}
 
   push(line: string): void {
-    if (this.queuedChars + line.length > MAX_QUEUED_CHARS) return;
-    this.queue.push(line);
-    this.queuedChars += line.length;
+    let safe: string;
+    try {
+      safe = redactLogLine(line, readHookSecretForRedaction());
+      if (!safe.endsWith('\n')) safe += '\n';
+    } catch {
+      safe = '[unredactable]\n';
+    }
+    if (this.queuedChars + safe.length > MAX_QUEUED_CHARS) return;
+    this.queue.push(safe);
+    this.queuedChars += safe.length;
     if (!this.timer) {
       this.timer = setTimeout(() => void this.flush(), FLUSH_DELAY_MS);
       this.timer.unref();
