@@ -3,7 +3,8 @@
  *
  * One function, no I/O, no caller-supplied pattern. A key that contains a
  * credential word is masked, at any length, except a short exact allowlist of
- * attribution keys. A key longer than the classifier cap is secret too, and is
+ * attribution keys. A key that only counts tokens is not one, when its value
+ * starts with a digit. A key longer than the classifier cap is secret too, and is
  * not copied or normalised. A key may start with a digit. The masked span is
  * the whole value: a quoted string, a bracketed object or array, or everything
  * up to the newline for any other value. The inside of a quote that is not
@@ -48,6 +49,12 @@ const ATTRIBUTION_KEYS = new Set(['author', 'authors', 'authored', 'authoredby',
  * are not here: those ids correlate rows and must stay readable.
  */
 const HEADER_SECRET_KEYS = new Set(['cookie', 'setcookie', 'codemansession', 'sid']);
+/**
+ * Normalized endings that name a count of tokens. `token` itself is not here.
+ * A key that also contains a credential word in `TOKEN_COUNT_BLOCK` stays secret.
+ */
+const TOKEN_COUNT_SUFFIXES = ['tokencount', 'tokenusage', 'tokenlimit', 'tokenbudget', 'tokens'];
+const TOKEN_COUNT_BLOCK = ['auth', 'access', 'refresh', 'secret', 'bearer', 'api', 'session', 'idtoken'];
 /** Prefix plus this many token characters. Longer prefixes are listed first. */
 const TOKEN_PREFIXES: { prefix: string; min: number }[] = [
   { prefix: 'github_pat_', min: 20 },
@@ -116,16 +123,50 @@ function normalizeKey(key: string): string {
 }
 
 /**
+ * A usage count: plural `tokens`, or a name ending in `tokens`, `tokencount`,
+ * `tokenusage`, `tokenlimit`, or `tokenbudget`. `authTokens` and the same
+ * shape stay out, because the name also carries a credential word.
+ */
+function isTokenCountKey(normalized: string): boolean {
+  let count = false;
+  for (let s = 0; s < TOKEN_COUNT_SUFFIXES.length; s++) {
+    if (normalized.endsWith(TOKEN_COUNT_SUFFIXES[s])) {
+      count = true;
+      break;
+    }
+  }
+  if (!count) return false;
+  for (let b = 0; b < TOKEN_COUNT_BLOCK.length; b++) {
+    if (normalized.includes(TOKEN_COUNT_BLOCK[b])) return false;
+  }
+  return true;
+}
+
+function startsWithDigit(text: string, i: number): boolean {
+  if (i < 0 || i >= text.length) return false;
+  const code = text.charCodeAt(i);
+  return code >= 48 && code <= 57;
+}
+
+/** A parsed count. A string, object, or array is not one, even when it looks numeric. */
+function parsedCount(value: unknown): boolean {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+  return startsWithDigit(String(value), 0);
+}
+
+/**
  * A telemetry key names a credential when it contains one, at any length.
  * A key longer than `KEY_CAP` is secret without normalisation. Attribution
- * keys in `ATTRIBUTION_KEYS` do not match. Config backup's `SECRET_KEY_RE`
- * is a different rule and still matches `author`.
+ * keys in `ATTRIBUTION_KEYS` do not match. A token-count key is not a secret
+ * key; the caller still masks it unless the value starts with a digit.
+ * Config backup's `SECRET_KEY_RE` is a different rule and still matches `author`.
  */
 export function isTelemetrySecretKey(key: string): boolean {
   if (key.length === 0) return false;
   if (key.length > KEY_CAP) return true;
   const normalized = normalizeKey(key);
   if (ATTRIBUTION_KEYS.has(normalized)) return false;
+  if (isTokenCountKey(normalized)) return false;
   if (HEADER_SECRET_KEYS.has(normalized)) return true;
   return CREDENTIAL_MARK.test(key);
 }
@@ -327,6 +368,24 @@ function readUnquotedKey(text: string, i: number): UnquotedKey | null {
   return { end, key: overlong ? '' : text.slice(i, end), overlong, pathLike };
 }
 
+/**
+ * Mask a secret assignment. A token-count key is masked too, unless its value
+ * starts with a digit: `tokens: 15234 input, 921 output` stays, and
+ * `{"tokens":{"access":"…"}}` does not.
+ */
+function shouldMaskAssignment(
+  secret: boolean,
+  count: boolean,
+  text: string,
+  valueStart: number,
+  pathLike: boolean
+): boolean {
+  if (count && !secret && startsWithDigit(text, valueStart)) return false;
+  if (!secret && !count) return false;
+  if (secret && isExemptValue(text, valueStart, pathLike)) return false;
+  return true;
+}
+
 function maskValue(
   parts: string[],
   text: string,
@@ -375,21 +434,21 @@ function maskSecrets(text: string, depth: number): string {
       const hasSep = sepChar === ':' || sepChar === '=';
       if (hasSep && found.closed) {
         let secret = rawLen > KEY_CAP;
+        let count = false;
         let pathLike = false;
         if (!secret && rawLen > 0) {
           const quoted = readQuoted(text, i);
           const key = quoted && quoted.closed ? quoted.value : '';
           pathLike = key.includes('.') || key.includes('/');
+          count = key.length > 0 && key.length <= KEY_CAP && isTokenCountKey(normalizeKey(key));
           secret = key.length > 0 && (key.length > KEY_CAP || isTelemetrySecretKey(key));
         }
-        if (secret) {
-          const valueStart = skipWs(text, sep + 1);
-          if (!isExemptValue(text, valueStart, pathLike)) {
-            const masked = maskValue(parts, text, i, sep, valueStart);
-            if (masked.changed) changed = true;
-            i = masked.end;
-            continue;
-          }
+        const valueStart = skipWs(text, sep + 1);
+        if (shouldMaskAssignment(secret, count, text, valueStart, pathLike)) {
+          const masked = maskValue(parts, text, i, sep, valueStart);
+          if (masked.changed) changed = true;
+          i = masked.end;
+          continue;
         }
       }
       const interior = text.slice(i + 1, interiorEnd);
@@ -410,9 +469,11 @@ function maskSecrets(text: string, depth: number): string {
     }
     const sep = skipWs(text, key.end);
     const sepChar = text[sep];
-    if ((sepChar === ':' || sepChar === '=') && (key.overlong || isTelemetrySecretKey(key.key))) {
+    if (sepChar === ':' || sepChar === '=') {
       const valueStart = skipWs(text, sep + 1);
-      if (!isExemptValue(text, valueStart, key.pathLike)) {
+      const count = !key.overlong && isTokenCountKey(normalizeKey(key.key));
+      const secret = key.overlong || isTelemetrySecretKey(key.key);
+      if (shouldMaskAssignment(secret, count, text, valueStart, key.pathLike)) {
         const masked = maskValue(parts, text, i, sep, valueStart);
         if (masked.changed) changed = true;
         i = masked.end;
@@ -699,14 +760,15 @@ function redactPlain(text: string, secret: string | undefined): string {
   return out;
 }
 
-function redactValue(value: unknown, secretKey: boolean, secret: string | undefined): unknown {
-  if (secretKey) return REDACTED;
+function redactValue(value: unknown, secretKey: boolean, secret: string | undefined, countKey = false): unknown {
+  if (secretKey || (countKey && !parsedCount(value))) return REDACTED;
   if (typeof value === 'string') return redactPlain(value, secret);
   if (Array.isArray(value)) return value.map((item) => redactValue(item, false, secret));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = redactValue(item, isTelemetrySecretKey(key), secret);
+      const count = key.length <= KEY_CAP && isTokenCountKey(normalizeKey(key));
+      out[key] = redactValue(item, isTelemetrySecretKey(key), secret, count);
     }
     return out;
   }

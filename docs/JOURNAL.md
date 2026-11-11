@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - A token count is not a credential
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** `tokens: 15234 input, 921 output` was masked because the key contains `token`. That line is a usage count this app logs on purpose.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round5.md)
+
+A key that only counts tokens is not a secret key. The value stays only when it starts with a digit. An object, an array, or a quoted string under `tokens` is still masked, because a key-only exemption would leave `{"tokens":{"access":"…"}}` readable and `access` is not itself a credential word. `authTokens` and any count-shaped key that also says `auth`, `access`, `refresh`, `secret`, `bearer`, `api`, `session`, or `id_token` stay secret.
+
 ## 2026-11-11 - An unquoted secret value runs to the newline
 
 **Type:** intent-refinement

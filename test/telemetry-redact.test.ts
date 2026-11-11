@@ -121,6 +121,31 @@ describe('redactLogLine', () => {
     for (const key of ['session', 'sessionId', 'session_id', 'claudeSessionId']) {
       expect(isTelemetrySecretKey(key), key).toBe(false);
     }
+    for (const key of [
+      'tokens',
+      'inputTokens',
+      'output_tokens',
+      'totalTokens',
+      'max_tokens',
+      'cache_read_input_tokens',
+      'tokenCount',
+      'tokenUsage',
+      'tokenLimit',
+      'tokenBudget',
+    ]) {
+      expect(isTelemetrySecretKey(key), key).toBe(false);
+    }
+    for (const key of [
+      'token',
+      'access_token',
+      'refresh_token',
+      'id_token',
+      'tokenSecret',
+      'authTokens',
+      'refreshTokens',
+    ]) {
+      expect(isTelemetrySecretKey(key), key).toBe(true);
+    }
   });
 
   it('masks bearer tokens and URL userinfo', () => {
@@ -662,6 +687,66 @@ describe('redaction before the queue', () => {
     const kept = await queryLogs({ dir, stream: 'server', text: 'https://h' });
     expect(kept.lines).toHaveLength(2);
     expect(kept.lines.every((line) => line.includes('[redacted]') && !line.includes(cred))).toBe(true);
+  });
+
+  it('keeps token usage counts and still masks token secrets', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const usage = 'tokens: 15234 input, 921 output';
+    const max = 'max_tokens=4096';
+    const telemetry = sink();
+    telemetry.write('server', {
+      level: 'log',
+      buildId: 'b',
+      pid: 1,
+      msg: usage,
+      inputTokens: 15234,
+      outputTokens: 921,
+      totalTokens: 16155,
+    } as never);
+    telemetry.write('server', { level: 'log', buildId: 'b', pid: 1, msg: max });
+    for (const msg of [
+      `token: ${cred}`,
+      `access_token=${cred}`,
+      `refreshTokens: ${cred}`,
+      `authTokens: ["${cred}"]`,
+      `{"tokens":{"access":"${cred}"}}`,
+    ]) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    telemetry.write('server', {
+      level: 'error',
+      buildId: 'b',
+      pid: 1,
+      msg: 'nested',
+      tokens: { access: cred },
+    } as never);
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).toContain(usage);
+    expect(raw).toContain(max);
+    expect(raw).toContain('"inputTokens":15234');
+    expect(raw).toContain('"outputTokens":921');
+    expect(raw).toContain('"totalTokens":16155');
+    expect(raw).not.toContain(cred);
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const kept = await queryLogs({ dir, stream: 'server', text: usage });
+    expect(kept.lines).toHaveLength(1);
+    expect(kept.lines[0]).toContain(usage);
+    const row = JSON.parse(kept.lines[0]) as {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    };
+    expect(row.inputTokens).toBe(15234);
+    expect(row.outputTokens).toBe(921);
+    expect(row.totalTokens).toBe(16155);
+    const cap = await queryLogs({ dir, stream: 'server', text: max });
+    expect(cap.lines).toHaveLength(1);
+    expect(cap.lines[0]).toContain(max);
+    const nested = await queryLogs({ dir, stream: 'server', text: '"tokens":"[redacted]"' });
+    expect(nested.lines.length).toBeGreaterThan(0);
+    expect(nested.lines.every((line) => !line.includes(cred))).toBe(true);
   });
 
   it('reads at most 512 bytes of an oversized hook-secret file', async () => {
