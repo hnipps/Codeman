@@ -6,6 +6,12 @@ This is a vision document, not a specification. It describes the long-term produ
 
 ## Decisions made since
 
+- The owner requires selectable groups as named chat context, FigJam-style canvas interaction foundations and structured agent parity for every human canvas action. Selection lassos, grouping, nested groups, resize, lock and related controls are build requirements even when absent from the prototype. Stickers, washi tape, sticky-note objects and decorative workshop types are excluded. See [canvas foundations](canvas-foundations.md).
+
+- Latest Nov 10 feedback replaces the floating conversation/card and attachment-picker designs with an ambient assistant: a thin, fully collapsible right rail, direct selection and hold-key lasso context, voice, background agents, configured provider/model choice and keyboard-first nonmodal controls. HeyClicky is an interaction reference; the dark Opsdeck visual direction stays. This supersedes the earlier conversation-placement interpretation below.
+
+- On Nov 10, after accepting the initial visual direction, the owner clarified that the canvas is the primary agentic workspace. Conversations are canvas objects, comment threads are another agent interface, and message attachments guide starting context while the whole canvas remains available to agents. Remove the canvas navbar, put search in the outline and reduce persistent system labels. The UI/UX brief and revised plan carry this direction; the original phase ordering below is historical.
+
 - The base is a fork of Codeman, which runs the unmodified Claude Code CLI in tmux. The app does not wrap agents through ACP, and Codex is deferred.
 - The whole system runs in a single VM on the home server, with snapshots taken from the host.
 - Remote Control runs on the host, outside the VM, with full access, as the recovery channel.
