@@ -634,3 +634,7 @@ The short rules now match in all three instruction files.
 **Links:** [intent/2026-11-04-light-assurance.md](../intent/2026-11-04-light-assurance.md)
 
 Per-change intent files are in `intent/`. That directory is separate from Read My Mind. The rules that already hold stay in `CLAUDE.md` and `docs/architecture-invariants.md`. Drafts for promises that are still moving go in `docs/invariants/` and carry no numbered promises yet. Every Crosscheck skill can be run by name. No new hook and no failing assurance job is installed.
+
+## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
+
+The desktop queue uses existing operation IDs for retries and recovers an acknowledgement from history when an SSE snapshot arrived before the POST response. A server refusal quarantines pending edits and rolls back their optimistic display. Explicit reparenting uses the existing `reparent` kind rather than adding a parent field to `move`.
