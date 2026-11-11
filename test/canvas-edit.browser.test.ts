@@ -493,8 +493,9 @@ describe('desktop canvas editing', () => {
     expect((await stored()).find((o) => o.id === 'note')?.content.text).toBe('Acknowledged only by history.');
     const pending = await page.evaluate(
       () =>
-        JSON.parse(localStorage.getItem(`codeman:canvas:${location.pathname.split('/').at(-1)}:edits`) ?? '{}')
-          .operations[0].opId
+        JSON.parse(
+          localStorage.getItem(`codeman:canvas:user:%40single:${location.pathname.split('/').at(-1)}:edits`) ?? '{}'
+        ).operations[0].opId
     );
     expect(typeof pending).toBe('string');
     await page.unrouteAll({ behavior: 'wait' });
@@ -506,7 +507,9 @@ describe('desktop canvas editing', () => {
     const log = await (await page.request.get(`${origin}/x/api/canvas/${workspace}/ops?since=0`)).json();
     expect(log.data.operations.filter((op: { opId: string }) => op.opId === pending)).toHaveLength(1);
     expect(
-      await page.evaluate(() => localStorage.getItem(`codeman:canvas:${location.pathname.split('/').at(-1)}:edits`))
+      await page.evaluate(() =>
+        localStorage.getItem(`codeman:canvas:user:%40single:${location.pathname.split('/').at(-1)}:edits`)
+      )
     ).toBeNull();
   });
   it('normalizes line-mode wheel zoom and keeps shortcuts after the focused object disappears', async () => {
@@ -711,7 +714,7 @@ describe('desktop canvas editing', () => {
       expect(await page.locator('#textEditor').inputValue()).toBe('Offline draft retained.');
       expect(await page.locator('#addTool').isDisabled()).toBe(true);
       const pending = await page.evaluate(() =>
-        localStorage.getItem(`codeman:canvas:${location.pathname.split('/').at(-1)}:edits`)
+        localStorage.getItem(`codeman:canvas:user:%40single:${location.pathname.split('/').at(-1)}:edits`)
       );
       expect(pending).toContain('Offline draft retained.');
       expect(
@@ -1021,6 +1024,51 @@ describe('desktop canvas editing', () => {
     expect(new Set(tops).size).toBe(1);
     expect(await page.locator('#contextRow').evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   }
+  it('keeps text typed behind a refused drag, saves it in order, and saves later typing', async () => {
+    await invoke('canvas_lock', { targetIds: ['other'], mode: 'subtree' });
+    await page.waitForFunction(() =>
+      window.canvasEdit.read().locks.some((lock) => lock.id === 'other' && lock.local === 'subtree')
+    );
+    await reader('note');
+    const editor = page.locator('#textEditor');
+    await editor.fill('Typed while the drag was in flight');
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let commands = 0;
+    await page.route('**/api/canvas/*/command', async (route) => {
+      commands++;
+      await held;
+      await route.continue();
+    });
+    expect(await page.evaluate(() => window.canvasEdit.move({ targetIds: ['other'], delta: { x: 30, y: 20 } }))).toBe(
+      true
+    );
+    await page.waitForFunction(() => window.canvasEdit.read().pending);
+    await editor.blur();
+    await page.waitForFunction(() => window.canvasEdit.read().drafts.note?.sent !== undefined);
+    release();
+    await saved();
+    expect(commands).toBe(1);
+    expect((await stored()).find((o) => o.id === 'note')?.content.text).toBe('Typed while the drag was in flight');
+    await editor.focus();
+    await editor.fill('And this came after the refusal');
+    await editor.blur();
+    await page.waitForFunction(
+      () =>
+        window.canvasEdit.read().status === 'saved' &&
+        !window.canvasEdit.read().pending &&
+        window.canvasEdit.read().drafts.note?.base === 'And this came after the refusal'
+    );
+    expect((await stored()).find((o) => o.id === 'note')?.content.text).toBe('And this came after the refusal');
+    expect(await page.locator('#editStatus').textContent()).toBe('Saved');
+    const keys = await page.evaluate(() => Object.keys(localStorage));
+    expect(keys.filter((key) => key.startsWith('codeman:canvas:') && !key.startsWith('codeman:canvas:user:'))).toEqual(
+      []
+    );
+    expect(keys).toContain(`codeman:canvas:user:%40single:${workspace}:drafts`);
+  });
   async function dragRefusal(id: string, dx: number, dy: number) {
     const p = await objectCenter(id);
     await page.mouse.move(p.x, p.y);

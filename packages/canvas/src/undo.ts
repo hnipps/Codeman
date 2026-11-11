@@ -5,7 +5,11 @@ export class CanvasUndo {
   private redo: Entry[] = [];
   private pending: { direction: 'undo' | 'redo'; focusId: string | null } | null = null;
   acknowledge(operations: Acknowledged[], focusId: string | null): string | null {
-    if (!operations.length) return null;
+    if (!operations.length) {
+      // A no-op answer wrote nothing, so a pending history step stays where it was.
+      this.pending = null;
+      return null;
+    }
     const sequences = operations.map((op) => op.seq);
     const pending = this.pending;
     if (pending) {

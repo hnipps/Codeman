@@ -8,6 +8,7 @@ import { label, ViewObjectSchema } from './model.js';
 import { targets, selectRegion } from './select.js';
 import { type Point, union } from './viewport.js';
 import { CanvasUndo } from './undo.js';
+import { canvasStorageKeys, clipboardTooLarge, retireUnscopedKeys, type CanvasStorageKeys } from './storage-keys.js';
 import { parseSnapshot } from './edit-queue.js';
 import { lockedSentence, refusalCopy, requestVerb, type RefusalVerb } from './refusal.js';
 import { z } from 'zod';
@@ -40,7 +41,8 @@ const DraftSchema = z.object({
   conflict: z.boolean(),
   conflictAuthor: z.string().optional(),
 });
-type Draft = z.infer<typeof DraftSchema> & { sent?: string };
+/** `sent` is valid only while the queue still holds `sentOp`; `saveText` clears a marker that outlived it. */
+type Draft = z.infer<typeof DraftSchema> & { sent?: string; sentOp?: string };
 export class DesktopEditor {
   readonly queue: EditQueue;
   private history = new CanvasUndo();
@@ -107,10 +109,13 @@ export class DesktopEditor {
   private selectionPath: SVGPathElement;
   private debounce: ReturnType<typeof setTimeout> | undefined;
   private editor: HTMLTextAreaElement;
+  private keys: CanvasStorageKeys;
   constructor(
     private options: {
       url: (path: string) => string;
       workspace: string;
+      /** Who is editing: the signed-in user, or `@single` without multi-user mode. */
+      viewer: string;
       mobile: MediaQueryList;
       view: () => ViewState;
       objects: () => ViewObject[];
@@ -143,6 +148,12 @@ export class DesktopEditor {
     const editor = node('textEditor');
     if (!(editor instanceof HTMLTextAreaElement)) throw new Error('Expected text editor');
     this.editor = editor;
+    this.keys = canvasStorageKeys(options.viewer, options.workspace);
+    try {
+      retireUnscopedKeys(localStorage, options.viewer, options.workspace);
+    } catch {
+      /* Without storage there is nothing to retire. */
+    }
     try {
       const stored = z.record(z.string(), DraftSchema).parse(JSON.parse(localStorage.getItem(this.draftKey) ?? '{}'));
       this.drafts = new Map(Object.entries(stored));
@@ -151,9 +162,9 @@ export class DesktopEditor {
     }
     this.queue = new EditQueue({
       storage: localStorage,
-      key: `codeman:canvas:${options.workspace}:edits`,
+      key: this.keys.edits,
       send: (ops, since) => sendEdits(options.url, options.workspace, ops, since),
-      sendCommand: (request) => sendCommand(options.url, options.workspace, request),
+      sendCommand: (request, since) => sendCommand(options.url, options.workspace, request, since),
       display: (objects) => {
         if (this.loaded) {
           options.display(objects);
@@ -186,14 +197,16 @@ export class DesktopEditor {
         this.history.refused();
         this.selectCreated = false;
         this.nextSelection = null;
-        if (reasons.some((r) => r.code === 'REVISION'))
-          for (const op of ops) {
-            const draft = this.drafts.get(op.objectId);
-            if (op.kind === 'update' && op.patch.content && draft) {
-              draft.conflict = true;
-              delete draft.sent;
-            }
+        const revision = reasons.some((r) => r.code === 'REVISION');
+        for (const op of ops) {
+          const draft = this.drafts.get(op.objectId);
+          if (op.kind !== 'update' || !op.patch.content || !draft) continue;
+          if (revision) draft.conflict = true;
+          if (draft.sentOp === op.opId) {
+            delete draft.sent;
+            delete draft.sentOp;
           }
+        }
         this.persistDrafts();
       },
     });
@@ -240,7 +253,12 @@ export class DesktopEditor {
     };
     btn('undoEdit').onclick = () => void this.undo('undo');
     btn('redoEdit').onclick = () => void this.undo('redo');
-    btn('retryEdit').onclick = () => this.queue.retry();
+    btn('retryEdit').onclick = () => {
+      const refusedText = this.status === 'refused' && this.readerRefusal;
+      this.queue.retry();
+      // A refused text save is already out of the queue; Retry sends the kept draft again.
+      if (refusedText) this.saveText();
+    };
     btn('discardEdit').onclick = () => {
       this.queue.discard();
       this.history.refused();
@@ -251,6 +269,7 @@ export class DesktopEditor {
         if (draft.sent !== undefined) {
           draft.value = draft.base;
           delete draft.sent;
+          delete draft.sentOp;
         }
       this.persistDrafts();
       this.read(this.options.objects().find((o) => o.id === this.currentId));
@@ -541,10 +560,16 @@ export class DesktopEditor {
   }
   private copy(cut: boolean): void {
     this.showArrange(false);
-    this.clipboard = copied(this.options.objects(), this.ids());
-    if (!this.clipboard.length) return;
+    const clipboard = copied(this.options.objects(), this.ids());
+    if (!clipboard.length) return;
+    const serialized = JSON.stringify(clipboard);
+    if (clipboardTooLarge(serialized)) {
+      this.say('This selection is too large to copy. Copy fewer objects or shorter text.');
+      return;
+    }
+    this.clipboard = clipboard;
     try {
-      localStorage.setItem('codeman:canvas:clipboard', JSON.stringify(this.clipboard));
+      localStorage.setItem(this.keys.clipboard, serialized);
     } catch {
       this.say('Clipboard storage is unavailable.');
       return;
@@ -565,9 +590,9 @@ export class DesktopEditor {
   private paste(): void {
     this.showArrange(false);
     try {
-      this.clipboard = z
-        .array(ViewObjectSchema)
-        .parse(JSON.parse(localStorage.getItem('codeman:canvas:clipboard') ?? '[]'));
+      const stored = localStorage.getItem(this.keys.clipboard) ?? '[]';
+      if (clipboardTooLarge(stored)) throw new Error('Clipboard too large');
+      this.clipboard = z.array(ViewObjectSchema).parse(JSON.parse(stored));
       if (!this.clipboard.length) {
         this.say('Copy a canvas selection before pasting.');
         return;
@@ -598,7 +623,7 @@ export class DesktopEditor {
       this.selectCreated = true;
   }
   private get draftKey(): string {
-    return `codeman:canvas:${this.options.workspace}:drafts`;
+    return this.keys.drafts;
   }
   private persistDrafts(): void {
     try {
@@ -641,6 +666,7 @@ export class DesktopEditor {
         draft.revision = this.revision(object);
         draft.conflict = false;
         delete draft.sent;
+        delete draft.sentOp;
       } else if (text !== draft.base && text !== draft.sent && draft.value !== draft.base) {
         draft.conflict = true;
         const previous = this.authoritative.find((o) => o.id === id);
@@ -663,7 +689,7 @@ export class DesktopEditor {
   private available(): boolean {
     if (this.options.mobile.matches) return false;
     if (this.connected) {
-      if (this.status === 'refused') {
+      if (this.queue.blocked) {
         this.queue.discard();
         this.history.refused();
         this.commandFocus = undefined;
@@ -776,21 +802,29 @@ export class DesktopEditor {
     if (!this.currentId || this.composing || !this.available()) return;
     const draft = this.drafts.get(this.currentId),
       object = this.authoritative.find((o) => o.id === this.currentId);
+    if (draft && draft.sent !== undefined && !(draft.sentOp && this.queue.holds(draft.sentOp))) {
+      delete draft.sent;
+      delete draft.sentOp;
+    }
     if (!draft || !object || draft.conflict || draft.sent !== undefined || draft.value === draft.base) return;
     const content = { ...knownContentFields(object.content), [object.type === 'text' ? 'text' : 'label']: draft.value };
+    const opId = crypto.randomUUID();
     draft.sent = draft.value;
+    draft.sentOp = opId;
     if (
       !this.submit([
         this.parse({
           kind: 'update',
-          opId: crypto.randomUUID(),
+          opId,
           objectId: object.id,
           expectedRevision: this.revision(object),
           patch: { content },
         }),
       ])
-    )
+    ) {
       delete draft.sent;
+      delete draft.sentOp;
+    }
   }
   private acknowledge(operations: Acknowledged[]): void {
     const created = this.selectCreated ? operations.filter((o) => o.kind === 'create').map((o) => o.objectId) : [];
@@ -828,6 +862,7 @@ export class DesktopEditor {
         draft.base = this.field(after) ?? draft.base;
         draft.revision = this.revision(after);
         delete draft.sent;
+        delete draft.sentOp;
         if (!draft.conflict && draft.value !== draft.base) this.debounce = setTimeout(() => this.saveText(), 50);
       }
     }
@@ -865,6 +900,7 @@ export class DesktopEditor {
       if (!keep) draft.value = draft.base;
       draft.conflict = false;
       delete draft.sent;
+      delete draft.sentOp;
       this.editor.value = draft.value;
       this.persistDrafts();
       this.paintStatus();
@@ -887,7 +923,7 @@ export class DesktopEditor {
     node('editStatus').dataset.state = draft?.conflict ? 'conflict' : this.status;
     node('conflictActions').hidden = !draft?.conflict;
     node('retryActions').hidden = this.status !== 'failed' && this.status !== 'refused';
-    btn('retryEdit').hidden = !!draft?.conflict;
+    btn('retryEdit').hidden = !!draft?.conflict || (this.status === 'refused' && !this.readerRefusal);
   }
   private showAddMenu(open: boolean): void {
     node('addMenu').hidden = !open;

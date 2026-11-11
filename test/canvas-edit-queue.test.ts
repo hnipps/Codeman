@@ -48,7 +48,8 @@ const ack = (op: Edit, seq = 1): Acknowledged => ({
 function fixture(
   send: (ops: Edit[], since: number) => Promise<Acknowledged[]>,
   memory = new Map<string, string>(),
-  sendCommand?: (request: QueuedRequest) => Promise<Acknowledged[]>
+  sendCommand?: (request: QueuedRequest) => Promise<{ records: Acknowledged[]; sequences: number[] }>,
+  refused?: (operations: Edit[], message: string) => void
 ) {
   let displayed: ViewObject[] = [],
     status = '',
@@ -66,6 +67,7 @@ function fixture(
     key: 'drafts',
     send,
     sendCommand,
+    refused,
     display: (objects) => {
       displayed = objects;
     },
@@ -100,7 +102,7 @@ describe('durable canvas edit queue', () => {
     const data = JSON.parse(f.memory.get('drafts') ?? '{}');
     expect(Object.values(data.requests)).toHaveLength(1);
     f.queue.stop();
-    const resend = vi.fn(async (_request: QueuedRequest) => [ack(move(24))]);
+    const resend = vi.fn(async (_request: QueuedRequest) => ({ records: [ack(move(24))], sequences: [1] }));
     const restored = fixture(async () => [], f.memory, resend);
     await settle();
     expect(resend.mock.calls[0]).toEqual(original);
@@ -191,24 +193,21 @@ describe('durable canvas edit queue', () => {
       vi.useRealTimers();
     }
   });
-  it('rolls back refused optimistic writes, explains why, and offers retry or discard', async () => {
-    const send = vi.fn().mockRejectedValue(new Refused('Edit refused: object is locked.'));
+  it('rolls back a refused optimistic write, explains why, and keeps editing available', async () => {
+    const send = vi.fn().mockRejectedValueOnce(new Refused('Edit refused: object is locked.'));
     const f = fixture(send);
     f.queue.enqueue([move(40)]);
     await settle();
     expect(f.display()[0].position.x).toBe(0);
     expect(f.status()).toBe('refused');
     expect(f.message()).toContain('locked');
-    expect(f.memory.size).toBe(1);
-    expect(f.queue.enqueue([move(50)])).toBe(false);
-    send.mockImplementation(async (ops: Edit[]) => ops.map((op) => ack(op)));
-    f.queue.retry();
-    await settle();
-    expect(f.display()[0].position.x).toBe(40);
-    f.queue.enqueue([move(60)]);
-    await settle();
-    f.queue.discard();
     expect(f.memory.size).toBe(0);
+    send.mockImplementation(async (ops: Edit[]) => ops.map((op) => ack(op)));
+    expect(f.queue.enqueue([move(50)])).toBe(true);
+    await settle();
+    expect(send.mock.calls.map((call) => call[0][0].opId)).toEqual(['move-40', 'move-50']);
+    expect(f.display()[0].position.x).toBe(50);
+    expect(f.status()).toBe('saved');
     f.queue.stop();
   });
   it('refuses new offline writes and keeps earlier operations durable until reconnect', async () => {
@@ -238,6 +237,170 @@ describe('durable canvas edit queue', () => {
   });
 });
 
+const text = (objectId: string, value: string, opId = `text-${objectId}-${value.replace(/\W/g, '')}`): Edit => ({
+  kind: 'update',
+  objectId,
+  opId,
+  expectedRevision: 1,
+  patch: { content: { type: 'text', text: value } },
+});
+const arrangeRequest = {
+  tool: 'canvas_arrange' as const,
+  arguments: { action: 'order' as const, targetIds: ['note'], placement: 'back' as const },
+};
+function controlled<T>() {
+  let resolve: (value: T) => void = () => {};
+  let reject: (error: unknown) => void = () => {};
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+describe('a refusal discards only the refused submission', () => {
+  it('still sends a text draft queued behind a refused compound, in order, and ends Saved', async () => {
+    const command = controlled<{ records: Acknowledged[]; sequences: number[] }>();
+    const send = vi.fn(async (ops: Edit[]) => ops.map((op, i) => ack(op, 10 + i)));
+    const refused = vi.fn();
+    const f = fixture(send, new Map(), () => command.promise, refused);
+    expect(f.queue.enqueueCommand(arrangeRequest)).toBe(true);
+    expect(f.queue.enqueue([text('note', 'Typed while dragging')])).toBe(true);
+    command.reject(new Refused('Locked', [{ code: 'LOCKED', objectId: 'note', message: 'Locked' }]));
+    await settle();
+    await settle();
+    expect(refused).toHaveBeenCalledTimes(1);
+    expect(refused.mock.calls[0][0]).toHaveLength(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0].map((op: Edit) => op.opId)).toEqual(['text-note-Typedwhiledragging']);
+    expect(f.queue.holds('text-note-Typedwhiledragging')).toBe(false);
+    expect(f.status()).toBe('saved');
+    expect(f.memory.size).toBe(0);
+    expect(f.queue.enqueue([text('note', 'More')])).toBe(true);
+    await settle();
+    expect(send).toHaveBeenCalledTimes(2);
+    f.queue.stop();
+  });
+  it('survives two refusals in a row and still sends the later edit', async () => {
+    const command = controlled<{ records: Acknowledged[]; sequences: number[] }>();
+    const send = vi.fn(async (ops: Edit[]) => {
+      if (ops[0].objectId === 'first')
+        throw new Refused('Changed', [{ code: 'REVISION', objectId: 'first', message: 'Object revision changed' }]);
+      return ops.map((op) => ack(op, 20));
+    });
+    const f = fixture(send, new Map(), () => command.promise);
+    f.queue.enqueueCommand(arrangeRequest);
+    f.queue.enqueue([text('first', 'A')]);
+    f.queue.enqueue([text('second', 'B')]);
+    command.reject(new Refused('Locked', [{ code: 'LOCKED', objectId: 'note', message: 'Locked' }]));
+    for (let i = 0; i < 4; i++) await settle();
+    expect(send.mock.calls.map((call) => call[0][0].objectId)).toEqual(['first', 'second']);
+    expect(f.status()).toBe('saved');
+    expect(f.memory.size).toBe(0);
+    f.queue.stop();
+  });
+  it('keeps three text edits to different objects through a refusal that lands while offline', async () => {
+    const command = controlled<{ records: Acknowledged[]; sequences: number[] }>();
+    const send = vi.fn(async (ops: Edit[]) => ops.map((op) => ack(op, 30)));
+    const f = fixture(send, new Map(), () => command.promise);
+    f.queue.enqueueCommand(arrangeRequest);
+    for (const id of ['one', 'two', 'three']) f.queue.enqueue([text(id, id)]);
+    f.queue.online(false);
+    command.reject(new Refused('Locked', [{ code: 'LOCKED', objectId: 'note', message: 'Locked' }]));
+    await settle();
+    expect(send).not.toHaveBeenCalled();
+    expect(f.memory.get('drafts')).toContain('text-three-three');
+    f.queue.online(true);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(send.mock.calls.map((call) => call[0].map((op: Edit) => op.objectId))).toEqual([
+      ['one'],
+      ['two'],
+      ['three'],
+    ]);
+    expect(f.status()).toBe('saved');
+    expect(f.memory.size).toBe(0);
+    f.queue.stop();
+  });
+  it('drops later edits that depend on an object the refused batch would have created', async () => {
+    const send = vi.fn(async (ops: Edit[]) => {
+      if (ops[0].kind === 'create') throw new Refused('No', [{ code: 'INVALID', message: 'No' }]);
+      return ops.map((op) => ack(op, 40));
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = fixture(async (ops, since) => {
+      await gate;
+      return send(ops, since);
+    });
+    f.queue.enqueue([
+      {
+        kind: 'create',
+        opId: 'make-x',
+        objectId: 'x',
+        patch: {
+          parentId: null,
+          order: 0,
+          position: { x: 0, y: 0 },
+          rotation: 0,
+          lock: null,
+          content: { type: 'text', text: '' },
+        },
+      },
+    ]);
+    f.queue.enqueue([text('x', 'Depends')]);
+    f.queue.enqueue([text('note', 'Independent')]);
+    release();
+    for (let i = 0; i < 4; i++) await settle();
+    expect(send.mock.calls.map((call) => call[0][0].opId)).toEqual(['make-x', 'text-note-Independent']);
+    f.queue.stop();
+  });
+});
+
+describe('compound acknowledgement cost', () => {
+  it('acknowledges a compound against 5,000 operations without requesting the whole log', async () => {
+    const { sendCommand } = await import('../packages/canvas/src/edit-queue.js');
+    const record = (seq: number) => ({ ...ack(move(seq), seq), opId: `op-${seq}` });
+    const urls: string[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      urls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (init?.method === 'POST')
+        return new Response(JSON.stringify({ success: true, data: { seq: 5001, sequences: [5001] } }));
+      const since = Number(new URL(url, 'http://canvas.test').searchParams.get('since'));
+      const operations = Array.from({ length: 5001 - since }, (_, i) => record(since + 1 + i)).slice(0, 500);
+      return new Response(JSON.stringify({ success: true, data: { seq: 5001, operations } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await sendCommand(
+        (path) => path,
+        'ws',
+        { ...arrangeRequest, requestId: crypto.randomUUID() },
+        5000
+      );
+      expect(urls.some((url) => url.includes('since=0'))).toBe(false);
+      expect(urls.filter((url) => url.startsWith('GET'))).toEqual(['GET /api/canvas/ws/ops?since=5000']);
+      expect(result.sequences).toEqual([5001]);
+      expect(result.records.map((op) => op.seq)).toEqual([5001]);
+      urls.length = 0;
+      const noop = vi.fn(
+        async () => new Response(JSON.stringify({ success: true, data: { seq: 5001, sequences: [], noop: true } }))
+      );
+      vi.stubGlobal('fetch', noop);
+      const quiet = await sendCommand(
+        (path) => path,
+        'ws',
+        { ...arrangeRequest, requestId: crypto.randomUUID() },
+        5001
+      );
+      expect(quiet).toEqual({ records: [], sequences: [] });
+      expect(noop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('server sequence history', () => {
   it('selects acknowledged sequences and moves returned undo sequences to redo', () => {
     const undo = new CanvasUndo();
@@ -247,6 +410,13 @@ describe('server sequence history', () => {
     expect(undo.prepare('redo')).toEqual({ tool: 'canvas_history', arguments: { action: 'redo', sequences: [4] } });
     undo.refused();
     expect(undo.available('redo')).toBe(true);
+  });
+  it('releases a pending history step when the server answers with a no-op', () => {
+    const undo = new CanvasUndo();
+    undo.acknowledge([ack(move(10), 2)], 'note');
+    undo.prepare('undo');
+    undo.acknowledge([], null);
+    expect(undo.available('undo')).toBe(true);
   });
 });
 
@@ -362,5 +532,53 @@ describe('history through the real server command validator', () => {
       )
     ).toThrow();
     expect(later.state.objects.child.deletedAt).toBeNull();
+  });
+});
+
+describe('per-viewer canvas storage', () => {
+  const memoryStorage = (entries: Record<string, string>) => {
+    const map = new Map(Object.entries(entries));
+    return {
+      map,
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => void map.set(key, value),
+      removeItem: (key: string) => void map.delete(key),
+    };
+  };
+  it('scopes queue, drafts and clipboard by viewer, and never shares a clipboard between viewers', async () => {
+    const { canvasStorageKeys } = await import('../packages/canvas/src/storage-keys.js');
+    const a = canvasStorageKeys('user-a', 'ws');
+    const b = canvasStorageKeys('user-b', 'ws');
+    expect(new Set([...Object.values(a), ...Object.values(b)]).size).toBe(6);
+    expect(canvasStorageKeys('user-a', 'other').clipboard).toBe(a.clipboard);
+    expect(a.edits).not.toBe(canvasStorageKeys('user-a', 'other').edits);
+  });
+  it('discards unscoped entries in multi-user mode and adopts them once in single-user mode', async () => {
+    const { canvasStorageKeys, retireUnscopedKeys, SINGLE_USER_VIEWER } =
+      await import('../packages/canvas/src/storage-keys.js');
+    const legacy = {
+      'codeman:canvas:ws:edits': '{"operations":[]}',
+      'codeman:canvas:ws:drafts': '{}',
+      'codeman:canvas:clipboard': '[]',
+    };
+    const shared = memoryStorage(legacy);
+    retireUnscopedKeys(shared, 'user-b', 'ws');
+    expect([...shared.map.keys()]).toEqual([]);
+    const single = memoryStorage(legacy);
+    retireUnscopedKeys(single, SINGLE_USER_VIEWER, 'ws');
+    const keys = canvasStorageKeys(SINGLE_USER_VIEWER, 'ws');
+    expect(Object.fromEntries(single.map)).toEqual({
+      [keys.edits]: legacy['codeman:canvas:ws:edits'],
+      [keys.drafts]: legacy['codeman:canvas:ws:drafts'],
+      [keys.clipboard]: legacy['codeman:canvas:clipboard'],
+    });
+    single.map.set('codeman:canvas:clipboard', '[{"stale":true}]');
+    retireUnscopedKeys(single, SINGLE_USER_VIEWER, 'ws');
+    expect(single.map.get(keys.clipboard)).toBe('[]');
+  });
+  it('refuses a clipboard over one megabyte', async () => {
+    const { clipboardTooLarge, MAX_CLIPBOARD_BYTES } = await import('../packages/canvas/src/storage-keys.js');
+    expect(clipboardTooLarge('x'.repeat(MAX_CLIPBOARD_BYTES))).toBe(false);
+    expect(clipboardTooLarge('x'.repeat(MAX_CLIPBOARD_BYTES + 1))).toBe(true);
   });
 });

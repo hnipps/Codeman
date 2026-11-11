@@ -27,6 +27,39 @@ export const viewOperationKinds = new Set([
   'remove-comment',
   'revert',
 ]);
+const PageSchema = z
+  .object({
+    seq: z.number().int().nonnegative().optional(),
+    operations: z.array(z.unknown()),
+    more: z.boolean().optional(),
+    next: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+/** A long catch-up is a refetch of the snapshot, not an unbounded walk of history. */
+const MAX_HISTORY_PAGES = 200;
+/** Follows the `/ops` cursor from `since` to the end and returns one combined answer. */
+export async function fetchHistory(
+  url: (path: string) => string,
+  workspaceId: string,
+  since: number,
+  signal?: AbortSignal
+): Promise<{ seq: number; operations: unknown[] }> {
+  const operations: unknown[] = [];
+  let cursor = since;
+  for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
+    const response = await fetch(url(`/api/canvas/${workspaceId}/ops?since=${cursor}`), { signal });
+    if (!response.ok) throw new Error('History request failed');
+    const data = envelope(PageSchema).parse(await response.json()).data;
+    operations.push(...data.operations);
+    if (data.more && data.next !== undefined && data.next > cursor) {
+      cursor = data.next;
+      continue;
+    }
+    if (data.seq === undefined) throw new Error('History page without a sequence');
+    return { seq: data.seq, operations };
+  }
+  throw new Error('History is too long to replay');
+}
 export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snapshot; unreadable: boolean } {
   const data = OpsSchema.parse(payload);
   const objects = new Map(state.objects.map((o) => [o.id, o]));
@@ -116,15 +149,14 @@ export class CanvasSync {
     this.pending = this.pending
       .then(async () => {
         if (this.stopped) return;
-        const response = await fetch(this.url(`/api/canvas/${this.workspaceId}/ops?since=${this.state.seq}`), {
-          signal: this.abort.signal,
-        });
-        if (!response.ok) throw new Error('Reconnect failed');
-        const payload = envelope(z.unknown()).parse(await response.json()).data;
         let replay;
         try {
-          replay = replayCatchUp(this.state, payload);
+          replay = replayCatchUp(
+            this.state,
+            await fetchHistory(this.url, this.workspaceId, this.state.seq, this.abort.signal)
+          );
         } catch {
+          if (this.abort.signal.aborted) return;
           await this.snapshot();
         }
         if (replay) {

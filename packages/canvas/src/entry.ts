@@ -505,6 +505,7 @@ board.addEventListener(
 const editor = new DesktopEditor({
   url,
   workspace: workspaceId,
+  viewer: document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single',
   mobile,
   view: () => state,
   objects: () => objects,

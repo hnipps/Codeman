@@ -5,6 +5,7 @@ import type { toolSchemas } from '../../../src/canvas/commands.js';
 import type { Command } from '../../../src/canvas/operations.js';
 import { SnapshotSchema, ViewObjectSchema, type Snapshot, type ViewObject } from './model.js';
 import { reparentPosition, worldOrigin } from './drag.js';
+import { fetchHistory } from './sync.js';
 const fields = { opId: IdSchema, objectId: IdSchema, expectedRevision: z.number().int().nonnegative().optional() };
 export const EditSchema = z.discriminatedUnion('kind', [
   z
@@ -64,6 +65,7 @@ const RequestSchema = z.object({
   requestId: z.uuid(),
 });
 export type QueuedRequest = z.infer<typeof RequestSchema>;
+export type CommandAcknowledgement = { records: Acknowledged[]; sequences: number[] };
 const StoredSchema = z.object({
   requests: z.record(z.string(), RequestSchema).default({}),
   operations: z.array(EditSchema),
@@ -91,7 +93,10 @@ export class EditQueue {
   private base: Snapshot = { seq: 0, objects: [] };
   private pending: Edit[] = [];
   private batchSizes: number[] = [];
-  private refusal: string | null = null;
+  /** Storage trouble that stops editing until the user discards. */
+  private blocker: string | null = null;
+  /** The last server refusal. Informational only: the refused submission is already gone from the queue. */
+  private notice: string | null = null;
   private flight = false;
   private connected = false;
   private failure = false;
@@ -102,7 +107,7 @@ export class EditQueue {
       storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
       key: string;
       send: (operations: Edit[], since: number) => Promise<Acknowledged[]>;
-      sendCommand?: (request: QueuedRequest, since: number) => Promise<Acknowledged[]>;
+      sendCommand?: (request: QueuedRequest, since: number) => Promise<CommandAcknowledgement>;
       display: (objects: ViewObject[]) => void;
       status: (status: QueueStatus, message: string) => void;
       acknowledged: (operations: Acknowledged[]) => void;
@@ -115,7 +120,7 @@ export class EditQueue {
     try {
       raw = options.storage.getItem(options.key);
     } catch {
-      this.refusal = 'Draft storage is unavailable. Editing is paused until storage is available.';
+      this.blocker = 'Draft storage is unavailable. Editing is paused until storage is available.';
     }
     if (raw) {
       try {
@@ -128,9 +133,13 @@ export class EditQueue {
             : this.pending.length
               ? [this.pending.length]
               : [];
-        this.refusal = stored.refusal;
+        // Written by an earlier build: a stored refusal names the head batch, which the server already refused.
+        if (stored.refusal && this.batchSizes.length) {
+          this.notice = stored.refusal;
+          this.dropRefused();
+        }
       } catch {
-        this.refusal = 'Saved edits could not be read. Discard them before editing.';
+        this.blocker = 'Saved edits could not be read. Discard them before editing.';
       }
     }
   }
@@ -151,13 +160,14 @@ export class EditQueue {
   }
   enqueue(operations: Edit[]): boolean {
     if (!operations.length) return true;
-    if (!this.connected || this.refusal) {
+    if (!this.connected || this.blocker) {
       this.options.status(
         this.connected ? 'refused' : 'offline',
-        this.refusal ?? 'Offline. Reconnect before making a new edit.'
+        this.blocker ?? 'Offline. Reconnect before making a new edit.'
       );
       return false;
     }
+    this.notice = null;
     const edits = z
       .array(EditSchema)
       .max(1000)
@@ -183,7 +193,7 @@ export class EditQueue {
     return accepted;
   }
   retry(): void {
-    this.refusal = null;
+    this.notice = null;
     this.failure = false;
     this.persist();
     this.render();
@@ -194,7 +204,8 @@ export class EditQueue {
     this.pending = [];
     this.requests = {};
     this.batchSizes = [];
-    this.refusal = null;
+    this.blocker = null;
+    this.notice = null;
     this.failure = false;
     this.persist();
     this.render();
@@ -202,14 +213,58 @@ export class EditQueue {
   get busy(): boolean {
     return this.pending.length > 0 || this.flight;
   }
+  get blocked(): boolean {
+    return this.blocker !== null;
+  }
+  /** Whether an operation is still queued or in flight. A draft's sent marker is only valid while this holds. */
+  holds(opId: string): boolean {
+    return this.pending.some((op) => op.opId === opId);
+  }
+  /**
+   * Removes the head batch and every later batch that provably depends on it: an edit of, or under, an object
+   * the dropped batches would have created. Unrelated queued edits stay, in order.
+   */
+  private dropRefused(): Edit[] {
+    const batches: Edit[][] = [];
+    let offset = 0;
+    for (const size of this.batchSizes) {
+      batches.push(this.pending.slice(offset, offset + size));
+      offset += size;
+    }
+    const [head = [], ...rest] = batches;
+    const dropped = [...head];
+    const created = new Set(head.filter((op) => op.kind === 'create').map((op) => op.objectId));
+    delete this.requests[head[0]?.opId ?? ''];
+    const kept: Edit[][] = [];
+    for (const batch of rest) {
+      const request = this.requests[batch[0].opId];
+      const mentions = request ? JSON.stringify(request.arguments) : '';
+      const depends = batch.some(
+        (op) =>
+          (op.kind !== 'create' && created.has(op.objectId)) ||
+          ((op.kind === 'create' || op.kind === 'reparent') && created.has(op.patch.parentId ?? '')) ||
+          [...created].some((id) => mentions.includes(JSON.stringify(id)))
+      );
+      if (!depends) {
+        kept.push(batch);
+        continue;
+      }
+      dropped.push(...batch);
+      delete this.requests[batch[0].opId];
+      for (const op of batch) if (op.kind === 'create') created.add(op.objectId);
+    }
+    this.pending = kept.flat();
+    this.batchSizes = kept.map((batch) => batch.length);
+    return dropped;
+  }
   private persist(): boolean {
     try {
-      if (this.pending.length || this.refusal)
+      if (this.pending.length)
         this.options.storage.setItem(
           this.options.key,
           JSON.stringify({
             operations: this.pending,
-            refusal: this.refusal,
+            refusal: null,
             batchSizes: this.batchSizes,
             requests: this.requests,
           })
@@ -222,20 +277,22 @@ export class EditQueue {
   }
   private render(): void {
     this.options.display(
-      this.refusal ? this.base.objects.filter((o) => o.deletedAt === null) : optimistic(this.base.objects, this.pending)
+      this.blocker ? this.base.objects.filter((o) => o.deletedAt === null) : optimistic(this.base.objects, this.pending)
     );
     const status: QueueStatus = !this.connected
       ? 'offline'
-      : this.refusal
+      : this.blocker
         ? 'refused'
         : this.failure
           ? 'failed'
           : this.pending.length
             ? 'saving'
-            : 'saved';
+            : this.notice
+              ? 'refused'
+              : 'saved';
     this.options.status(
       status,
-      this.refusal ??
+      (status === 'refused' ? (this.blocker ?? this.notice) : null) ??
         (status === 'offline'
           ? 'Offline. Pending edits and drafts are retained.'
           : status === 'failed'
@@ -246,16 +303,26 @@ export class EditQueue {
     );
   }
   private async flush(): Promise<void> {
-    if (this.stopped || this.flight || !this.connected || this.refusal || !this.pending.length) return;
+    if (this.stopped || this.flight || !this.connected || this.blocker || !this.pending.length) return;
     this.flight = true;
     this.failure = false;
     this.options.status('saving', 'Saving…');
     const batch = this.pending.slice(0, this.batchSizes[0] ?? this.pending.length);
     try {
       const request = this.requests[batch[0].opId];
-      const acknowledged = request ? await this.sendCommand(request) : await this.options.send(batch, this.base.seq);
-      const ids = new Set(acknowledged.map((op) => op.opId));
-      if (!request && !batch.every((op) => ids.has(op.opId))) throw new Error('Acknowledgement missing');
+      let acknowledged: Acknowledged[];
+      let mine: Acknowledged[];
+      if (request) {
+        const result = await this.sendCommand(request);
+        const wanted = new Set(result.sequences);
+        acknowledged = result.records;
+        mine = acknowledged.filter((op) => wanted.has(op.seq));
+      } else {
+        acknowledged = await this.options.send(batch, this.base.seq);
+        const ids = new Set(acknowledged.map((op) => op.opId));
+        if (!batch.every((op) => ids.has(op.opId))) throw new Error('Acknowledgement missing');
+        mine = acknowledged.filter((op) => batch.some((edit) => edit.opId === op.opId));
+      }
       const objects = new Map(this.base.objects.map((o) => [o.id, o]));
       for (const op of acknowledged) {
         if (op.seq > this.base.seq) for (const change of op.prev) objects.set(change.objectId, change.after);
@@ -265,14 +332,15 @@ export class EditQueue {
       this.pending = this.pending.filter((op) => !batchIds.has(op.opId));
       this.batchSizes.shift();
       delete this.requests[batch[0].opId];
-      this.options.acknowledged(
-        request ? acknowledged : acknowledged.filter((op) => batch.some((edit) => edit.opId === op.opId))
-      );
+      this.notice = null;
+      this.options.acknowledged(mine);
     } catch (error) {
       if (error instanceof Refused) {
         const request = this.requests[batch[0].opId];
-        this.refusal = this.options.describe?.(batch, request, error) ?? error.message;
-        this.options.refused?.(batch, this.refusal, error.reasons);
+        const notice = this.options.describe?.(batch, request, error) ?? error.message;
+        const dropped = this.dropRefused();
+        this.notice = notice;
+        this.options.refused?.(dropped, notice, error.reasons);
       } else this.failure = true;
     } finally {
       this.flight = false;
@@ -285,7 +353,7 @@ export class EditQueue {
         }, 1500);
     }
   }
-  private sendCommand(request: QueuedRequest): Promise<Acknowledged[]> {
+  private sendCommand(request: QueuedRequest): Promise<CommandAcknowledgement> {
     if (!this.options.sendCommand) throw new Error('Command transport unavailable');
     return this.options.sendCommand(request, this.base.seq);
   }
@@ -339,6 +407,17 @@ export function optimistic(source: ViewObject[], operations: Edit[]): ViewObject
   }
   return [...objects.values()].filter((o) => o.deletedAt === null);
 }
+const parseAcks = (records: unknown[]): Acknowledged[] =>
+  records.flatMap((record) => {
+    const parsed = AckSchema.safeParse(record);
+    return parsed.success ? [parsed.data] : [];
+  });
+const WriteSchema = z.object({
+  data: z.object({ seq: z.number(), sequences: z.array(z.number()).optional(), noop: z.boolean().optional() }),
+});
+/** Catch up from the earlier of the client's sequence and just before what this write produced. */
+const catchUpFrom = (since: number, sequences: number[]): number =>
+  Math.max(0, Math.min(since, ...sequences.map((seq) => seq - 1)));
 export async function sendEdits(
   url: (path: string) => string,
   workspace: string,
@@ -356,19 +435,9 @@ export async function sendEdits(
     if (response.status >= 400 && response.status < 500) throw refusedFrom(reason.success ? reason.data : null);
     throw new Error('Save failed');
   }
-  const history = await fetch(url(`/api/canvas/${workspace}/ops?since=${since}`));
-  if (!history.ok) throw new Error('Acknowledgement failed');
-  const schema = z.object({ data: z.object({ operations: z.array(z.unknown()) }) });
-  const parseHistory = (payload: unknown): Acknowledged[] =>
-    schema.parse(payload).data.operations.flatMap((record) => {
-      const parsed = AckSchema.safeParse(record);
-      return parsed.success ? [parsed.data] : [];
-    });
-  const acknowledged = parseHistory(await history.json());
-  if (operations.every((edit) => acknowledged.some((op) => op.opId === edit.opId))) return acknowledged;
-  const full = await fetch(url(`/api/canvas/${workspace}/ops?since=0`));
-  if (!full.ok) throw new Error('Acknowledgement recovery failed');
-  return parseHistory(await full.json());
+  const written = WriteSchema.parse(payload).data;
+  const history = await fetchHistory(url, workspace, catchUpFrom(since, written.sequences ?? []));
+  return parseAcks(history.operations);
 }
 function refusedFrom(payload: z.infer<typeof RefusalSchema> | null): Refused {
   if (!payload) return new Refused('Edit refused by the server.');
@@ -380,8 +449,9 @@ export const parseSnapshot = (payload: unknown): Snapshot => z.object({ data: Sn
 export async function sendCommand(
   url: (path: string) => string,
   workspace: string,
-  request: QueuedRequest
-): Promise<Acknowledged[]> {
+  request: QueuedRequest,
+  since: number
+): Promise<CommandAcknowledgement> {
   const response = await fetch(url(`/api/canvas/${workspace}/command`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -393,16 +463,11 @@ export async function sendCommand(
     const refused = RefusalSchema.safeParse(payload);
     throw refusedFrom(refused.success ? refused.data : null);
   }
-  const result = z.object({ data: z.object({ sequences: z.array(z.number()) }) }).parse(payload).data;
-  const history = await fetch(url(`/api/canvas/${workspace}/ops?since=0`));
-  if (!history.ok) throw new Error('Command acknowledgement failed');
-  const records = z.object({ data: z.object({ operations: z.array(z.unknown()) }) }).parse(await history.json())
-    .data.operations;
-  const wanted = new Set(result.sequences);
-  const acknowledged = records.flatMap((record) => {
-    const parsed = AckSchema.safeParse(record);
-    return parsed.success && wanted.has(parsed.data.seq) ? [parsed.data] : [];
-  });
-  if (acknowledged.length !== wanted.size) throw new Error('Command acknowledgement missing');
-  return acknowledged;
+  const sequences = WriteSchema.parse(payload).data.sequences ?? [];
+  if (!sequences.length) return { records: [], sequences: [] };
+  const history = await fetchHistory(url, workspace, catchUpFrom(since, sequences));
+  const records = parseAcks(history.operations);
+  const found = new Set(records.map((op) => op.seq));
+  if (!sequences.every((seq) => found.has(seq))) throw new Error('Command acknowledgement missing');
+  return { records, sequences };
 }
