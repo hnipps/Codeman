@@ -1,0 +1,104 @@
+{
+  "kind": "Ambient assistant design prototype; voice, provider catalog and background runs are not connected to live services",
+  "views": [
+    {
+      "name": "outline-board",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "group-context",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "canvas-hidden",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "conversation-context",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "keyboard-reference",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "background-agents",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "voice-mode",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "provider-model",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "desktop-focus",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "phone-focus",
+      "width": 390,
+      "height": 844,
+      "scrollWidth": 390,
+      "scrollHeight": 844,
+      "dialogs": 0,
+      "errors": []
+    },
+    {
+      "name": "phone-outline",
+      "width": 390,
+      "height": 844,
+      "scrollWidth": 390,
+      "scrollHeight": 844,
+      "dialogs": 0,
+      "errors": []
+    }
+  ]
+}

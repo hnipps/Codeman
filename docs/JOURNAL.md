@@ -2,6 +2,90 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Run the canvas program with Codex, Grok and Copilot workers
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/initial-version-plan.md`
+**Why:** The owner asked the coordinator to build the shaped canvas by directing Codex, Grok and Copilot worker sessions and to keep its own context for judgment.
+**Links:** [Initial version plan](agentic-canvas/initial-version-plan.md), [Canvas surface brief](../.impeccable/surfaces/src-web-public-canvas-html.md)
+
+Each PR has three roles, each held by a different CLI: one owner builds in its
+own worktree, one verifier runs the gates, the live lanes and the perf probe
+from the plan's boot recipe, and one auditor reads the diff and distrusts the
+PR body. This replaces the plan's ten same-model lanes and its swarm. The lane
+list, the perf rules, the review gate for PC3 to PC6 and the coordinator's
+authority to land and deploy stay as the plan states them. The coordinator
+writes each task packet, judges findings and owns every push, merge and deploy.
+
+## 2026-11-10 - Require canvas foundations and agent parity
+
+**Type:** intent-refinement
+**Touches:** `PRODUCT.md`, `docs/agentic-canvas/`
+**Why:** The owner approved the ambient design and clarified selectable group context, FigJam-style foundational controls and agent-native parity.
+**Links:** [Canvas foundations](agentic-canvas/canvas-foundations.md), [Design intent](../intent/2026-11-10-canvas-design.md)
+
+The prototype now lets Design exploration be selected from its canvas heading
+or outline and added as one named context reference, with explicit descendants
+and overlapping targets deduplicated. The production scope explicitly includes
+selection lassos, grouping/ungrouping, nested groups, resize, lock and related
+geometry/layout/clipboard/history controls. Decorative workshop elements remain
+excluded. Each human operation must have structured agent control and readable
+state through the same validated domain path. Prototype scope stays narrow;
+its current controls are not the complete build checklist.
+
+## 2026-11-10 - Replace chat cards with an ambient assistant
+
+**Type:** intent-refinement
+**Touches:** `PRODUCT.md`, `docs/agentic-canvas/`
+**Why:** The owner rejected floating chat and modal context picking, favoring a thin dismissible right rail inspired by HeyClicky's ambient interaction.
+**Links:** [Current design brief](agentic-canvas/canvas-ui-ux-brief.md), [Interactive design prototype](agentic-canvas/design/ambient-assistant.html)
+
+The assistant collapses to zero without moving the canvas. Direct selection and
+a hold-Q lasso add object references to the next request; cancellation changes
+nothing. Help, comments and task details use the same nonmodal rail. Voice,
+background agents and configured provider/model selection are explicit scope,
+with separate dictation/conversation modes and isolated child-task identity.
+The plan now names PC9–PC12 for this work. The browser prototype exercises UI
+and gesture behavior only; audio, model calls and agent sessions remain
+unconnected. These decisions supersede the prior chat-card interpretation.
+
+## 2026-11-10 - Make conversations part of the canvas workspace
+
+**Type:** intent-refinement
+**Touches:** `PRODUCT.md`, `docs/agentic-canvas/`
+**Why:** The owner accepted the visual direction and clarified that the canvas is the primary agentic interface, with conversations and comment threads inside it.
+**Links:** [Revised UI/UX brief](agentic-canvas/canvas-ui-ux-brief.md), [Design intent](../intent/2026-11-10-canvas-design.md)
+
+The navbar is removed, search moves into the outline and persistent system labels
+leave the board. Conversations become movable objects linked to real sessions.
+Per-message attachments guide attention while the whole authorized canvas stays
+available; removing a reference does not erase previously supplied context.
+Ordinary comments stay ordinary, and Ask agent explicitly invokes work that
+replies to its originating thread. The same session can open as a conversation.
+Users and agents can reshape the workspace and initiate app changes inside it,
+through the existing self-building release path. This supersedes the first
+brief's exclusion of native chat and agent comments. The revised plan adds that
+work explicitly; static studies are not evidence of a working session adapter.
+
+## 2026-11-10 - Shape the initial canvas before implementation
+
+**Type:** intent-refinement
+**Touches:** `PRODUCT.md`, `docs/agentic-canvas/`
+**Why:** The owner approved the plan, supplied spatial-canvas and Opsdeck references, requested dark mode and emphasized keyboard shortcuts.
+**Links:** [Canvas design intent](../intent/2026-11-10-canvas-design.md), [UI/UX brief](agentic-canvas/canvas-ui-ux-brief.md)
+
+The owner delegated orchestration, design choices, verified PR landing and
+supervised deployment for this program. This supersedes its older human-only
+prompt and per-PR approval restrictions; deployment and data protections remain.
+The design compares three compositions and selects an open board with a
+collapsible outline, preserving explicit context and stable keyboard order.
+Object selection and keyboard focus are separate. Focused plain-text reading
+uses an overlay on desktop and a commenting sheet on the phone. Offline permits
+reading but no new writes; existing pending drafts remain visible and recoverable.
+Ordinary layout dragging preserves parent membership, while named targets make
+reparenting explicit. The implementation checklist was reconciled with those
+decisions. Static studies and contrast calculations are design evidence, not
+runtime, durability or performance verification.
 ## 2026-11-10 - Run real-iPhone tests as one scenario
 
 **Type:** propagated-discovery

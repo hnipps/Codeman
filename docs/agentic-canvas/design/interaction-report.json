@@ -1,0 +1,23 @@
+{
+  "kind": "Interactive design prototype checks through authenticated Codeman preview; no live model, microphone or agent assertions",
+  "checks": [
+    "Assistant collapses to zero and reopens without moving the canvas",
+    "Typing shortcut letters in the composer does not invoke canvas commands",
+    "Single/multi-selection adds actual object references to the composer",
+    "Hold Q and circle objects adds the enclosed object IDs on release",
+    "Escape cancels lasso without changing context",
+    "Nonmodal cheatsheet, provider/model controls and example background task snapshot work",
+    "Example background task can be inspected and cancelled",
+    "Voice/dictation preview is distinct and does not claim microphone capture",
+    "Help filters commands, summons with visible-view focus, and restores composer focus without a modal",
+    "Disabling letter shortcuts preserves arrows, Space selection and valid selectable-object semantics",
+    "Early Q release and blur cancel partial lasso without committing context",
+    "Pan and Fit work; object creation is visibly disconnected rather than a dead active control",
+    "Canvas group heading selects its full bounds and attaches one named reference with eight explicit descendants",
+    "Attaching a parent replaces overlapping child references; adding a covered child does not duplicate context",
+    "Mixed parent/child multi-selection normalizes to one group context reference",
+    "Outline selection attaches the same group; example task resolves the group and each child exactly once",
+    "Keyboard navigation and object opening recognize the group instead of showing an unrelated element"
+  ],
+  "errors": []
+}

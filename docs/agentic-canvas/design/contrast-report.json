@@ -1,0 +1,129 @@
+{
+  "method": "WCAG relative luminance; opaque sRGB colors. Proposal token checks only; not an audit of rendered controls or all sketch pixels.",
+  "checks": [
+    {
+      "role": "text",
+      "foreground": "#f2f1ed",
+      "background": "#16181b",
+      "minimum": 4.5,
+      "ratio": 15.74,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#f2f1ed",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 14.3,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#f2f1ed",
+      "background": "#282c32",
+      "minimum": 4.5,
+      "ratio": 12.42,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#b2b5bc",
+      "background": "#16181b",
+      "minimum": 4.5,
+      "ratio": 8.66,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#b2b5bc",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 7.87,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#b2b5bc",
+      "background": "#282c32",
+      "minimum": 4.5,
+      "ratio": 6.83,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#979da6",
+      "background": "#16181b",
+      "minimum": 4.5,
+      "ratio": 6.51,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#979da6",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 5.92,
+      "passes": true
+    },
+    {
+      "role": "text",
+      "foreground": "#979da6",
+      "background": "#282c32",
+      "minimum": 4.5,
+      "ratio": 5.14,
+      "passes": true
+    },
+    {
+      "role": "semantic text or focus",
+      "foreground": "#f58a45",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 6.62,
+      "passes": true
+    },
+    {
+      "role": "semantic text or focus",
+      "foreground": "#82c5a0",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 8.04,
+      "passes": true
+    },
+    {
+      "role": "semantic text or focus",
+      "foreground": "#e8b66b",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 8.72,
+      "passes": true
+    },
+    {
+      "role": "semantic text or focus",
+      "foreground": "#ff9d9d",
+      "background": "#1e2125",
+      "minimum": 4.5,
+      "ratio": 8.13,
+      "passes": true
+    },
+    {
+      "role": "action label",
+      "foreground": "#16181b",
+      "background": "#f58a45",
+      "minimum": 4.5,
+      "ratio": 7.29,
+      "passes": true
+    },
+    {
+      "role": "selection indicator",
+      "foreground": "#979da6",
+      "background": "#16181b",
+      "minimum": 3,
+      "ratio": 6.51,
+      "passes": true
+    }
+  ],
+  "notes": [
+    "#353940 is a decorative divider, not a sufficient focus or control-boundary indicator.",
+    "Images, embeds, opacity, hover states, control boundaries and light mode require implementation checks."
+  ]
+}
