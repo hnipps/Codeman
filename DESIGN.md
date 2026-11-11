@@ -43,3 +43,5 @@ text and explicit recovery actions. Phone layouts omit all editing controls.
 `test/canvas-edit.browser.test.ts` captures both themes at 1440px into
 `pr/media/pc4-review-<timestamp>-<theme>-<state>.png`. Independent design approval
 remains with the coordinator.
+
+Selection chrome clears content by 6 screen pixels at every zoom. Multi-selection keeps member corner marks and one combined boundary without handles. Amber focus clears the selection by another 3px, with 4px object and 6px container corners. Undo/redo use the dock's icon style; selection actions center 8px above the dock. Add centers on its button at the same 8px gap, uses the dock pressed state and supports arrows/Escape. Reader values use primary text; conflicts name the change writer when known and offer “Keep my draft” and “Use saved text”.

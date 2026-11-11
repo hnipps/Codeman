@@ -21,7 +21,13 @@ const btn = (id: string): HTMLButtonElement => {
   if (!(el instanceof HTMLButtonElement)) throw new Error(`Expected button: ${id}`);
   return el;
 };
-const DraftSchema = z.object({ base: z.string(), value: z.string(), revision: z.number(), conflict: z.boolean() });
+const DraftSchema = z.object({
+  base: z.string(),
+  value: z.string(),
+  revision: z.number(),
+  conflict: z.boolean(),
+  conflictAuthor: z.string().optional(),
+});
 type Draft = z.infer<typeof DraftSchema> & { sent?: string };
 export class DesktopEditor {
   readonly queue: EditQueue;
@@ -146,8 +152,7 @@ export class DesktopEditor {
     });
     btn('addTool').onclick = () => {
       if (!this.available()) return;
-      node('addMenu').hidden = !node('addMenu').hidden;
-      btn('addTool').setAttribute('aria-expanded', String(!node('addMenu').hidden));
+      this.showAddMenu(node('addMenu').hidden);
       if (!node('addMenu').hidden) btn('addText').focus();
     };
     for (const [id, type] of [
@@ -220,7 +225,7 @@ export class DesktopEditor {
       if (options.mobile.matches) {
         clearTimeout(this.debounce);
         this.cancelSelection();
-        node('addMenu').hidden = true;
+        this.showAddMenu(false);
       }
       this.paint();
     });
@@ -313,7 +318,13 @@ export class DesktopEditor {
           Object.fromEntries(
             [...this.drafts].map(([id, d]) => [
               id,
-              { base: d.base, value: d.value, revision: d.revision, conflict: d.conflict },
+              {
+                base: d.base,
+                value: d.value,
+                revision: d.revision,
+                conflict: d.conflict,
+                conflictAuthor: d.conflictAuthor,
+              },
             ])
           )
         )
@@ -327,7 +338,6 @@ export class DesktopEditor {
     if (snapshot.seq < this.sequence) return;
     this.loaded = true;
     this.sequence = snapshot.seq;
-    this.authoritative = snapshot.objects;
     for (const [id, draft] of this.drafts) {
       const object = snapshot.objects.find((o) => o.id === id);
       if (!object) {
@@ -341,13 +351,18 @@ export class DesktopEditor {
         draft.revision = this.revision(object);
         draft.conflict = false;
         delete draft.sent;
-      } else if (text !== draft.base && text !== draft.sent && draft.value !== draft.base) draft.conflict = true;
-      else if (draft.value === draft.base && !draft.sent) {
+      } else if (text !== draft.base && text !== draft.sent && draft.value !== draft.base) {
+        draft.conflict = true;
+        const previous = this.authoritative.find((o) => o.id === id);
+        if (!previous || this.field(previous) !== text || !draft.conflictAuthor)
+          draft.conflictAuthor = snapshot.textAuthors?.[id];
+      } else if (draft.value === draft.base && !draft.sent) {
         draft.base = text;
         draft.value = text;
         draft.revision = this.revision(object);
       }
     }
+    this.authoritative = snapshot.objects;
     this.persistDrafts();
     this.queue.receive(snapshot);
   }
@@ -405,8 +420,7 @@ export class DesktopEditor {
       },
     };
     if (!this.submit([this.parse(operation)])) return;
-    node('addMenu').hidden = true;
-    btn('addTool').setAttribute('aria-expanded', 'false');
+    this.showAddMenu(false);
     this.options.dispatch({ kind: 'selection', ids: [id] });
     this.options.dispatch({ kind: 'focus', id });
     this.options.dispatch({ kind: 'rail', view: 'reader' });
@@ -539,7 +553,7 @@ export class DesktopEditor {
   private paintStatus(): void {
     const draft = this.currentId ? this.drafts.get(this.currentId) : undefined;
     node('editStatus').textContent = draft?.conflict
-      ? `Conflict: this field changed elsewhere. Your draft is preserved.${this.status === 'refused' ? ` ${this.message}` : ''}`
+      ? `${draft.conflictAuthor || 'Someone'} changed this text while you were editing. Your draft is kept.`
       : this.status === 'saved' && draft && draft.value !== draft.base
         ? 'Draft · waiting to save'
         : this.message;
@@ -548,8 +562,18 @@ export class DesktopEditor {
     node('retryActions').hidden = this.status !== 'failed' && this.status !== 'refused';
     btn('retryEdit').hidden = !!draft?.conflict;
   }
+  private showAddMenu(open: boolean): void {
+    node('addMenu').hidden = !open;
+    btn('addTool').setAttribute('aria-expanded', String(open));
+    btn('addTool').setAttribute('aria-pressed', String(open));
+  }
   private paintAvailability(): void {
     const unavailable = !this.connected || this.status === 'refused';
+    for (const direction of ['undo', 'redo'] as const)
+      btn(`${direction}Edit`).setAttribute(
+        'aria-disabled',
+        String(unavailable || this.queue.busy || this.actions > 0 || !this.history.available(direction))
+      );
     const key = `${unavailable}:${this.connected}`;
     if (this.availability === key && !this.handlesDirty) return;
     this.availability = key;
@@ -564,8 +588,6 @@ export class DesktopEditor {
       'moveMode',
       'moveTo',
       'commitMoveTo',
-      'undoEdit',
-      'redoEdit',
     ])
       btn(id).disabled = unavailable;
     for (const handle of node('layer').querySelectorAll<HTMLButtonElement>('[data-resize]'))
@@ -576,6 +598,7 @@ export class DesktopEditor {
   }
   paint(): void {
     node('contextRow').hidden = this.options.mobile.matches || !this.options.view().selected.length;
+    btn('editSelection').hidden = this.options.view().selected.length !== 1;
     node('selectionCount').textContent = `${this.options.view().selected.length} selected`;
     this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
@@ -749,6 +772,7 @@ export class DesktopEditor {
         }
       }
     }
+    node('selectionBounds').style.translate = '';
     this.moveGesture = null;
     this.resizeGesture = null;
     for (const el of node('layer').querySelectorAll('.drop-target')) el.classList.remove('drop-target');
@@ -884,6 +908,7 @@ export class DesktopEditor {
   private previewMove(): void {
     const gesture = this.moveGesture;
     if (!gesture?.moved) return;
+    node('selectionBounds').style.translate = `${gesture.delta.x}px ${gesture.delta.y}px`;
     for (const object of gesture.originals) {
       const position = movedPosition(gesture.all, object, gesture.delta);
       const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${object.id}"]`);
@@ -937,6 +962,10 @@ export class DesktopEditor {
       node('announcement').textContent = 'Wait for pending edits to save before changing history.';
       return;
     }
+    if (!this.history.available(direction)) {
+      node('announcement').textContent = direction === 'undo' ? 'Nothing to undo.' : 'Nothing to redo.';
+      return;
+    }
     this.actions++;
     try {
       const response = await fetch(
@@ -952,6 +981,7 @@ export class DesktopEditor {
       node('announcement').textContent = error instanceof Error ? error.message : 'History could not be changed.';
     } finally {
       this.actions--;
+      this.paintAvailability();
     }
   }
   private key(e: KeyboardEvent): void {
@@ -965,8 +995,22 @@ export class DesktopEditor {
     if (e.key === 'Escape' && !node('addMenu').hidden) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      node('addMenu').hidden = true;
+      this.showAddMenu(false);
       btn('addTool').focus();
+      return;
+    }
+    if (!node('addMenu').hidden && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const items = [...node('addMenu').querySelectorAll('button')];
+      const index = items.findIndex((item) => item === document.activeElement);
+      const next =
+        e.key === 'Home'
+          ? 0
+          : e.key === 'End'
+            ? items.length - 1
+            : (index + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+      items[next]?.focus();
       return;
     }
     const target = e.target;

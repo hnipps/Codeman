@@ -149,6 +149,37 @@ describe('read-only canvas document', () => {
     await shot(page, 'selected-group');
   });
 
+  it('keeps the real group bounds selectable between children while chrome stays outside', async () => {
+    await page.route('**/api/canvas/*/objects', async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      const child = snapshot.data.objects.find((o: ViewObject) => o.id === 'nested-text');
+      snapshot.data.objects.push({
+        ...child,
+        id: 'group-gap-child',
+        position: { x: 300, y: 40 },
+        size: { width: 100, height: 100 },
+      });
+      await route.fulfill({ json: snapshot });
+    });
+    await open();
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'viewport', viewport: { x: -600, y: 100, zoom: 1 } }));
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const hitBounds = await page.locator('[data-object-id="nested-group"] > .group-bounds').boundingBox();
+    if (!hitBounds) throw new Error('Missing group hit bounds');
+    expect(hitBounds).toEqual({ x: 380, y: 140, width: 420, height: 100 });
+    await page.mouse.click(660, 180);
+    await page.waitForFunction(() => window.canvasView.read().selected.includes('nested-group'));
+    expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual(['nested-group']);
+    const chrome = await page.locator('[data-object-id="nested-group"] > .selection-bounds').boundingBox();
+    if (!chrome) throw new Error('Missing group selection chrome');
+    expect(chrome.x).toBeCloseTo(hitBounds.x - 6);
+    expect(chrome.y).toBeCloseTo(hitBounds.y - 6);
+    expect(chrome.width).toBeCloseTo(hitBounds.width + 12);
+    expect(chrome.height).toBeCloseTo(hitBounds.height + 12);
+    expect(await page.locator('[data-object-id="nested-group"] > .resize-handle:visible').count()).toBe(0);
+  });
+
   it('opens the reader by double-click and pans twice in one Space hold without toggling selection', async () => {
     await open();
     await page.locator('[data-object-id="brief"] .object-body').dblclick();
@@ -593,13 +624,13 @@ describe('read-only canvas document', () => {
         expect(
           await page.locator('[data-object-id="research"]').evaluate((el) => getComputedStyle(el, '::after').content)
         ).toBe('none');
-        const boundary = await page.locator('[data-object-id="research"]').evaluate((el) => {
+        const boundary = await page.locator('[data-object-id="research"] > .selection-bounds').evaluate((el) => {
           const css = getComputedStyle(el);
           const zoom = window.canvasView.read().viewport.zoom;
           return {
             color: css.borderColor,
             secondary: css.getPropertyValue('--secondary').trim(),
-            width: parseFloat(css.borderWidth) * zoom,
+            width: parseFloat(css.borderWidth) * new DOMMatrix(css.transform).a * zoom,
           };
         });
         expect(boundary.color).toBe(theme === 'dark' ? 'rgb(178, 181, 188)' : 'rgb(80, 82, 79)');

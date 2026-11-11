@@ -30,6 +30,7 @@ export const viewOperationKinds = new Set([
 export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snapshot; unreadable: boolean } {
   const data = OpsSchema.parse(payload);
   const objects = new Map(state.objects.map((o) => [o.id, o]));
+  const textAuthors = { ...state.textAuthors };
   let unreadable = false;
   for (const record of data.operations) {
     const header = HeaderSchema.safeParse(record);
@@ -43,9 +44,21 @@ export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snaps
       unreadable = true;
       continue;
     }
-    for (const change of operation.data.prev) objects.set(change.objectId, change.after);
+    const author = ViewObjectSchema.shape.author.safeParse(operation.data.author);
+    for (const change of operation.data.prev) {
+      if (objects.get(change.objectId)?.content.text !== change.after.content.text) {
+        if (author.success)
+          textAuthors[change.objectId] =
+            author.data.kind === 'human' ? author.data.userId : `Agent ${author.data.sessionId}`;
+        else delete textAuthors[change.objectId];
+      }
+      objects.set(change.objectId, change.after);
+    }
   }
-  return { state: { seq: data.seq, objects: [...objects.values()].filter((o) => o.deletedAt === null) }, unreadable };
+  return {
+    state: { seq: data.seq, textAuthors, objects: [...objects.values()].filter((o) => o.deletedAt === null) },
+    unreadable,
+  };
 }
 export class CanvasSync {
   private state: Snapshot = { seq: 0, objects: [] };

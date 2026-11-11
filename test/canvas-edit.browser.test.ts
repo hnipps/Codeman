@@ -122,6 +122,110 @@ describe('desktop canvas editing', () => {
   async function shot(theme: string, slug: string) {
     await page.screenshot({ path: resolve(media, `pc4-review-${stamp}-${theme}-${slug}.png`), animations: 'disabled' });
   }
+  it('keeps selection chrome outside content at every zoom and shows handles only for one object', async () => {
+    const before = await stored();
+    expect(await page.locator('.selection-bounds:visible').count()).toBe(0);
+    for (const zoom of [0.5, 1, 2]) {
+      await page.evaluate((zoom) => {
+        window.canvasView.dispatch({ kind: 'viewport', viewport: { x: 200, y: 80, zoom } });
+        window.canvasView.dispatch({ kind: 'selection', ids: ['note'] });
+      }, zoom);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      const object = page.locator('[data-object-id="note"]');
+      const boundary = object.locator(':scope > .selection-bounds');
+      const box = await object.boundingBox(),
+        outline = await boundary.boundingBox();
+      if (!box || !outline) throw new Error('Missing selection bounds');
+      expect(outline.x).toBeCloseTo(box.x - 6, 1);
+      expect(outline.y).toBeCloseTo(box.y - 6, 1);
+      expect(outline.width).toBeCloseTo(box.width + 12, 1);
+      expect(outline.height).toBeCloseTo(box.height + 12, 1);
+      expect(await page.locator('.resize-handle:visible').count()).toBe(8);
+      const handle = await object.locator('.handle-nw').boundingBox();
+      if (!handle) throw new Error('Missing handle');
+      expect(handle.width).toBeCloseTo(16);
+      expect(handle.x + 8).toBeCloseTo(box.x - 6, 1);
+      expect(handle.y + 8).toBeCloseTo(box.y - 6, 1);
+      await page.locator('#board').focus();
+      await page.evaluate(() => window.canvasView.dispatch({ kind: 'focus', id: 'note' }));
+      await page.keyboard.press('x');
+      await page.keyboard.press('x');
+      await page.waitForSelector('[data-object-id="note"].keyboard-focus');
+      const focus = await boundary.evaluate((el) => ({
+        offset: getComputedStyle(el).outlineOffset,
+        width: getComputedStyle(el).outlineWidth,
+      }));
+      expect(parseFloat(focus.offset)).toBeCloseTo(3, 1);
+      expect(parseFloat(focus.width)).toBeCloseTo(2, 1);
+      await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: ['note', 'other'] }));
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      expect(await page.locator('.resize-handle:visible').count()).toBe(0);
+      expect(await page.locator('.object.selected > .selection-bounds > .corner:visible').count()).toBe(8);
+      const combined = await page.locator('#selectionBounds').boundingBox();
+      const other = await page.locator('[data-object-id="other"]').boundingBox();
+      if (!combined || !other) throw new Error('Missing combined bounds');
+      expect(combined.x).toBeCloseTo(box.x - 6, 1);
+      expect(combined.y).toBeCloseTo(box.y - 6, 1);
+      expect(combined.width).toBeCloseTo(box.width + 12, 1);
+      expect(combined.height).toBeCloseTo(other.y + other.height - box.y + 12, 1);
+    }
+    const combinedBefore = await page.locator('#selectionBounds').boundingBox();
+    await page.locator('#moveMode').click();
+    await page.keyboard.press('ArrowRight');
+    const combinedMoving = await page.locator('#selectionBounds').boundingBox();
+    if (!combinedBefore || !combinedMoving) throw new Error('Missing moving selection');
+    expect(combinedMoving.x - combinedBefore.x).toBeCloseTo(20);
+    await page.keyboard.press('Escape');
+    expect(await page.locator('#selectionBounds').boundingBox()).toEqual(combinedBefore);
+    expect(await stored()).toEqual(before);
+  });
+  it('anchors selection actions and Add to the dock and exposes available history with icons', async () => {
+    expect(await page.locator('#undoEdit').getAttribute('aria-disabled')).toBe('true');
+    expect(await page.locator('#redoEdit').getAttribute('aria-disabled')).toBe('true');
+    await page.locator('#undoEdit').focus();
+    await page.keyboard.press('Enter');
+    expect(await page.locator('#announcement').textContent()).toBe('Nothing to undo.');
+    expect(await page.locator('#dock > #undoEdit svg').count()).toBe(1);
+    expect(await page.locator('#dock > #redoEdit svg').count()).toBe(1);
+    await select('note');
+    expect(await page.locator('#contextRow #undoEdit, #contextRow #redoEdit').count()).toBe(0);
+    for (const ids of [['note'], ['note', 'other']]) {
+      await page.evaluate((ids) => window.canvasView.dispatch({ kind: 'selection', ids }), ids);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      const row = await page.locator('#contextRow').boundingBox(),
+        dock = await page.locator('#dock').boundingBox();
+      if (!row || !dock) throw new Error('Missing toolbar');
+      expect(dock.y - row.y - row.height).toBeCloseTo(8);
+      expect(row.x + row.width / 2).toBeCloseTo(dock.x + dock.width / 2);
+      expect(await page.locator('#editSelection').isVisible()).toBe(ids.length === 1);
+    }
+    await page.locator('#addTool').click();
+    const menu = await page.locator('#addMenu').boundingBox(),
+      add = await page.locator('#addTool').boundingBox(),
+      dock = await page.locator('#dock').boundingBox();
+    if (!menu || !add || !dock) throw new Error('Missing Add menu');
+    expect(menu.x + menu.width / 2).toBeCloseTo(add.x + add.width / 2);
+    expect(dock.y - menu.y - menu.height).toBeCloseTo(8);
+    expect(await page.locator('#addTool').getAttribute('aria-pressed')).toBe('true');
+    await page.keyboard.press('ArrowDown');
+    expect(await page.locator('#addFrame').evaluate((el) => el === document.activeElement)).toBe(true);
+    await page.keyboard.press('ArrowUp');
+    expect(await page.locator('#addText').evaluate((el) => el === document.activeElement)).toBe(true);
+    await page.keyboard.press('Escape');
+    expect(await page.locator('#addMenu').isVisible()).toBe(false);
+    expect(await page.locator('#addTool').getAttribute('aria-pressed')).toBe('false');
+    expect(await page.locator('#addTool').evaluate((el) => el === document.activeElement)).toBe(true);
+    await drag('note', 20, 10);
+    expect(await page.locator('#undoEdit').getAttribute('aria-disabled')).toBe('false');
+    const moved = (await stored()).find((o) => o.id === 'note')?.position;
+    await page.locator('#undoEdit').click();
+    await saved();
+    expect((await stored()).find((o) => o.id === 'note')?.position).toEqual({ x: 100, y: 100 });
+    expect(await page.locator('#redoEdit').getAttribute('aria-disabled')).toBe('false');
+    await page.locator('#redoEdit').click();
+    await saved();
+    expect((await stored()).find((o) => o.id === 'note')?.position).toEqual(moved);
+  });
   it('creates every Add kind and saves plain text as a human author', async () => {
     for (const [control, type] of [
       ['addText', 'text'],
@@ -321,7 +425,15 @@ describe('desktop canvas editing', () => {
         },
       });
       expect(response.ok()).toBe(true);
-      await page.waitForFunction(() => document.getElementById('editStatus')?.textContent?.includes('Conflict'));
+      await page.waitForFunction(() => document.getElementById('editStatus')?.dataset.state === 'conflict');
+      const author = (await stored()).find((o) => o.id === 'note')?.author;
+      if (!author) throw new Error('Missing fixture author');
+      const writer = author.kind === 'human' ? author.userId : `Agent ${author.sessionId}`;
+      expect(await page.locator('#editStatus').textContent()).toBe(
+        `${writer} changed this text while you were editing. Your draft is kept.`
+      );
+      expect(await page.locator('#keepDraft').textContent()).toBe('Keep my draft');
+      expect(await page.locator('#useServer').textContent()).toBe('Use saved text');
       expect(await page.locator('#textEditor').inputValue()).toBe('My preserved draft');
       await page.locator('#keepDraft').click();
       await saved();
@@ -342,7 +454,7 @@ describe('desktop canvas editing', () => {
           ],
         },
       });
-      await page.waitForFunction(() => document.getElementById('editStatus')?.textContent?.includes('Conflict'));
+      await page.waitForFunction(() => document.getElementById('editStatus')?.dataset.state === 'conflict');
       await page.locator('#useServer').click();
       await saved();
       expect(await page.locator('#textEditor').inputValue()).toBe('Keep the server wording');
@@ -403,7 +515,16 @@ describe('desktop canvas editing', () => {
       await page.request.post(`${origin}/x/api/canvas/${workspace}/ops`, {
         data: {
           operations: [
-            { kind: 'move', opId: `reset-note-${theme}`, objectId: 'note', patch: { position: { x: 100, y: 100 } } },
+            {
+              kind: 'revert',
+              opId: `reset-note-${theme}`,
+              objectId: 'note',
+              patch: {
+                position: { x: 100, y: 100 },
+                order: 200,
+                content: { type: 'text', text: 'Keep the reason you wanted to return.' },
+              },
+            },
             { kind: 'move', opId: `reset-frame-${theme}`, objectId: 'frame', patch: { position: { x: 500, y: 100 } } },
             {
               kind: 'update',
@@ -423,6 +544,27 @@ describe('desktop canvas editing', () => {
       await shot(theme, 'add-menu');
       await page.keyboard.press('Escape');
       await reader();
+      const contrast = await page.locator('#positionX').evaluate((el) => {
+        const css = getComputedStyle(el);
+        const luminance = (color: string) => {
+          const channels = (color.match(/[\d.]+/g) ?? [])
+            .slice(0, 3)
+            .map(Number)
+            .map((v) => {
+              const c = v / 255;
+              return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+            });
+          return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+        };
+        const a = luminance(css.color),
+          b = luminance(css.backgroundColor);
+        return {
+          ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+          color: css.color,
+          primary: css.getPropertyValue('--text').trim(),
+        };
+      });
+      expect(contrast.ratio).toBeGreaterThanOrEqual(4.5);
       let release: (() => void) | undefined;
       await page.route('**/api/canvas/*/ops', async (route) => {
         if (route.request().method() !== 'POST') {
@@ -479,7 +621,7 @@ describe('desktop canvas editing', () => {
           ],
         },
       });
-      await page.waitForFunction(() => document.getElementById('editStatus')?.textContent?.includes('Conflict'));
+      await page.waitForFunction(() => document.getElementById('editStatus')?.dataset.state === 'conflict');
       await shot(theme, 'conflict');
       await page.locator('#keepDraft').click();
       await saved();
@@ -487,6 +629,11 @@ describe('desktop canvas editing', () => {
       await page.mouse.move(270, 140);
       await page.mouse.down();
       await page.mouse.move(570, 550, { steps: 10 });
+      await page.waitForFunction(() => !document.querySelector('#layer .keyboard-focus'));
+      const previewOutlines = await page
+        .locator('.selection-preview')
+        .evaluateAll((objects) => objects.map((object) => getComputedStyle(object).outlineStyle));
+      expect(previewOutlines).toEqual(['none', 'none']);
       await shot(theme, 'marquee');
       await page.mouse.up();
       expect((await page.evaluate(() => window.canvasView.read().selected)).sort()).toEqual(['note', 'other']);

@@ -39,12 +39,8 @@
     </section>
     <span id="addDescription" class="sr">Add text, frame, section or sub-canvas</span>
     <span id="commentDescription" class="sr">Comments arrive with conversations</span>
-    <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
-      <span id="selectionCount"></span><button id="moveMode">Move</button
-      ><button id="moveTo" aria-controls="moveToMenu">Move to…</button><button id="editSelection">Edit</button
-      ><button id="deleteSelection">Delete</button><button id="undoEdit" title="Undo · Cmd/Ctrl+Z">Undo</button
-      ><button id="redoEdit" title="Redo · Cmd/Ctrl+Shift+Z">Redo</button>
-    </div>
+    <span id="undoDescription" class="sr">Undo an edit saved by this browser. Available after an edit saves.</span>
+    <span id="redoDescription" class="sr">Redo an edit undone by this browser. Available after undo saves.</span>
     <div id="moveToMenu" class="edit-control" hidden>
       <label for="moveDestination">Move selection to</label
       ><select id="moveDestination"></select
@@ -53,21 +49,45 @@
     <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
     <span id="dropName" class="edit-control" hidden></span>
     <div class="dock-area">
-      <div id="addMenu" class="edit-control" aria-label="Add objects" hidden>
-        <button id="addText">Text</button><button id="addFrame">Frame</button><button id="addSection">Section</button
-        ><button id="addSubcanvas">Sub-canvas</button>
-      </div>
       <div id="dock" role="toolbar" aria-label="Canvas tools">
+        <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
+          <span id="selectionCount"></span><button id="moveMode">Move</button
+          ><button id="moveTo" aria-controls="moveToMenu">Move to…</button><button id="editSelection">Edit</button
+          ><button id="deleteSelection">Delete</button>
+        </div>
+        <button
+          id="undoEdit"
+          class="edit-control"
+          aria-label="Undo"
+          aria-describedby="undoDescription"
+          aria-disabled="true"
+          title="Undo · Cmd/Ctrl+Z"
+        ></button>
+        <button
+          id="redoEdit"
+          class="edit-control"
+          aria-label="Redo"
+          aria-describedby="redoDescription"
+          aria-disabled="true"
+          title="Redo · Shift+Cmd/Ctrl+Z"
+        ></button>
         <button id="selectTool" aria-label="Select" title="Select · V; drag to select; Alt-drag to lasso"></button>
         <button id="panTool" aria-label="Pan" title="Pan · H"></button>
-        <button
-          id="addTool"
-          aria-expanded="false"
-          aria-controls="addMenu"
-          aria-label="Add objects"
-          aria-describedby="addDescription"
-          title="Add objects"
-        ></button>
+        <div class="add-anchor">
+          <div id="addMenu" class="edit-control" aria-label="Add objects" hidden>
+            <button id="addText">Text</button><button id="addFrame">Frame</button
+            ><button id="addSection">Section</button><button id="addSubcanvas">Sub-canvas</button>
+          </div>
+          <button
+            id="addTool"
+            aria-expanded="false"
+            aria-pressed="false"
+            aria-controls="addMenu"
+            aria-label="Add objects"
+            aria-describedby="addDescription"
+            title="Add objects"
+          ></button>
+        </div>
         <button
           id="chatTool"
           aria-disabled="true"
@@ -96,13 +116,13 @@
       <div id="readerView" class="rail-body" hidden>
         <p id="readerText"></p>
         <div id="textEdit" class="edit-control" hidden>
-          <label id="editorLabel" for="textEditor">Text</label>
+          <label class="sr" id="editorLabel" for="textEditor">Text</label>
           <textarea id="textEditor" rows="9" spellcheck="true"></textarea>
         </div>
         <div id="writeFeedback" class="edit-control">
           <p id="editStatus" role="status" class="secondary"></p>
           <div id="conflictActions" hidden>
-            <button id="keepDraft">Save my draft</button><button id="useServer">Use server text</button>
+            <button id="keepDraft">Keep my draft</button><button id="useServer">Use saved text</button>
           </div>
           <div id="retryActions" hidden>
             <button id="retryEdit">Retry save</button><button id="discardEdit">Discard pending edits</button>

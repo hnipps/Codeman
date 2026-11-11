@@ -443,3 +443,5 @@ Ordinary canvas drags submit position only. Named container headings/outline row
 Sized canvas objects expose eight neutral resize handles with fixed 16px screen hit areas and 8px visible squares. Shift preserves proportion; Alt resizes from center. Pointer geometry is converted through zoom and ancestor rotation. Frame/section resize changes bounds only. Numeric local position and size share the reader; auto-bounded groups have no size handles.
 
 `window.canvasEdit` exposes the same queued operation, constrained resize and history paths with cloned readable state. `canvasView` also accepts typed region selection. Keep browser editing tests registered with the browser runner, never the default gate.
+
+Selection chrome stays six screen pixels outside geometry, with a separate amber focus ring and no multi-selection handles in part 1. History lives in the dock; selection actions and Add use eight-pixel dock spacing. Conflict copy names the change writer when known. → [Canvas read view](docs/architecture-invariants.md#canvas-read-view)

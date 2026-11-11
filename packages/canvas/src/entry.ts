@@ -41,6 +41,8 @@ const mobile = matchMedia('(max-width: 600px)');
 state = command(state, { kind: 'outline', open: !mobile.matches }, objects);
 const renderer = new Renderer(layer, tree, choose);
 const icons: Record<string, string> = {
+  undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',
+  redoEdit: 'M13 4l4 4-4 4M17 8H9a5 5 0 0 0-5 5v3',
   selectTool: 'M5 3l12 8-6 1-3 6z',
   panTool:
     'M7 10V5a1 1 0 0 1 2 0v4-1-5a1 1 0 0 1 2 0v5-1-3a1 1 0 0 1 2 0v4-1-2a1 1 0 0 1 2 0v6c0 4-2 6-5 6-2 0-3-1-4-3l-3-5a1 1 0 0 1 2-1z',
@@ -493,6 +495,7 @@ const editor = new DesktopEditor({
   dispatch,
   focusMode: (value) => {
     keyboard = value;
+    if (!frame) frame = requestAnimationFrame(paint);
   },
   display: (displayed) => {
     objects = displayed;

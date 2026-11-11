@@ -71,6 +71,28 @@ Read/search/query/history use text-only JSON capped at 60,000 UTF-8 bytes with a
 truncation flag and omit records that do not fit. Case scope follows the longest
 registered case path containing the visible caller session's working directory;
 body workspace and author fields are forbidden.
+## 2026-11-11 — Separate canvas selection chrome from content and history
+
+**Type:** intent-refinement
+**Touches:** canvas renderer, dock, reader and browser checks
+**Why:** PC4 design review found handles covering text and repeated across multi-selection.
+**Links:** [intent](../intent/2026-11-11-canvas-pc4-design-review.md)
+
+Selection chrome uses six screen pixels of outward clearance at every zoom;
+resize still measures pointer deltas against true stored geometry. Boundaries
+and focus rings counter-scale with zoom to avoid fractional CSS outline rounding.
+Multi-selection shows individual corner marks and one combined boundary without resize handles
+until part 2. Marquee and lasso previews reuse those boundaries rather than
+stacking outlines; pointer focus-mode changes schedule a paint immediately.
+Auto-bounded groups retain their real hit region between children independently
+of the outward selection chrome.
+Unselected, unfocused boundaries stay out of rendering after a
+500-object comparison exposed the cost of empty chrome. History belongs in the
+dock and stays available without selection.
+Conflict attribution comes from replayed operations, because an object's author
+identifies its creator rather than the writer who changed the text. Missing
+operation attribution uses “Someone” instead of naming the creator.
+
 ## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
 
 **Type:** intent-refinement

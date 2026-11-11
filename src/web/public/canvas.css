@@ -188,11 +188,11 @@ kbd {
   text-align: left;
 }
 .object.container {
-  border: calc(1px / var(--zoom, 1)) solid var(--divider);
+  box-shadow: inset 0 0 0 calc(1px / var(--zoom, 1)) var(--divider);
   border-radius: 6px;
 }
 .object.container[data-type='group'] {
-  border-color: transparent;
+  box-shadow: none;
 }
 .object-body {
   height: 100%;
@@ -211,49 +211,64 @@ kbd {
 .object[data-type='text'] {
   font-size: 14px;
 }
-.object.selected:not(.container)::after {
-  content: '';
-  pointer-events: none;
+.group-bounds {
   position: absolute;
-  inset: 0;
-  border: calc(1px / var(--zoom, 1)) solid var(--selection);
+  z-index: -1;
+}
+.selection-bounds,
+#selectionBounds {
+  position: absolute;
+  pointer-events: none;
   border-radius: 4px;
+  transform: scale(calc(1 / var(--zoom, 1)));
+  transform-origin: 0 0;
+}
+.selection-bounds {
+  display: none;
+}
+.object.selected > .selection-bounds,
+.object.keyboard-focus > .selection-bounds {
+  display: block;
+}
+.object.selected > .selection-bounds,
+#selectionBounds {
+  border: 1px solid var(--selection);
+}
+.object.keyboard-focus > .selection-bounds {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .corner {
   display: none;
   position: absolute;
-  width: calc(8px / var(--zoom, 1));
-  height: calc(8px / var(--zoom, 1));
+  width: 8px;
+  height: 8px;
   border: 0 solid var(--selection);
-  border-width: calc(1.5px / var(--zoom, 1)) 0 0 calc(1.5px / var(--zoom, 1));
+  border-width: 1.5px 0 0 1.5px;
   pointer-events: none;
   z-index: 1;
 }
-.selected > .corner {
+.selected > .selection-bounds > .corner {
   display: block;
 }
 .corner:nth-of-type(1) {
-  left: calc(-1px / var(--zoom, 1));
-  top: calc(-1px / var(--zoom, 1));
+  left: -1px;
+  top: -1px;
 }
 .corner:nth-of-type(2) {
-  right: calc(-1px / var(--zoom, 1));
-  top: calc(-1px / var(--zoom, 1));
+  right: -1px;
+  top: -1px;
   transform: rotate(90deg);
 }
 .corner:nth-of-type(3) {
-  left: calc(-1px / var(--zoom, 1));
-  bottom: calc(-1px / var(--zoom, 1));
+  left: -1px;
+  bottom: -1px;
   transform: rotate(-90deg);
 }
 .corner:nth-of-type(4) {
-  right: calc(-1px / var(--zoom, 1));
-  bottom: calc(-1px / var(--zoom, 1));
+  right: -1px;
+  bottom: -1px;
   transform: rotate(180deg);
-}
-.object.keyboard-focus {
-  outline: calc(2px / var(--zoom, 1)) solid var(--accent);
-  outline-offset: calc(4px / var(--zoom, 1));
 }
 #outline {
   position: fixed;
@@ -529,29 +544,6 @@ dd {
     transition: none !important;
   }
 }
-.object.container.selected {
-  border-color: var(--selection);
-}
-.object.selected > .group-bounds {
-  border: calc(1px / var(--zoom, 1)) solid var(--selection);
-}
-.object[data-type='group'].keyboard-focus {
-  outline: none;
-}
-.object.keyboard-focus > .group-bounds {
-  outline: calc(2px / var(--zoom, 1)) solid var(--accent);
-  outline-offset: calc(4px / var(--zoom, 1));
-}
-.group-bounds {
-  z-index: -1;
-}
-.object[data-type='group'] > .corner {
-  display: none;
-}
-.selected > .group-bounds > .corner {
-  display: block;
-}
-
 #dock button[aria-pressed='true']:hover {
   border-color: var(--muted);
 }
@@ -629,9 +621,11 @@ dd {
 }
 
 #addMenu {
+  z-index: 6;
   position: absolute;
-  bottom: 56px;
-  left: 80px;
+  bottom: calc(100% + 13px);
+  left: 50%;
+  transform: translateX(-50%);
   width: 200px;
   padding: 4px;
   background: var(--panel);
@@ -645,8 +639,10 @@ dd {
   text-align: left;
 }
 #contextRow {
-  position: fixed;
-  bottom: 84px;
+  width: max-content;
+  white-space: nowrap;
+  position: absolute;
+  bottom: calc(100% + 9px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -661,12 +657,6 @@ dd {
 #selectionCount {
   font-size: 12px;
   color: var(--secondary);
-}
-#textEdit label {
-  display: block;
-  font-size: 12px;
-  color: var(--secondary);
-  margin-bottom: 8px;
 }
 textarea {
   font: inherit;
@@ -727,10 +717,6 @@ textarea:focus-visible {
   fill: var(--selection);
   fill-opacity: 0.06;
 }
-.object.selection-preview {
-  outline: calc(1px / var(--zoom)) solid var(--selection);
-}
-
 #moveToMenu {
   position: fixed;
   bottom: 132px;
@@ -795,49 +781,49 @@ textarea:focus-visible {
   border: 1px solid var(--selection);
   background: var(--panel);
 }
-.object.selected > .resize-handle {
+#layer:not(.multi-selection) .object.selected > .resize-handle {
   display: block;
 }
 .resize-handle:hover {
   background: var(--raised);
 }
 .handle-nw {
-  left: 0;
-  top: 0;
+  left: calc(-6px / var(--zoom));
+  top: calc(-6px / var(--zoom));
   cursor: nwse-resize;
 }
 .handle-n {
   left: 50%;
-  top: 0;
+  top: calc(-6px / var(--zoom));
   cursor: ns-resize;
 }
 .handle-ne {
-  left: 100%;
-  top: 0;
+  left: calc(100% + 6px / var(--zoom));
+  top: calc(-6px / var(--zoom));
   cursor: nesw-resize;
 }
 .handle-e {
-  left: 100%;
+  left: calc(100% + 6px / var(--zoom));
   top: 50%;
   cursor: ew-resize;
 }
 .handle-se {
-  left: 100%;
-  top: 100%;
+  left: calc(100% + 6px / var(--zoom));
+  top: calc(100% + 6px / var(--zoom));
   cursor: nwse-resize;
 }
 .handle-s {
   left: 50%;
-  top: 100%;
+  top: calc(100% + 6px / var(--zoom));
   cursor: ns-resize;
 }
 .handle-sw {
-  left: 0;
-  top: 100%;
+  left: calc(-6px / var(--zoom));
+  top: calc(100% + 6px / var(--zoom));
   cursor: nesw-resize;
 }
 .handle-w {
-  left: 0;
+  left: calc(-6px / var(--zoom));
   top: 50%;
   cursor: ew-resize;
 }
@@ -852,6 +838,7 @@ textarea:focus-visible {
   font-size: 12px;
 }
 .geometry-grid input {
+  color: var(--text);
   margin-top: 4px;
   font-size: 14px;
 }
@@ -864,11 +851,13 @@ textarea:focus-visible {
 .object[data-type='group'].drop-target {
   outline: none;
 }
-.object.drop-target > .group-bounds {
-  outline: calc(1px / var(--zoom)) solid var(--accent);
+.object[data-type='group'].drop-target > .selection-bounds {
+  display: block;
+  outline: 1px solid var(--accent);
 }
-.object.selection-preview > .group-bounds {
-  outline: calc(1px / var(--zoom)) solid var(--selection);
+.object.selection-preview > .selection-bounds {
+  display: block;
+  border: 1px solid var(--selection);
 }
 textarea[readonly] {
   color: var(--secondary);
@@ -885,4 +874,22 @@ textarea[readonly] {
 .resize-handle:disabled::after {
   border-color: var(--divider);
   background: var(--panel);
+}
+
+#dock {
+  position: relative;
+}
+.add-anchor {
+  position: relative;
+}
+@media (max-width: 600px) {
+  #undoEdit,
+  #redoEdit,
+  .add-anchor {
+    display: none;
+  }
+}
+
+.object.container > .selection-bounds {
+  border-radius: 6px;
 }

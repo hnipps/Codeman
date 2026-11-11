@@ -1,9 +1,12 @@
 import { handles } from './resize.js';
 import { editable, container, label, readable, searchText, type ViewObject } from './model.js';
-import { localBounds, outline } from './tree.js';
+import { union } from './viewport.js';
+import { localBounds, worldBounds, outline } from './tree.js';
 import type { ViewState } from './commands.js';
 export class Renderer {
   readonly elements = new Map<string, HTMLElement>();
+  private objectsState: ViewObject[] = [];
+  private combined = document.createElement('div');
   private lastSelection = '';
   private lastFocus = '';
   private rows = new Map<string, HTMLButtonElement>();
@@ -11,8 +14,13 @@ export class Renderer {
     private layer: HTMLElement,
     private tree: HTMLElement,
     private choose: (id: string, toggle: boolean, reveal: boolean) => void
-  ) {}
+  ) {
+    this.combined.id = 'selectionBounds';
+    this.combined.hidden = true;
+    this.layer.append(this.combined);
+  }
   objects(objects: ViewObject[]): void {
+    this.objectsState = objects;
     this.lastFocus = '';
     this.lastSelection = '';
     const live = outline(objects),
@@ -38,10 +46,13 @@ export class Renderer {
         title.className = 'object-title';
         title.tabIndex = -1;
         el.append(title);
+        const selection = document.createElement('div');
+        selection.className = 'selection-bounds';
+        el.append(selection);
         for (let i = 0; i < 4; i++) {
           const corner = document.createElement('i');
           corner.className = 'corner';
-          el.append(corner);
+          selection.append(corner);
         }
         for (const handle of handles) {
           const control = document.createElement('button');
@@ -89,20 +100,22 @@ export class Renderer {
         title.style.top = `${(o.size ? 0 : r.y) - 36}px`;
         title.style.maxWidth = `${Math.max(160, r.width)}px`;
       }
-      let bounds = el.querySelector<HTMLElement>(':scope > .group-bounds');
+      const bounds = el.querySelector<HTMLElement>(':scope > .selection-bounds');
+      if (bounds) {
+        bounds.style.left = `calc(${o.size ? 0 : r.x}px - 6px / var(--zoom))`;
+        bounds.style.top = `calc(${o.size ? 0 : r.y}px - 6px / var(--zoom))`;
+        bounds.style.width = `calc(${o.size ? '100%' : `${r.width}px`} * var(--zoom) + 12px)`;
+        bounds.style.height = `calc(${o.size ? '100%' : `${r.height}px`} * var(--zoom) + 12px)`;
+      }
+      let hitBounds = el.querySelector<HTMLElement>(':scope > .group-bounds');
       if (!o.size) {
-        if (!bounds) {
-          bounds = document.createElement('div');
-          bounds.className = 'group-bounds';
-          for (let i = 0; i < 4; i++) {
-            const corner = document.createElement('i');
-            corner.className = 'corner';
-            bounds.append(corner);
-          }
-          el.append(bounds);
+        if (!hitBounds) {
+          hitBounds = document.createElement('div');
+          hitBounds.className = 'group-bounds';
+          el.append(hitBounds);
         }
-        bounds.style.cssText = `position:absolute;left:${r.x}px;top:${r.y}px;width:${r.width}px;height:${r.height}px;`;
-      } else bounds?.remove();
+        hitBounds.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.width}px;height:${r.height}px;`;
+      } else hitBounds?.remove();
       const parent = o.parentId ? this.elements.get(o.parentId) : this.layer;
       if (parent && el.parentElement !== parent) parent.append(el);
       const row = this.rows.get(o.id);
@@ -127,6 +140,17 @@ export class Renderer {
     if (this.lastSelection === selected && this.lastFocus === focus) return;
     this.lastSelection = selected;
     this.lastFocus = focus;
+    this.layer.classList.toggle('multi-selection', state.selected.length > 1);
+    this.combined.hidden = state.selected.length < 2;
+    if (!this.combined.hidden) {
+      const bounds = union(
+        this.objectsState.filter((o) => state.selected.includes(o.id)).map((o) => worldBounds(this.objectsState, o))
+      );
+      this.combined.style.left = `calc(${bounds.x}px - 6px / var(--zoom))`;
+      this.combined.style.top = `calc(${bounds.y}px - 6px / var(--zoom))`;
+      this.combined.style.width = `calc(${bounds.width}px * var(--zoom) + 12px)`;
+      this.combined.style.height = `calc(${bounds.height}px * var(--zoom) + 12px)`;
+    }
     for (const [id, el] of this.elements) {
       el.classList.toggle('selected', state.selected.includes(id));
       el.classList.toggle('keyboard-focus', keyboard && state.focusId === id);

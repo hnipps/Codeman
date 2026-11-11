@@ -27,7 +27,11 @@ export const ViewObjectSchema = z
   .passthrough();
 export type ViewObject = z.infer<typeof ViewObjectSchema>;
 export const SnapshotSchema = z
-  .object({ seq: z.number().int().nonnegative(), objects: z.array(ViewObjectSchema) })
+  .object({
+    seq: z.number().int().nonnegative(),
+    objects: z.array(ViewObjectSchema),
+    textAuthors: z.record(z.string(), z.string()).optional(),
+  })
   .passthrough();
 export type Snapshot = z.infer<typeof SnapshotSchema>;
 export const container = isContainer;

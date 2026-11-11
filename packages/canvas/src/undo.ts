@@ -87,6 +87,9 @@ export class CanvasUndo {
     this.pending = { direction, ids: new Set(result.map((op) => op.opId)), focusId: entry.focusId };
     return { operations: result, focusId: entry.focusId };
   }
+  available(direction: 'undo' | 'redo'): boolean {
+    return !this.pending && (direction === 'undo' ? this.undo : this.redo).length > 0;
+  }
   refused(): void {
     this.pending = null;
   }

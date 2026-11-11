@@ -117,3 +117,5 @@ Canvas pointer reading uses consecutive pointer taps because cancelling pointerd
 Canvas desktop editing uses the existing dock, contextual row and reader. Draft text remains inert; same-field conflicts require Save my draft or Use server text. Saving and failures stay inline. Phone widths omit edit controls and new offline writes are refused.
 
 Screen-sized resize handles, selection gesture overlays and all reader/context editing controls disappear at phone width. `window.canvasEdit` shares the UI command path and refuses phone/offline mutations.
+
+Selection chrome stays six screen pixels outside geometry, with a separate amber focus ring and no multi-selection handles in part 1. History lives in the dock; selection actions and Add use eight-pixel dock spacing. Conflict copy names the change writer when known. → [Canvas read view](../../docs/architecture-invariants.md#canvas-read-view)
