@@ -8,7 +8,7 @@ Codeman retains its existing visual system.
 The board occupies the document. A 192px outline overlays the left edge; a 320px
 reader/Keys rail overlays the right. Closing either preserves world coordinates.
 The board carries content and container titles. Object authors and dates belong
-in the reader. Select and Pan work; Add and Assistant are visibly disabled with
+in the reader. Select and Pan work; Add and Comment are visibly muted, keyboard reachable and aria-disabled with
 an explanation until their owning slices ship.
 
 Tokens are scoped to `html[data-canvas]` in `canvas.css`. Dark uses the pinned
@@ -19,8 +19,9 @@ content is inert text in this slice. No shipping raster assets are introduced.
 System sans, 14px/1.45 body, 12px supporting text and tabular monospace key hints;
 16px reader text. Spacing follows 4px increments, control corners 4px and content
 corners 6px. Desktop controls are at least 32px high; phone controls are 44px.
-Neutral selection boundaries have corner marks; keyboard focus and the selected
-tool use amber. Inline SVG icons share a 1.5px stroke. Native inputs, caret,
+Neutral selection boundaries follow object edges with corner brackets; keyboard
+focus uses an offset amber outline. Selected tools use raised neutral fill and an
+amber icon. Outline selection uses a raised row; focus uses the amber outline. Inline SVG icons share a 1.5px stroke. Native inputs, caret,
 selection, scrollbars and focus use the surface tokens.
 
 The rail arrives using opacity/transform over 160ms. Content updates and camera

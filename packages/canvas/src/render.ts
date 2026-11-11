@@ -108,6 +108,7 @@ export class Renderer {
   }
   view(state: ViewState, keyboard: boolean): void {
     const v = state.viewport;
+    this.layer.style.setProperty('--zoom', String(v.zoom));
     this.layer.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.zoom})`;
     const selected = JSON.stringify(state.selected),
       focus = `${keyboard}:${state.focusId}`;
@@ -117,7 +118,7 @@ export class Renderer {
     for (const [id, el] of this.elements) {
       el.classList.toggle('selected', state.selected.includes(id));
       el.classList.toggle('keyboard-focus', keyboard && state.focusId === id);
-      this.rows.get(id)?.setAttribute('aria-current', String(state.focusId === id));
+      this.rows.get(id)?.classList.toggle('keyboard-focus', keyboard && state.focusId === id);
       this.rows.get(id)?.setAttribute('aria-pressed', String(state.selected.includes(id)));
     }
   }

@@ -34,6 +34,18 @@ A store with unknown operation kinds fsyncs its log but skips new snapshots.
 This deliberately accepts repeated replay instead of writing an inaccurately
 advanced checkpoint. The same rule applies to shutdown and handoff flushes.
 Existing checkpoints and all log records stay unchanged for a future reader.
+## 2026-11-10 — Make read-only canvas affordances truthful
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/`, `src/web/public/canvas.css`, `src/web/public/canvas.html`
+**Why:** PC3 review found resizing-like selection squares and unavailable actions that looked live.
+**Links:** [intent](../intent/2026-11-10-canvas-pc3-review.md)
+
+Selection follows the existing container edge with corner brackets; amber belongs
+to keyboard focus and selected-tool strokes. Add and Comment remain reachable
+with aria-disabled and activation announcements, so keyboard readers can discover
+when those actions arrive. Comments name the later conversation slice; the empty
+state directs the owner to an agent in the case until hand editing ships.
 
 ## 2026-11-10 - Keep canvas view commands independent of rendering
 

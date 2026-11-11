@@ -18,7 +18,11 @@
       </div>
       <div class="search-wrap">
         <label class="sr" for="search">Search canvas</label
-        ><input id="search" type="search" placeholder="Search canvas" autocomplete="off" />
+        ><input id="search" type="search" placeholder="Search canvas" autocomplete="off" /><kbd
+          class="search-hint"
+          aria-hidden="true"
+          >/</kbd
+        >
       </div>
       <nav id="tree" aria-label="Canvas objects"></nav>
       <div class="outline-foot">
@@ -32,21 +36,25 @@
       <p>Loading the workspace…</p>
       <button id="retry" hidden>Try again</button>
     </section>
+    <span id="addDescription" class="sr">Adding objects arrives with editing</span>
+    <span id="commentDescription" class="sr">Comments arrive with conversations</span>
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
         <button id="selectTool" aria-label="Select" title="Select · V"></button>
         <button id="panTool" aria-label="Pan" title="Pan · H"></button>
         <button
           id="addTool"
-          disabled
-          aria-label="Add objects unavailable in read-only view"
-          title="Adding objects comes with editing"
+          aria-disabled="true"
+          aria-label="Add objects"
+          aria-describedby="addDescription"
+          title="Adding objects arrives with editing"
         ></button>
         <button
           id="chatTool"
-          disabled
-          aria-label="Assistant unavailable in read-only view"
-          title="Assistant comes in a later release"
+          aria-disabled="true"
+          aria-label="Comment"
+          aria-describedby="commentDescription"
+          title="Comments arrive with conversations"
         ></button>
         <button id="keys" aria-label="Keys" title="Keys · ? or F1"></button>
       </div>
@@ -58,18 +66,19 @@
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
       </div>
       <div id="keysView" class="rail-body" hidden>
-        <h1>Shortcuts</h1>
         <p class="secondary">Use these while the canvas has focus. Text fields keep their own keys.</p>
         <label class="sr" for="keysSearch">Find a shortcut</label
         ><input id="keysSearch" type="search" placeholder="Find a shortcut…" />
         <div id="keyRows"></div>
-        <button id="letters">Single-letter shortcuts: on</button>
+        <button id="letters" role="switch" aria-checked="true">
+          <span>Single-letter shortcuts</span><span class="switch-track" aria-hidden="true"><span></span></span>
+        </button>
       </div>
       <div id="readerView" class="rail-body" hidden>
-        <h1 id="readerTitle"></h1>
         <p id="readerText"></p>
         <dl id="readerMeta"></dl>
-        <button id="parent">Focus parent</button><button id="children">Explore children</button>
+        <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button
+        ><button id="children" class="quiet">Explore children <kbd role="img" aria-label="Right arrow">→</kbd></button>
       </div>
     </aside>
     <span id="announcement" class="sr" role="status" aria-live="polite"></span>

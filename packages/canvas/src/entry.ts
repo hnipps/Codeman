@@ -139,11 +139,20 @@ function paint(): void {
   node('rail').hidden = !state.rail.length;
   node('keysView').hidden = state.rail.at(-1) !== 'keys';
   node('readerView').hidden = state.rail.at(-1) !== 'reader';
-  node('railTitle').textContent = state.rail.at(-1) === 'reader' ? 'Object reader' : 'Keys';
+  const focused = objects.find((o) => o.id === state.focusId);
+  node('railTitle').textContent =
+    state.rail.at(-1) === 'reader'
+      ? focused
+        ? container(focused)
+          ? label(focused)
+          : focused.type.charAt(0).toUpperCase() + focused.type.slice(1)
+        : 'Object no longer available'
+      : 'Keys';
+  document.documentElement.style.setProperty('--outline-space', state.outlineOpen && !mobile.matches ? '192px' : '0px');
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
   board.classList.toggle('panning', state.tool === 'pan' || spaceHeld);
-  node('letters').textContent = `Single-letter shortcuts: ${state.letters ? 'on' : 'off'}`;
+  button('letters').setAttribute('aria-checked', String(state.letters));
   if (
     state.rail.at(-1) === 'reader' &&
     (readerObject !== objects.find((o) => o.id === state.focusId) || readerFocus !== state.focusId)
@@ -162,14 +171,24 @@ function readObject(): void {
   const o = objects.find((o) => o.id === state.focusId);
   readerObject = o;
   readerFocus = state.focusId;
-  node('readerTitle').textContent = o ? label(o) : 'Object no longer available';
   node('readerText').textContent = o ? readable(o) : 'This object was removed from the workspace.';
+  node('readerText').hidden = !!o && container(o);
   node('readerMeta').replaceChildren();
-  if (o)
+  if (o) {
+    const dates: [string, number][] = [['Created', o.createdAt]];
+    if (o.updatedAt !== o.createdAt) dates.push(['Updated', o.updatedAt]);
     for (const [title, value] of [
       ['Author', o.author.kind === 'human' ? o.author.userId : `Agent · ${o.author.sessionId}`],
-      ['Created', new Date(o.createdAt).toLocaleString()],
-      ['Updated', new Date(o.updatedAt).toLocaleString()],
+      ...dates.map(([title, timestamp]) => [
+        title,
+        new Date(timestamp).toLocaleString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }),
+      ]),
     ]) {
       const dt = document.createElement('dt'),
         dd = document.createElement('dd');
@@ -177,22 +196,48 @@ function readObject(): void {
       if (title === 'Created' || title === 'Updated') {
         const time = document.createElement('time');
         time.dateTime = new Date(title === 'Created' ? o.createdAt : o.updatedAt).toISOString();
+        time.title = time.dateTime;
         time.textContent = value;
         dd.append(time);
       } else dd.textContent = value;
       node('readerMeta').append(dt, dd);
     }
+  }
   button('parent').hidden = !o?.parentId;
   button('children').hidden = !o || !siblings(objects, o.id).length;
 }
-for (const [action, key] of shortcuts) {
+const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
+const keyNames: Record<string, string> = {
+  '←': 'Left arrow',
+  '→': 'Right arrow',
+  '↑': 'Up arrow',
+  '↓': 'Down arrow',
+  '⌘': 'Command',
+};
+for (const [action, alternatives] of shortcuts) {
   const row = document.createElement('div'),
     title = document.createElement('span'),
-    hint = document.createElement('kbd');
+    hints = document.createElement('span');
   row.className = 'key-row';
   title.textContent = action;
-  hint.textContent = key;
-  row.append(title, hint);
+  hints.className = 'key-hints';
+  for (const [index, chord] of alternatives.entries()) {
+    if (index) hints.append(document.createTextNode('\u2009/\u2009'));
+    const group = document.createElement('span');
+    group.className = 'key-chord';
+    for (const key of chord) {
+      const cap = document.createElement('kbd');
+      cap.textContent = key === 'Mod' ? modifier : key;
+      const name = keyNames[cap.textContent];
+      if (name) {
+        cap.setAttribute('role', 'img');
+        cap.setAttribute('aria-label', name);
+      }
+      group.append(cap);
+    }
+    hints.append(group);
+  }
+  row.append(title, hints);
   node('keyRows').append(row);
 }
 input('keysSearch').oninput = () => {
@@ -213,6 +258,13 @@ button('closeRail').onclick = () => dispatch({ kind: 'escape' });
 for (const id of ['keys', 'outlineKeys']) button(id).onclick = () => dispatch({ kind: 'rail', view: 'keys' });
 button('letters').onclick = () => dispatch({ kind: 'letters', enabled: !state.letters });
 button('selectTool').onclick = () => dispatch({ kind: 'tool', tool: 'select' });
+for (const id of ['addTool', 'chatTool'])
+  button(id).onclick = () => {
+    node('announcement').textContent = '';
+    requestAnimationFrame(() => {
+      node('announcement').textContent = node(id === 'addTool' ? 'addDescription' : 'commentDescription').textContent;
+    });
+  };
 button('panTool').onclick = () => dispatch({ kind: 'tool', tool: 'pan' });
 button('fit').onclick = () => fit(state.selected.length ? state.selected : undefined);
 function parent(): void {
@@ -420,7 +472,7 @@ const sync = new CanvasSync(
     if (!objects.length) {
       node('state').querySelector('h1')!.textContent = 'A place for your work';
       node('state').querySelector('p')!.textContent =
-        'This canvas holds the ideas and references for your project. Objects added by your agents will appear here.';
+        'This canvas holds the ideas and references for your project. Ask an agent in this case to write to the canvas; editing by hand arrives in a later release.';
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
   },
