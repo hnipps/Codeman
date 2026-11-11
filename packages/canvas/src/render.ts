@@ -72,6 +72,7 @@ export class Renderer {
       if (title) {
         title.hidden = !container(o);
         title.textContent = label(o);
+        title.dataset.containerId = o.id;
         title.style.left = `${o.size ? 0 : r.x}px`;
         title.style.top = `${(o.size ? 0 : r.y) - 36}px`;
         title.style.maxWidth = `${Math.max(160, r.width)}px`;
@@ -95,6 +96,8 @@ export class Renderer {
       const row = this.rows.get(o.id);
       if (row) {
         row.textContent = label(o);
+        if (container(o)) row.dataset.containerId = o.id;
+        else delete row.dataset.containerId;
         row.dataset.searchText = searchText(o).toLowerCase();
         row.title = label(o);
         row.classList.toggle('root', depth === 0);

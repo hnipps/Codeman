@@ -437,3 +437,5 @@ Desktop Add, soft delete and focused plain-text/name editing use the queue. Read
 Canvas undo records only this browser’s acknowledged writes, appends inverse commands, checks changed fields against current state and uses expected revisions. Subtree inverses include atomic revision guards for affected descendants; a later added child prevents a destructive inverse. Text entry and composition keep native undo.
 
 Desktop selection supports enclosed marquee and Alt-drag freehand lasso (center hit testing) among immediate objects in the active container. Escape, pointer cancellation, capture loss, blur and tab suspension cancel without writes. Selection commands normalize parent/child overlap.
+
+Ordinary canvas drags submit position only. Named container headings/outline rows preview explicit reparent destinations; Move to includes Canvas root. Keyboard Move previews coarse 10-unit or Shift fine 1-unit steps until Enter; Escape cancels. Containers move through their own local position, keeping child membership and geometry.

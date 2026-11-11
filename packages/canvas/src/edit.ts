@@ -1,3 +1,5 @@
+import { movedPosition } from './drag.js';
+import { label } from './model.js';
 import { targets, selectRegion } from './select.js';
 import { type Point, union } from './viewport.js';
 import { CanvasUndo } from './undo.js';
@@ -36,6 +38,18 @@ export class DesktopEditor {
     lasso: boolean;
     toggle: boolean;
     parentId: string | null;
+  } | null = null;
+  private lastTap: { id: string; at: number } | null = null;
+  private moveGesture: {
+    pointerId: number | null;
+    start: Point;
+    delta: Point;
+    originals: ViewObject[];
+    all: ViewObject[];
+    destination: string | null;
+    moved: boolean;
+    shift: boolean;
+    target: string;
   } | null = null;
   private space = false;
   private selectionPath: SVGPathElement;
@@ -116,6 +130,17 @@ export class DesktopEditor {
       }
     };
     btn('deleteSelection').onclick = () => this.remove();
+    btn('moveMode').onclick = () => this.startKeyboardMove();
+    btn('moveTo').onclick = () => {
+      this.refreshDestinations();
+      node('moveToMenu').hidden = !node('moveToMenu').hidden;
+    };
+    btn('commitMoveTo').onclick = () => {
+      const select = node('moveDestination');
+      if (!(select instanceof HTMLSelectElement)) return;
+      this.reparent(select.value || null);
+      node('moveToMenu').hidden = true;
+    };
     btn('undoEdit').onclick = () => void this.undo('undo');
     btn('redoEdit').onclick = () => void this.undo('redo');
     btn('retryEdit').onclick = () => this.queue.retry();
@@ -380,6 +405,7 @@ export class DesktopEditor {
     node('selectionCount').textContent = `${this.options.view().selected.length} selected`;
     this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
+    this.previewMove();
   }
   private selectionStart(e: PointerEvent): void {
     if (
@@ -390,7 +416,28 @@ export class DesktopEditor {
       this.space
     )
       return;
-    if (e.target instanceof Element && e.target.closest('[data-object-id]') && !e.altKey) return;
+    const targetId =
+      e.target instanceof Element ? e.target.closest<HTMLElement>('[data-object-id]')?.dataset.objectId : undefined;
+    if (targetId && !e.altKey) {
+      if (!this.available()) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const selected = this.options.view().selected.includes(targetId) ? this.options.view().selected : [targetId];
+      this.moveGesture = {
+        pointerId: e.pointerId,
+        start: { x: e.clientX, y: e.clientY },
+        delta: { x: 0, y: 0 },
+        originals: targets(this.options.objects(), selected),
+        all: this.options.objects(),
+        destination: null,
+        moved: false,
+        shift: e.shiftKey,
+        target: targetId,
+      };
+      node('board').setPointerCapture(e.pointerId);
+      node('board').focus({ preventScroll: true });
+      return;
+    }
     e.preventDefault();
     e.stopImmediatePropagation();
     const start = { x: e.clientX, y: e.clientY };
@@ -415,6 +462,10 @@ export class DesktopEditor {
       : { kind: 'rectangle' as const, rect: union(points.map((p) => ({ ...p, width: 0, height: 0 }))) };
   }
   private selectionMove(e: PointerEvent): void {
+    if (this.moveGesture?.pointerId === e.pointerId) {
+      this.movePointer(e);
+      return;
+    }
     const gesture = this.selectionGesture;
     if (!gesture || gesture.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -435,6 +486,24 @@ export class DesktopEditor {
       el.classList.toggle('selection-preview', ids.includes(el.dataset.objectId ?? ''));
   }
   private selectionEnd(e: PointerEvent): void {
+    if (this.moveGesture?.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const gesture = this.moveGesture;
+      if (gesture.moved) this.commitMove();
+      else {
+        this.options.dispatch({ kind: 'focus', id: gesture.target });
+        if (this.lastTap?.id === gesture.target && e.timeStamp - this.lastTap.at < 500) {
+          this.options.dispatch({ kind: 'rail', view: 'reader' });
+          this.lastTap = null;
+        } else this.lastTap = { id: gesture.target, at: e.timeStamp };
+        this.options.dispatch(
+          gesture.shift ? { kind: 'toggle', id: gesture.target } : { kind: 'selection', ids: [gesture.target] }
+        );
+      }
+      this.cancelSelection();
+      return;
+    }
     const gesture = this.selectionGesture;
     if (!gesture || gesture.pointerId !== e.pointerId) return;
     e.preventDefault();
@@ -446,9 +515,137 @@ export class DesktopEditor {
     this.cancelSelection();
   }
   private cancelSelection(): void {
+    if (this.moveGesture) {
+      for (const object of this.options.objects()) {
+        const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${object.id}"]`);
+        if (el) {
+          el.style.left = `${object.position.x}px`;
+          el.style.top = `${object.position.y}px`;
+        }
+      }
+    }
+    this.moveGesture = null;
+    for (const el of node('layer').querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+    node('dropName').hidden = true;
+    node('moveHint').hidden = true;
     this.selectionGesture = null;
     this.selectionPath.removeAttribute('d');
     for (const el of node('layer').querySelectorAll('.selection-preview')) el.classList.remove('selection-preview');
+  }
+  private validDestination(id: string): boolean {
+    const selected = this.moveGesture?.originals ?? targets(this.options.objects(), this.options.view().selected);
+    const ids = new Set(selected.map((o) => o.id));
+    let parent: string | null = id;
+    const seen = new Set<string>();
+    while (parent && !seen.has(parent)) {
+      if (ids.has(parent)) return false;
+      seen.add(parent);
+      parent = this.options.objects().find((o) => o.id === parent)?.parentId ?? null;
+    }
+    return true;
+  }
+  private refreshDestinations(): void {
+    const select = node('moveDestination');
+    select.replaceChildren();
+    for (const o of [null, ...this.options.objects().filter((o) => container(o) && this.validDestination(o.id))]) {
+      const option = document.createElement('option');
+      option.value = o?.id ?? '';
+      option.textContent = o
+        ? `${label(o)}${o.parentId ? ` · in ${label(this.options.objects().find((p) => p.id === o.parentId) ?? o)}` : ''}`
+        : 'Canvas root';
+      select.append(option);
+    }
+  }
+  private reparent(parentId: string | null): void {
+    const selected = targets(this.options.objects(), this.options.view().selected);
+    if (parentId && !this.validDestination(parentId)) return;
+    this.submit(
+      selected.map((o) => ({
+        kind: 'reparent',
+        opId: crypto.randomUUID(),
+        objectId: o.id,
+        patch: { parentId, order: Date.now(), preserveWorld: true },
+      }))
+    );
+  }
+  private movePointer(e: PointerEvent): void {
+    const gesture = this.moveGesture;
+    if (!gesture) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    gesture.delta = {
+      x: (e.clientX - gesture.start.x) / this.options.view().viewport.zoom,
+      y: (e.clientY - gesture.start.y) / this.options.view().viewport.zoom,
+    };
+    if (Math.hypot(e.clientX - gesture.start.x, e.clientY - gesture.start.y) > 4) gesture.moved = true;
+    if (!gesture.moved) return;
+    this.options.dispatch({ kind: 'selection', ids: gesture.originals.map((o) => o.id) });
+    const moving = gesture.originals.map((o) => node('layer').querySelector<HTMLElement>(`[data-object-id="${o.id}"]`));
+    for (const el of moving) if (el) el.style.pointerEvents = 'none';
+    const target = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('[data-container-id]');
+    for (const el of moving) if (el) el.style.pointerEvents = '';
+    const id = target?.dataset.containerId;
+    gesture.destination = id && this.validDestination(id) ? id : null;
+    for (const el of node('layer').querySelectorAll('.drop-target')) el.classList.remove('drop-target');
+    if (gesture.destination) {
+      const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${gesture.destination}"]`);
+      el?.classList.add('drop-target');
+      const destination = this.options.objects().find((o) => o.id === gesture.destination);
+      node('dropName').textContent = destination ? `Move to ${label(destination)}` : '';
+      node('dropName').style.left = `${Math.min(innerWidth - 240, e.clientX + 16)}px`;
+      node('dropName').style.top = `${Math.max(8, e.clientY - 40)}px`;
+    }
+    node('dropName').hidden = !gesture.destination;
+    this.previewMove();
+  }
+  private previewMove(): void {
+    const gesture = this.moveGesture;
+    if (!gesture?.moved) return;
+    for (const object of gesture.originals) {
+      const position = movedPosition(gesture.all, object, gesture.delta);
+      const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${object.id}"]`);
+      if (el) {
+        el.style.left = `${position.x}px`;
+        el.style.top = `${position.y}px`;
+      }
+    }
+  }
+  private commitMove(): void {
+    const gesture = this.moveGesture;
+    if (!gesture) return;
+    const operations: Edit[] = gesture.originals.map((o) => ({
+      kind: 'move',
+      opId: crypto.randomUUID(),
+      objectId: o.id,
+      patch: { position: movedPosition(gesture.all, o, gesture.delta) },
+    }));
+    if (gesture.destination)
+      for (const o of gesture.originals)
+        operations.push({
+          kind: 'reparent',
+          opId: crypto.randomUUID(),
+          objectId: o.id,
+          patch: { parentId: gesture.destination, order: Date.now(), preserveWorld: true },
+        });
+    this.submit(operations);
+  }
+  private startKeyboardMove(): void {
+    if (!this.available()) return;
+    const selected = targets(this.options.objects(), this.options.view().selected);
+    if (!selected.length) return;
+    this.moveGesture = {
+      pointerId: null,
+      start: { x: 0, y: 0 },
+      delta: { x: 0, y: 0 },
+      originals: selected,
+      all: this.options.objects(),
+      destination: null,
+      moved: false,
+      shift: false,
+      target: selected[0].id,
+    };
+    node('moveHint').hidden = false;
+    node('board').focus({ preventScroll: true });
   }
   private async undo(direction: 'undo' | 'redo'): Promise<void> {
     if (!this.available()) return;
@@ -471,7 +668,7 @@ export class DesktopEditor {
   }
   private key(e: KeyboardEvent): void {
     if (e.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Escape' && this.selectionGesture) {
+    if (e.key === 'Escape' && (this.selectionGesture || this.moveGesture)) {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.cancelSelection();
@@ -492,6 +689,26 @@ export class DesktopEditor {
       this.options.mobile.matches
     )
       return;
+    if (this.moveGesture?.pointerId === null) {
+      const gesture = this.moveGesture;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (gesture.moved) this.commitMove();
+        this.cancelSelection();
+        return;
+      }
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const step = e.shiftKey ? 1 : 10;
+        gesture.delta.x += e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        gesture.delta.y += e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        gesture.moved = true;
+        this.previewMove();
+        return;
+      }
+    }
     if (e.key === ' ') this.space = true;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();

@@ -40,10 +40,18 @@
     <span id="addDescription" class="sr">Add text, frame, section or sub-canvas</span>
     <span id="commentDescription" class="sr">Comments arrive with conversations</span>
     <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
-      <span id="selectionCount"></span><button id="editSelection">Edit</button
+      <span id="selectionCount"></span><button id="moveMode">Move</button
+      ><button id="moveTo" aria-controls="moveToMenu">Move to…</button><button id="editSelection">Edit</button
       ><button id="deleteSelection">Delete</button><button id="undoEdit" title="Undo · Cmd/Ctrl+Z">Undo</button
       ><button id="redoEdit" title="Redo · Cmd/Ctrl+Shift+Z">Redo</button>
     </div>
+    <div id="moveToMenu" class="edit-control" hidden>
+      <label for="moveDestination">Move selection to</label
+      ><select id="moveDestination"></select
+      ><button id="commitMoveTo">Move</button>
+    </div>
+    <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
+    <span id="dropName" class="edit-control" hidden></span>
     <div class="dock-area">
       <div id="addMenu" class="edit-control" aria-label="Add objects" hidden>
         <button id="addText">Text</button><button id="addFrame">Frame</button><button id="addSection">Section</button

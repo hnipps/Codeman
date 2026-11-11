@@ -730,3 +730,45 @@ textarea:focus-visible {
 .object.selection-preview {
   outline: calc(1px / var(--zoom)) solid var(--selection);
 }
+
+#moveToMenu {
+  position: fixed;
+  bottom: 132px;
+  left: 50%;
+  width: 280px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  z-index: 5;
+}
+#moveToMenu label {
+  display: block;
+  margin-bottom: 8px;
+}
+#moveToMenu button {
+  margin-top: 8px;
+}
+#moveHint {
+  position: fixed;
+  bottom: 124px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  padding: 8px 12px;
+  font-size: 12px;
+  z-index: 5;
+}
+#dropName {
+  position: fixed;
+  padding: 4px 8px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 6;
+}
+.object.drop-target {
+  outline: calc(1px / var(--zoom)) solid var(--accent);
+}
