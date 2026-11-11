@@ -35,6 +35,13 @@ This deliberately accepts repeated replay instead of writing an inaccurately
 advanced checkpoint. The same rule applies to shutdown and handoff flushes.
 Existing checkpoints and all log records stay unchanged for a future reader.
 
+## 2026-11-10 - Keep canvas view commands independent of rendering
+
+**Type:** implementation-decision
+**Touches:** `packages/canvas/`, canvas document and managed web tabs
+**Why:** PC3 needs a read-only first screen whose view actions can later be driven by both editing controls and agent adapters.
+
+The client uses a pure typed command reducer and exposes a cloned state query plus dispatcher. Keyed nested DOM remains the first renderer; only the world layer transforms while panning. Canvas tabs use the existing trusted direct managed mode, which carries normal same-origin login cookies and avoids proxying the application into itself. This requires an additive `canvas` managed-origin discriminator. Reader and Keys share a removable overlay rail; unsupported media and future object types remain inert. The coordinator retains independent live/performance comparison and final design-review ownership.
 ## 2026-11-10 - Preserve future canvas data across code-only rollback
 
 **Type:** intent-refinement

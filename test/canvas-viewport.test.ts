@@ -76,6 +76,15 @@ describe('read view commands and hierarchy', () => {
     ]);
     expect(worldBounds(objects, objects[0])).toEqual({ x: 20, y: 40, width: 100, height: 80 });
   });
+  it('fits rotated descendants using their actual world corners', () => {
+    const parent = { ...group, position: { x: 100, y: 0 }, rotation: -45 };
+    const child = { ...object('rotated', 'group'), rotation: 45 };
+    const result = worldBounds([parent, child], child);
+    expect(result.x).toBeCloseTo(100 + 30 / Math.sqrt(2));
+    expect(result.y).toBeCloseTo(10 / Math.sqrt(2));
+    expect(result.width).toBeCloseTo(100);
+    expect(result.height).toBeCloseTo(80);
+  });
   it('overlays and unwinds rail views without changing the camera or selection', () => {
     const view = { ...initialView(), selected: ['a'], focusId: 'a' };
     const rail = command(

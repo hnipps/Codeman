@@ -39,7 +39,7 @@ export type WebviewEmbedMode = 'proxy' | 'direct';
  * same dashboard twice, once as "DeepSeek web UI..." and once as the row it had
  * just written.
  */
-export type WebviewManagedKind = 'deepseek-web';
+export type WebviewManagedKind = 'deepseek-web' | 'canvas';
 
 /**
  * Who a web tab belongs to.

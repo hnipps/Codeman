@@ -3,6 +3,7 @@ coverage/
 node_modules/
 src/web/public/vendor/
 src/web/public/gesture/
+src/web/public/canvas.js
 src/web/public/app.js
 src/web/public/styles.css
 src/web/public/mobile.css

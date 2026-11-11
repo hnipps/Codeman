@@ -1,5 +1,5 @@
 import { container, type ViewObject } from './model.js';
-import { union, type Rect } from './viewport.js';
+import { union, type Point, type Rect } from './viewport.js';
 export const siblings = (objects: ViewObject[], parentId: string | null): ViewObject[] =>
   objects
     .filter((o) => o.parentId === parentId && o.deletedAt === null)
@@ -25,49 +25,39 @@ export function nextFocus(objects: ViewObject[], id: string | null, step: number
   const index = list.findIndex((o) => o.id === id);
   return list[index < 0 ? (step > 0 ? 0 : list.length - 1) : (index + step + list.length) % list.length].id;
 }
-export function localBounds(objects: ViewObject[], o: ViewObject, seen = new Set<string>()): Rect {
-  if (seen.has(o.id)) return { x: 0, y: 0, width: 0, height: 0 };
+function geometryPoints(objects: ViewObject[], o: ViewObject, seen: Set<string>): Point[] {
+  if (seen.has(o.id)) return [];
   seen.add(o.id);
-  const r = o.size
-    ? { x: 0, y: 0, ...o.size }
-    : union(siblings(objects, o.id).map((c) => localBounds(objects, c, new Set(seen))));
+  const points = o.size
+    ? [
+        { x: 0, y: 0 },
+        { x: o.size.width, y: 0 },
+        { x: 0, y: o.size.height },
+        { x: o.size.width, y: o.size.height },
+      ]
+    : siblings(objects, o.id).flatMap((child) => geometryPoints(objects, child, new Set(seen)));
+  return transform(points.length ? points : [{ x: 0, y: 0 }], o);
+}
+function transform(points: Point[], o: ViewObject): Point[] {
   const angle = (o.rotation * Math.PI) / 180;
-  return union(
-    [
-      [r.x, r.y],
-      [r.x + r.width, r.y],
-      [r.x, r.y + r.height],
-      [r.x + r.width, r.y + r.height],
-    ].map(([x, y]) => ({
-      x: o.position.x + x * Math.cos(angle) - y * Math.sin(angle),
-      y: o.position.y + x * Math.sin(angle) + y * Math.cos(angle),
-      width: 0,
-      height: 0,
-    }))
-  );
+  return points.map((p) => ({
+    x: o.position.x + p.x * Math.cos(angle) - p.y * Math.sin(angle),
+    y: o.position.y + p.x * Math.sin(angle) + p.y * Math.cos(angle),
+  }));
+}
+const enclose = (points: Point[]): Rect => union(points.map((p) => ({ ...p, width: 0, height: 0 })));
+export function localBounds(objects: ViewObject[], o: ViewObject): Rect {
+  return enclose(geometryPoints(objects, o, new Set()));
 }
 export function worldBounds(objects: ViewObject[], o: ViewObject): Rect {
-  let r = localBounds(objects, o),
+  let points = geometryPoints(objects, o, new Set()),
     parent = objects.find((p) => p.id === o.parentId);
   const seen = new Set([o.id]);
   while (parent && !seen.has(parent.id)) {
     seen.add(parent.id);
-    const p = parent;
-    const a = (p.rotation * Math.PI) / 180;
-    r = union(
-      [
-        [r.x, r.y],
-        [r.x + r.width, r.y],
-        [r.x, r.y + r.height],
-        [r.x + r.width, r.y + r.height],
-      ].map(([x, y]) => ({
-        x: p.position.x + x * Math.cos(a) - y * Math.sin(a),
-        y: p.position.y + x * Math.sin(a) + y * Math.cos(a),
-        width: 0,
-        height: 0,
-      }))
-    );
-    parent = objects.find((p) => p.id === parent?.parentId);
+    points = transform(points, parent);
+    const parentId = parent.parentId;
+    parent = objects.find((p) => p.id === parentId);
   }
-  return r;
+  return enclose(points);
 }

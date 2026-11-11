@@ -104,4 +104,8 @@ Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. L
 
 ## Canvas API notifications
 
-`CanvasChanged` / `CANVAS_CHANGED` names `canvas:changed` in the backend/frontend SSE registries. Its payload contains the workspace ID, committed sequence and trusted resource owner; `deriveSseHint()` routes it to that owner and admins. The synced `canvasEnabled` setting defaults off and survives saving the existing Settings form. PC1 adds no canvas tab or controls.
+`CanvasChanged` / `CANVAS_CHANGED` names `canvas:changed` in the backend/frontend SSE registries. Its payload contains the workspace ID, committed sequence and trusted resource owner; `deriveSseHint()` routes it to that owner and admins. The synced `canvasEnabled` setting defaults off and survives saving the existing Settings form. The canvas document and case-picker entry are implemented in PC3.
+
+## Canvas document
+
+The read-only canvas has its own document and scoped tokens, not dashboard markup. `packages/canvas` is the source and `scripts/build-canvas-bundle.mjs` generates the ignored module in dev and production. Canvas controls use one typed view command layer. Selection is neutral; keyboard focus is amber. Text entry, native controls and IME retain their keys. The outline is 192px; the 320px nonmodal rail overlays the board and removes completely. Panel visibility never changes the camera. Phone panels occupy the full viewport with visible close controls. Managed canvas tabs use direct same-origin navigation so login cookies and base paths work without proxying the app back into itself.

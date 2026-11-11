@@ -1098,6 +1098,20 @@ export class WebServer extends EventEmitter {
         .type('text/html; charset=utf-8')
         .send(await this.renderIndexHtml());
     });
+    this.app.get('/canvas.html', async (_req, reply) => reply.code(404).send());
+    this.app.get<{ Params: { workspaceId: string } }>('/canvas/:workspaceId', async (req, reply) => {
+      if ((await this.readSettings(true)).canvasEnabled !== true) return reply.code(404).send();
+      const { readWorkspaces } = await import('../canvas/workspace-registry.js');
+      const { canAccessOwned, getAuthUser } = await import('./route-helpers.js');
+      const workspace = readWorkspaces().find((w) => w.id === req.params.workspaceId);
+      if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner)) return reply.code(404).send();
+      let html = readFileSync(join(__dirname, 'public', 'canvas.html'), 'utf8');
+      html = html.replace('<base href="/" />', `<base href="${escapeHtmlText(joinBasePath(this.basePath, '/'))}" />`);
+      return reply
+        .header('Cache-Control', 'no-cache')
+        .type('text/html; charset=utf-8')
+        .send(this.cacheBustAssets(html));
+    });
     this.app.get('/index.html', async (_req, reply) => {
       return reply
         .header('Cache-Control', 'no-cache')
