@@ -1,11 +1,18 @@
 /**
  * @fileoverview File telemetry for supervised (blue-green) deploys.
  *
- * With `CODEMAN_LOG_DIR` set, the server appends three JSONL streams there so an agent
+ * With `CODEMAN_LOG_DIR` set, the server appends four JSONL streams there so an agent
  * or a supervisor can read what the app did without a log shipper: `server.jsonl` (every
- * console line), `requests.jsonl` (one line per HTTP request) and `client-errors.jsonl`
- * (browser errors posted to `/api/client-errors`). With it unset nothing is written and
- * nothing else changes.
+ * console line), `requests.jsonl` (one line per HTTP request), `client-errors.jsonl`
+ * (browser errors posted to `/api/client-errors`) and `ui-events.jsonl` (canvas and
+ * tab-strip events posted to that same route with `kind: "ui"`). With it unset nothing
+ * is written and nothing else changes.
+ *
+ * Every line is passed through `redactLogLine` before it joins the queue, so a crash
+ * flush cannot write a secret the async flush would have masked. The hook secret is
+ * read from disk with a capped read and never created here. A miss is not
+ * remembered, so a secret created a moment later is visible to the next line.
+ * Once a usable secret is known, later lines do not read the file again.
  *
  * Writes never throw into a caller and never block: lines queue in memory (bounded) and
  * one async append per stream flushes them. Rotation is by size, checked against the file
@@ -18,11 +25,13 @@
  * @module telemetry
  */
 
-import { accessSync, appendFileSync, constants, mkdirSync } from 'node:fs';
+import { accessSync, appendFileSync, closeSync, constants, lstatSync, mkdirSync, openSync, readSync } from 'node:fs';
 import { appendFile, rename, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { format } from 'node:util';
+import { dataPath } from './config/instance.js';
+import { redactLogLine } from './telemetry-redact.js';
 
 const require = createRequire(import.meta.url);
 export const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
@@ -65,10 +74,80 @@ interface ClientErrorLogLine {
   url?: string | null;
 }
 
+interface UiEventLogLine {
+  buildId: string;
+  surface: 'canvas' | 'tab-strip';
+  action: string;
+  target?: string | null;
+}
+
 interface StreamRecords {
   server: ServerLogLine;
   requests: RequestLogLine;
   'client-errors': ClientErrorLogLine;
+  'ui-events': UiEventLogLine;
+}
+
+let cachedHookSecret: string | undefined;
+/** Bytes of the hook-secret file taken by the last disk read. Zero when the cache answered. */
+let hookSecretReadBytes = 0;
+
+/** A hook secret is a short file. The read never asks for more than this. */
+export const HOOK_SECRET_READ_CAP = 512;
+
+/** Drop the cached hook secret. Tests use this so a file written mid-process is visible. */
+export function resetTelemetryRedactionCache(): void {
+  cachedHookSecret = undefined;
+  hookSecretReadBytes = 0;
+}
+
+/** How many bytes the last hook-secret disk read took. Zero when the cache answered. */
+export function lastHookSecretReadBytes(): number {
+  return hookSecretReadBytes;
+}
+
+/**
+ * Remember a secret `getHookSecret()` just read or created. A log line must not
+ * keep a copy that appeared after an earlier miss. Unusable values are ignored.
+ */
+export function noteHookSecretForRedaction(value: string): void {
+  const text = value.trim();
+  if (text.length < 16 || text.length > 256) return;
+  if (text.includes('\n') || text.includes('\r') || text.includes('\0')) return;
+  cachedHookSecret = text;
+}
+
+/**
+ * The hook secret already on disk, or undefined. This never creates the file:
+ * `getHookSecret()` would mint one the first time a log line was written.
+ * A miss is not cached. A value shorter than 16 characters, longer than 256,
+ * or carrying a newline is ignored.
+ */
+export function readHookSecretForRedaction(): string | undefined {
+  if (cachedHookSecret !== undefined) {
+    hookSecretReadBytes = 0;
+    return cachedHookSecret;
+  }
+  let fd: number | undefined;
+  try {
+    const path = dataPath('hook-secret');
+    const info = lstatSync(path);
+    if (!info.isFile()) return undefined;
+    fd = openSync(path, constants.O_RDONLY);
+    const buf = Buffer.alloc(HOOK_SECRET_READ_CAP);
+    const n = readSync(fd, buf, 0, HOOK_SECRET_READ_CAP, 0);
+    hookSecretReadBytes = n;
+    const firstLine = buf.subarray(0, n).toString('utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+    if (firstLine.length < 16 || firstLine.length > 256) return undefined;
+    if (firstLine.includes('\0')) return undefined;
+    cachedHookSecret = firstLine;
+    return firstLine;
+  } catch {
+    hookSecretReadBytes = 0;
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 type TelemetryStream = keyof StreamRecords;
@@ -119,9 +198,16 @@ class StreamWriter {
   ) {}
 
   push(line: string): void {
-    if (this.queuedChars + line.length > MAX_QUEUED_CHARS) return;
-    this.queue.push(line);
-    this.queuedChars += line.length;
+    let safe: string;
+    try {
+      safe = redactLogLine(line, readHookSecretForRedaction());
+      if (!safe.endsWith('\n')) safe += '\n';
+    } catch {
+      safe = '[unredactable]\n';
+    }
+    if (this.queuedChars + safe.length > MAX_QUEUED_CHARS) return;
+    this.queue.push(safe);
+    this.queuedChars += safe.length;
     if (!this.timer) {
       this.timer = setTimeout(() => void this.flush(), FLUSH_DELAY_MS);
       this.timer.unref();

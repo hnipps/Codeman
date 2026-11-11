@@ -1143,6 +1143,7 @@ The JSON form is what Claude Desktop, Cursor and Gemini CLI take. Add `"CODEMAN_
 | `list_extensions` | Plugins and skills Codeman has imported, with the id `remove_extension` takes |
 | `import_extension` | Imports a GitHub repository or an absolute path (directory, zip, tar.gz, or SKILL.md) for every agent CLI |
 | `remove_extension` | Uninstalls one imported plugin or skill. Directories Codeman did not import stay |
+| `logs_query` | Already-redacted lines from one telemetry stream and its rotated file. Literal text only |
 
 Rules the server enforces rather than documents:
 

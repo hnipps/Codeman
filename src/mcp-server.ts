@@ -52,6 +52,7 @@ import {
 } from './cli-agent.js';
 import { credentialsFrom, readCodemanEnvFile } from './codeman-credentials.js';
 import { listClis } from './config/cli-registry/registry.js';
+import { LOG_LEVELS, LOG_QUERY_MAX_LIMIT, LOG_QUERY_MAX_TEXT, LOG_STREAMS } from './telemetry-query.js';
 import { getErrorMessage } from './types.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -424,6 +425,45 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: 'logs_query',
+      title: 'Query redacted logs',
+      description:
+        'Read already-redacted lines from one telemetry stream (server, requests, client-errors or ui-events) ' +
+        'and its rotated .1 file. Filter with since, until, level and a literal text substring. There is no ' +
+        'way to read the raw line. An empty list with a reason means no log directory is configured.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          stream: {
+            type: 'string',
+            enum: [...LOG_STREAMS],
+            description: 'Which JSONL stream to read.',
+          },
+          text: {
+            type: 'string',
+            maxLength: LOG_QUERY_MAX_TEXT,
+            description: 'Literal substring. Not a regular expression.',
+          },
+          since: { type: 'string', description: 'Inclusive ISO-8601 lower bound on ts.' },
+          until: { type: 'string', description: 'Inclusive ISO-8601 upper bound on ts.' },
+          level: {
+            type: 'string',
+            enum: [...LOG_LEVELS],
+            description: 'Console level. Matches the level field.',
+          },
+          limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: LOG_QUERY_MAX_LIMIT,
+            description: 'Newest matching lines to return. Default 200.',
+          },
+        },
+        required: ['stream'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
   ];
 }
@@ -938,6 +978,38 @@ export function createToolRunner(deps: ToolRunnerDeps) {
       const res = await call({ method: 'DELETE', path: `/api/v1/extensions/${encodeURIComponent(id)}` }, signal);
       ensureOk(res);
       return structuredResult((res.json?.data as Record<string, unknown> | undefined) ?? { id });
+    },
+
+    async logs_query(args, signal) {
+      const allowed = new Set(['stream', 'text', 'since', 'until', 'level', 'limit']);
+      for (const key of Object.keys(args)) {
+        if (!allowed.has(key)) throw new ToolError(`Unknown field ${key}`);
+      }
+      const stream = readString(args, 'stream', { required: true, max: 40 })!;
+      if (!(LOG_STREAMS as readonly string[]).includes(stream)) {
+        throw new ToolError(`stream must be one of: ${LOG_STREAMS.join(', ')}`);
+      }
+      const text = readString(args, 'text', { max: LOG_QUERY_MAX_TEXT });
+      const since = readString(args, 'since', { max: 40 });
+      const until = readString(args, 'until', { max: 40 });
+      const level =
+        args.level === undefined || args.level === null
+          ? undefined
+          : readEnum(args, 'level', LOG_LEVELS, LOG_LEVELS[0]);
+      const limit = args.limit === undefined ? undefined : readInt(args, 'limit', 1, 1, LOG_QUERY_MAX_LIMIT);
+      const query: Record<string, string | number | undefined> = {
+        stream,
+        text: text || undefined,
+        since: since || undefined,
+        until: until || undefined,
+        level,
+        limit,
+      };
+      const res = await call({ method: 'GET', path: '/api/v1/logs', query }, signal);
+      ensureOk(res);
+      const data = res.json?.data;
+      if (!data || typeof data !== 'object') throw new ToolError('Codeman answered without log lines');
+      return { text: JSON.stringify(data, null, 2) };
     },
   };
 

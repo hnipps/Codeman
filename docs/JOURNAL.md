@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - An Authorization bearer is one placeholder
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** `Authorization: Bearer …` was stored as `Authorization: [redacted]]`. The bearer shape and the header rule both rewrote the same span, and the `]` inside the placeholder ended the header value early.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round7.md)
+
+The assignment is measured on the original text, before any placeholder is written. A credential header that holds a bearer token gets one `[redacted]`. A `]` that was already in the input, such as the closer of `headers: [Authorization: Bearer …]`, stays. Free-standing bearer tokens are unchanged.
+
 ## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
 
 **Type:** propagated-discovery
@@ -136,6 +145,68 @@ Normal replay records avoid constructing failed envelope-schema parses.
 Appends reach the OS synchronously; snapshot and handoff flushes fsync the log.
 This covers process restart recovery, with no per-append power-loss guarantee.
 The smoke probe is not the program's independent live or performance verdict.
+## 2026-11-11 - A token count is a whole number
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** Round 5 kept any value that started with a digit, so `tokens: 1synthetic-credential-123456789` stayed on the line.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round6.md)
+
+The first value token under a token-count key must be entirely a number: digits, group separators only between digits, and an optional `k` or `m`. `174k` stays. Anything else is masked like a secret value.
+
+## 2026-11-11 - A token count is not a credential
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** `tokens: 15234 input, 921 output` was masked because the key contains `token`. That line is a usage count this app logs on purpose.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round5.md)
+
+A key that only counts tokens is not a secret key. The value stays only when it starts with a digit. An object, an array, or a quoted string under `tokens` is still masked, because a key-only exemption would leave `{"tokens":{"access":"…"}}` readable and `access` is not itself a credential word. `authTokens` and any count-shaped key that also says `auth`, `access`, `refresh`, `secret`, `bearer`, `api`, `session`, or `id_token` stay secret.
+
+## 2026-11-11 - An unquoted secret value runs to the newline
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** A coordinator probe still found HTTP Basic credentials, cookie values, multi-word passwords, `sk-` and `ghp_` tokens, and curl `-u` arguments on disk. Stopping an unquoted value at the first space was the gap.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round4.md)
+
+An unquoted value under a secret key now runs to the newline, or to the `}` or `]` that closes the surrounding structure. `cookie`, `set-cookie`, `codeman_session`, and `sid` are secret keys. `session`, `sessionId`, `session_id`, and `claudeSessionId` stay readable so a row can still be correlated. Token shapes are masked by a linear scan with no key. The plan did not list those shapes; the probe did.
+
+## 2026-11-11 - Scan quoted text, and stop over-masking diagnostics
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** The third audit still found secrets inside quoted assignments, after a second `@`, and under a digit-leading key. The same pass was eating stack-frame positions, `host:port`, and an `Error:` label, and a megabyte-long quoted key took seconds because it was copied and normalised.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round3.md)
+
+A quote that is not itself a secret value is scanned for assignments and URL userinfo, four levels deep. Past that depth a marked interior is masked whole. Userinfo is masked through the last `@` before the authority ends, and a URL with no `@` keeps a numeric port. A key may start with a digit. A key longer than 256 characters is secret without another copy. A path-like key followed only by digits, and a value that is only an `Error:` label, stay. The plain scan repeats at most three times so a mask that uncovers a later shape still settles. An unlabelled secret is still not detected. That is a second line behind not logging the secret.
+
+## 2026-11-10 - Mask the whole value when the key merely contains a credential word
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`, `src/telemetry.ts`, `src/telemetry-query.ts`
+**Why:** The second audit showed that an exact-word key rule, a capped value, and a tail window that always skipped to the next newline still left secrets out of the mask or dropped a complete row.
+**Links:** [Intent](../intent/2026-11-10-pc8-log-redaction-fix-round2.md)
+
+The key rule is a substring match again (`auth`, `password`, `secret`, `token`, `key`, `credential`), at any length, minus an exact allowlist of attribution keys after case and separators are removed. `keyboard` is therefore a credential key. That is the over-mask the rule accepts. Config backup's `SECRET_KEY_RE` is unchanged and still matches `author`. A masked value runs to its quote, bracket, or delimiter, or to the end of the line when the closer is not in the line. The hook secret is read with a 512-byte cap and, once known, is not read again; a miss is still not cached. A query window keeps its first row when the byte before the window is a newline. A secret with no credential key and no known shape is not detected.
+
+## 2026-11-10 - Mask the secret shapes the first log audit still found
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`, `src/telemetry-query.ts`, `src/telemetry.ts`, `src/config/hook-secret.ts`
+**Why:** The first audit showed credential-shaped lines still reaching disk, a 30 second blind spot after the hook secret was created, and a query that dropped the newest rows once a file passed its byte cap.
+**Links:** [Intent](../intent/2026-11-10-pc8-log-redaction-fix.md)
+
+URL userinfo is masked with or without a password, and the scheme match is case-insensitive. Bearer tokens are too. Secret-shaped keys are recognized in the quoted, escaped, and whitespace-separated forms `util.format` actually prints. A hook-secret miss is not cached, and `getHookSecret()` supplies the value it just stored, so the next line cannot keep a secret that appeared a moment earlier. `queryLogs` reads each generation from the tail. Telemetry's key rule is no longer config backup's: `author`, `authored`, `authUser`, and `authorId` keep their values, while `auth`, `authorization`, and `x-auth-*` stay masked. Config backup's `SECRET_KEY_RE` is unchanged.
+
+## 2026-11-10 - Query redacted telemetry without a second intake route
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry.ts`, `src/telemetry-redact.ts`, `src/telemetry-query.ts`, `src/web/routes/telemetry-routes.ts`, `src/mcp-server.ts`
+**Why:** The canvas plan asks for redacted log query and a `ui-events` stream, and leaves the intake route and the newest-row structure unspecified.
+**Links:** [Intent](../intent/2026-11-10-pc8-redacted-logs.md), [Initial version plan](agentic-canvas/initial-version-plan.md)
+
+Canvas and tab-strip events post through the existing `POST /api/client-errors` with `kind: "ui"`, validated by a small schema in the route, and land in `ui-events.jsonl`. They use their own 120-per-minute bucket so a burst does not consume the 30-per-minute client-error budget. `queryLogs` keeps the newest matches in a ring rather than shifting an array, and it redacts again on read so a line written by an older release cannot come back raw. The hook secret is read from the file that already exists and is never created by a log write. A value shorter than 16 characters is ignored. A usable secret is removed by literal split/join, not by a regular expression. `deploy/test.sh` gains `test/telemetry-redact.test.ts` and `test/telemetry-query.test.ts` next to the telemetry files it already runs, because those tests guard stored data.
 
 ## 2026-11-10 - Run the canvas program with Codex, Grok and Copilot workers
 
