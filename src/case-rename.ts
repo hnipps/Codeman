@@ -22,6 +22,8 @@
  */
 
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { dataPath } from './config/instance.js';
 import { dirname, join, resolve, sep } from 'node:path';
 import { claudeProjectsDir } from './utils/claude-transcript.js';
 
@@ -224,3 +226,10 @@ export function renameInOrder(order: unknown, from: string, to: string): string[
 
 /** The folder a linked case moves to: its own parent, the new name. */
 export const siblingPath = (path: string, newName: string): string => join(dirname(path), newName);
+
+/** Carry canvas identity across a successful case rename, without minting a workspace. */
+export async function rekeyCaseWorkspace(from: string, to: string, owner?: string): Promise<void> {
+  if (!existsSync(dataPath('workspaces.json'))) return;
+  const { renameWorkspaceCase } = await import('./canvas/workspace-registry.js');
+  renameWorkspaceCase(from, to, owner);
+}
