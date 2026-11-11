@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - Scan quoted text, and stop over-masking diagnostics
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** The third audit still found secrets inside quoted assignments, after a second `@`, and under a digit-leading key. The same pass was eating stack-frame positions, `host:port`, and an `Error:` label, and a megabyte-long quoted key took seconds because it was copied and normalised.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round3.md)
+
+A quote that is not itself a secret value is scanned for assignments and URL userinfo, four levels deep. Past that depth a marked interior is masked whole. Userinfo is masked through the last `@` before the authority ends, and a URL with no `@` keeps a numeric port. A key may start with a digit. A key longer than 256 characters is secret without another copy. A path-like key followed only by digits, and a value that is only an `Error:` label, stay. The plain scan repeats at most three times so a mask that uncovers a later shape still settles. An unlabelled secret is still not detected. That is a second line behind not logging the secret.
+
 ## 2026-11-10 - Mask the whole value when the key merely contains a credential word
 
 **Type:** intent-refinement
