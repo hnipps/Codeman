@@ -6,6 +6,8 @@ import { CanvasStore } from '../src/canvas/canvas-store.js';
 import { workspaceForCase, readWorkspaces } from '../src/canvas/workspace-registry.js';
 import { rekeyCaseWorkspace } from '../src/case-rename.js';
 import { deployRole } from '../src/deploy-role.js';
+import { applyOperation, OperationSchema, CommandSchema } from '../src/canvas/operations.js';
+import { emptyState } from '../src/canvas/model.js';
 import { create, human, agent } from './canvas-fixtures.js';
 
 let dir: string;
@@ -33,6 +35,87 @@ describe('canvas durable store', () => {
     expect(readFileSync(store.logPath, 'utf8').trim().split('\n')).toHaveLength(2);
     expect(statSync(store.logPath).mode & 0o777).toBe(0o600);
   });
+  it.each(['log', 'snapshot'] as const)(
+    'preserves future data loaded from a %s through edits, snapshots and replay',
+    (source) => {
+      const store = new CanvasStore('workspace');
+      const result = store.append([create('known'), create('opaque')], human);
+      if (!result.ok) throw new Error('fixture append failed');
+      const operations = result.operations.map((op) => ({
+        ...op,
+        futureOperation: { nested: ['keep'] },
+        prev: op.prev.map((change) => ({
+          ...change,
+          futureChange: true,
+          after: {
+            ...change.after,
+            futureObject: { keep: true },
+            type: change.objectId === 'opaque' ? 'future-widget' : change.after.type,
+            content: {
+              ...change.after.content,
+              type: change.objectId === 'opaque' ? 'future-widget' : change.after.type,
+              futureContent: ['keep'],
+            },
+          },
+        })),
+      }));
+      const future = { seq: 3, opId: 'future-op', kind: 'future-operation', futurePayload: { keep: ['all'] } };
+      const rawLog = [...operations, future].map((op) => JSON.stringify(op)).join('\n') + '\n';
+      writeFileSync(store.logPath, rawLog);
+      let expected = emptyState();
+      for (const op of operations) expected = applyOperation(expected, OperationSchema.parse(op));
+      expected.seq = 3;
+      if (source === 'snapshot') writeFileSync(store.snapshotPath, JSON.stringify({ version: 1, state: expected }));
+      const loaded = new CanvasStore('workspace');
+      expect(loaded.read()).toEqual(expected);
+      expect(loaded.operations()).toEqual([...operations, future]);
+      const opaqueBefore = structuredClone(loaded.read().objects.opaque);
+      expect(
+        loaded.append(
+          [{ kind: 'move', opId: 'opaque-move', objectId: 'opaque', patch: { position: { x: 9, y: 9 } } }],
+          human
+        ).ok
+      ).toBe(false);
+      expect(
+        loaded.append(
+          [
+            {
+              kind: 'update',
+              opId: 'known-edit',
+              objectId: 'known',
+              patch: { content: { type: 'text', text: 'edited' } },
+            },
+          ],
+          human
+        ).ok
+      ).toBe(true);
+      expect(loaded.read().objects.known).toMatchObject({
+        futureObject: { keep: true },
+        content: { text: 'edited', futureContent: ['keep'] },
+      });
+      expect(loaded.read().objects.opaque).toEqual(opaqueBefore);
+      expect(() => CommandSchema.parse({ ...create('bad'), futureRequest: true })).toThrow();
+      expect(() =>
+        CommandSchema.parse({
+          kind: 'update',
+          opId: 'bad-content',
+          objectId: 'known',
+          patch: { content: { type: 'text', text: 'bad', futureContent: true } },
+        })
+      ).toThrow();
+      const state = loaded.read();
+      const log = loaded.operations();
+      loaded.snapshot();
+      expect(JSON.parse(readFileSync(loaded.snapshotPath, 'utf8')).state).toEqual(state);
+      expect(readFileSync(loaded.logPath, 'utf8').startsWith(rawLog)).toBe(true);
+      const replayed = new CanvasStore('workspace');
+      expect(replayed.read()).toEqual(state);
+      expect(replayed.operations()).toEqual(log);
+      rmSync(loaded.snapshotPath);
+      expect(new CanvasStore('workspace').read()).toEqual(state);
+      expect(new CanvasStore('workspace').operations()).toEqual(log);
+    }
+  );
   it('ignores a torn final transaction and repairs its tail before appending', () => {
     const store = new CanvasStore('workspace');
     store.append([create('a')], human);

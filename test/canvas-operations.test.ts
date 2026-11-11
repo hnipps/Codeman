@@ -23,6 +23,7 @@ describe('canvas domain operations', () => {
     ]);
     const op = result.operations[0];
     if (!op) throw new Error('missing op');
+    expect(invertOperation(op)[0]?.kind).toBe('update');
     expect(apply(result.state, invertOperation(op)).state.objects.text?.content).toEqual({
       type: 'text',
       text: 'text',
@@ -34,6 +35,32 @@ describe('canvas domain operations', () => {
         human
       )
     ).toMatchObject({ ok: false, reasons: [{ code: 'REVISION' }] });
+  });
+  it('uses native undo operations and restores exact local placement after reparenting', () => {
+    const base = apply(emptyState(), [create('frame', null, 'frame'), create('child')]);
+    const before = structuredClone(base.state.objects.child);
+    const next = apply(base.state, [
+      {
+        kind: 'reparent',
+        opId: 'parent',
+        objectId: 'child',
+        patch: { parentId: 'frame', order: 8, preserveWorld: true },
+      },
+    ]);
+    const op = next.operations[0];
+    if (!op) throw new Error('missing reparent');
+    const inverse = invertOperation(op);
+    expect(inverse.map((command) => command.kind)).toEqual(['reparent', 'move', 'update']);
+    const restored = apply(next.state, inverse).state.objects.child;
+    expect(restored).toMatchObject({
+      parentId: before?.parentId,
+      order: before?.order,
+      position: before?.position,
+      rotation: before?.rotation,
+    });
+    const created = base.operations[0];
+    if (!created) throw new Error('missing create');
+    expect(invertOperation(created)[0]?.kind).toBe('delete');
   });
   it('refuses cycles and atomically rejects the preceding valid command', () => {
     const state = apply(emptyState(), [create('group', null, 'group'), create('child', 'group', 'group')]).state;
@@ -218,10 +245,11 @@ describe('canvas domain operations', () => {
       create('child', 'frame'),
       create('group', null, 'group'),
     ]).state;
+    const childBefore = structuredClone(state.objects.child);
     const resized = apply(state, [
       { kind: 'update', opId: 'resize', objectId: 'frame', patch: { size: { width: 200, height: 300 } } },
     ]).state;
-    expect(resized.objects.child).toEqual(state.objects.child);
+    expect(resized.objects.child).toEqual(childBefore);
     expect(
       validateBatch(
         state,
@@ -229,6 +257,25 @@ describe('canvas domain operations', () => {
         human
       ).ok
     ).toBe(false);
+  });
+  it('treats subcanvas as an explicitly sized container without scaling children', () => {
+    const base = apply(emptyState(), [create('sub', null, 'subcanvas'), create('child', 'sub')]);
+    const childBefore = structuredClone(base.state.objects.child);
+    const resized = apply(base.state, [
+      { kind: 'update', opId: 'resize-sub', objectId: 'sub', patch: { size: { width: 600, height: 400 } } },
+    ]);
+    expect(bounds(resized.state, 'sub', 'local')).toEqual({ x: 10, y: 20, width: 600, height: 400 });
+    expect(resized.state.objects.child).toEqual(childBefore);
+    const deleted = apply(resized.state, [{ kind: 'delete', opId: 'delete-sub', objectId: 'sub' }]);
+    const operation = deleted.operations[0];
+    if (!operation) throw new Error('missing delete');
+    const inverse = invertOperation(operation);
+    expect(inverse).toHaveLength(1);
+    expect(inverse[0]?.kind).toBe('restore');
+    const restored = apply(deleted.state, inverse);
+    expect(restored.operations[0]?.kind).toBe('restore');
+    expect(restored.state.objects.sub?.deletedAt).toBeNull();
+    expect(restored.state.objects.child?.deletedAt).toBeNull();
   });
   it('validates against frozen input without exposing the staging table', () => {
     const initial = apply(emptyState(), [create('group', null, 'group')]).state;

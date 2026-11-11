@@ -38,7 +38,7 @@ export const MutableSchema = z
     deletionOpId: IdSchema.nullable(),
   })
   .strict();
-export const ObjectSchema = MutableSchema.extend({
+const ObjectFieldsSchema = MutableSchema.extend({
   deletionOpId: IdSchema.nullable().default(null),
   id: IdSchema,
   type: z.enum(['text', 'image', 'link', 'embed', 'group', 'frame', 'section', 'subcanvas']),
@@ -46,8 +46,11 @@ export const ObjectSchema = MutableSchema.extend({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   revision: z.number().int().nonnegative(),
-})
-  .refine((o) => o.type === o.content.type, 'content type must match object type')
+});
+export const ObjectSchema = ObjectFieldsSchema.refine(
+  (o) => o.type === o.content.type,
+  'content type must match object type'
+)
   .refine(
     (o) => o.type !== 'group' || (o.size === null && o.lock !== 'background'),
     'groups are auto-bounded and only support subtree locks'
@@ -57,7 +60,30 @@ export const ObjectSchema = MutableSchema.extend({
     'background locks require frame or section'
   )
   .refine((o) => o.type === 'group' || o.size !== null, 'explicitly sized objects require size');
-export type CanvasObject = z.infer<typeof ObjectSchema>;
+export const StoredObjectSchema = ObjectFieldsSchema.extend({
+  type: z.string(),
+  content: z.object({ type: z.string() }).passthrough(),
+}).passthrough();
+export type CanvasObject = z.infer<typeof StoredObjectSchema>;
+export const isKnownObject = (o: CanvasObject): boolean => ObjectFieldsSchema.shape.type.safeParse(o.type).success;
+
+export function knownContentFields(content: CanvasObject['content']) {
+  const contentSchema = ContentSchema.options.find((schema) => schema.shape.type.value === content.type);
+  if (!contentSchema) throw new Error('Unknown content type is read-only');
+  return contentSchema.strip().parse(content);
+}
+
+/** Validate understood fields without discarding extensions owned by newer releases. */
+export function validateKnownObject(o: CanvasObject): boolean {
+  const contentSchema = ContentSchema.options.find((schema) => schema.shape.type.value === o.content.type);
+  if (!contentSchema) return false;
+  const content = contentSchema.strip().safeParse(o.content);
+  if (!content.success) return false;
+  return ObjectSchema.safeParse({
+    ...Object.fromEntries(Object.keys(ObjectFieldsSchema.shape).map((key) => [key, o[key]])),
+    content: content.data,
+  }).success;
+}
 export type MutableFields = z.infer<typeof MutableSchema>;
 export const CommentSchema = z
   .object({
@@ -71,7 +97,7 @@ export const CommentSchema = z
 export type Comment = z.infer<typeof CommentSchema>;
 export const StateSchema = z.object({
   seq: z.number().int().nonnegative(),
-  objects: z.record(z.string(), ObjectSchema),
+  objects: z.record(z.string(), StoredObjectSchema),
   comments: z.array(CommentSchema),
 });
 export type CanvasState = z.infer<typeof StateSchema>;
@@ -80,7 +106,7 @@ export const sameAuthor = (a: Author, b: Author): boolean =>
   a.kind === 'human' && b.kind === 'human'
     ? a.userId === b.userId
     : a.kind === 'agent' && b.kind === 'agent' && a.sessionId === b.sessionId;
-export const isContainer = (o: CanvasObject): boolean => ['group', 'frame', 'section'].includes(o.type);
+export const isContainer = (o: CanvasObject): boolean => ['group', 'frame', 'section', 'subcanvas'].includes(o.type);
 
 export function descendants(state: CanvasState, id: string): CanvasObject[] {
   const children = new Map<string, CanvasObject[]>();

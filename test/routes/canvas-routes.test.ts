@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerCanvasRoutes } from '../../src/web/routes/canvas-routes.js';
 import { installRouteErrorHandler } from '../../src/web/route-error-handler.js';
 import { CanvasStores } from '../../src/canvas/canvas-store.js';
-import { workspaceForCase } from '../../src/canvas/workspace-registry.js';
+import * as pathProbe from '../../src/utils/bounded-path-probe.js';
+import { readWorkspaces, workspaceForCase } from '../../src/canvas/workspace-registry.js';
 import { deployRole } from '../../src/deploy-role.js';
 import { resolveCasesDir } from '../../src/web/route-helpers.js';
 import { create } from '../canvas-fixtures.js';
@@ -100,12 +101,16 @@ describe('canvas routes', () => {
     expect(response.statusCode).toBe(200);
     expect((await app.inject({ url: `${base}/objects` })).json().data.comments).toHaveLength(1);
     expect((await app.inject({ url: `${base}/ops?since=3` })).json().data.operations).toHaveLength(1);
+    const beforeObjects = (await app.inject({ url: `${base}/objects` })).json();
+    const beforeLog = (await app.inject({ url: `${base}/ops` })).json();
     response = await app.inject({
       method: 'POST',
       url: `${base}/revert`,
       payload: { author: { kind: 'agent', sessionId: 'other' } },
     });
     expect(response.statusCode).toBe(200);
+    expect((await app.inject({ url: `${base}/objects` })).json()).toEqual(beforeObjects);
+    expect((await app.inject({ url: `${base}/ops` })).json()).toEqual(beforeLog);
     expect((await app.inject({ url: '/api/canvas/workspaces' })).json().data.workspaces).toHaveLength(1);
     await app.close();
   });
@@ -149,6 +154,25 @@ describe('canvas routes', () => {
     const { app } = await harness();
     expect((await app.inject({ url: `/api/canvas/${workspace.id}/objects` })).statusCode).toBe(200);
     await app.close();
+  });
+  it('returns a diagnostic 503 without minting when the case probe is unknown', async () => {
+    const probe = vi.spyOn(pathProbe, 'probePathKind').mockResolvedValue('unknown');
+    const { app } = await harness();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/canvas/workspaces',
+        payload: { caseName: 'unreachable' },
+      });
+      expect(response.statusCode).toBe(503);
+      const path = join(resolveCasesDir({ username: 'user-a', role: 'user' }), 'unreachable');
+      expect(probe).toHaveBeenCalledWith(path, { pastCap: true });
+      expect(response.json().error).toBe(pathProbe.describeUnknownPath('Case folder', path, { pastCap: true }));
+      expect(readWorkspaces()).toEqual([]);
+    } finally {
+      probe.mockRestore();
+      await app.close();
+    }
   });
   it('mints a workspace only for an existing accessible case', async () => {
     mkdirSync(join(resolveCasesDir({ username: 'user-a', role: 'user' }), 'canvas-test-case'), { recursive: true });

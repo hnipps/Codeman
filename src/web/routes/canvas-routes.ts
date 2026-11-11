@@ -1,6 +1,6 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
 import type { FastifyInstance } from 'fastify';
-import { stat } from 'node:fs/promises';
+import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
 import { canAccessOwned, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
@@ -48,12 +48,17 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
       const { caseName } = parseBody(CanvasWorkspaceSchema, req.body);
       const path = await resolveCasePath(caseName, getAuthUser(req));
-      if (
-        !(await stat(path).then(
-          (s) => s.isDirectory(),
-          () => false
-        ))
-      )
+      const kind = await probePathKind(path, { pastCap: true });
+      if (kind === 'unknown')
+        return reply
+          .code(503)
+          .send(
+            createErrorResponse(
+              ApiErrorCode.OPERATION_FAILED,
+              describeUnknownPath('Case folder', path, { pastCap: true })
+            )
+          );
+      if (kind !== 'directory')
         return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Case not found'));
       const { workspaceForCase } = await import('../../canvas/workspace-registry.js');
       return { success: true, data: { workspace: workspaceForCase(caseName, ownerFor(req)) } };

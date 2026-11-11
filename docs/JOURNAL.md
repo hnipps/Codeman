@@ -2,6 +2,28 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Preserve future canvas data across code-only rollback
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/`, `src/web/routes/canvas-routes.ts`
+**Why:** The PC1 audit found strict disk schemas would reject later object extensions on rollback.
+**Links:** [Audit fix intent](../intent/2026-11-10-canvas-audit-fixes.md), [Canvas storage invariants](architecture-invariants.md#canvas-storage)
+
+Requests retain strict schemas. Stored objects, content and operation records
+retain extension keys; known content edits merge those keys unchanged. Future
+object types are opaque and read-only to this release, including compound
+commands affecting their subtree. Unknown operation kinds remain unapplied but
+are retained in returned history and in the log, which snapshots never truncate.
+
+Sub-canvases are explicitly bounded containers so later media work can place
+blocks inside them. Resizing their bounds leaves child geometry unchanged.
+Delete inversion emits a root restore, using deletion IDs to restore only its
+own tombstones. Other ordinary undo commands use native operations; reparent
+undo restores membership and exact local geometry in one batch. Author revert
+retains its separate field-aware operation.
+Workspace creation probes case paths with bounded helpers: unknown returns a
+diagnostic 503 and never mints a workspace or claims the case is missing.
+
 ## 2026-11-10 - Store canvas commands as atomic attributed transactions
 
 **Type:** intent-refinement
@@ -119,6 +141,7 @@ Ordinary layout dragging preserves parent membership, while named targets make
 reparenting explicit. The implementation checklist was reconciled with those
 decisions. Static studies and contrast calculations are design evidence, not
 runtime, durability or performance verification.
+
 ## 2026-11-10 - Run real-iPhone tests as one scenario
 
 **Type:** propagated-discovery

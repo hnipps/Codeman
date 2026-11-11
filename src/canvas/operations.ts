@@ -8,6 +8,10 @@ import {
   IdSchema,
   MutableSchema,
   ObjectSchema,
+  StoredObjectSchema,
+  isKnownObject,
+  validateKnownObject,
+  knownContentFields,
   descendants,
   effectiveLock,
   isContainer,
@@ -68,18 +72,22 @@ export const CommandSchema = z.discriminatedUnion('kind', [
   z.object({ ...fields, kind: z.literal('revert'), patch: MutableSchema.partial() }).strict(),
 ]);
 export type Command = z.infer<typeof CommandSchema>;
-export const ChangeSchema = z.object({ objectId: IdSchema, before: ObjectSchema.nullable(), after: ObjectSchema });
-export const OperationSchema = z.object({
-  seq: z.number().int().positive(),
-  opId: IdSchema,
-  author: AuthorSchema,
-  kind: z.string(),
-  objectId: IdSchema,
-  patch: z.unknown(),
-  prev: z.array(ChangeSchema),
-  comment: CommentSchema.optional(),
-  removedComment: CommentSchema.optional(),
-});
+export const ChangeSchema = z
+  .object({ objectId: IdSchema, before: StoredObjectSchema.nullable(), after: StoredObjectSchema })
+  .passthrough();
+export const OperationSchema = z
+  .object({
+    seq: z.number().int().positive(),
+    opId: IdSchema,
+    author: AuthorSchema,
+    kind: z.string(),
+    objectId: IdSchema,
+    patch: z.unknown(),
+    prev: z.array(ChangeSchema),
+    comment: CommentSchema.optional(),
+    removedComment: CommentSchema.optional(),
+  })
+  .passthrough();
 export type Operation = z.infer<typeof OperationSchema>;
 export const knownKinds: ReadonlySet<string> = new Set(CommandSchema.options.map((o) => o.shape.kind.value));
 export type Rejection = {
@@ -146,6 +154,7 @@ export function validateBatch(initial: CanvasState, commands: Command[], author:
     const current = state.objects[command.objectId];
     if (command.kind === 'create' ? !!current : !current)
       return reject(command.kind === 'create' ? 'DUPLICATE' : 'NOT_FOUND', 'Object identity is unavailable');
+    if (current && !isKnownObject(current)) return reject('INVALID', 'Unknown object type is read-only');
     if (current && command.expectedRevision !== undefined && command.expectedRevision !== current.revision)
       return reject('REVISION', 'Object revision changed');
     if (
@@ -194,6 +203,8 @@ export function validateBatch(initial: CanvasState, commands: Command[], author:
         case 'reorder':
         case 'revert':
           proposed = { ...proposed, ...command.patch };
+          if ('content' in command.patch && command.patch.content)
+            proposed.content = { ...current.content, ...command.patch.content };
           break;
         case 'lock':
           proposed.lock = command.patch.mode;
@@ -241,8 +252,7 @@ export function validateBatch(initial: CanvasState, commands: Command[], author:
       }
     }
     if (current && ['comment', 'remove-comment'].includes(command.kind)) proposed = current;
-    const valid = ObjectSchema.safeParse(proposed);
-    if (!valid.success) return reject('INVALID', valid.error.message);
+    if (!validateKnownObject(proposed)) return reject('INVALID', 'Invalid object fields');
     const parentLock = proposed.parentId === null ? null : effectiveLock(state, proposed.parentId);
     if (
       parentLock?.mode === 'subtree' &&
@@ -260,6 +270,7 @@ export function validateBatch(initial: CanvasState, commands: Command[], author:
         ? descendants(state, current.id).slice(1)
         : [];
     for (const child of subtree) {
+      if (!isKnownObject(child)) return reject('INVALID', 'Unknown descendant type is read-only');
       const childLock = effectiveLock(state, child.id);
       if (childLock) return reject('LOCKED', `Protected descendant ${child.id}`);
       if (command.kind === 'delete' && child.deletedAt === null)
@@ -323,7 +334,17 @@ export function validateBatch(initial: CanvasState, commands: Command[], author:
 const historyId = (key: string): string => createHash('sha256').update(key).digest('hex');
 
 export function invertOperation(op: Operation): Command[] {
+  if (!knownKinds.has(op.kind) || op.prev.some((change) => !isKnownObject(change.after))) return [];
   const changedObject = op.prev.find((change) => change.objectId === op.objectId);
+  if (op.kind === 'delete')
+    return [
+      {
+        kind: 'restore',
+        opId: historyId(`inverse:${op.opId}`),
+        objectId: op.objectId,
+        expectedRevision: changedObject?.after.revision,
+      },
+    ];
   if (op.kind === 'lock')
     return [
       {
@@ -362,13 +383,64 @@ export function invertOperation(op: Operation): Command[] {
         patch: { id: op.removedComment.id, text: op.removedComment.text },
       },
     ];
+  const inverse = {
+    opId: historyId(`inverse:${op.opId}:${op.objectId}`),
+    objectId: op.objectId,
+    expectedRevision: changedObject?.after.revision,
+  };
+  if (op.kind === 'create' || op.kind === 'restore') return [{ ...inverse, kind: 'delete' }];
+  const before = changedObject?.before;
+  if (!changedObject || !before) return [];
+  switch (op.kind) {
+    case 'move':
+      return [{ ...inverse, kind: 'move', patch: { position: before.position } }];
+    case 'reorder':
+      return [{ ...inverse, kind: 'reorder', patch: { order: before.order } }];
+    case 'update':
+      return [
+        {
+          ...inverse,
+          kind: 'update',
+          patch: { content: knownContentFields(before.content), size: before.size, rotation: before.rotation },
+        },
+      ];
+    case 'reparent':
+      return [
+        {
+          ...inverse,
+          kind: 'reparent',
+          patch: { parentId: before.parentId, order: before.order, preserveWorld: false },
+        },
+        {
+          ...inverse,
+          opId: historyId(`inverse-position:${op.opId}`),
+          expectedRevision: changedObject.after.revision + 1,
+          kind: 'move',
+          patch: { position: before.position },
+        },
+        {
+          ...inverse,
+          opId: historyId(`inverse-rotation:${op.opId}`),
+          expectedRevision: changedObject.after.revision + 2,
+          kind: 'update',
+          patch: { rotation: before.rotation },
+        },
+      ];
+    case 'revert':
+      break;
+    default:
+      return [];
+  }
   return op.prev.map((change) => ({
     kind: 'revert',
     opId: historyId(`inverse:${op.opId}:${change.objectId}`),
     objectId: change.objectId,
     expectedRevision: change.after.revision,
     patch: change.before
-      ? MutableSchema.parse(Object.fromEntries(mutableKeys.map((key) => [key, change.before?.[key]])))
+      ? MutableSchema.parse({
+          ...Object.fromEntries(mutableKeys.map((key) => [key, change.before?.[key]])),
+          content: knownContentFields(change.before.content),
+        })
       : { deletedAt: change.after.updatedAt, deletionOpId: historyId(`inverse:${op.opId}:${change.objectId}`) },
   }));
 }
@@ -377,9 +449,10 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
   const patches = new Map<string, Partial<z.infer<typeof MutableSchema>>>();
   const protectedFields = new Set<string>();
   for (const op of [...log].reverse()) {
+    if (!knownKinds.has(op.kind)) continue;
     for (const change of op.prev) {
       const current = state.objects[change.objectId];
-      if (!current) continue;
+      if (!current || !isKnownObject(current) || (change.before && !isKnownObject(change.before))) continue;
       for (const key of mutableKeys) {
         if (change.before && equal(change.before[key], change.after[key])) continue;
         const field = `${change.objectId}:${key}`;
@@ -389,7 +462,10 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
         }
         if (protectedFields.has(field)) continue;
         const patch = patches.get(current.id) ?? {};
-        if (change.before) Object.assign(patch, { [key]: change.before[key] });
+        if (change.before)
+          Object.assign(patch, {
+            [key]: key === 'content' ? knownContentFields(change.before.content) : change.before[key],
+          });
         else if (
           ![...protectedFields].some((f) => f.startsWith(`${current.id}:`)) &&
           !descendants(state, current.id).some(
@@ -408,7 +484,9 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
     }
   }
   const comments: Command[] = state.comments
-    .filter((c) => sameAuthor(c.author, author))
+    .filter(
+      (c) => sameAuthor(c.author, author) && !!state.objects[c.objectId] && isKnownObject(state.objects[c.objectId])
+    )
     .map((c) => ({
       kind: 'remove-comment',
       opId: historyId(`revert-comment:${state.seq}:${c.id}`),

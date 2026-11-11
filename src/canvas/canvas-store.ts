@@ -51,7 +51,10 @@ export function atomicWrite(path: string, value: unknown): void {
 }
 const SnapshotSchema = z.object({ version: z.literal(1), state: StateSchema });
 const EnvelopeSchema = z.object({ version: z.literal(1), operations: z.array(z.unknown()).min(1) });
-const ReplayHeaderSchema = z.object({ seq: z.number().int().positive(), kind: z.string(), opId: IdSchema });
+const ReplayHeaderSchema = z
+  .object({ seq: z.number().int().positive(), kind: z.string(), opId: IdSchema })
+  .passthrough();
+type FutureOperation = z.infer<typeof ReplayHeaderSchema>;
 export type AppendResult = { ok: true; seq: number; operations: Operation[] } | Extract<BatchResult, { ok: false }>;
 
 function replayInto(state: CanvasState, op: Operation): void {
@@ -64,6 +67,7 @@ function replayInto(state: CanvasState, op: Operation): void {
 export class CanvasStore {
   private state: CanvasState = emptyState();
   private log: Operation[] = [];
+  private futureLog: FutureOperation[] = [];
   private seen = new Map<string, { seq: number; author?: Author }>();
   private tornOffset: number | undefined;
   readonly logPath: string;
@@ -78,8 +82,10 @@ export class CanvasStore {
   read(): CanvasState {
     return structuredClone(this.state);
   }
-  operations(since = 0): Operation[] {
-    return structuredClone(this.log.filter((op) => op.seq > since));
+  operations(since = 0): (Operation | FutureOperation)[] {
+    return structuredClone(
+      [...this.log, ...this.futureLog].filter((op) => op.seq > since).sort((a, b) => a.seq - b.seq)
+    );
   }
   reload(): void {
     let state = emptyState();
@@ -87,6 +93,7 @@ export class CanvasStore {
       state = SnapshotSchema.parse(JSON.parse(readFileSync(this.snapshotPath, 'utf8'))).state;
     const snapshotSeq = state.seq;
     const log: Operation[] = [];
+    const futureLog: FutureOperation[] = [];
     const seen = new Map<string, { seq: number; author?: Author }>();
     this.tornOffset = undefined;
     const raw = existsSync(this.logPath) ? readFileSync(this.logPath, 'utf8') : '';
@@ -110,6 +117,7 @@ export class CanvasStore {
       for (const record of records) {
         const header = ReplayHeaderSchema.parse(record);
         if (!knownKinds.has(header.kind)) {
+          futureLog.push(header);
           seen.set(header.opId, { seq: header.seq });
           state = { ...state, seq: Math.max(state.seq, header.seq) };
           continue;
@@ -125,6 +133,7 @@ export class CanvasStore {
     }
     this.state = state;
     this.log = log;
+    this.futureLog = futureLog;
     this.seen = seen;
   }
   append(input: Command[], author: Author): AppendResult {

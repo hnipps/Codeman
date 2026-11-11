@@ -6,7 +6,7 @@ export const agent: Author = { kind: 'agent', sessionId: 'session-a' };
 export function create(
   id: string,
   parentId: string | null = null,
-  type: 'text' | 'group' | 'frame' | 'section' = 'text'
+  type: 'text' | 'group' | 'frame' | 'section' | 'subcanvas' = 'text'
 ): Command {
   return CommandSchema.parse({
     kind: 'create',
@@ -17,7 +17,12 @@ export function create(
       order: 0,
       position: { x: 10, y: 20 },
       size: type === 'group' ? null : { width: 100, height: 80 },
-      content: type === 'text' ? { type, text: id } : { type, label: id },
+      content:
+        type === 'text'
+          ? { type, text: id }
+          : type === 'subcanvas'
+            ? { type, workspaceId: 'nested', label: id }
+            : { type, label: id },
     },
   });
 }
