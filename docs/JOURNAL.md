@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - An unquoted secret value runs to the newline
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** A coordinator probe still found HTTP Basic credentials, cookie values, multi-word passwords, `sk-` and `ghp_` tokens, and curl `-u` arguments on disk. Stopping an unquoted value at the first space was the gap.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round4.md)
+
+An unquoted value under a secret key now runs to the newline, or to the `}` or `]` that closes the surrounding structure. `cookie`, `set-cookie`, `codeman_session`, and `sid` are secret keys. `session`, `sessionId`, `session_id`, and `claudeSessionId` stay readable so a row can still be correlated. Token shapes are masked by a linear scan with no key. The plan did not list those shapes; the probe did.
+
 ## 2026-11-11 - Scan quoted text, and stop over-masking diagnostics
 
 **Type:** intent-refinement
