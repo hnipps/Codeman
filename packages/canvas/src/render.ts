@@ -86,10 +86,11 @@ export class Renderer {
       const boundary = el.querySelector('.selection-bounds');
       boundary?.querySelector('.lock-mark')?.remove();
       if (locked && boundary) boundary.append(lockMark());
+      el.classList.toggle('locked', !!locked);
       for (const handle of el.querySelectorAll<HTMLElement>(':scope > .resize-handle'))
         handle.hidden = !o.size || !editable(o);
       el.classList.toggle('container', container(o));
-      el.setAttribute('aria-label', label(o));
+      el.setAttribute('aria-label', `${label(o)}${locked ? ' · Locked' : ''}`);
       el.style.left = `${o.position.x}px`;
       el.style.top = `${o.position.y}px`;
       el.style.transform = `rotate(${o.rotation}deg)`;
@@ -138,6 +139,7 @@ export class Renderer {
       if (row) {
         row.textContent = label(o);
         if (locked) row.append(lockMark());
+        row.classList.toggle('locked', !!locked);
         row.setAttribute('aria-label', `${label(o)}${locked ? ` · Locked by ${label(locked)}` : ''}`);
         if (container(o)) row.dataset.containerId = o.id;
         else delete row.dataset.containerId;
@@ -185,13 +187,10 @@ export class Renderer {
 function lockMark(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('lock-mark');
-  svg.setAttribute('viewBox', '0 0 16 16');
-  svg.setAttribute('aria-label', 'Locked');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
   const path = document.createElementNS(svg.namespaceURI, 'path');
-  path.setAttribute('d', 'M5 7V5a3 3 0 0 1 6 0v2M4 7h8v7H4Z');
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '1.5');
+  path.setAttribute('d', 'M6.5 9V6.5a3.5 3.5 0 0 1 7 0V9M4.5 9h11v8h-11z');
   svg.append(path);
   return svg;
 }

@@ -70,7 +70,22 @@ const StoredSchema = z.object({
   refusal: z.string().nullable(),
   batchSizes: z.array(z.number().int().positive()).default([]),
 });
-export class Refused extends Error {}
+export const RefusalReasonSchema = z.object({
+  code: z.string().optional(),
+  objectId: z.string().optional(),
+  message: z.string(),
+  dependents: z.array(z.object({ objectId: z.string() })).optional(),
+});
+export type RefusalReason = z.infer<typeof RefusalReasonSchema>;
+const RefusalSchema = z.object({ error: z.string(), reasons: z.array(RefusalReasonSchema).optional() });
+export class Refused extends Error {
+  constructor(
+    message: string,
+    readonly reasons: RefusalReason[] = []
+  ) {
+    super(message);
+  }
+}
 export class EditQueue {
   private requests: Record<string, QueuedRequest> = {};
   private base: Snapshot = { seq: 0, objects: [] };
@@ -91,7 +106,8 @@ export class EditQueue {
       display: (objects: ViewObject[]) => void;
       status: (status: QueueStatus, message: string) => void;
       acknowledged: (operations: Acknowledged[]) => void;
-      refused?: (operations: Edit[], message: string) => void;
+      refused?: (operations: Edit[], message: string, reasons: RefusalReason[]) => void;
+      describe?: (operations: Edit[], request: QueuedRequest | undefined, error: Refused) => string;
       id?: () => string;
     }
   ) {
@@ -254,8 +270,9 @@ export class EditQueue {
       );
     } catch (error) {
       if (error instanceof Refused) {
-        this.refusal = error.message;
-        this.options.refused?.(batch, error.message);
+        const request = this.requests[batch[0].opId];
+        this.refusal = this.options.describe?.(batch, request, error) ?? error.message;
+        this.options.refused?.(batch, this.refusal, error.reasons);
       } else this.failure = true;
     } finally {
       this.flight = false;
@@ -335,13 +352,8 @@ export async function sendEdits(
   });
   const payload: unknown = await response.json();
   if (!response.ok) {
-    const reason = z
-      .object({ error: z.string(), reasons: z.array(z.object({ message: z.string() })).optional() })
-      .safeParse(payload);
-    if (response.status >= 400 && response.status < 500)
-      throw new Refused(
-        `Edit refused: ${reason.success ? reason.data.reasons?.map((r) => r.message).join('; ') || reason.data.error : 'the server rejected this write'}.`
-      );
+    const reason = RefusalSchema.safeParse(payload);
+    if (response.status >= 400 && response.status < 500) throw refusedFrom(reason.success ? reason.data : null);
     throw new Error('Save failed');
   }
   const history = await fetch(url(`/api/canvas/${workspace}/ops?since=${since}`));
@@ -358,6 +370,11 @@ export async function sendEdits(
   if (!full.ok) throw new Error('Acknowledgement recovery failed');
   return parseHistory(await full.json());
 }
+function refusedFrom(payload: z.infer<typeof RefusalSchema> | null): Refused {
+  if (!payload) return new Refused('Edit refused by the server.');
+  const reasons = payload.reasons ?? [];
+  return new Refused(reasons.map((r) => r.message).join('; ') || payload.error, reasons);
+}
 export const parseSnapshot = (payload: unknown): Snapshot => z.object({ data: SnapshotSchema }).parse(payload).data;
 
 export async function sendCommand(
@@ -373,25 +390,8 @@ export async function sendCommand(
   const payload: unknown = await response.json();
   if (!response.ok) {
     if (response.status >= 500) throw new Error('Command save failed');
-    const refused = z
-      .object({
-        error: z.string(),
-        reasons: z
-          .array(
-            z.object({
-              message: z.string(),
-              objectId: z.string(),
-              dependents: z.array(z.object({ objectId: z.string() })).optional(),
-            })
-          )
-          .optional(),
-      })
-      .safeParse(payload);
-    throw new Refused(
-      refused.success
-        ? `Edit refused: ${refused.data.reasons?.map((r) => `${r.message}${r.dependents?.length ? `; depends on ${r.dependents.map((d) => d.objectId).join(', ')}` : r.objectId ? ` (${r.objectId})` : ''}`).join('; ') || refused.data.error}.`
-        : 'Edit refused by the server.'
-    );
+    const refused = RefusalSchema.safeParse(payload);
+    throw refusedFrom(refused.success ? refused.data : null);
   }
   const result = z.object({ data: z.object({ sequences: z.array(z.number()) }) }).parse(payload).data;
   const history = await fetch(url(`/api/canvas/${workspace}/ops?since=0`));

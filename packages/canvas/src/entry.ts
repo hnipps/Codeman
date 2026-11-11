@@ -52,6 +52,14 @@ const icons: Record<string, string> = {
   closeOutline: 'M13 4l-6 6 6 6',
   openOutline: 'M3 4h14v12H3zM7 4v12',
   closeRail: 'M5 5l10 10M15 5L5 15',
+  alignXStart: 'M3 3v14M6 5h9v3H6zM6 12h6v3H6z',
+  alignXCenter: 'M10 3v14M5 5h10v3H5zM7 12h6v3H7z',
+  alignXEnd: 'M17 3v14M5 5h9v3H5zM8 12h6v3H8z',
+  alignYStart: 'M3 3h14M5 6h3v9H5zM12 6h3v6h-3z',
+  alignYCenter: 'M3 10h14M5 5h3v10H5zM12 7h3v6h-3z',
+  alignYEnd: 'M3 17h14M5 5h3v9H5zM12 8h3v6h-3z',
+  distributeX: 'M3 4v12M17 4v12M8 6h4v8H8z',
+  distributeY: 'M4 3h12M4 17h12M6 8h8v4H6z',
 };
 for (const [id, path] of Object.entries(icons)) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -254,6 +262,14 @@ for (const [action, alternatives] of [...shortcuts, ...(mobile.matches ? [] : ed
   }
   row.append(title, hints);
   node('keyRows').append(row);
+}
+for (const hint of document.querySelectorAll<HTMLElement>('.action-menu [data-keys]')) {
+  hint.setAttribute('aria-hidden', 'true');
+  for (const key of hint.dataset.keys?.split(' ') ?? []) {
+    const cap = document.createElement('kbd');
+    cap.textContent = key === 'Mod' ? modifier : key;
+    hint.append(cap);
+  }
 }
 input('keysSearch').oninput = () => {
   for (const row of node('keyRows').children)

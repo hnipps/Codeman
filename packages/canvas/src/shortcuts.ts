@@ -30,10 +30,25 @@ export const editShortcuts: [string, string[][]][] = [
     ],
   ],
   ['Duplicate selection', [['Mod', 'D']]],
+  [
+    'Bring forward / to front',
+    [
+      ['Mod', ']'],
+      ['Mod', 'Shift', ']'],
+    ],
+  ],
+  [
+    'Send backward / to back',
+    [
+      ['Mod', '['],
+      ['Mod', 'Shift', '['],
+    ],
+  ],
   ['Disable pointer snapping (hold)', [['Ctrl']]],
   ['Delete selection', [['Delete']]],
   ['Undo canvas edit', [['Mod', 'Z']]],
   ['Redo canvas edit', [['Mod', 'Shift', 'Z']]],
+  ['Move selection with arrows', [['M']]],
   ['Move mode: coarse / fine', [['↑'], ['Shift', '↑']]],
   ['Resize: proportional / from center', [['Shift'], ['Alt']]],
 ];

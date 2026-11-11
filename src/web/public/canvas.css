@@ -595,9 +595,9 @@ dd {
   background: var(--accent);
   transform: translateX(12px);
 }
+#board:focus,
 #board:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -4px;
+  outline: none;
 }
 #openOutline:hover {
   background: var(--raised);
@@ -653,6 +653,13 @@ dd {
   border: 1px solid var(--divider);
   border-radius: 4px;
   z-index: 4;
+}
+#contextRow > .primary {
+  color: var(--action-ink);
+  background: var(--accent);
+}
+#contextRow > .primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--text));
 }
 #selectionCount {
   font-size: 12px;
@@ -900,32 +907,41 @@ textarea[readonly] {
   bottom: 124px;
   left: 50%;
   transform: translateX(-50%);
-  width: 384px;
-  max-height: calc(100dvh - 160px);
-  overflow: auto;
-  padding: 12px;
+  width: 240px;
+  padding: 4px;
   border: 1px solid var(--divider);
   border-radius: 4px;
   background: var(--panel);
   box-shadow: 0 8px 24px #0002;
 }
-.action-menu button {
+.action-menu > div + div {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--divider);
+}
+.menu-icons {
+  display: flex;
+  gap: 4px;
+}
+.menu-icons button {
+  width: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+.menu-rows button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   text-align: left;
 }
-.action-menu label {
-  display: block;
-  margin-top: 12px;
-  color: var(--secondary);
-  font-size: 12px;
+.menu-rows .key-chord {
+  gap: 2px;
 }
-.action-menu input {
-  width: 100%;
-  margin: 4px 0 8px;
-}
-.menu-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
+.action-menu button[aria-disabled='true'] svg {
+  opacity: 0.5;
 }
 #actionMessage {
   position: fixed;
@@ -992,9 +1008,20 @@ textarea[readonly] {
   position: absolute;
   width: 12px;
   height: 12px;
-  right: -4px;
-  top: -16px;
   color: var(--secondary);
+}
+.lock-mark path {
+  vector-effect: non-scaling-stroke;
+}
+.selection-bounds > .lock-mark {
+  left: calc(100% + 2px);
+  top: min(calc(-20px * var(--zoom, 1)), -18px);
+}
+.object.locked:hover:not(:has(.object:hover)) > .selection-bounds {
+  display: block;
+}
+.object:not(.selected):not(.keyboard-focus) > .selection-bounds > .lock-mark {
+  opacity: 0.6;
 }
 .alignment-guide {
   position: fixed;
@@ -1018,7 +1045,10 @@ textarea[readonly] {
 .tree-row {
   position: relative;
 }
+.tree-row.locked {
+  padding-right: 28px;
+}
 .tree-row > .lock-mark {
   right: 8px;
-  top: 10px;
+  top: calc(50% - 6px);
 }

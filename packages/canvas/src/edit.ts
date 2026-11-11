@@ -9,6 +9,7 @@ import { targets, selectRegion } from './select.js';
 import { type Point, union } from './viewport.js';
 import { CanvasUndo } from './undo.js';
 import { parseSnapshot } from './edit-queue.js';
+import { lockedSentence, refusalCopy, requestVerb, type RefusalVerb } from './refusal.js';
 import { z } from 'zod';
 import {
   EditQueue,
@@ -65,6 +66,8 @@ export class DesktopEditor {
   private status: QueueStatus = 'offline';
   private message = '';
   private readerRefusal = false;
+  private refusalDetail: string | undefined;
+  private selectionKey = '';
   private connected = false;
   private availability = '';
   private handlesDirty = true;
@@ -163,15 +166,27 @@ export class DesktopEditor {
         this.paintStatus();
         this.paintAvailability();
         if (status === 'failed' || status === 'refused')
-          this.say(status === 'refused' && this.readerRefusal ? '' : message);
+          this.say(status === 'refused' && this.readerRefusal ? '' : message, this.refusalDetail);
       },
       acknowledged: (ops) => this.acknowledge(ops),
-      refused: (ops, message) => {
+      describe: (ops, request, error) => {
+        const fallbackId = request ? undefined : ops[0]?.objectId;
+        const copy = refusalCopy(
+          this.authoritative.length ? this.authoritative : this.options.objects(),
+          error.reasons.map((r) => ({ ...r, objectId: r.objectId ?? fallbackId })),
+          requestVerb(request, ops),
+          request,
+          error.message
+        );
+        this.refusalDetail = copy.detail;
+        return copy.text;
+      },
+      refused: (ops, _message, reasons) => {
         this.readerRefusal = ops.some((op) => op.kind === 'update' && !!op.patch.content);
         this.history.refused();
         this.selectCreated = false;
         this.nextSelection = null;
-        if (/revision/i.test(message))
+        if (reasons.some((r) => r.code === 'REVISION'))
           for (const op of ops) {
             const draft = this.drafts.get(op.objectId);
             if (op.kind === 'update' && op.patch.content && draft) {
@@ -195,23 +210,25 @@ export class DesktopEditor {
     ])
       btn(id).onclick = () => this.create(type);
     btn('editSelection').onclick = () => {
+      if (this.refuseLocked(btn('editSelection'))) return;
       const id = options.view().selected[0];
       if (id) {
         options.dispatch({ kind: 'focus', id });
         options.dispatch({ kind: 'rail', view: 'reader' });
       }
     };
-    btn('deleteSelection').onclick = () => this.remove();
+    btn('deleteSelection').onclick = () => {
+      if (!this.refuseLocked(btn('deleteSelection'))) this.remove();
+    };
     for (const id of ['positionX', 'positionY', 'sizeWidth', 'sizeHeight']) {
       const field = node(id);
       if (field instanceof HTMLInputElement) field.onchange = () => this.numericGeometry();
     }
-    btn('moveMode').onclick = () => {
-      this.showArrange(false);
-      this.startKeyboardMove();
-    };
+    const rotation = node('rotationDegrees');
+    if (rotation instanceof HTMLInputElement) rotation.onchange = () => this.numericRotation(rotation);
     this.installArrange();
     btn('moveTo').onclick = () => {
+      if (this.refuseLocked(btn('moveTo'))) return;
       this.refreshDestinations();
       node('moveToMenu').hidden = !node('moveToMenu').hidden;
     };
@@ -354,13 +371,22 @@ export class DesktopEditor {
         resizeDeltaSpace: 'world',
         autoBoundedGroupResize: 'uniform-subtree',
         flip: 'Unsupported: the server accepts positive scales only',
+        rotation: 'Every editable type, in degrees, about the selection centre',
+        distributeSpacing: 'Command endpoint only (canvas_arrange distribute spacing)',
         backgroundLock: ['frame', 'section'],
       },
     };
   }
-  private say(message: string): void {
+  private say(message: string, detail?: string): void {
     node('actionMessage').textContent = message;
     node('actionMessage').hidden = !message;
+    if (detail && message) node('actionMessage').title = detail;
+    else node('actionMessage').removeAttribute('title');
+  }
+  private refuseLocked(control: HTMLButtonElement): boolean {
+    if (control.getAttribute('aria-disabled') !== 'true') return false;
+    if (control.dataset.reason) this.say(control.dataset.reason);
+    return true;
   }
   private compound(request: CanvasRequest): boolean {
     if (!this.available()) return false;
@@ -392,13 +418,18 @@ export class DesktopEditor {
   }
   private installArrange(): void {
     btn('arrangeSelection').onclick = () => {
+      if (this.refuseLocked(btn('arrangeSelection'))) return;
       this.say('');
       const open = node('arrangeMenu').hidden;
       this.showArrange(open);
-      if (open) btn('moveMode').focus();
+      if (open) node('arrangeMenu').querySelector<HTMLButtonElement>('button:not([hidden])')?.focus();
     };
-    btn('groupSelection').onclick = () =>
-      this.group(targets(this.options.objects(), this.ids()).every((o) => o.type === 'group'));
+    btn('groupSelection').onclick = () => {
+      if (this.refuseLocked(btn('groupSelection'))) return;
+      const selected = targets(this.options.objects(), this.ids());
+      this.group(selected.length === 1 && selected[0].type === 'group');
+    };
+    btn('duplicateSelection').onclick = () => this.duplicate();
     btn('lockSelection').onclick = () => {
       const selected = targets(this.options.objects(), this.ids());
       this.compound({
@@ -419,32 +450,9 @@ export class DesktopEditor {
       this.showAddMenu(false);
       this.paste();
     };
-    btn('copySelection').onclick = () => this.copy(false);
-    btn('cutSelection').onclick = () => this.copy(true);
-    btn('pasteSelection').onclick = () => this.paste();
-    btn('duplicateSelection').onclick = () => this.duplicate();
-    btn('rotateSelection').onclick = () => {
-      const field = node('rotationDegrees');
-      if (!(field instanceof HTMLInputElement) || !Number.isFinite(field.valueAsNumber)) {
-        this.say('Enter a finite rotation in degrees.');
-        return;
-      }
-      const box = selectionBox(this.options.objects(), this.ids());
-      this.showArrange(false);
-      this.compound({
-        tool: 'canvas_transform',
-        arguments: {
-          targetIds: this.ids(),
-          space: 'world',
-          anchor: { x: box.x + box.width / 2, y: box.y + box.height / 2 },
-          translation: { x: 0, y: 0 },
-          scale: { width: 1, height: 1 },
-          rotation: field.valueAsNumber,
-        },
-      });
-    };
     for (const button of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('[data-align]'))
       button.onclick = () => {
+        if (button.getAttribute('aria-disabled') === 'true') return;
         const [axis, anchor] = (button.dataset.align ?? '').split('-');
         this.showArrange(false);
         this.compound({
@@ -459,7 +467,7 @@ export class DesktopEditor {
       };
     for (const button of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('[data-distribute]'))
       button.onclick = () => {
-        const spacing = node('layoutSpacing');
+        if (button.getAttribute('aria-disabled') === 'true') return;
         this.showArrange(false);
         this.compound({
           tool: 'canvas_arrange',
@@ -467,22 +475,39 @@ export class DesktopEditor {
             action: 'distribute',
             targetIds: this.ids(),
             axis: z.enum(['x', 'y']).parse(button.dataset.distribute),
-            ...(spacing instanceof HTMLInputElement && spacing.value !== '' ? { spacing: spacing.valueAsNumber } : {}),
           },
         });
       };
     for (const button of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('[data-order]'))
-      button.onclick = () => {
-        this.showArrange(false);
-        this.compound({
-          tool: 'canvas_arrange',
-          arguments: {
-            action: 'order',
-            targetIds: this.ids(),
-            placement: z.enum(['front', 'back', 'forward', 'backward']).parse(button.dataset.order),
-          },
-        });
-      };
+      button.onclick = () => this.order(z.enum(['front', 'back', 'forward', 'backward']).parse(button.dataset.order));
+  }
+  private order(placement: 'front' | 'back' | 'forward' | 'backward'): void {
+    const targetIds = this.ids();
+    if (!targetIds.length) return;
+    this.showArrange(false);
+    this.compound({ tool: 'canvas_arrange', arguments: { action: 'order', targetIds, placement } });
+  }
+  private numericRotation(field: HTMLInputElement): void {
+    const object = this.options.objects().find((o) => o.id === this.options.view().focusId);
+    if (!object || !this.available()) return;
+    if (!Number.isFinite(field.valueAsNumber)) {
+      node('announcement').textContent = 'Enter a finite rotation in degrees.';
+      return;
+    }
+    const rotation = field.valueAsNumber - object.rotation;
+    if (!rotation) return;
+    const box = selectionBox(this.options.objects(), [object.id]);
+    this.compound({
+      tool: 'canvas_transform',
+      arguments: {
+        targetIds: [object.id],
+        space: 'world',
+        anchor: { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+        translation: { x: 0, y: 0 },
+        scale: { width: 1, height: 1 },
+        rotation,
+      },
+    });
   }
   private group(ungroup: boolean, containerType: 'group' | 'frame' | 'section' = 'group'): void {
     const targetIds = this.ids();
@@ -887,7 +912,7 @@ export class DesktopEditor {
       'addSection',
       'addSubcanvas',
       'deleteSelection',
-      'moveMode',
+      'duplicateSelection',
       'moveTo',
       'commitMoveTo',
       'arrangeSelection',
@@ -902,20 +927,61 @@ export class DesktopEditor {
     btn('useServer').disabled = !this.connected;
   }
   paint(): void {
-    node('contextRow').hidden = this.options.mobile.matches || !this.options.view().selected.length;
-    btn('editSelection').hidden = this.options.view().selected.length !== 1;
-    node('selectionCount').textContent = `${this.options.view().selected.length} selected`;
-    const selected = targets(this.options.objects(), this.options.view().selected);
-    const ungroup = selected.length > 0 && selected.every((o) => o.type === 'group');
+    const ids = this.options.view().selected;
+    const selectionKey = ids.join(' ');
+    // A refusal names the selection it was about; it must not outlive that selection.
+    if (selectionKey !== this.selectionKey && this.status !== 'failed') this.say('');
+    this.selectionKey = selectionKey;
+    node('contextRow').hidden = this.options.mobile.matches || !ids.length;
+    btn('editSelection').hidden = ids.length !== 1;
+    node('selectionCount').textContent = `${ids.length} selected`;
+    const objects = this.options.objects();
+    const selected = targets(objects, ids);
+    const ungroup = selected.length === 1 && selected[0].type === 'group';
+    btn('groupSelection').hidden = !ungroup && selected.length < 2;
     btn('groupSelection').textContent = ungroup ? 'Ungroup' : 'Group';
     btn('groupSelection').title = ungroup ? 'Ungroup · Shift+Cmd/Ctrl+G' : 'Group · Cmd/Ctrl+G';
-    btn('lockSelection').textContent = selected.some((o) => lockOwner(this.options.objects(), o)) ? 'Unlock' : 'Lock';
+    const locked = selected.find((o) => lockOwner(objects, o));
+    btn('lockSelection').textContent = locked ? 'Unlock' : 'Lock';
+    btn('lockSelection').classList.toggle('primary', !!locked);
+    const forbidden: [string, RefusalVerb][] = [
+      ['moveTo', 'move'],
+      ['arrangeSelection', 'move'],
+      ['groupSelection', ungroup ? 'ungroup' : 'group'],
+      ['editSelection', 'edit'],
+      ['deleteSelection', 'delete'],
+    ];
+    for (const [id, verb] of forbidden) {
+      const control = btn(id);
+      const reason = locked ? lockedSentence(objects, locked, verb) : null;
+      node(`${id}Reason`).textContent = reason ?? '';
+      if (reason) {
+        control.setAttribute('aria-disabled', 'true');
+        control.dataset.reason = reason;
+        control.setAttribute('aria-describedby', `${id}Reason`);
+      } else {
+        control.removeAttribute('aria-disabled');
+        delete control.dataset.reason;
+        control.removeAttribute('aria-describedby');
+      }
+    }
     btn('backgroundLock').hidden =
       !selected.length || !selected.every((o) => o.type === 'frame' || o.type === 'section');
     for (const control of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('button'))
       control.disabled = !this.connected;
-    if (this.options.mobile.matches || !selected.length) this.showArrange(false);
-    this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
+    for (const [selector, minimum, verb] of [
+      ['[data-align]', 2, 'align'],
+      ['[data-distribute]', 3, 'distribute'],
+    ] as const)
+      for (const control of node('arrangeMenu').querySelectorAll<HTMLButtonElement>(selector)) {
+        const short = selected.length < minimum;
+        control.setAttribute('aria-disabled', String(short));
+        control.title = short
+          ? `${control.getAttribute('aria-label')} · select ${minimum === 2 ? 'two' : 'three'} or more objects to ${verb}`
+          : (control.getAttribute('aria-label') ?? '');
+      }
+    if (this.options.mobile.matches || !selected.length || locked) this.showArrange(false);
+    this.read(objects.find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
     this.previewMove();
     this.previewResize();
@@ -1283,6 +1349,12 @@ export class DesktopEditor {
       if (document.activeElement !== field)
         field.value = typeof value === 'number' ? String(Math.round(value * 100) / 100) : '';
     }
+    const rotation = node('rotationDegrees');
+    node('rotationField').hidden = !editable(object);
+    if (rotation instanceof HTMLInputElement) {
+      rotation.disabled = !this.connected || this.status === 'refused';
+      if (document.activeElement !== rotation) rotation.value = String(Math.round(object.rotation * 100) / 100);
+    }
   }
   private numericGeometry(): void {
     const object = this.options.objects().find((o) => o.id === this.options.view().focusId);
@@ -1477,7 +1549,7 @@ export class DesktopEditor {
       !node('arrangeMenu').hidden &&
       e.target instanceof HTMLButtonElement &&
       e.target.closest('#arrangeMenu') &&
-      ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)
+      ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)
     ) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -1490,7 +1562,7 @@ export class DesktopEditor {
           ? 0
           : e.key === 'End'
             ? items.length - 1
-            : (index + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+            : (index + (e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 1) + items.length) % items.length;
       items[next]?.focus();
       return;
     }
@@ -1523,6 +1595,26 @@ export class DesktopEditor {
       this.options.mobile.matches
     )
       return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.code === 'BracketRight' || e.code === 'BracketLeft')) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat)
+        this.order(e.code === 'BracketRight' ? (e.shiftKey ? 'front' : 'forward') : e.shiftKey ? 'back' : 'backward');
+      return;
+    }
+    if (
+      this.options.view().letters &&
+      e.key.toLowerCase() === 'm' &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !this.moveGesture
+    ) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat) this.startKeyboardMove();
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && ['g', 'c', 'x', 'v', 'd'].includes(e.key.toLowerCase())) {
       e.preventDefault();
       e.stopImmediatePropagation();

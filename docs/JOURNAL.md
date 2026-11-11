@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 — Canvas Arrange becomes a compact menu; refusals become product copy
+
+**Type:** intent-refinement
+**Touches:** desktop canvas Arrange menu, selection row, reader geometry, refusal copy, lock marks
+**Why:** Design review found the Arrange panel covering half the board, raw server text in refusals, a viewport-wide focus ring and a locked selection offering actions that could only fail.
+**Links:** [Intent](../intent/2026-11-11-canvas-pc4-design-review-2.md)
+
+Arrange keeps only layout: align and distribute icons, order with Mod+] / Mod+[ hints, and wrapping. Explicit equal spacing left the pointer UI rather than becoming a reader field: a gap value needs an axis, and splitting it from the distribute buttons across two surfaces did not fit cleanly. It stays on the command endpoint. Rotation moved to the reader; move mode gained the `M` key because the removed menu item was its only entry point. Duplicate joined the selection row, which still fits one line at 1440. Refusal sentences are chosen from the server's reason code and the client's own lock tree, so an inherited lock names its ancestor without new server data. A refusal names the selection it was about, so it clears when the selection changes; a failed save keeps its message until retried or discarded.
+
 ## 2026-11-11 — Persist compound canvas identities and use server history
 
 **Type:** intent-refinement

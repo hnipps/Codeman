@@ -39,6 +39,9 @@
     </section>
     <span id="addDescription" class="sr">Add text, frame, section or sub-canvas</span>
     <span id="commentDescription" class="sr">Comments arrive with conversations</span>
+    <span id="moveToReason" class="sr"></span><span id="arrangeSelectionReason" class="sr"></span
+    ><span id="groupSelectionReason" class="sr"></span><span id="editSelectionReason" class="sr"></span
+    ><span id="deleteSelectionReason" class="sr"></span>
     <span id="undoDescription" class="sr">Undo an edit saved by this browser. Available after an edit saves.</span>
     <span id="redoDescription" class="sr">Redo an edit undone by this browser. Available after undo saves.</span>
     <div id="moveToMenu" class="edit-control" hidden>
@@ -46,31 +49,71 @@
       ><select id="moveDestination"></select
       ><button id="commitMoveTo">Move</button>
     </div>
-    <div id="arrangeMenu" class="edit-control action-menu" aria-label="Arrange selection" hidden>
-      <button id="moveMode">Move with arrows</button>
-      <div class="menu-grid" aria-label="Alignment">
-        <button data-align="x-start">Align left</button><button data-align="y-start">Align top</button>
-        <button data-align="x-center">Center horizontally</button
-        ><button data-align="y-center">Center vertically</button> <button data-align="x-end">Align right</button
-        ><button data-align="y-end">Align bottom</button> <button data-distribute="x">Distribute horizontally</button
-        ><button data-distribute="y">Distribute vertically</button>
+    <div id="arrangeMenu" class="edit-control action-menu" role="menu" aria-label="Arrange selection" hidden>
+      <div class="menu-icons" role="group" aria-label="Align">
+        <button
+          id="alignXStart"
+          role="menuitem"
+          data-align="x-start"
+          aria-label="Align left"
+          title="Align left"
+        ></button
+        ><button
+          id="alignXCenter"
+          role="menuitem"
+          data-align="x-center"
+          aria-label="Centre horizontally"
+          title="Centre horizontally"
+        ></button
+        ><button id="alignXEnd" role="menuitem" data-align="x-end" aria-label="Align right" title="Align right"></button
+        ><button id="alignYStart" role="menuitem" data-align="y-start" aria-label="Align top" title="Align top"></button
+        ><button
+          id="alignYCenter"
+          role="menuitem"
+          data-align="y-center"
+          aria-label="Centre vertically"
+          title="Centre vertically"
+        ></button
+        ><button
+          id="alignYEnd"
+          role="menuitem"
+          data-align="y-end"
+          aria-label="Align bottom"
+          title="Align bottom"
+        ></button>
       </div>
-      <label for="layoutSpacing">Equal spacing (optional)</label
-      ><input id="layoutSpacing" type="number" placeholder="Automatic" />
-      <div class="menu-grid">
-        <button data-order="forward">Bring forward</button><button data-order="backward">Send backward</button>
-        <button data-order="front">Bring to front</button><button data-order="back">Send to back</button>
-        <button id="wrapFrame">Wrap in frame</button><button id="wrapSection">Wrap in section</button>
-        <button id="copySelection">Copy</button><button id="cutSelection">Cut</button>
-        <button id="pasteSelection">Paste</button><button id="duplicateSelection">Duplicate</button>
+      <div class="menu-icons" role="group" aria-label="Distribute">
+        <button
+          id="distributeX"
+          role="menuitem"
+          data-distribute="x"
+          aria-label="Distribute horizontally"
+          title="Distribute horizontally"
+        ></button
+        ><button
+          id="distributeY"
+          role="menuitem"
+          data-distribute="y"
+          aria-label="Distribute vertically"
+          title="Distribute vertically"
+        ></button>
       </div>
-      <label for="rotationDegrees">Rotate by degrees</label><input id="rotationDegrees" type="number" value="90" />
-      <button id="rotateSelection">Rotate</button>
-      <button id="backgroundLock">Lock background only</button>
-      <p class="secondary" id="transformCapability">
-        Groups scale uniformly; frames and sections resize bounds. Flip is unsupported: the server accepts positive
-        scales only.
-      </p>
+      <div class="menu-rows" role="group" aria-label="Order">
+        <button role="menuitem" data-order="front">
+          <span>Bring to front</span><span class="key-chord" data-keys="Mod Shift ]"></span></button
+        ><button role="menuitem" data-order="forward">
+          <span>Bring forward</span><span class="key-chord" data-keys="Mod ]"></span></button
+        ><button role="menuitem" data-order="backward">
+          <span>Send backward</span><span class="key-chord" data-keys="Mod ["></span></button
+        ><button role="menuitem" data-order="back">
+          <span>Send to back</span><span class="key-chord" data-keys="Mod Shift ["></span>
+        </button>
+      </div>
+      <div class="menu-rows" role="group" aria-label="Wrap">
+        <button id="wrapFrame" role="menuitem">Wrap in frame</button
+        ><button id="wrapSection" role="menuitem">Wrap in section</button
+        ><button id="backgroundLock" role="menuitem">Lock background only</button>
+      </div>
     </div>
     <p id="actionMessage" class="edit-control" role="status" hidden></p>
     <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
@@ -80,7 +123,8 @@
         <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
           <span id="selectionCount"></span><button id="moveTo" aria-controls="moveToMenu">Move to…</button>
           <button id="arrangeSelection" aria-controls="arrangeMenu" aria-expanded="false">Arrange</button>
-          <button id="groupSelection" title="Group · Cmd/Ctrl+G">Group</button>
+          <button id="groupSelection" title="Group · Cmd/Ctrl+G">Group</button
+          ><button id="duplicateSelection" title="Duplicate · Cmd/Ctrl+D">Duplicate</button>
           <button id="lockSelection">Lock</button><button id="editSelection">Edit</button
           ><button id="deleteSelection">Delete</button>
         </div>
@@ -164,7 +208,15 @@
             <label>X<input id="positionX" type="number" step="any" /></label
             ><label>Y<input id="positionY" type="number" step="any" /></label>
             <label>Width<input id="sizeWidth" type="number" min="0.01" step="any" /></label
-            ><label>Height<input id="sizeHeight" type="number" min="0.01" step="any" /></label>
+            ><label>Height<input id="sizeHeight" type="number" min="0.01" step="any" /></label
+            ><label id="rotationField"
+              >Rotation<input
+                id="rotationDegrees"
+                type="number"
+                step="any"
+                aria-label="Rotation in degrees"
+                title="Degrees"
+            /></label>
           </div>
         </div>
         <p id="readerCount" class="secondary" hidden></p>

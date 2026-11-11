@@ -182,8 +182,8 @@ describe('desktop canvas editing', () => {
       expect(combined.height).toBeCloseTo(other.y + other.height - box.y + 12, 1);
     }
     const combinedBefore = await page.locator('#selectionBounds').boundingBox();
-    await page.locator('#arrangeSelection').click();
-    await page.locator('#moveMode').click();
+    await page.locator('#board').focus();
+    await page.keyboard.press('m');
     await page.keyboard.press('ArrowRight');
     const combinedMoving = await page.locator('#selectionBounds').boundingBox();
     if (!combinedBefore || !combinedMoving) throw new Error('Missing moving selection');
@@ -399,8 +399,8 @@ describe('desktop canvas editing', () => {
     await page.mouse.up();
     await page.keyboard.up('Alt');
     expect((await page.evaluate(() => window.canvasView.read().selected)).sort()).toEqual(['note', 'other']);
-    await page.locator('#arrangeSelection').click();
-    await page.locator('#moveMode').click();
+    await page.locator('#board').focus();
+    await page.keyboard.press('m');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('Escape');
     expect(await stored()).toEqual(before);
@@ -615,7 +615,9 @@ describe('desktop canvas editing', () => {
       await page.locator('#textEditor').fill('A failed save keeps this draft.');
       await page.locator('#textEditor').blur();
       await page.waitForFunction(() => window.canvasEdit.read().status === 'refused');
-      expect(await page.locator('#editStatus').textContent()).toContain('unlock');
+      expect(await page.locator('#editStatus').textContent()).toBe(
+        `"A useful excerpt in ${theme}." is locked. Unlock it to edit it.`
+      );
       expect((await stored()).find((o) => o.id === 'note')?.content.text).toBe(beforeRefusal);
       expect(await page.locator('#textEditor').inputValue()).toBe('A failed save keeps this draft.');
       await shot(theme, 'failed-save');
@@ -757,7 +759,7 @@ describe('desktop canvas editing', () => {
     })),
     {
       name: 'equal-spacing-x',
-      selector: '[data-distribute="x"]',
+      selector: null,
       tool: 'canvas_arrange',
       arguments: { action: 'distribute', targetIds: ['note', 'other', 'third'], axis: 'x', spacing: 32 },
     },
@@ -830,9 +832,15 @@ describe('desktop canvas editing', () => {
     page.on('request', (r) => {
       if (r.method() === 'POST') requests.push(r.url());
     });
-    await page.locator('#arrangeSelection').click();
-    if ('spacing' in action.arguments) await page.locator('#layoutSpacing').fill(String(action.arguments.spacing));
-    await page.locator(action.selector).click();
+    if (action.selector) {
+      await page.locator('#arrangeSelection').click();
+      await page.locator(action.selector).click();
+    } else
+      // Explicit spacing is a command-endpoint capability without a pointer control.
+      await page.evaluate(
+        (args) => window.canvasEdit.command({ tool: 'canvas_arrange', arguments: args }),
+        action.arguments as never
+      );
     await saved();
     await invoke(action.tool, action.arguments, mirror);
     expect(material(await stored())).toEqual(material(await storedAt(mirror)));
@@ -952,7 +960,9 @@ describe('desktop canvas editing', () => {
     expect(refused.status()).toBe(409);
     expect((await refused.json()).reasons[0].code).toBe('LOCKED');
     expect(material(await stored())).toEqual(material(await storedAt(mirror)));
-    expect(await page.locator('#actionMessage').textContent()).toContain('unlock');
+    expect(await page.locator('#actionMessage').textContent()).toBe(
+      '"Keep the reason you wanted to r…" is locked. Unlock it to move it.'
+    );
     await reader('note');
     await page.locator('#textEditor').fill('Protected text');
     await page.locator('#textEditor').blur();
@@ -974,7 +984,9 @@ describe('desktop canvas editing', () => {
     });
     expect(protectedContent.status()).toBe(409);
     expect(material(await stored())).toEqual(material(await storedAt(mirror)));
-    expect(await page.locator('#editStatus').textContent()).toContain('unlock');
+    expect(await page.locator('#editStatus').textContent()).toBe(
+      '"Keep the reason you wanted to r…" is locked. Unlock it to edit it.'
+    );
     await page.locator('#lockSelection').click();
     await saved();
     await invoke('canvas_lock', { targetIds: ['note'], mode: 'unlock' }, mirror);
@@ -1001,6 +1013,14 @@ describe('desktop canvas editing', () => {
     );
     expect(material(await stored())).toEqual(material(await storedAt(mirror)));
   });
+  async function rowFits() {
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const tops = await page
+      .locator('#contextRow > button:visible')
+      .evaluateAll((items) => items.map((item) => Math.round(item.getBoundingClientRect().top)));
+    expect(new Set(tops).size).toBe(1);
+    expect(await page.locator('#contextRow').evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  }
   async function dragRefusal(id: string, dx: number, dy: number) {
     const p = await objectCenter(id);
     await page.mouse.move(p.x, p.y);
@@ -1045,6 +1065,7 @@ describe('desktop canvas editing', () => {
   it('resizes a combined selection, scales groups uniformly, rotates, and keeps frame children fixed', async () => {
     const mirror = await twin();
     await selectMany(['note', 'other']);
+    await page.locator('#selectionBounds > .handle-se').waitFor({ state: 'visible' });
     const handle = await page.locator('#selectionBounds > .handle-se').boundingBox();
     if (!handle) throw new Error('Missing combined handle');
     await page.keyboard.down('Control');
@@ -1108,8 +1129,9 @@ describe('desktop canvas editing', () => {
     );
     expect(material(await stored())).toEqual(material(await storedAt(mirror)));
     const rotationBox = selectionBox(await storedAt(mirror), ['mirror-group']);
-    await page.locator('#arrangeSelection').click();
-    await page.locator('#rotateSelection').click();
+    await page.locator('#editSelection').click();
+    await page.locator('#rotationDegrees').fill('90');
+    await page.locator('#rotationDegrees').press('Tab');
     await saved();
     expect((await stored()).find((o) => o.id === group.id)?.rotation).toBe(90);
     await invoke(
@@ -1125,7 +1147,8 @@ describe('desktop canvas editing', () => {
       mirror
     );
     expect(material(await stored())).toEqual(material(await storedAt(mirror)));
-    expect(await page.locator('#transformCapability').textContent()).toContain('Flip is unsupported');
+    expect(await page.evaluate(() => window.canvasEdit.capabilities.flip)).toContain('Unsupported');
+    await closeReader();
     await select('frame');
     await page.locator('[data-object-id="frame"] > .handle-se').waitFor({ state: 'visible' });
     const frameHandle = await page.locator('[data-object-id="frame"] > .handle-se').boundingBox();
@@ -1178,7 +1201,9 @@ describe('desktop canvas editing', () => {
     await page.locator('#board').focus();
     await page.keyboard.press('Control+z');
     await page.waitForFunction(() => window.canvasEdit.read().status === 'refused');
-    expect(await page.locator('#actionMessage').textContent()).toContain('later-child');
+    expect(await page.locator('#actionMessage').textContent()).toBe(
+      `Can't undo: "A quiet place for references." was added to "Design exploration" later.`
+    );
     expect((await stored()).some((o) => o.id === 'later-child')).toBe(true);
   });
   it('captures the six compound interaction states in both themes and scopes new shortcuts', async () => {
@@ -1190,23 +1215,57 @@ describe('desktop canvas editing', () => {
         window.dispatchEvent(new Event('storage'));
       }, theme);
       await selectMany(['note', 'other']);
+      await rowFits();
+      expect(await page.locator('#groupSelection').textContent()).toBe('Group');
+      expect(await page.locator('#groupSelection').isVisible()).toBe(true);
+      await page.locator('#board').focus();
+      await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('ArrowLeft');
+      await selectMany(['note', 'other']);
+      await page.locator('#selectionBounds > .handle-se').waitFor({ state: 'visible' });
       const handle = await page.locator('#selectionBounds > .handle-se').boundingBox();
       if (!handle) throw new Error('Missing resize handle');
       await page.keyboard.down('Control');
       await page.mouse.move(handle.x + 8, handle.y + 8);
       await page.mouse.down();
       await page.mouse.move(handle.x + 68, handle.y + 98, { steps: 8 });
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('board');
+      expect(await page.locator('#board').evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('none');
       await shot(theme, 'combined-resize');
       await page.keyboard.press('Escape');
       await page.mouse.up();
       await page.keyboard.up('Control');
+      expect(await page.locator('#board').evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('none');
       await page.locator('#board').focus();
       await page.keyboard.press('Control+g');
       await saved();
+      await rowFits();
+      expect(await page.locator('#groupSelection').textContent()).toBe('Ungroup');
       await shot(theme, 'grouped-selection');
       await page.locator('#arrangeSelection').click();
+      const menu = await page.locator('#arrangeMenu').boundingBox();
+      if (!menu) throw new Error('Missing Arrange menu');
+      expect(menu.height).toBeLessThanOrEqual(320);
+      expect(menu.width).toBeLessThanOrEqual(248);
+      expect(await page.locator('#arrangeMenu [data-align]').count()).toBe(6);
+      expect(await page.locator('#arrangeMenu [data-distribute]').count()).toBe(2);
+      expect(await page.locator('#arrangeMenu [data-align][aria-disabled="true"]').count()).toBe(6);
+      expect(await page.locator('#arrangeMenu input').count()).toBe(0);
+      const labels = await page
+        .locator('#arrangeMenu button:visible')
+        .evaluateAll((items) => items.map((item) => item.getAttribute('aria-label') ?? item.textContent ?? ''));
+      for (const removed of ['Copy', 'Cut', 'Paste', 'Duplicate', 'Move with arrows', 'Rotate'])
+        expect(labels.some((label) => label.includes(removed))).toBe(false);
+      expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Align left');
+      await page.keyboard.press('ArrowRight');
+      expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Centre horizontally');
+      await page.keyboard.press('ArrowLeft');
+      await page.keyboard.press('ArrowLeft');
+      expect(await page.evaluate(() => document.activeElement?.textContent?.trim())).toBe('Wrap in section');
       await shot(theme, 'arrange-menu');
       await page.keyboard.press('Escape');
+      expect(await page.locator('#arrangeMenu').isHidden()).toBe(true);
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe('arrangeSelection');
       await page.locator('#board').focus();
       await page.keyboard.press('Control+c');
       await page.keyboard.press('Control+v');
@@ -1215,11 +1274,79 @@ describe('desktop canvas editing', () => {
       await page.locator('#board').focus();
       await page.keyboard.press('Control+z');
       await saved();
+      await selectMany(['note', 'other']);
+      await page.locator('#arrangeSelection').click();
+      expect(await page.locator('#arrangeMenu [data-align][aria-disabled="false"]').count()).toBe(6);
+      expect(await page.locator('#arrangeMenu [data-distribute][aria-disabled="true"]').count()).toBe(2);
+      await page.keyboard.press('Escape');
       await select('note');
+      await rowFits();
+      expect(await page.locator('#groupSelection').isHidden()).toBe(true);
       await page.locator('#lockSelection').click();
       await saved();
       await dragRefusal('note', 30, 20);
+      expect(await page.locator('#actionMessage').textContent()).toBe(
+        '"Keep the reason you wanted to r…" is locked. Unlock it to move it.'
+      );
+      await rowFits();
       await shot(theme, 'locked-refusal');
+      for (const [id, verb] of [
+        ['moveTo', 'move'],
+        ['arrangeSelection', 'move'],
+        ['editSelection', 'edit'],
+        ['deleteSelection', 'delete'],
+      ]) {
+        const control = page.locator(`#${id}`);
+        expect(await control.getAttribute('aria-disabled')).toBe('true');
+        expect(
+          await control.evaluate(
+            (el) => document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent
+          )
+        ).toBe(`"Keep the reason you wanted to r…" is locked. Unlock it to ${verb} it.`);
+      }
+      expect(await page.locator('#lockSelection').textContent()).toBe('Unlock');
+      const unlock = await page.locator('#lockSelection').evaluate((el) => {
+        const probe = document.createElement('i');
+        probe.style.color = 'var(--accent)';
+        el.append(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        return { fill: getComputedStyle(el).backgroundColor, accent };
+      });
+      expect(unlock.fill).toBe(unlock.accent);
+      const before = await stored();
+      await page.locator('#deleteSelection').focus();
+      await page.keyboard.press('Enter');
+      expect(await stored()).toEqual(before);
+      expect(await page.locator('#actionMessage').textContent()).toBe(
+        '"Keep the reason you wanted to r…" is locked. Unlock it to delete it.'
+      );
+      const bounds = await page.locator('[data-object-id="note"] > .selection-bounds').boundingBox();
+      const lock = await page.locator('[data-object-id="note"] > .selection-bounds > .lock-mark').boundingBox();
+      if (!bounds || !lock) throw new Error('Missing lock mark');
+      expect(lock.width).toBeCloseTo(12, 0);
+      expect(lock.x).toBeGreaterThanOrEqual(bounds.x + bounds.width);
+      expect(lock.y + lock.height).toBeLessThanOrEqual(bounds.y - 4);
+      const row = page.locator('[data-row-id="note"]');
+      const rowBox = await row.boundingBox(),
+        rowLock = await row.locator('.lock-mark').boundingBox();
+      if (!rowBox || !rowLock) throw new Error('Missing outline lock');
+      expect(rowLock.width).toBeCloseTo(12, 0);
+      expect(await row.evaluate((el) => parseFloat(getComputedStyle(el).paddingRight))).toBeGreaterThanOrEqual(
+        rowBox.x + rowBox.width - rowLock.x
+      );
+      await shot(theme, 'locked-row');
+      await page.evaluate(() => {
+        window.canvasView.dispatch({ kind: 'selection', ids: [] });
+        window.canvasView.dispatch({ kind: 'focus', id: null });
+      });
+      // The refusal named the cleared selection, so it leaves with it.
+      await page.locator('#actionMessage').waitFor({ state: 'hidden', timeout: 2000 });
+      await page.mouse.move((await objectCenter('note')).x, (await objectCenter('note')).y);
+      await page.locator('[data-object-id="note"] > .selection-bounds > .lock-mark').waitFor({ state: 'visible' });
+      await shot(theme, 'locked-hover');
+      await page.mouse.move(700, 700);
+      expect(await page.locator('[data-object-id="note"] > .selection-bounds > .lock-mark').isVisible()).toBe(false);
       const p = await objectCenter('other');
       await page.mouse.move(p.x, p.y);
       await page.mouse.down();
