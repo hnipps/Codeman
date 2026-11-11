@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createToolRunner, createMcpServer, buildToolDefinitions } from '../src/mcp-server.js';
@@ -12,13 +12,22 @@ import { registerCanvasRoutes } from '../src/web/routes/canvas-routes.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import { create, human } from './canvas-fixtures.js';
 import { deployRole } from '../src/deploy-role.js';
-import type { ApiRequest } from '../src/cli-agent.js';
+import type { AgentContext, ApiRequest } from '../src/cli-agent.js';
+import {
+  SCREENSHOT_MISCONFIGURED_MESSAGE,
+  type HeadlessBrowser,
+  type HeadlessPage,
+} from '../src/canvas/canvas-screenshot.js';
+
+const { launchHeadlessBrowser } = vi.hoisted(() => ({ launchHeadlessBrowser: vi.fn() }));
+vi.mock('../src/headless-browser.js', () => ({ launchHeadlessBrowser }));
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mcp-canvas-'));
   vi.stubEnv('CODEMAN_DATA_DIR', dir);
   vi.stubEnv('CODEMAN_MULTIUSER', '0');
+  launchHeadlessBrowser.mockReset();
 });
 afterEach(() => {
   deployRole.enter('live');
@@ -503,4 +512,109 @@ describe('canvas MCP HTTP parity', () => {
     expect((await unconfigured.run('canvas_screenshot', { objectId: 'section' })).text).toContain('CODEMAN_API_URL');
     server.close();
   });
+
+  it('returns image content through the real routes when the session header supplies the workspace', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    launchHeadlessBrowser.mockImplementation(async () => shotBrowser(png));
+    const h = await harness();
+    const ctx: AgentContext = { apiUrl: 'http://example.invalid', selfId: 'agent-a' };
+    try {
+      const out: Record<string, unknown>[] = [];
+      const server = createMcpServer({
+        config: { apiUrl: 'http://example.invalid', selfId: 'agent-a', allowAnySession: false, version: 'test' },
+        request: h.request,
+        write: (message) => out.push(message),
+      });
+      await server.handleLine(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'canvas_screenshot', arguments: { objectId: 'section', theme: 'light' } },
+        })
+      );
+      const result = out[0].result as {
+        content: { type: string; text?: string; data?: string }[];
+        structuredContent?: unknown;
+        isError?: boolean;
+      };
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.content.find((item) => item.type === 'image')?.data).toBe(png.toString('base64'));
+      expect(JSON.stringify(out[0])).not.toContain(dir);
+
+      const explicit = await h.request(ctx, {
+        method: 'GET',
+        path: `/api/v1/canvas/${h.workspace.id}/objects/a/screenshot`,
+      });
+      expect(explicit.status).toBe(200);
+      expect(explicit.body?.subarray(0, 8).equals(png.subarray(0, 8))).toBe(true);
+
+      const rooted = await h.request(ctx, {
+        method: 'GET',
+        path: '/api/v1/canvas/current/objects',
+        query: { root: 'a' },
+      });
+      expect(rooted.status).toBe(200);
+      const objects = (rooted.json as { data: { objects: { id: string }[] } }).data.objects;
+      expect(objects.map((object) => object.id)).toEqual(['a']);
+
+      const history = await h.runner().run('canvas_history', { action: 'read', since: 100 });
+      expect(history.isError).toBe(false);
+      expect(JSON.parse(history.text).data).toEqual([]);
+      const ops = await h.request(ctx, {
+        method: 'GET',
+        path: '/api/v1/canvas/current/ops',
+        query: { since: '100' },
+      });
+      expect(ops.status).toBe(200);
+      expect((ops.json as { data: { operations: unknown[] } }).data.operations).toEqual([]);
+      server.close();
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('keeps the data directory out of the screenshot tool text', async () => {
+    writeFileSync(join(dir, 'mermaid-runtime.json'), '{');
+    const actual = await vi.importActual<typeof import('../src/headless-browser.js')>('../src/headless-browser.js');
+    launchHeadlessBrowser.mockImplementation((options: { noSandbox?: boolean; timeoutMs?: number }) =>
+      actual.launchHeadlessBrowser(options)
+    );
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const h = await harness();
+    try {
+      const shot = await h.runner().run('canvas_screenshot', { objectId: 'section' });
+      expect(shot.isError).toBe(true);
+      expect(shot.text).toContain(SCREENSHOT_MISCONFIGURED_MESSAGE);
+      expect(shot.text).not.toContain(dir);
+      expect(spy.mock.calls.some((call) => call.join(' ').includes(dir))).toBe(true);
+    } finally {
+      spy.mockRestore();
+      await h.app.close();
+    }
+  });
 });
+
+function shotBrowser(png: Buffer): HeadlessBrowser {
+  const page: HeadlessPage = {
+    async setViewport() {},
+    async setCacheEnabled() {},
+    async setRequestInterception() {},
+    on() {},
+    async goto() {},
+    async evaluate() {
+      return undefined;
+    },
+    async screenshot() {
+      return png;
+    },
+  };
+  return {
+    async newPage() {
+      return page;
+    },
+    async close() {},
+    process: () => null,
+  };
+}

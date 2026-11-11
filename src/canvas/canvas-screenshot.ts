@@ -23,6 +23,10 @@ export const SCREENSHOT_MARGIN = 48;
 export const SCREENSHOT_MAX_SIDE = 4096;
 export const SCREENSHOT_TIMEOUT_MS = 20_000;
 export const SCREENSHOT_TIMEOUT_MESSAGE = 'Canvas screenshot timed out after 20 seconds.';
+export const SCREENSHOT_CLOSE_BUDGET_MS = 2_000;
+export const SCREENSHOT_EXIT_WAIT_MS = 2_000;
+export const SCREENSHOT_MISCONFIGURED_MESSAGE = 'Screenshot renderer is misconfigured on this server';
+export const SCREENSHOT_FAILED_MESSAGE = 'Canvas screenshot failed';
 export const DOCUMENT_URL = 'https://codeman-canvas.invalid/screenshot';
 const DOCUMENT_ORIGIN = 'https://codeman-canvas.invalid';
 const MAX_STORED_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -44,6 +48,18 @@ export class ScreenshotUnavailable extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ScreenshotUnavailable';
+  }
+}
+export class ScreenshotMisconfigured extends Error {
+  constructor() {
+    super(SCREENSHOT_MISCONFIGURED_MESSAGE);
+    this.name = 'ScreenshotMisconfigured';
+  }
+}
+export class ScreenshotAborted extends Error {
+  constructor() {
+    super('Canvas screenshot aborted');
+    this.name = 'ScreenshotAborted';
   }
 }
 
@@ -103,13 +119,48 @@ export function liveScreenshotBrowserPids(): number[] {
 }
 
 let tail: Promise<void> = Promise.resolve();
+let activeRenders = new AbortController();
+
 function enqueue<T>(fn: () => Promise<T>): Promise<T> {
-  const run = tail.then(fn, fn);
-  tail = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
+  const previous = tail;
+  let release = (): void => undefined;
+  tail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const run = (): Promise<T> => {
+    const job = fn();
+    job.then(
+      () => undefined,
+      () => undefined
+    );
+    // The queue is released here. This finally must not await: a hung
+    // browser.close() stays inside the job, which bounds that wait itself.
+    return job.finally(() => {
+      release();
+    });
+  };
+  return previous.then(run, run);
+}
+
+/** Abort in-flight renders and wait until their bounded cleanup releases the queue. */
+export async function stopScreenshotRenders(): Promise<void> {
+  const stopping = activeRenders;
+  activeRenders = new AbortController();
+  stopping.abort();
+  const pending = tail;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, SCREENSHOT_CLOSE_BUDGET_MS + SCREENSHOT_EXIT_WAIT_MS + 1_000);
+    pending.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      }
+    );
+  });
 }
 
 export function clipFor(box: WorldBox, margin = SCREENSHOT_MARGIN): WorldBox {
@@ -331,33 +382,72 @@ async function readBundles(): Promise<{ css: string; script: string }> {
   }
 }
 
-function mapLaunchError(error: unknown): Error {
-  if (
+const BROWSER_MISSING =
+  /could not find chrome|failed to launch|no usable sandbox|executable doesn't exist|cannot find browser|the browser is not installed/i;
+const ABSOLUTE_PATH = /(?:^|[\s"'`(:=])\/(?:[\w.+@~-]+\/)+[\w.+@~-]*/;
+
+export function messageHasAbsolutePath(text: string): boolean {
+  return ABSOLUTE_PATH.test(text) || /[A-Za-z]:\\[\w .+@~-]+\\/.test(text);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logScreenshotError(error: unknown): void {
+  console.error(`[canvas-screenshot] ${errorMessage(error)}`);
+}
+
+function isRuntimeConfigFailure(error: unknown): boolean {
+  if (errorMessage(error).startsWith('Invalid Mermaid runtime configuration')) return true;
+  const path = (error as { path?: unknown } | null)?.path;
+  return typeof path === 'string' && path.endsWith('mermaid-runtime.json');
+}
+
+function isScreenshotError(error: unknown): boolean {
+  return (
     error instanceof ScreenshotTimeout ||
     error instanceof ScreenshotUnavailable ||
-    error instanceof ScreenshotNotFound
-  ) {
-    return error;
+    error instanceof ScreenshotNotFound ||
+    error instanceof ScreenshotMisconfigured ||
+    error instanceof ScreenshotAborted
+  );
+}
+
+export function classifyScreenshotError(error: unknown): Error {
+  if (isScreenshotError(error)) return error as Error;
+  if (isRuntimeConfigFailure(error)) {
+    logScreenshotError(error);
+    return new ScreenshotMisconfigured();
   }
-  const message = error instanceof Error ? error.message : String(error);
-  if (
-    /could not find chrome|failed to launch|no usable sandbox|executable doesn't exist|cannot find browser|the browser is not installed/i.test(
-      message
-    )
-  ) {
+  const message = errorMessage(error);
+  if (BROWSER_MISSING.test(message)) {
+    if (messageHasAbsolutePath(message)) logScreenshotError(error);
     return new ScreenshotUnavailable('No headless browser is available. Run codeman mermaid setup.');
+  }
+  if (messageHasAbsolutePath(message)) {
+    logScreenshotError(error);
+    return new Error(SCREENSHOT_FAILED_MESSAGE);
   }
   return error instanceof Error ? error : new Error(message);
 }
 
-async function closeHeadlessBrowser(browser: HeadlessBrowser): Promise<void> {
-  try {
-    await browser.close();
-  } catch {
-    // The pid check below is what proves the process is gone.
+export function screenshotFailure(error: unknown): { status: number; message: string } {
+  const mapped = classifyScreenshotError(error);
+  if (mapped instanceof ScreenshotNotFound) return { status: 404, message: mapped.message };
+  if (
+    mapped instanceof ScreenshotTimeout ||
+    mapped instanceof ScreenshotUnavailable ||
+    mapped instanceof ScreenshotAborted
+  ) {
+    return { status: 503, message: mapped.message };
   }
-  const pid = browser.process()?.pid;
-  if (typeof pid !== 'number' || pid <= 0 || pid === process.pid) return;
+  if (mapped instanceof ScreenshotMisconfigured) return { status: 500, message: mapped.message };
+  return { status: 500, message: mapped.message };
+}
+
+async function killBrowserPid(pid: number | undefined): Promise<void> {
+  if (typeof pid !== 'number' || pid <= 1 || pid === process.pid) return;
   try {
     process.kill(pid, 0);
   } catch {
@@ -366,8 +456,55 @@ async function closeHeadlessBrowser(browser: HeadlessBrowser): Promise<void> {
   try {
     process.kill(pid, 'SIGKILL');
   } catch {
-    // Already gone.
+    return;
   }
+  // Drop the pid as soon as it is killed. The exit wait below can outlive the
+  // caller's view of the signal, and a killed browser is not still rendering.
+  livePids.delete(pid);
+  await new Promise<void>((resolve) => {
+    const started = Date.now();
+    const tick = (): void => {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        resolve();
+        return;
+      }
+      if (Date.now() - started >= SCREENSHOT_EXIT_WAIT_MS) {
+        resolve();
+        return;
+      }
+      setTimeout(tick, 25);
+    };
+    tick();
+  });
+}
+
+async function closeHeadlessBrowser(browser: HeadlessBrowser): Promise<void> {
+  const pid = browser.process()?.pid;
+  const closing = browser.close().then(
+    () => undefined,
+    () => undefined
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    closing,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SCREENSHOT_CLOSE_BUDGET_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  await killBrowserPid(pid);
+}
+
+function whenAborted(signal: AbortSignal): { promise: Promise<never>; cancel: () => void } {
+  let onAbort = (): void => undefined;
+  const promise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new ScreenshotAborted());
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return { promise, cancel: () => signal.removeEventListener('abort', onAbort) };
 }
 
 function delay(ms: number): { promise: Promise<never>; cancel: () => void } {
@@ -405,6 +542,7 @@ async function capture(
 export interface RenderContainerOptions {
   theme?: 'dark' | 'light';
   timeoutMs?: number;
+  signal?: AbortSignal;
   launch?: (options: { noSandbox?: boolean; timeoutMs?: number }) => Promise<HeadlessBrowser>;
   readAssets?: () => Promise<{ css: string; script: string }>;
 }
@@ -415,29 +553,32 @@ export async function renderContainer(
   options: RenderContainerOptions = {}
 ): Promise<{ png: Buffer; meta: ShotMeta }> {
   const theme = options.theme ?? 'dark';
-  const model = shotModel(state, objectId);
-  const bundles = await (options.readAssets ?? readBundles)();
-  const html = buildShotDocument(model, bundles.css, bundles.script, theme);
   const launch = options.launch ?? ((launchOptions) => launchHeadlessBrowser(launchOptions));
   const timeoutMs = options.timeoutMs ?? SCREENSHOT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
-  const meta: ShotMeta = {
-    scaled: model.fit.scaled,
-    scale: model.fit.scale,
-    width: model.fit.width,
-    height: model.fit.height,
-    clip: model.fit.clip,
-  };
+  const signal = options.signal ? AbortSignal.any([activeRenders.signal, options.signal]) : activeRenders.signal;
   const job = enqueue(async () => {
+    if (signal.aborted) throw new ScreenshotAborted();
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScreenshotTimeout();
+    const model = shotModel(state, objectId);
+    const bundles = await (options.readAssets ?? readBundles)();
+    const html = buildShotDocument(model, bundles.css, bundles.script, theme);
+    const meta: ShotMeta = {
+      scaled: model.fit.scaled,
+      scale: model.fit.scale,
+      width: model.fit.width,
+      height: model.fit.height,
+      clip: model.fit.clip,
+    };
     let browser: HeadlessBrowser | undefined;
     try {
       try {
         browser = await launch({ timeoutMs: Math.min(LAUNCH_TIMEOUT_MS, remaining) });
       } catch (error) {
-        throw mapLaunchError(error);
+        throw classifyScreenshotError(error);
       }
+      if (signal.aborted) throw new ScreenshotAborted();
       const pid = browser.process()?.pid;
       if (typeof pid === 'number' && pid > 0) livePids.add(pid);
       const left = deadline - Date.now();
@@ -445,17 +586,22 @@ export async function renderContainer(
       const gate = delay(left);
       const painting = capture(browser, html, model.assets, model.fit);
       painting.catch(() => undefined);
+      const aborted = whenAborted(signal);
       try {
-        const png = await Promise.race([painting, gate.promise]);
+        const png = await Promise.race([painting, gate.promise, aborted.promise]);
         return { png, meta };
       } finally {
         gate.cancel();
+        aborted.cancel();
       }
     } finally {
       if (browser) {
         const pid = browser.process()?.pid;
-        await closeHeadlessBrowser(browser);
-        if (typeof pid === 'number') livePids.delete(pid);
+        try {
+          await closeHeadlessBrowser(browser);
+        } finally {
+          if (typeof pid === 'number') livePids.delete(pid);
+        }
       }
     }
   });

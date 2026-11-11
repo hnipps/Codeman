@@ -116,6 +116,7 @@ import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
+import { stopScreenshotRenders } from '../canvas/canvas-screenshot.js';
 import { deriveWebviewSseHint } from './webview-sse.js';
 import {
   type SessionListenerRefs,
@@ -4558,6 +4559,9 @@ export class WebServer extends EventEmitter {
     getLifecycleLog().log({ event: 'server_stopped', sessionId: '*' });
     // Set stopping flag to prevent new timer creation during shutdown
     this.sse.setStopping();
+    await stopScreenshotRenders().catch((err) => {
+      console.error('[canvas-screenshot] shutdown cleanup failed:', getErrorMessage(err));
+    });
 
     if (this._pasteImageGcStop) {
       this._pasteImageGcStop();

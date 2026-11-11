@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - Screenshot cleanup is bounded and answers stay path-free
+
+**Type:** propagated-discovery
+**Touches:** `src/canvas/canvas-screenshot.ts`, `src/web/routes/canvas-routes.ts`, `src/web/server.ts`
+**Why:** The audit showed a session-scoped screenshot dropping `:id`, a `browser.close()` that never settles holding the only render slot, and a bad `mermaid-runtime.json` putting the data directory in the HTTP body.
+**Links:** [Intent](../intent/2026-11-11-canvas-screenshot-fix.md)
+
+The workspace pre-handler assigns `workspaceId` on the existing params object. Close waits 2 seconds, then the pid is killed, and the exit wait uses that same 2 second bound. The queue `finally` releases without awaiting close. Shutdown and a client hang-up share that close. A missing browser stays the 503 that names `codeman mermaid setup`. A bad runtime config is the fixed 500, and any other absolute path in a screenshot error is `Canvas screenshot failed`, so a paint failure is not labelled as a bad config. The path is logged on the server. `codeman mermaid` keeps the detailed line. The 20 second deadline starts before the job, and model, bundle and document work run inside it.
+
 ## 2026-11-11 - A canvas screenshot is one clipped page
 
 **Type:** intent-refinement
