@@ -146,11 +146,19 @@ export function canvasJsonSchema(schema: z.ZodType) {
 export function capabilities() {
   const types = ContentSchema.options.map((s) => s.shape.type.value);
   return {
-    tools: canvasToolNames.map((name) => ({
-      name,
-      schema: canvasJsonSchema(toolSchemas[name]),
-      objectTypes: types,
-    })),
+    tools: [
+      ...canvasToolNames.map((name) => ({
+        name,
+        schema: canvasJsonSchema(toolSchemas[name]),
+        objectTypes: types,
+      })),
+      {
+        name: 'canvas_screenshot',
+        available: true,
+        objectTypes: types,
+        note: 'PNG of one container or object via GET screenshot. The page has no network.',
+      },
+    ],
     compoundCommands: ArrangeSchema.options.flatMap((s) => {
       const actions = s.shape.action instanceof z.ZodEnum ? s.shape.action.options : [s.shape.action.value];
       return actions.map((command) => ({
@@ -209,7 +217,7 @@ export function capabilities() {
       paste: 'canvas_create atomic batch with fresh object/op IDs and remapped parent IDs',
       duplicate: 'canvas_arrange duplicate allocates and remaps IDs server-side',
     },
-    future: { render: 'PC7', contextSessionActions: 'PC9/PC10', voice: 'PC11', backgroundWork: 'PC12' },
+    future: { contextSessionActions: 'PC9/PC10', voice: 'PC11', backgroundWork: 'PC12' },
   };
 }
 export class CanvasCommandError extends Error {

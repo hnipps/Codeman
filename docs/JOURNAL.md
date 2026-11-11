@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - A canvas screenshot is one clipped page
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/canvas-screenshot.ts`, `src/headless-browser.ts`, `packages/canvas/src/shot.ts`
+**Why:** The plan left the clip margin, image fetching, the page bundle, and the queue budget unspecified.
+**Links:** [Intent](../intent/2026-11-11-canvas-screenshot.md)
+
+The clip margin is 48 pixels so a container title drawn above the box is inside the picture. A title wider than the object can still meet the clip edge. Device scale factor stays 1. Past 4096 pixels on the long side, CSS scale shrinks the page and the metadata says so. Only a stored `data:image` of png, jpeg, gif, or webp is painted. A remote image URL is not fetched. The shot page loads `canvas-shot.js`, which uses the shipped Renderer and does not boot the live view. An embed label includes its URL so the view and the screenshot draw the same box. The 20 second budget includes time waiting for the single render slot, and a caller whose budget is already spent does not launch. `canvas_screenshot` is a GET, not a command-batch tool. A browser process that survives `close()` is killed.
+
 ## 2026-11-11 - An Authorization bearer is one placeholder
 
 **Type:** intent-refinement

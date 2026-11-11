@@ -3,39 +3,13 @@
  * Chromium has no network access. The browser sandbox stays enabled unless explicitly disabled.
  */
 import { readFile, writeFile } from 'node:fs/promises';
-import { dirname, extname, isAbsolute, join } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
-import { dataPath } from './config/instance.js';
+import { launchHeadlessBrowser } from './headless-browser.js';
 
 const MAX_SOURCE_BYTES = 200_000;
 const RENDER_TIMEOUT_MS = 15_000;
 const RENDER_URL = 'https://codeman-mermaid.invalid/';
-const RuntimeConfigSchema = z
-  .object({
-    noSandbox: z.boolean().optional(),
-    libraryPath: z
-      .string()
-      .refine((path) => isAbsolute(path) && !path.includes(':') && !path.includes('\0'))
-      .optional(),
-  })
-  .strict();
-
-async function readRuntimeConfig(): Promise<z.infer<typeof RuntimeConfigSchema>> {
-  const path = dataPath('mermaid-runtime.json');
-  let source: string;
-  try {
-    source = await readFile(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw error;
-  }
-  try {
-    return RuntimeConfigSchema.parse(JSON.parse(source));
-  } catch {
-    throw new Error(`Invalid Mermaid runtime configuration in ${path}.`);
-  }
-}
 
 export async function readMermaidSource(input: AsyncIterable<Buffer | string>): Promise<string> {
   const chunks: Buffer[] = [];
@@ -63,22 +37,7 @@ export async function renderMermaid(
     join(dirname(fileURLToPath(import.meta.url)), 'web/public/vendor/mermaid-frame.html'),
     'utf8'
   );
-  const config = await readRuntimeConfig();
-  if (config.libraryPath && process.platform !== 'linux') {
-    throw new Error('Mermaid libraryPath is supported only on Linux.');
-  }
-  const { default: puppeteer } = await import('puppeteer');
-  const browser = await puppeteer.launch({
-    headless: 'shell',
-    timeout: RENDER_TIMEOUT_MS,
-    args: (options.noSandbox ?? config.noSandbox ?? false) ? ['--no-sandbox'] : [],
-    env: config.libraryPath
-      ? {
-          ...process.env,
-          LD_LIBRARY_PATH: [config.libraryPath, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':'),
-        }
-      : undefined,
-  });
+  const browser = await launchHeadlessBrowser({ noSandbox: options.noSandbox, timeoutMs: RENDER_TIMEOUT_MS });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const work = async (): Promise<string | Uint8Array> => {

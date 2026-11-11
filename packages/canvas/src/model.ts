@@ -43,8 +43,10 @@ export function readable(o: ViewObject): string {
       return `Image · ${text(o.content.alt) || 'Preview unavailable in read-only view'}`;
     case 'link':
       return `Link · ${text(o.content.label) || text(o.content.url)}`;
-    case 'embed':
-      return 'Embed · Preview unavailable in read-only view';
+    case 'embed': {
+      const url = text(o.content.url);
+      return url ? `Embed · ${url}` : 'Embed · Preview unavailable in read-only view';
+    }
     default:
       return `Unsupported object · ${o.type}`;
   }

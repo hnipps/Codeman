@@ -47,12 +47,25 @@ async function harness() {
   registerCanvasRoutes(app, port);
   await app.ready();
   const request: ApiRequest = async (ctx, options) => {
+    const url = new URL(options.path.replace('/api/v1/', '/api/'), 'http://codeman.local');
+    for (const [key, value] of Object.entries(options.query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
     const response = await app.inject({
       method: options.method,
-      url: options.path.replace('/api/v1/', '/api/'),
+      url: `${url.pathname}${url.search}`,
       headers: { 'x-codeman-parent-session': ctx.selfId },
       payload: options.body,
     });
+    const contentType = String(response.headers['content-type'] ?? '');
+    if (contentType.startsWith('image/')) {
+      return {
+        status: response.statusCode,
+        text: '',
+        body: response.rawPayload,
+        headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, String(value)])),
+      };
+    }
     return { status: response.statusCode, json: response.json(), text: response.body };
   };
   function runner(selfId = 'agent-a', configured = true) {
@@ -269,6 +282,10 @@ describe('canvas MCP HTTP parity', () => {
         available: false,
         owner: 'PC3/PC9',
       });
+      expect(parse(capabilityResult).tools.some((tool: { name: string }) => tool.name === 'canvas_screenshot')).toBe(
+        true
+      );
+      expect(parse(capabilityResult).future.render).toBeUndefined();
     } finally {
       await h.app.close();
     }
@@ -420,8 +437,70 @@ describe('canvas MCP HTTP parity', () => {
       server.close();
       h.disable();
       for (const name of canvasToolNames) expect((await h.runner().run(name, {})).text).toContain('Canvas is disabled');
+      expect((await h.runner().run('canvas_screenshot', { objectId: 'section' })).text).toBe('Canvas is off');
     } finally {
       await h.app.close();
     }
+  });
+  it('returns a screenshot as image content and keeps it out of the command envelope', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const seen: { path?: string; query?: Record<string, unknown> } = {};
+    const request: ApiRequest = async (_ctx, options) => {
+      seen.path = options.path;
+      seen.query = options.query;
+      if (!options.path.endsWith('/screenshot')) throw new Error(`unexpected ${options.path}`);
+      return {
+        status: 200,
+        text: '',
+        body: png,
+        headers: {
+          'content-type': 'image/png',
+          'x-canvas-screenshot-meta': JSON.stringify({ scaled: false, scale: 1, width: 8, height: 8 }),
+        },
+      };
+    };
+    const out: Record<string, unknown>[] = [];
+    const server = createMcpServer({
+      config: { apiUrl: 'http://example.invalid', selfId: 'agent-a', allowAnySession: false, version: 'test' },
+      request,
+      write: (message) => out.push(message),
+    });
+    await server.handleLine(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'canvas_screenshot', arguments: { objectId: 'section', theme: 'light' } },
+      })
+    );
+    const result = out[0].result as {
+      content: { type: string; text?: string; mimeType?: string; data?: string }[];
+      structuredContent?: unknown;
+    };
+    expect(seen.path).toBe('/api/v1/canvas/current/objects/section/screenshot');
+    expect(seen.query).toEqual({ theme: 'light' });
+    expect(result.structuredContent).toBeUndefined();
+    expect(result.content.map((item) => item.type)).toEqual(['text', 'image']);
+    expect(result.content[1].mimeType).toBe('image/png');
+    expect(result.content[1].data).toBe(png.toString('base64'));
+    expect(result.content[0].text).toContain('"scaled":false');
+    const runner = createToolRunner({
+      config: { apiUrl: 'http://example.invalid', selfId: 'agent-a', allowAnySession: false, version: 'test' },
+      request,
+      started: new Set(),
+      clientId: 'test',
+    });
+    expect((await runner.run('canvas_screenshot', { objectId: 'section', workspaceId: 'other' })).text).toContain(
+      'Unknown field'
+    );
+    expect((await runner.run('canvas_screenshot', {})).text).toContain('objectId');
+    const unconfigured = createToolRunner({
+      config: { allowAnySession: false, version: 'test' },
+      request,
+      started: new Set(),
+      clientId: 'test',
+    });
+    expect((await unconfigured.run('canvas_screenshot', { objectId: 'section' })).text).toContain('CODEMAN_API_URL');
+    server.close();
   });
 });

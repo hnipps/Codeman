@@ -22,7 +22,13 @@ import {
   normalizeTargets,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
-import type { Author } from '../../canvas/model.js';
+import { IdSchema, type Author } from '../../canvas/model.js';
+import {
+  ScreenshotNotFound,
+  ScreenshotTimeout,
+  ScreenshotUnavailable,
+  renderContainer,
+} from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
 
 export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): void {
@@ -239,6 +245,28 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             success: true,
             data: { seq: result.seq, sequences: result.operations.map((o) => o.seq), hierarchy },
           };
+        }
+      );
+      workspaceScope.get<{ Params: { workspaceId: string; id: string } }>(
+        '/api/canvas/:workspaceId/objects/:id/screenshot',
+        async (req, reply) => {
+          const { id } = z.object({ id: IdSchema }).parse(req.params);
+          const { theme } = z.object({ theme: z.enum(['dark', 'light']).optional() }).parse(req.query);
+          try {
+            const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
+            const rendered = await renderContainer(state, id, { theme });
+            return reply
+              .header('Cache-Control', 'no-store')
+              .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))
+              .type('image/png')
+              .send(rendered.png);
+          } catch (error) {
+            if (error instanceof ScreenshotNotFound)
+              return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, error.message));
+            if (error instanceof ScreenshotTimeout || error instanceof ScreenshotUnavailable)
+              return reply.code(503).send(createErrorResponse(ApiErrorCode.OPERATION_FAILED, error.message));
+            throw error;
+          }
         }
       );
       workspaceScope.get<{ Params: { workspaceId: string } }>('/api/canvas/:workspaceId/objects', async (req) => {
