@@ -10,7 +10,8 @@
  *
  * Every line is passed through `redactLogLine` before it joins the queue, so a crash
  * flush cannot write a secret the async flush would have masked. The hook secret is
- * read from disk and never created here.
+ * read from disk and never created here. A miss is not remembered, so a secret
+ * created a moment later is visible to the next line.
  *
  * Writes never throw into a caller and never block: lines queue in memory (bounded) and
  * one async append per stream flushes them. Rotation is by size, checked against the file
@@ -86,26 +87,32 @@ interface StreamRecords {
   'ui-events': UiEventLogLine;
 }
 
-const HOOK_SECRET_RECHECK_MS = 30_000;
 let cachedHookSecret: string | undefined;
-let hookSecretCheckedAt = 0;
 
 /** Drop the cached hook secret. Tests use this so a file written mid-process is visible. */
 export function resetTelemetryRedactionCache(): void {
   cachedHookSecret = undefined;
-  hookSecretCheckedAt = 0;
+}
+
+/**
+ * Remember a secret `getHookSecret()` just read or created. A log line must not
+ * keep a copy that appeared after an earlier miss. Unusable values are ignored.
+ */
+export function noteHookSecretForRedaction(value: string): void {
+  const text = value.trim();
+  if (text.length < 16 || text.length > 256) return;
+  if (text.includes('\n') || text.includes('\r') || text.includes('\0')) return;
+  cachedHookSecret = text;
 }
 
 /**
  * The hook secret already on disk, or undefined. This never creates the file:
  * `getHookSecret()` would mint one the first time a log line was written.
- * A miss is retried at most every 30 seconds. A value shorter than 16 characters,
- * longer than 256, or carrying a newline is ignored.
+ * A miss is not cached. A value shorter than 16 characters, longer than 256,
+ * or carrying a newline is ignored.
  */
-export function readHookSecretForRedaction(now = Date.now()): string | undefined {
+export function readHookSecretForRedaction(): string | undefined {
   if (cachedHookSecret !== undefined) return cachedHookSecret;
-  if (hookSecretCheckedAt !== 0 && now - hookSecretCheckedAt < HOOK_SECRET_RECHECK_MS) return undefined;
-  hookSecretCheckedAt = now;
   try {
     const path = dataPath('hook-secret');
     const info = lstatSync(path);

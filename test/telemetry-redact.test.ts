@@ -5,10 +5,14 @@
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { format } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SECRET_KEY_RE as CONFIG_BACKUP_SECRET_KEY_RE } from '../src/config-backup.js';
+import { getHookSecret } from '../src/config/hook-secret.js';
 import { dataPath } from '../src/config/instance.js';
 import { Telemetry, resetTelemetryRedactionCache } from '../src/telemetry.js';
-import { SECRET_KEY_RE, redactLogLine } from '../src/telemetry-redact.js';
+import { isTelemetrySecretKey, redactLogLine } from '../src/telemetry-redact.js';
+import { queryLogs } from '../src/telemetry-query.js';
 
 const TOKEN = 'abcdefghijklmnop';
 
@@ -48,10 +52,25 @@ describe('redactLogLine', () => {
     expect(redactLogLine(line)).not.toContain(TOKEN);
   });
 
-  it('masks an author key because SECRET_KEY_RE matches auth unanchored', () => {
-    expect(SECRET_KEY_RE.test('author')).toBe(true);
-    expect(SECRET_KEY_RE.test('keyboard')).toBe(false);
-    expect(JSON.parse(redactLogLine('{"author":"ada"}')).author).toBe('[redacted]');
+  it('keeps attribution keys and masks credential keys', () => {
+    expect(CONFIG_BACKUP_SECRET_KEY_RE.test('author')).toBe(true);
+    expect(CONFIG_BACKUP_SECRET_KEY_RE.test('authorization')).toBe(true);
+    expect(CONFIG_BACKUP_SECRET_KEY_RE.test('keyboard')).toBe(false);
+
+    for (const key of ['author', 'authored', 'authUser', 'authorId', 'auth_user']) {
+      expect(isTelemetrySecretKey(key)).toBe(false);
+      expect(JSON.parse(redactLogLine(JSON.stringify({ [key]: 'agent-a' })))[key]).toBe('agent-a');
+    }
+    expect(JSON.parse(redactLogLine(JSON.stringify({ author: { name: 'agent-a' } }))).author).toEqual({
+      name: 'agent-a',
+    });
+
+    for (const key of ['auth', 'authorization', 'auth_token', 'authToken', 'x-auth-token', 'proxy-authorization']) {
+      expect(isTelemetrySecretKey(key)).toBe(true);
+      expect(JSON.parse(redactLogLine(JSON.stringify({ [key]: TOKEN })))[key]).toBe('[redacted]');
+    }
+    expect(isTelemetrySecretKey('x-auth-user')).toBe(true);
+    expect(isTelemetrySecretKey('keyboard')).toBe(false);
   });
 
   it('masks bearer tokens and URL userinfo', () => {
@@ -59,8 +78,15 @@ describe('redactLogLine', () => {
     expect(header).not.toContain(TOKEN);
     expect(header).toContain('[redacted]');
     expect(redactLogLine(`use bearer ${TOKEN} now`)).toBe('use Bearer [redacted] now');
+    expect(redactLogLine(`request failed with BEARER ${TOKEN}`)).toBe('request failed with Bearer [redacted]');
     expect(redactLogLine(`clone https://user:p4ss@github.com/org/repo.git`)).toBe(
       'clone https://[redacted]@github.com/org/repo.git'
+    );
+    expect(redactLogLine(`clone HTTPS://user:p4ss@github.com/org/repo.git`)).toBe(
+      'clone HTTPS://[redacted]@github.com/org/repo.git'
+    );
+    expect(redactLogLine(`clone https://${TOKEN}@example.invalid/repo.git`)).toBe(
+      'clone https://[redacted]@example.invalid/repo.git'
     );
     expect(redactLogLine('https://github.com/org/repo')).toBe('https://github.com/org/repo');
   });
@@ -161,5 +187,85 @@ describe('redaction before the queue', () => {
     const row = JSON.parse(raw) as { password?: string; msg?: string };
     expect(row.password).toBe('[redacted]');
     expect(row.msg).toContain('[redacted]');
+  });
+
+  async function written(msg: string, text: string): Promise<{ raw: string; lines: string[] }> {
+    const telemetry = sink();
+    telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    const queried = await queryLogs({ dir, stream: 'server', text });
+    return { raw, lines: queried.lines };
+  }
+
+  it('masks a URL username through the writer and the query', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const { raw, lines } = await written(`clone https://${cred}@example.invalid/repo.git`, 'clone');
+    expect(raw).not.toContain(cred);
+    expect(raw).toContain('[redacted]');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain(cred);
+    expect(lines[0]).toContain('https://[redacted]@example.invalid/repo.git');
+  });
+
+  it('masks secret-shaped keys as the console printer writes them', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const inspected = format({ 'api-key': cred });
+    const tabbed = `password:\t${cred}`;
+    const escaped = `{"\\u0070assword":"${cred}"}`;
+    const telemetry = sink();
+    for (const msg of [inspected, tabbed, escaped]) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    const queried = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(queried.lines).toEqual([]);
+    const masked = await queryLogs({ dir, stream: 'server', text: '[redacted]' });
+    expect(masked.lines).toHaveLength(3);
+  });
+
+  it('masks any capitalization of the bearer scheme', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const { raw, lines } = await written(`request failed with BEARER ${cred}`, 'request failed');
+    expect(raw).not.toContain(cred);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain(cred);
+    expect(lines[0]).toContain('Bearer [redacted]');
+  });
+
+  it('masks a hook secret created after the first line', async () => {
+    writeFileSync(dataPath('hook-secret'), '\n', { mode: 0o600 });
+    resetTelemetryRedactionCache();
+    const secret = 'ab12cd34ef56ab12cd34ef56ab12cd34';
+    const telemetry = sink();
+    telemetry.write('server', { level: 'log', buildId: 'b', pid: 1, msg: 'startup banner' });
+    await telemetry.flush();
+    writeFileSync(dataPath('hook-secret'), `${secret}\n`, { mode: 0o600 });
+    telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg: `hook failed: ${secret}` });
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).toContain('startup banner');
+    expect(raw).not.toContain(secret);
+    const queried = await queryLogs({ dir, stream: 'server', text: 'hook failed' });
+    expect(queried.lines).toHaveLength(1);
+    expect(queried.lines[0]).not.toContain(secret);
+    expect(queried.lines[0]).toContain('[redacted]');
+  });
+
+  it('masks a hook secret minted by getHookSecret after a miss', async () => {
+    resetTelemetryRedactionCache();
+    const telemetry = sink();
+    telemetry.write('server', { level: 'log', buildId: 'b', pid: 1, msg: 'startup banner' });
+    await telemetry.flush();
+    const secret = getHookSecret();
+    telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg: `hook failed: ${secret}` });
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(secret);
+    const queried = await queryLogs({ dir, stream: 'server', text: 'hook failed' });
+    expect(queried.lines).toHaveLength(1);
+    expect(queried.lines[0]).not.toContain(secret);
   });
 });
