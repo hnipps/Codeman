@@ -1,3 +1,4 @@
+import { resized } from '../packages/canvas/src/resize.js';
 import { targets, selectRegion } from '../packages/canvas/src/select.js';
 import { movedPosition, reparentPosition } from '../packages/canvas/src/drag.js';
 import { CanvasUndo } from '../packages/canvas/src/undo.js';
@@ -239,5 +240,16 @@ describe('selection geometry', () => {
         null
       )
     ).toEqual([]);
+  });
+});
+
+describe('resize geometry', () => {
+  it('resizes proportionally and from center without scaling children', () => {
+    const child = { ...object, id: 'child', parentId: 'note' };
+    const result = resized([object, child], object, 'se', { x: 50, y: 50 }, true, true);
+    expect(result?.size).toEqual({ width: 400, height: 200 });
+    expect(result?.position).toEqual({ x: -100, y: -50 });
+    expect(child.position).toEqual({ x: 0, y: 0 });
+    expect(resized([object], object, 'w', { x: -20, y: 0 }, false, false)?.position.x).toBe(-20);
   });
 });

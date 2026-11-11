@@ -1,3 +1,4 @@
+import { resized } from './resize.js';
 import { movedPosition } from './drag.js';
 import { label } from './model.js';
 import { targets, selectRegion } from './select.js';
@@ -40,6 +41,14 @@ export class DesktopEditor {
     parentId: string | null;
   } | null = null;
   private lastTap: { id: string; at: number } | null = null;
+  private resizeGesture: {
+    pointerId: number;
+    start: Point;
+    object: ViewObject;
+    all: ViewObject[];
+    handle: string;
+    result: ReturnType<typeof resized>;
+  } | null = null;
   private moveGesture: {
     pointerId: number | null;
     start: Point;
@@ -130,6 +139,10 @@ export class DesktopEditor {
       }
     };
     btn('deleteSelection').onclick = () => this.remove();
+    for (const id of ['positionX', 'positionY', 'sizeWidth', 'sizeHeight']) {
+      const field = node(id);
+      if (field instanceof HTMLInputElement) field.onchange = () => this.numericGeometry();
+    }
     btn('moveMode').onclick = () => this.startKeyboardMove();
     btn('moveTo').onclick = () => {
       this.refreshDestinations();
@@ -406,6 +419,8 @@ export class DesktopEditor {
     this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
     this.previewMove();
+    this.previewResize();
+    this.paintGeometry();
   }
   private selectionStart(e: PointerEvent): void {
     if (
@@ -418,6 +433,25 @@ export class DesktopEditor {
       return;
     const targetId =
       e.target instanceof Element ? e.target.closest<HTMLElement>('[data-object-id]')?.dataset.objectId : undefined;
+    const handle =
+      e.target instanceof Element ? e.target.closest<HTMLElement>('[data-resize]')?.dataset.resize : undefined;
+    if (targetId && handle) {
+      const object = this.options.objects().find((o) => o.id === targetId);
+      if (!object?.size || !this.available()) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.resizeGesture = {
+        pointerId: e.pointerId,
+        start: { x: e.clientX, y: e.clientY },
+        object,
+        all: this.options.objects(),
+        handle,
+        result: null,
+      };
+      node('board').setPointerCapture(e.pointerId);
+      node('board').focus({ preventScroll: true });
+      return;
+    }
     if (targetId && !e.altKey) {
       if (!this.available()) return;
       e.preventDefault();
@@ -462,6 +496,22 @@ export class DesktopEditor {
       : { kind: 'rectangle' as const, rect: union(points.map((p) => ({ ...p, width: 0, height: 0 }))) };
   }
   private selectionMove(e: PointerEvent): void {
+    const resize = this.resizeGesture;
+    if (resize?.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const zoom = this.options.view().viewport.zoom;
+      resize.result = resized(
+        resize.all,
+        resize.object,
+        resize.handle,
+        { x: (e.clientX - resize.start.x) / zoom, y: (e.clientY - resize.start.y) / zoom },
+        e.shiftKey,
+        e.altKey
+      );
+      this.previewResize();
+      return;
+    }
     if (this.moveGesture?.pointerId === e.pointerId) {
       this.movePointer(e);
       return;
@@ -486,6 +536,14 @@ export class DesktopEditor {
       el.classList.toggle('selection-preview', ids.includes(el.dataset.objectId ?? ''));
   }
   private selectionEnd(e: PointerEvent): void {
+    const resize = this.resizeGesture;
+    if (resize?.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (resize.result) this.setGeometry(resize.object, resize.result.position, resize.result.size);
+      this.cancelSelection();
+      return;
+    }
     if (this.moveGesture?.pointerId === e.pointerId) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -515,22 +573,82 @@ export class DesktopEditor {
     this.cancelSelection();
   }
   private cancelSelection(): void {
-    if (this.moveGesture) {
+    if (this.moveGesture || this.resizeGesture) {
       for (const object of this.options.objects()) {
         const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${object.id}"]`);
         if (el) {
           el.style.left = `${object.position.x}px`;
           el.style.top = `${object.position.y}px`;
+          if (object.size) {
+            el.style.width = `${object.size.width}px`;
+            el.style.height = `${object.size.height}px`;
+          }
         }
       }
     }
     this.moveGesture = null;
+    this.resizeGesture = null;
     for (const el of node('layer').querySelectorAll('.drop-target')) el.classList.remove('drop-target');
     node('dropName').hidden = true;
     node('moveHint').hidden = true;
     this.selectionGesture = null;
     this.selectionPath.removeAttribute('d');
     for (const el of node('layer').querySelectorAll('.selection-preview')) el.classList.remove('selection-preview');
+  }
+  private previewResize(): void {
+    const resize = this.resizeGesture;
+    if (!resize?.result) return;
+    const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${resize.object.id}"]`);
+    if (!el) return;
+    el.style.left = `${resize.result.position.x}px`;
+    el.style.top = `${resize.result.position.y}px`;
+    el.style.width = `${resize.result.size.width}px`;
+    el.style.height = `${resize.result.size.height}px`;
+  }
+  private paintGeometry(): void {
+    const object = this.options.objects().find((o) => o.id === this.options.view().focusId);
+    node('geometryEdit').hidden = this.options.mobile.matches || !object;
+    if (!object) return;
+    node('geometrySpace').textContent = object.parentId ? 'Position in parent' : 'Position on canvas';
+    for (const [id, value] of [
+      ['positionX', object.position.x],
+      ['positionY', object.position.y],
+      ['sizeWidth', object.size?.width],
+      ['sizeHeight', object.size?.height],
+    ]) {
+      if (typeof id !== 'string') continue;
+      const field = node(id);
+      if (!(field instanceof HTMLInputElement)) continue;
+      field.disabled = !this.connected || value === undefined;
+      if (document.activeElement !== field)
+        field.value = typeof value === 'number' ? String(Math.round(value * 100) / 100) : '';
+    }
+  }
+  private numericGeometry(): void {
+    const object = this.options.objects().find((o) => o.id === this.options.view().focusId);
+    if (!object || !this.available()) return;
+    const value = (id: string): number => {
+      const el = node(id);
+      return el instanceof HTMLInputElement ? el.valueAsNumber : NaN;
+    };
+    const position = { x: value('positionX'), y: value('positionY') };
+    const size = object.size ? { width: value('sizeWidth'), height: value('sizeHeight') } : null;
+    if (
+      ![position.x, position.y, ...(size ? [size.width, size.height] : [])].every(Number.isFinite) ||
+      (size && (size.width <= 0 || size.height <= 0))
+    ) {
+      node('announcement').textContent = 'Enter finite coordinates and a positive size.';
+      return;
+    }
+    this.setGeometry(object, position, size);
+  }
+  private setGeometry(object: ViewObject, position: Point, size: ViewObject['size']): void {
+    const operations: Edit[] = [];
+    if (object.position.x !== position.x || object.position.y !== position.y)
+      operations.push({ kind: 'move', opId: crypto.randomUUID(), objectId: object.id, patch: { position } });
+    if (size && (size.width !== object.size?.width || size.height !== object.size?.height))
+      operations.push({ kind: 'update', opId: crypto.randomUUID(), objectId: object.id, patch: { size } });
+    if (operations.length) this.submit(operations);
   }
   private validDestination(id: string): boolean {
     const selected = this.moveGesture?.originals ?? targets(this.options.objects(), this.options.view().selected);
@@ -668,7 +786,7 @@ export class DesktopEditor {
   }
   private key(e: KeyboardEvent): void {
     if (e.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Escape' && (this.selectionGesture || this.moveGesture)) {
+    if (e.key === 'Escape' && (this.selectionGesture || this.moveGesture || this.resizeGesture)) {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.cancelSelection();

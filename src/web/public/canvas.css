@@ -772,3 +772,91 @@ textarea:focus-visible {
 .object.drop-target {
   outline: calc(1px / var(--zoom)) solid var(--accent);
 }
+
+.resize-handle {
+  display: none;
+  position: absolute;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  transform: translate(-50%, -50%) scale(calc(1 / var(--zoom)));
+  border: 0;
+  border-radius: 0;
+  z-index: 3;
+  background: transparent;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  inset: 4px;
+  border: 1px solid var(--selection);
+  background: var(--panel);
+}
+.object.selected > .resize-handle {
+  display: block;
+}
+.resize-handle:hover {
+  background: transparent;
+}
+.handle-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.handle-n {
+  left: 50%;
+  top: 0;
+  cursor: ns-resize;
+}
+.handle-ne {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.handle-e {
+  left: 100%;
+  top: 50%;
+  cursor: ew-resize;
+}
+.handle-se {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+.handle-s {
+  left: 50%;
+  top: 100%;
+  cursor: ns-resize;
+}
+.handle-sw {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.handle-w {
+  left: 0;
+  top: 50%;
+  cursor: ew-resize;
+}
+.geometry-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.geometry-grid label {
+  color: var(--secondary);
+  font-size: 12px;
+}
+.geometry-grid input {
+  margin-top: 4px;
+  font-size: 14px;
+}
+@media (max-width: 600px) {
+  .resize-handle {
+    display: none !important;
+  }
+}

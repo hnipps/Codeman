@@ -106,6 +106,15 @@
             <button id="retryEdit">Retry save</button><button id="discardEdit">Discard pending edits</button>
           </div>
         </div>
+        <div id="geometryEdit" class="edit-control" hidden>
+          <p id="geometrySpace" class="secondary">Position on canvas</p>
+          <div class="geometry-grid">
+            <label>X<input id="positionX" type="number" step="any" /></label
+            ><label>Y<input id="positionY" type="number" step="any" /></label>
+            <label>Width<input id="sizeWidth" type="number" min="0.01" step="any" /></label
+            ><label>Height<input id="sizeHeight" type="number" min="0.01" step="any" /></label>
+          </div>
+        </div>
         <p id="readerCount" class="secondary" hidden></p>
         <dl id="readerMeta"></dl>
         <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button
