@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +10,7 @@ import * as pathProbe from '../../src/utils/bounded-path-probe.js';
 import { readWorkspaces, workspaceForCase } from '../../src/canvas/workspace-registry.js';
 import { deployRole } from '../../src/deploy-role.js';
 import { resolveCasesDir } from '../../src/web/route-helpers.js';
-import { create } from '../canvas-fixtures.js';
+import { create, human, agent } from '../canvas-fixtures.js';
 
 let dir: string;
 beforeEach(() => {
@@ -113,6 +113,105 @@ describe('canvas routes', () => {
     expect((await app.inject({ url: `${base}/ops` })).json()).toEqual(beforeLog);
     expect((await app.inject({ url: '/api/canvas/workspaces' })).json().data.workspaces).toHaveLength(1);
     await app.close();
+  });
+  it.each(['mystery', 'image'] as const)(
+    'preserves opaque %s content while reverting normal objects by the same author',
+    async (type) => {
+      for (const mixed of [false, true]) {
+        const workspace = workspaceForCase(`opaque-${type}-${mixed}`, 'user-a');
+        const { app, port } = await harness();
+        try {
+          const stores = await port.canvasStores();
+          const store = stores.get(workspace.id);
+          store.append([create('opaque'), create('normal')], agent);
+          if (mixed)
+            store.append(
+              [
+                {
+                  kind: 'update',
+                  opId: 'normal-update',
+                  objectId: 'normal',
+                  patch: { content: { type: 'text', text: 'changed' } },
+                },
+              ],
+              human
+            );
+          const before = { ...store.read().objects.opaque, content: { type, text: 'old', url: 'future-url', alt: '' } };
+          const after = { ...before, content: { ...before.content, text: 'z' } };
+          appendFileSync(
+            store.logPath,
+            JSON.stringify({
+              seq: store.read().seq + 1,
+              opId: 'opaque-update',
+              kind: 'update',
+              author: human,
+              objectId: 'opaque',
+              patch: {},
+              prev: [{ objectId: 'opaque', before, after }],
+            }) + '\n'
+          );
+          store.reload();
+          const originalSeq = store.read().seq;
+          const response = await app.inject({
+            method: 'POST',
+            url: `/api/canvas/${workspace.id}/revert`,
+            payload: { author: human },
+          });
+          expect(response.statusCode).toBe(200);
+          expect(store.read().objects.opaque).toEqual(after);
+          expect(store.read().objects.normal.content.text).toBe('normal');
+          expect(store.read().seq).toBe(originalSeq + (mixed ? 1 : 0));
+          expect((await app.inject({ url: `/api/canvas/${workspace.id}/objects` })).json().data.objects).toContainEqual(
+            after
+          );
+          const edit = await app.inject({
+            method: 'POST',
+            url: `/api/canvas/${workspace.id}/ops`,
+            payload: {
+              operations: [
+                { kind: 'move', objectId: 'opaque', opId: 'edit-opaque', patch: { position: { x: 0, y: 0 } } },
+              ],
+            },
+          });
+          expect(edit.statusCode).toBe(409);
+          expect(edit.json().reasons[0].code).toBe('INVALID');
+          store.snapshot();
+          stores.reload();
+          expect(store.read().objects.opaque).toEqual(after);
+        } finally {
+          await app.close();
+        }
+      }
+    }
+  );
+  it('returns the audit cycle from root reads and rejects its edits without changing the log', async () => {
+    const workspace = workspaceForCase('cycle', 'user-a');
+    const { app, port } = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const store = (await port.canvasStores()).get(workspace.id);
+      store.append([create('a'), create('b')], human);
+      const state = store.read();
+      state.objects.a.parentId = 'b';
+      state.objects.b = { ...state.objects.b, type: 'future-widget', parentId: 'a' };
+      writeFileSync(store.snapshotPath, JSON.stringify({ version: 1, state }));
+      store.reload();
+      const log = store.operations();
+      const read = await app.inject({ url: `/api/canvas/${workspace.id}/objects?root=a` });
+      expect(read.statusCode).toBe(200);
+      expect(read.json().data.objects).toEqual([state.objects.a, state.objects.b]);
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/canvas/${workspace.id}/ops`,
+        payload: { operations: [{ kind: 'move', opId: 'cycle', objectId: 'a', patch: { position: { x: 0, y: 0 } } }] },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().reasons[0].code).toBe('CYCLE');
+      expect(store.operations()).toEqual(log);
+    } finally {
+      warn.mockRestore();
+      await app.close();
+    }
   });
   it('refuses non-live writes and malformed or forged author requests', async () => {
     const workspace = workspaceForCase('case', 'user-a');

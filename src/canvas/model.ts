@@ -65,7 +65,7 @@ export const StoredObjectSchema = ObjectFieldsSchema.extend({
   content: z.object({ type: z.string() }).passthrough(),
 }).passthrough();
 export type CanvasObject = z.infer<typeof StoredObjectSchema>;
-export const isKnownObject = (o: CanvasObject): boolean => ObjectFieldsSchema.shape.type.safeParse(o.type).success;
+export const isKnownObject = (o: CanvasObject): boolean => validateKnownObject(o);
 
 export function knownContentFields(content: CanvasObject['content']) {
   const contentSchema = ContentSchema.options.find((schema) => schema.shape.type.value === content.type);
@@ -108,68 +108,144 @@ export const sameAuthor = (a: Author, b: Author): boolean =>
     : a.kind === 'agent' && b.kind === 'agent' && a.sessionId === b.sessionId;
 export const isContainer = (o: CanvasObject): boolean => ['group', 'frame', 'section', 'subcanvas'].includes(o.type);
 
-export function descendants(state: CanvasState, id: string): CanvasObject[] {
-  const children = new Map<string, CanvasObject[]>();
-  for (const o of Object.values(state.objects)) {
-    if (o.parentId !== null) {
+export const MAX_HIERARCHY_DEPTH = 256;
+export const MAX_HIERARCHY_NODES = 10_000;
+export type HierarchyIssue = { code: 'CYCLE' | 'HIERARCHY_LIMIT'; objectId: string; message: string };
+export class HierarchyError extends Error {
+  constructor(readonly reason: HierarchyIssue) {
+    super(reason.message);
+  }
+}
+
+/** Every hierarchy consumer shares the same iterative, bounded traversal. */
+export function walkHierarchy(
+  state: CanvasState,
+  roots: Iterable<string>,
+  direction: 'parents' | 'children',
+  geometryOnly = false
+): { objects: CanvasObject[]; cycles: Set<string>; issue: HierarchyIssue | null } {
+  const children = new Map<string, string[]>();
+  if (direction === 'children') {
+    for (const o of Object.values(state.objects)) {
+      if (o.parentId === null || (geometryOnly && o.deletedAt !== null)) continue;
       const siblings = children.get(o.parentId) ?? [];
-      siblings.push(o);
+      siblings.push(o.id);
       children.set(o.parentId, siblings);
     }
   }
-  const result: CanvasObject[] = [];
-  const visit = (key: string): void => {
-    const o = state.objects[key];
-    if (o) result.push(o);
-    for (const child of children.get(key) ?? []) visit(child.id);
-  };
-  visit(id);
-  return result;
+  const objects: CanvasObject[] = [];
+  const seen = new Set<string>();
+  const active = new Map<string, number>();
+  const path: string[] = [];
+  const cycles = new Set<string>();
+  let issue: HierarchyIssue | null = null;
+  for (const root of roots) {
+    const stack = [{ id: root, exit: false }];
+    while (stack.length) {
+      const step = stack.pop();
+      if (!step) break;
+      if (step.exit) {
+        active.delete(step.id);
+        path.pop();
+        continue;
+      }
+      const cycleStart = active.get(step.id);
+      if (cycleStart !== undefined) {
+        for (const id of path.slice(cycleStart)) cycles.add(id);
+        issue = { code: 'CYCLE', objectId: step.id, message: 'Cyclic hierarchy is read-only' };
+        continue;
+      }
+      if (seen.has(step.id)) continue;
+      if (path.length >= MAX_HIERARCHY_DEPTH || seen.size >= MAX_HIERARCHY_NODES) {
+        issue ??= { code: 'HIERARCHY_LIMIT', objectId: step.id, message: 'Hierarchy traversal limit exceeded' };
+        return { objects, cycles, issue };
+      }
+      seen.add(step.id);
+      const o = state.objects[step.id];
+      if (!o) continue;
+      objects.push(o);
+      active.set(step.id, path.length);
+      path.push(step.id);
+      stack.push({ id: step.id, exit: true });
+      const next =
+        direction === 'parents'
+          ? o.parentId === null
+            ? []
+            : [o.parentId]
+          : geometryOnly && o.size
+            ? []
+            : (children.get(o.id) ?? []);
+      for (let i = next.length - 1; i >= 0; i--) stack.push({ id: next[i], exit: false });
+    }
+  }
+  return { objects, cycles, issue };
+}
+
+export function requireHierarchy(walk: ReturnType<typeof walkHierarchy>): CanvasObject[] {
+  if (walk.issue) throw new HierarchyError(walk.issue);
+  return walk.objects;
+}
+
+export function descendants(state: CanvasState, id: string, complete = false): CanvasObject[] {
+  const walk = walkHierarchy(state, [id], 'children');
+  return complete ? requireHierarchy(walk) : walk.objects;
 }
 
 export function effectiveLock(
   state: CanvasState,
   id: string
 ): { objectId: string; mode: 'subtree' | 'background' } | null {
-  let o: CanvasObject | undefined = state.objects[id];
   let result: ReturnType<typeof effectiveLock> = null;
-  while (o) {
+  for (const o of requireHierarchy(walkHierarchy(state, [id], 'parents'))) {
     if (o.lock && (o.id === id || o.lock === 'subtree')) result = { objectId: o.id, mode: o.lock };
-    o = o.parentId === null ? undefined : state.objects[o.parentId];
   }
   return result;
 }
 
 export type Transform = { x: number; y: number; rotation: number };
 export function worldTransform(state: CanvasState, id: string): Transform {
-  const o = state.objects[id];
-  if (!o) throw new Error('Unknown object');
-  const p = o.parentId === null ? { x: 0, y: 0, rotation: 0 } : worldTransform(state, o.parentId);
-  const r = (p.rotation * Math.PI) / 180;
-  return {
-    x: p.x + o.position.x * Math.cos(r) - o.position.y * Math.sin(r),
-    y: p.y + o.position.x * Math.sin(r) + o.position.y * Math.cos(r),
-    rotation: p.rotation + o.rotation,
-  };
+  if (!state.objects[id]) throw new Error('Unknown object');
+  let p: Transform = { x: 0, y: 0, rotation: 0 };
+  for (const o of requireHierarchy(walkHierarchy(state, [id], 'parents')).reverse()) {
+    const r = (p.rotation * Math.PI) / 180;
+    p = {
+      x: p.x + o.position.x * Math.cos(r) - o.position.y * Math.sin(r),
+      y: p.y + o.position.x * Math.sin(r) + o.position.y * Math.cos(r),
+      rotation: p.rotation + o.rotation,
+    };
+  }
+  return p;
 }
 function geometryPoints(state: CanvasState, id: string): { x: number; y: number }[] {
-  const o = state.objects[id];
-  if (!o) throw new Error('Unknown object');
-  const points = o.size
-    ? [
-        { x: 0, y: 0 },
-        { x: o.size.width, y: 0 },
-        { x: 0, y: o.size.height },
-        { x: o.size.width, y: o.size.height },
-      ]
-    : Object.values(state.objects)
-        .filter((c) => c.parentId === id && c.deletedAt === null)
-        .flatMap((c) => geometryPoints(state, c.id));
-  const r = (o.rotation * Math.PI) / 180;
-  return (points.length ? points : [{ x: 0, y: 0 }]).map((p) => ({
-    x: o.position.x + p.x * Math.cos(r) - p.y * Math.sin(r),
-    y: o.position.y + p.x * Math.sin(r) + p.y * Math.cos(r),
-  }));
+  if (!state.objects[id]) throw new Error('Unknown object');
+  const objects = requireHierarchy(walkHierarchy(state, [id], 'children', true));
+  const pointsById = new Map<string, { x: number; y: number }[]>();
+  const children = new Map<string, string[]>();
+  for (const o of objects) {
+    if (o.parentId === null) continue;
+    const siblings = children.get(o.parentId) ?? [];
+    siblings.push(o.id);
+    children.set(o.parentId, siblings);
+  }
+  for (const o of objects.reverse()) {
+    const points = o.size
+      ? [
+          { x: 0, y: 0 },
+          { x: o.size.width, y: 0 },
+          { x: 0, y: o.size.height },
+          { x: o.size.width, y: o.size.height },
+        ]
+      : (children.get(o.id) ?? []).flatMap((child) => pointsById.get(child) ?? []);
+    const r = (o.rotation * Math.PI) / 180;
+    pointsById.set(
+      o.id,
+      (points.length ? points : [{ x: 0, y: 0 }]).map((p) => ({
+        x: o.position.x + p.x * Math.cos(r) - p.y * Math.sin(r),
+        y: o.position.y + p.x * Math.sin(r) + p.y * Math.cos(r),
+      }))
+    );
+  }
+  return pointsById.get(id) ?? [];
 }
 
 /** Local bounds are in the object's parent coordinates; world bounds include every ancestor. */

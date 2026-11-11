@@ -1,13 +1,13 @@
-import { mkdtempSync, readFileSync, writeFileSync, statSync, rmSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, statSync, rmSync, appendFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CanvasStore } from '../src/canvas/canvas-store.js';
+import { CanvasStore, CanvasStores } from '../src/canvas/canvas-store.js';
 import { workspaceForCase, readWorkspaces } from '../src/canvas/workspace-registry.js';
 import { rekeyCaseWorkspace } from '../src/case-rename.js';
 import { deployRole } from '../src/deploy-role.js';
 import { applyOperation, OperationSchema, CommandSchema } from '../src/canvas/operations.js';
-import { emptyState } from '../src/canvas/model.js';
+import { emptyState, StateSchema, MAX_HIERARCHY_DEPTH } from '../src/canvas/model.js';
 import { create, human, agent } from './canvas-fixtures.js';
 
 let dir: string;
@@ -106,16 +106,173 @@ describe('canvas durable store', () => {
       const state = loaded.read();
       const log = loaded.operations();
       loaded.snapshot();
-      expect(JSON.parse(readFileSync(loaded.snapshotPath, 'utf8')).state).toEqual(state);
+      if (source === 'snapshot') expect(JSON.parse(readFileSync(loaded.snapshotPath, 'utf8')).state).toEqual(expected);
+      else expect(existsSync(loaded.snapshotPath)).toBe(false);
       expect(readFileSync(loaded.logPath, 'utf8').startsWith(rawLog)).toBe(true);
       const replayed = new CanvasStore('workspace');
       expect(replayed.read()).toEqual(state);
       expect(replayed.operations()).toEqual(log);
-      rmSync(loaded.snapshotPath);
+      rmSync(loaded.snapshotPath, { force: true });
       expect(new CanvasStore('workspace').read()).toEqual(state);
       expect(new CanvasStore('workspace').operations()).toEqual(log);
     }
   );
+  it.each(['snapshot', 'shutdown', 'handoff'] as const)(
+    'keeps the exact future-operation replayable after %s and known later writes',
+    async (flush) => {
+      const stores = new CanvasStores();
+      const store = stores.get('workspace');
+      const created = store.append([create('text')], human);
+      if (!created.ok) throw new Error('fixture append failed');
+      const before = { ...store.read().objects.text, content: { type: 'text', text: 'before' } };
+      const op = created.operations[0];
+      const future = {
+        ...op,
+        seq: 2,
+        opId: 'future',
+        kind: 'future-operation',
+        prev: [{ objectId: 'text', before, after: { ...before, content: { type: 'text', text: 'after-future' } } }],
+      };
+      // Use the audit's before/after sequence, with no checkpoint before the future record.
+      const first = {
+        ...op,
+        prev: [{ objectId: 'text', before: null, after: { ...before, content: { type: 'text', text: 'before' } } }],
+      };
+      writeFileSync(store.logPath, [first, future].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      store.reload();
+      expect(store.read()).toMatchObject({ seq: 2, objects: { text: { content: { text: 'before' } } } });
+      expect(store.operations()[1]).toEqual(future);
+      if (flush === 'snapshot') store.snapshot();
+      else stores.flush();
+      expect(existsSync(store.snapshotPath)).toBe(false);
+      // A later known operation must not let a later lifecycle flush seal the gap either.
+      store.append([create('later')], human);
+      stores.flush();
+      if (flush !== 'snapshot') {
+        vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc1-replay');
+        vi.stubEnv('CODEMAN_NO_AUTOSTART', '1');
+        vi.stubEnv('CODEMAN_DEPLOY_ROLE', 'live');
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ canvasEnabled: true }));
+        writeFileSync(
+          join(dir, 'workspaces.json'),
+          JSON.stringify({ version: 1, workspaces: [{ id: 'workspace', caseName: 'lifecycle' }] })
+        );
+        const { WebServer } = await import('../src/web/server.js');
+        const server = new WebServer(0, false, true);
+        try {
+          await server.start();
+          const response = await fetch(`http://127.0.0.1:${server.boundPort}/api/canvas/workspace/objects`);
+          expect(response.status).toBe(200);
+          expect((await response.json()).data.seq).toBe(3);
+          if (flush === 'handoff') expect(await server.changeDeployRole('retired')).toMatchObject({ kind: 'accepted' });
+        } finally {
+          await server.stop();
+        }
+        deployRole.enter('live');
+        expect(existsSync(store.snapshotPath)).toBe(false);
+      }
+      expect(new CanvasStore('workspace').read()).toEqual(store.read());
+      let understood = existsSync(store.snapshotPath)
+        ? StateSchema.parse(JSON.parse(readFileSync(store.snapshotPath, 'utf8')).state)
+        : emptyState();
+      const snapshotSeq = understood.seq;
+      // Simulate the next release: it understands future-operation's before/after payload.
+      for (const line of readFileSync(store.logPath, 'utf8').trim().split('\n')) {
+        const entry = OperationSchema.parse(JSON.parse(line));
+        if (entry.seq <= snapshotSeq) continue;
+        for (const change of entry.prev) understood.objects[change.objectId] = change.after;
+        understood.seq = entry.seq;
+      }
+      expect(understood.objects.text.content.text).toBe('after-future');
+      expect(understood.objects.later).toBeDefined();
+    }
+  );
+  it('retains a checkpoint below a future operation that alone introduces an object', () => {
+    const store = new CanvasStore('workspace');
+    const result = store.append([create('a')], human);
+    if (!result.ok) throw new Error('fixture append failed');
+    store.snapshot();
+    const checkpoint = readFileSync(store.snapshotPath, 'utf8');
+    const future = {
+      ...result.operations[0],
+      seq: 2,
+      opId: 'future-create',
+      kind: 'future-operation',
+      prev: [{ objectId: 'future-only', before: null, after: { ...store.read().objects.a, id: 'future-only' } }],
+    };
+    appendFileSync(store.logPath, JSON.stringify(future) + '\n');
+    store.reload();
+    store.snapshot();
+    expect(readFileSync(store.snapshotPath, 'utf8')).toBe(checkpoint);
+    const understood = StateSchema.parse(JSON.parse(checkpoint).state);
+    const replayable = store.operations(understood.seq);
+    expect(replayable).toEqual([future]);
+    for (const entry of replayable) {
+      for (const change of OperationSchema.parse(entry).prev) understood.objects[change.objectId] = change.after;
+    }
+    expect(understood.objects['future-only']).toEqual(future.prev[0].after);
+  });
+  it.each(['two-object', 'self-parent'] as const)(
+    'diagnoses a loaded %s cycle once and preserves its records',
+    (kind) => {
+      const store = new CanvasStore('workspace');
+      store.append([create('a'), create('b')], human);
+      const state = store.read();
+      state.objects.a.parentId = kind === 'self-parent' ? 'a' : 'b';
+      state.objects.b = { ...state.objects.b, type: 'future-widget', parentId: 'a' };
+      writeFileSync(store.snapshotPath, JSON.stringify({ version: 1, state }));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const loaded = new CanvasStore('workspace');
+        loaded.reload();
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('Cyclic'),
+          expect.objectContaining({ objectIds: expect.arrayContaining(['a']) })
+        );
+        expect(loaded.read()).toEqual(state);
+        expect(
+          loaded.append(
+            [{ kind: 'move', objectId: 'a', opId: 'move-cycle', patch: { position: { x: 1, y: 2 } } }],
+            human
+          )
+        ).toMatchObject({ ok: false, reasons: [{ code: 'CYCLE' }] });
+        expect(loaded.read()).toEqual(state);
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  );
+  it('loads a chain at the bound and diagnoses a cycle longer than the bound once', () => {
+    const store = new CanvasStore('workspace');
+    store.append([create('seed', null, 'group')], human);
+    const seed = store.read().objects.seed;
+    const state = emptyState();
+    state.seq = 1;
+    for (let i = 0; i < MAX_HIERARCHY_DEPTH; i++) {
+      const id = `n${i}`;
+      state.objects[id] = { ...seed, id, parentId: i ? `n${i - 1}` : null };
+    }
+    writeFileSync(store.snapshotPath, JSON.stringify({ version: 1, state }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      store.reload();
+      expect(warn).not.toHaveBeenCalled();
+      expect(store.read()).toEqual(state);
+      state.objects.extra = { ...seed, id: 'extra', parentId: `n${MAX_HIERARCHY_DEPTH - 1}` };
+      state.objects.n0.parentId = 'extra';
+      writeFileSync(store.snapshotPath, JSON.stringify({ version: 1, state }));
+      store.reload();
+      store.reload();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(store.read()).toEqual(state);
+      expect(
+        store.append([{ kind: 'move', opId: 'long-cycle', objectId: 'n0', patch: { position: { x: 0, y: 0 } } }], human)
+      ).toMatchObject({ ok: false, reasons: [{ code: 'HIERARCHY_LIMIT' }] });
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it('ignores a torn final transaction and repairs its tail before appending', () => {
     const store = new CanvasStore('workspace');
     store.append([create('a')], human);

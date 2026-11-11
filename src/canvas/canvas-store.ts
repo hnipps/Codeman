@@ -17,7 +17,16 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { dataPath } from '../config/instance.js';
 import { deployRole, DeployRoleRefusal } from '../deploy-role.js';
-import { AuthorSchema, IdSchema, StateSchema, emptyState, sameAuthor, type Author, type CanvasState } from './model.js';
+import {
+  AuthorSchema,
+  IdSchema,
+  StateSchema,
+  walkHierarchy,
+  emptyState,
+  sameAuthor,
+  type Author,
+  type CanvasState,
+} from './model.js';
 import {
   CommandSchema,
   OperationSchema,
@@ -65,6 +74,7 @@ function replayInto(state: CanvasState, op: Operation): void {
 }
 
 export class CanvasStore {
+  private reportedUnsafeHierarchy = new Set<string>();
   private state: CanvasState = emptyState();
   private log: Operation[] = [];
   private futureLog: FutureOperation[] = [];
@@ -130,6 +140,20 @@ export class CanvasStore {
         }
       }
       offset += Buffer.byteLength(line) + 1;
+    }
+    const unsafe = new Set<string>();
+    for (const id of Object.keys(state.objects)) {
+      const walk = walkHierarchy(state, [id], 'parents');
+      for (const member of walk.cycles) unsafe.add(member);
+      if (walk.issue?.code === 'HIERARCHY_LIMIT') unsafe.add(id);
+    }
+    const unreported = [...unsafe].filter((id) => !this.reportedUnsafeHierarchy.has(id));
+    if (unreported.length) {
+      console.warn('[canvas] Cyclic or over-limit hierarchy is read-only', {
+        workspaceId: this.workspaceId,
+        objectIds: unreported,
+      });
+      for (const id of unreported) this.reportedUnsafeHierarchy.add(id);
     }
     this.state = state;
     this.log = log;
@@ -202,6 +226,8 @@ export class CanvasStore {
         closeSync(fd);
       }
     }
+    // The current state omits future effects; retaining the previous checkpoint keeps them replayable.
+    if (this.futureLog.length) return;
     atomicWrite(this.snapshotPath, { version: 1, state: this.state });
   }
 }

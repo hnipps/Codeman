@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { emptyState, effectiveLock, worldTransform, bounds, type CanvasState } from '../src/canvas/model.js';
+import {
+  emptyState,
+  effectiveLock,
+  worldTransform,
+  bounds,
+  descendants,
+  walkHierarchy,
+  MAX_HIERARCHY_DEPTH,
+  MAX_HIERARCHY_NODES,
+  type CanvasState,
+} from '../src/canvas/model.js';
 import {
   applyOperation,
   invertOperation,
@@ -16,6 +26,98 @@ function apply(state: CanvasState, commands: Command[], author = human) {
 }
 
 describe('canvas domain operations', () => {
+  it.each(['two-object', 'self-parent'] as const)('bounds every walk over a %s cycle', (kind) => {
+    const state = apply(emptyState(), [create('a'), create('b')]).state;
+    state.objects.a.parentId = kind === 'self-parent' ? 'a' : 'b';
+    state.objects.b = { ...state.objects.b, type: 'future-widget', parentId: 'a' };
+    expect(descendants(state, 'a').map((o) => o.id)).toEqual(['a', 'b']);
+    expect(() => effectiveLock(state, 'a')).toThrow('Cyclic');
+    expect(() => worldTransform(state, 'a')).toThrow('Cyclic');
+    expect(() => bounds(state, 'a')).toThrow('Cyclic');
+    // Auto-bounded geometry has its own child traversal through the same helper.
+    state.objects.a.size = null;
+    state.objects.b.size = null;
+    expect(() => bounds(state, 'a', 'local')).toThrow('Cyclic');
+    expect(
+      validateBatch(
+        state,
+        [{ kind: 'move', opId: 'cycle-move', objectId: 'a', patch: { position: { x: 1, y: 2 } } }],
+        human
+      )
+    ).toMatchObject({ ok: false, reasons: [{ code: 'CYCLE' }] });
+  });
+  it('accepts a chain at the depth bound and rejects writes and geometry beyond it', () => {
+    const seed = apply(emptyState(), [create('seed', null, 'group')]).state.objects.seed;
+    const state = emptyState();
+    for (let i = 0; i < MAX_HIERARCHY_DEPTH; i++) {
+      const id = `n${i}`;
+      state.objects[id] = { ...seed, id, parentId: i === 0 ? null : `n${i - 1}` };
+    }
+    const last = `n${MAX_HIERARCHY_DEPTH - 1}`;
+    expect(descendants(state, 'n0')).toHaveLength(MAX_HIERARCHY_DEPTH);
+    expect(worldTransform(state, last).x).toBe(MAX_HIERARCHY_DEPTH * 10);
+    expect(bounds(state, 'n0').x).toBe(MAX_HIERARCHY_DEPTH * 10);
+    expect(effectiveLock(state, last)).toBeNull();
+    expect(
+      validateBatch(
+        state,
+        [{ kind: 'move', opId: 'at-limit', objectId: last, patch: { position: { x: 0, y: 0 } } }],
+        human
+      ).ok
+    ).toBe(true);
+    state.objects.extra = { ...seed, id: 'extra', parentId: last };
+    expect(descendants(state, 'n0')).toHaveLength(MAX_HIERARCHY_DEPTH);
+    expect(() => worldTransform(state, 'extra')).toThrow('limit');
+    expect(() => effectiveLock(state, 'extra')).toThrow('limit');
+    expect(() => bounds(state, 'n0')).toThrow('limit');
+    expect(
+      validateBatch(
+        state,
+        [{ kind: 'move', opId: 'over-limit', objectId: 'n0', patch: { position: { x: 0, y: 0 } } }],
+        human
+      )
+    ).toMatchObject({ ok: false, reasons: [{ code: 'HIERARCHY_LIMIT' }] });
+  });
+  it('bounds wide descendant walks and rejects an incomplete compound edit atomically', () => {
+    const seed = apply(emptyState(), [create('root', null, 'group')]).state.objects.root;
+    const state = emptyState();
+    state.objects.root = seed;
+    for (let i = 1; i < MAX_HIERARCHY_NODES; i++) {
+      const id = `n${i}`;
+      state.objects[id] = { ...seed, id, parentId: 'root' };
+    }
+    expect(walkHierarchy(state, ['root'], 'children').issue).toBeNull();
+    state.objects.extra = { ...seed, id: 'extra', parentId: 'root' };
+    expect(descendants(state, 'root')).toHaveLength(MAX_HIERARCHY_NODES);
+    const before = structuredClone(state);
+    expect(
+      validateBatch(state, [create('new'), { kind: 'delete', objectId: 'root', opId: 'wide-delete' }], human)
+    ).toMatchObject({ ok: false, reasons: [{ code: 'HIERARCHY_LIMIT' }] });
+    expect(state).toEqual(before);
+  });
+  it.each(['future-widget', 'mystery', 'image'])('rejects compound edits affecting an opaque %s descendant', (type) => {
+    const state = apply(emptyState(), [create('group', null, 'group'), create('child', 'group')]).state;
+    state.objects.child.content = { type, text: 'z', url: 'future-url', alt: '' };
+    if (type === 'future-widget') state.objects.child.type = type;
+    const before = structuredClone(state);
+    for (const command of [
+      { kind: 'move', objectId: 'group', opId: 'move', patch: { position: { x: 0, y: 0 } } },
+      { kind: 'delete', objectId: 'group', opId: 'delete' },
+      {
+        kind: 'reparent',
+        objectId: 'group',
+        opId: 'reparent',
+        patch: { parentId: null, order: 1, preserveWorld: true },
+      },
+      { kind: 'update', objectId: 'group', opId: 'rotate', patch: { rotation: 30 } },
+    ] satisfies Command[]) {
+      expect(validateBatch(state, [create('new'), command], human)).toMatchObject({
+        ok: false,
+        reasons: [{ code: 'INVALID' }],
+      });
+      expect(state).toEqual(before);
+    }
+  });
   it('applies and inverts create, typed update and movement', () => {
     let result = apply(emptyState(), [create('text')]);
     result = apply(result.state, [

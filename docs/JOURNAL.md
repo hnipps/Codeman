@@ -2,6 +2,24 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Keep unsafe canvas data readable and future operations replayable
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/`, canvas route tests
+**Why:** The second PC1 audit found cycles could hang hierarchy walks, snapshots could seal unapplied future operations, and author revert could throw on opaque content.
+**Links:** [Safe replay intent](../intent/2026-11-10-canvas-safe-replay.md), [Canvas storage invariants](architecture-invariants.md#canvas-storage)
+
+All hierarchy consumers share an iterative walk with cycle detection, a depth
+of 256 objects and a 10,000-node limit. Reads retain reached records; commands
+and geometry refuse an unsafe or incomplete walk. Load diagnostics are deduplicated
+across reloads of the same store. Unknown or mismatched content is opaque,
+including before/after history, so independent author changes can still revert.
+
+A store with unknown operation kinds fsyncs its log but skips new snapshots.
+This deliberately accepts repeated replay instead of writing an inaccurately
+advanced checkpoint. The same rule applies to shutdown and handoff flushes.
+Existing checkpoints and all log records stay unchanged for a future reader.
+
 ## 2026-11-10 - Preserve future canvas data across code-only rollback
 
 **Type:** intent-refinement
