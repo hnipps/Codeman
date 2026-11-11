@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Query redacted telemetry without a second intake route
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry.ts`, `src/telemetry-redact.ts`, `src/telemetry-query.ts`, `src/web/routes/telemetry-routes.ts`, `src/mcp-server.ts`
+**Why:** The canvas plan asks for redacted log query and a `ui-events` stream, and leaves the intake route and the newest-row structure unspecified.
+**Links:** [Intent](../intent/2026-11-10-pc8-redacted-logs.md), [Initial version plan](agentic-canvas/initial-version-plan.md)
+
+Canvas and tab-strip events post through the existing `POST /api/client-errors` with `kind: "ui"`, validated by a small schema in the route, and land in `ui-events.jsonl`. They use their own 120-per-minute bucket so a burst does not consume the 30-per-minute client-error budget. `queryLogs` keeps the newest matches in a ring rather than shifting an array, and it redacts again on read so a line written by an older release cannot come back raw. The hook secret is read from the file that already exists and is never created by a log write. A value shorter than 16 characters is ignored. A usable secret is removed by literal split/join, not by a regular expression. `deploy/test.sh` gains `test/telemetry-redact.test.ts` and `test/telemetry-query.test.ts` next to the telemetry files it already runs, because those tests guard stored data.
+
 ## 2026-11-10 - Run the canvas program with Codex, Grok and Copilot workers
 
 **Type:** intent-refinement

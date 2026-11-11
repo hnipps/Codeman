@@ -1044,6 +1044,7 @@ JSON 形式适用于 Claude Desktop、Cursor 和 Gemini CLI。服务器设置了
 | `list_extensions` | Codeman 已导入的插件和技能，附带 `remove_extension` 要用的 id |
 | `import_extension` | 从一个 GitHub 仓库或本机绝对路径（目录、zip、tar.gz 或 SKILL.md）导入，装到每个智能体 CLI |
 | `remove_extension` | 卸载一个已导入的插件或技能。Codeman 没有导入的目录会留下 |
+| `logs_query` | 从一个遥测流及其轮转文件读取已经脱敏的行。文本只按字面量匹配 |
 
 这些规则由服务器强制执行，而不只是写在文档里：
 

@@ -105,7 +105,9 @@ SHA=$(jq -r .sha <<<"$LAST")
 SINCE=$(jq -r .finishedAt <<<"$LAST")
 ```
 
-`SHA` is the live release and `SINCE` is the time its run finished. To find a fault:
+`SHA` is the live release and `SINCE` is the time its run finished. Lines are redacted before they are written: a bearer token, URL userinfo, the hook secret and a value under a secret-shaped key are replaced with `[redacted]`. The same masking runs again when a line is read back, so a file from an older release does not return a secret through the query. An agent should use `GET /api/logs` or the `logs_query` MCP tool. Both take `stream` (`server`, `requests`, `client-errors` or `ui-events`), an inclusive `since` and `until`, a `level`, and a literal `text` substring. They return the newest matching lines inside the `ApiResponse` envelope. There is no parameter that returns the raw line. With no log directory the answer is an empty list and the reason `No log directory is configured`. In multi-user mode the route is admin-only. The files below are still there for `jq` when you are on the machine.
+
+To find a fault:
 
 1. List the server's errors and warnings for the live build. `server.jsonl.1` holds the lines from before the last rotation.
 
@@ -154,8 +156,8 @@ A release judges itself with its own health check, so a weakened check would pas
 ### Code that supports deploys
 
 - `src/deploy-role.ts` holds the role machine and its policy table. A colour starts as `candidate` when `CODEMAN_DEPLOY_ROLE=candidate`, or as `live` when the variable is unset. The transitions are `candidate` to `live`, `live` to `retired`, and `retired` to `live`. Only a `live` colour may `persist`, which means writing the shared files and creating panes, or `automate`, which means running the timers and controllers that write the data directory or act on panes.
-- `src/telemetry.ts` writes the three telemetry files and owns the build id.
-- `src/web/routes/telemetry-routes.ts` serves `GET /api/health`, `/ws/health` and `POST /api/client-errors`.
+- `src/telemetry.ts` writes the four telemetry files and owns the build id. `src/telemetry-redact.ts` masks a line before it is queued, and `src/telemetry-query.ts` reads one stream and its `.1` file.
+- `src/web/routes/telemetry-routes.ts` serves `GET /api/health`, `/ws/health`, `GET /api/logs` and `POST /api/client-errors`.
 - `src/web/routes/deploy-routes.ts` serves `POST /api/deploy/role`. It accepts only loopback requests that carry no forwarding headers.
 - `src/deploy-control.ts` and `src/web/routes/deploy-control-routes.ts` back the Deploys section in Settings, and `src/web/public/deploy-ui.js` draws it. They run the supervisor command named in `CODEMAN_SUPERVISOR_CLI` and pass on only shas, times and outcomes. A rollback request needs the `requestDeploy` capability, which only a `live` colour has.
 - `src/web/pane-api-url.ts` hands panes `CODEMAN_STABLE_API_URL` as their `CODEMAN_API_URL` when it is an http or https URL on a loopback host, so their hooks reach whichever colour is live.
@@ -185,8 +187,9 @@ The server writes these files to `CODEMAN_LOG_DIR` when it is set, and both colo
 | `server.jsonl` | `level`, `buildId`, `pid` and `msg`. One line per console call, with `level` one of `log`, `info`, `warn`, `error` or `debug`. `msg` is capped at 8 KiB. |
 | `requests.jsonl` | `buildId`, `pid`, `reqId`, `method`, `path`, `status` and `ms`. One line per HTTP response. `path` has no query string, and the token in a `/q/`, `/webview/` or `/html-view/` path reads `:redacted`. `reqId` restarts with each server process, so use `pid` or `buildId` to tell the two colours apart during a deploy. |
 | `client-errors.jsonl` | `buildId`, `ua`, `message`, `source`, `line`, `col`, `stack` and `url`. One line per uncaught browser error or unhandled rejection. A page reports at most 20 distinct errors per load. The server accepts 30 reports a minute per client address, and behind the proxy every client shares the proxy's address. |
+| `ui-events.jsonl` | `buildId`, `surface`, `action` and an optional `target`. One line per canvas or tab-strip event, posted to `POST /api/client-errors` with `kind: "ui"`. `surface` is `canvas` or `tab-strip`. `action` is a short lowercase token. This body has its own budget of 120 reports a minute and does not spend the client-error budget. A release that does not know this file ignores it. |
 
-A file that has passed `CODEMAN_LOG_MAX_BYTES`, 20 MiB by default, is renamed to `<name>.1` before the next write, replacing the older `.1`. Lines are written in batches about every 200 ms. A write that fails is dropped, never raised, so a full disk loses lines without stopping the server.
+A file that has passed `CODEMAN_LOG_MAX_BYTES`, 20 MiB by default, is renamed to `<name>.1` before the next write, replacing the older `.1`. Lines are written in batches about every 200 ms. A write that fails is dropped, never raised, so a full disk loses lines without stopping the server. `GET /api/logs` reads the current file and the `.1` file, newest matches last, and does not load a whole generation into one string.
 
 ### Environment the supervisor sets
 
