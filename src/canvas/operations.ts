@@ -10,12 +10,16 @@ import {
   ObjectSchema,
   StoredObjectSchema,
   isKnownObject,
+  knownObjectIds,
+  indexKnownObjects,
+  classifyObject,
   validateKnownObject,
   knownContentFields,
   descendants,
   walkHierarchy,
   requireHierarchy,
   HierarchyError,
+  MAX_HIERARCHY_DEPTH,
   effectiveLock,
   isContainer,
   sameAuthor,
@@ -105,10 +109,14 @@ const equal = isDeepStrictEqual;
 const mutableKeys = Object.keys(MutableSchema.shape) as (keyof z.infer<typeof MutableSchema>)[];
 
 export function applyOperation(state: CanvasState, op: Operation): CanvasState {
-  if (!knownKinds.has(op.kind)) return { ...state, seq: Math.max(state.seq, op.seq) };
+  if (!knownKinds.has(op.kind)) {
+    const next = { ...state, seq: Math.max(state.seq, op.seq) };
+    indexKnownObjects(next, knownObjectIds(state));
+    return next;
+  }
   const objects = { ...state.objects };
   for (const change of op.prev) objects[change.objectId] = change.after;
-  return {
+  const next = {
     seq: op.seq,
     objects,
     comments: op.comment
@@ -117,9 +125,12 @@ export function applyOperation(state: CanvasState, op: Operation): CanvasState {
         ? state.comments.filter((c) => c.id !== op.removedComment?.id)
         : state.comments,
   };
+  indexKnownObjects(next, knownObjectIds(state));
+  for (const change of op.prev) classifyObject(next, change.after);
+  return next;
 }
 
-function hierarchyReason(state: CanvasState, o: CanvasObject): Rejection | null {
+function hierarchyReason(state: CanvasState, o: CanvasObject, isKnown: (id: string) => boolean): Rejection | null {
   const walk = walkHierarchy(
     {
       ...state,
@@ -130,7 +141,7 @@ function hierarchyReason(state: CanvasState, o: CanvasObject): Rejection | null 
   );
   if (walk.issue) return { ...walk.issue, objectId: o.id };
   for (const p of walk.objects.slice(1)) {
-    if (!isKnownObject(p) || !isContainer(p) || (o.deletedAt === null && p.deletedAt !== null))
+    if (!isKnown(p.id) || !isContainer(p) || (o.deletedAt === null && p.deletedAt !== null))
       return { code: 'INVALID', objectId: o.id, message: 'Parent must be an existing live known container' };
   }
   if (walk.objects.some((p) => p.parentId !== null && !state.objects[p.parentId]))
@@ -148,7 +159,9 @@ export function validateBatch(initial: CanvasState, commands: Command[], author:
 }
 
 function validateBatchUnchecked(initial: CanvasState, commands: Command[], author: Author, now = 0): BatchResult {
+  const known = knownObjectIds(initial);
   const staged = new Map<string, CanvasObject>();
+  const isKnown = (id: string): boolean => staged.has(id) || known.has(id);
   const objects = new Proxy<Record<string, CanvasObject>>(
     {},
     {
@@ -172,7 +185,7 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
     if (command.kind === 'create' ? !!current : !current)
       return reject(command.kind === 'create' ? 'DUPLICATE' : 'NOT_FOUND', 'Object identity is unavailable');
     if (current) requireHierarchy(walkHierarchy(state, [current.id], 'parents'));
-    if (current && !isKnownObject(current)) return reject('INVALID', 'Unknown object type is read-only');
+    if (current && !isKnown(current.id)) return reject('INVALID', 'Unknown object type is read-only');
     if (current && command.expectedRevision !== undefined && command.expectedRevision !== current.revision)
       return reject('REVISION', 'Object revision changed');
     if (
@@ -277,7 +290,7 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
       (command.kind === 'create' || command.kind === 'reparent' || command.kind === 'revert')
     )
       return reject('LOCKED', 'Destination ancestor is locked');
-    const reason = hierarchyReason(state, proposed);
+    const reason = hierarchyReason(state, proposed, isKnown);
     if (reason) return { ok: false, reasons: [reason] };
     changes.push({ objectId: proposed.id, before: current ?? null, after: proposed });
     const subtree =
@@ -288,9 +301,8 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
         ? descendants(state, current.id, true).slice(1)
         : [];
     for (const child of subtree) {
-      if (!isKnownObject(child)) return reject('INVALID', 'Unknown descendant type is read-only');
-      const childLock = effectiveLock(state, child.id);
-      if (childLock) return reject('LOCKED', `Protected descendant ${child.id}`);
+      if (!isKnown(child.id)) return reject('INVALID', 'Unknown descendant type is read-only');
+      if (child.lock) return reject('LOCKED', `Protected descendant ${child.id}`);
       if (command.kind === 'delete' && child.deletedAt === null)
         changes.push({
           objectId: child.id,
@@ -327,18 +339,46 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
     };
     operations.push(op);
   }
+  const roots = new Set<string>();
   for (const operation of operations) {
-    for (const change of operation.prev) {
-      const o = state.objects[change.objectId];
-      const reason = hierarchyReason(state, o);
-      if (reason) return { ok: false, reasons: [reason] };
-      if (change.before && change.before.deletedAt !== o.deletedAt && isContainer(o)) {
-        for (const child of descendants(state, o.id, true)) {
-          const childReason = hierarchyReason(state, child);
-          if (childReason) return { ok: false, reasons: [childReason] };
-        }
-      }
-    }
+    const o = state.objects[operation.objectId];
+    const reason = hierarchyReason(state, o, isKnown);
+    if (reason) return { ok: false, reasons: [reason] };
+    if (
+      isContainer(o) &&
+      operation.prev.some(
+        (change) => change.objectId === o.id && change.before && change.before.deletedAt !== o.deletedAt
+      )
+    )
+      roots.add(o.id);
+  }
+  const facts = new Map<string, { depth: number; deleted: boolean }>();
+  for (const id of roots) {
+    const ancestors = requireHierarchy(walkHierarchy(state, [id], 'parents'));
+    facts.set(id, { depth: ancestors.length, deleted: ancestors.some((o) => o.deletedAt !== null) });
+  }
+  for (const o of roots.size ? requireHierarchy(walkHierarchy(state, roots, 'children')) : []) {
+    if (roots.has(o.id)) continue;
+    const parent = o.parentId === null ? undefined : state.objects[o.parentId];
+    const inherited = parent ? facts.get(parent.id) : undefined;
+    if (
+      !parent ||
+      !inherited ||
+      !isKnown(parent.id) ||
+      !isContainer(parent) ||
+      (o.deletedAt === null && inherited.deleted)
+    )
+      return {
+        ok: false,
+        reasons: [{ code: 'INVALID', objectId: o.id, message: 'Parent must be an existing live known container' }],
+      };
+    const depth = inherited.depth + 1;
+    if (depth > MAX_HIERARCHY_DEPTH)
+      return {
+        ok: false,
+        reasons: [{ code: 'HIERARCHY_LIMIT', objectId: o.id, message: 'Hierarchy traversal limit exceeded' }],
+      };
+    facts.set(o.id, { depth, deleted: inherited.deleted || o.deletedAt !== null });
   }
   return {
     ok: true,
@@ -468,6 +508,7 @@ export function invertOperation(op: Operation): Command[] {
 }
 
 export function revertAuthor(state: CanvasState, log: Operation[], author: Author): Command[] {
+  const known = knownObjectIds(state);
   const patches = new Map<string, Partial<z.infer<typeof MutableSchema>>>();
   const protectedFields = new Set<string>();
   for (const op of [...log].reverse()) {
@@ -476,7 +517,7 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
       const current = state.objects[change.objectId];
       if (
         !current ||
-        !isKnownObject(current) ||
+        !known.has(current.id) ||
         !isKnownObject(change.after) ||
         (change.before && !isKnownObject(change.before)) ||
         walkHierarchy(state, [current.id], 'parents').issue
@@ -501,7 +542,7 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
             (child) =>
               child.id !== current.id &&
               child.deletedAt === null &&
-              (!isKnownObject(child) ||
+              (!known.has(child.id) ||
                 !sameAuthor(child.author, author) ||
                 [...protectedFields].some((f) => f.startsWith(`${child.id}:`)))
           )

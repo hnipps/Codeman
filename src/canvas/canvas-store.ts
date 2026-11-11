@@ -21,6 +21,8 @@ import {
   AuthorSchema,
   IdSchema,
   StateSchema,
+  indexKnownObjects,
+  classifyObject,
   walkHierarchy,
   emptyState,
   sameAuthor,
@@ -67,7 +69,10 @@ type FutureOperation = z.infer<typeof ReplayHeaderSchema>;
 export type AppendResult = { ok: true; seq: number; operations: Operation[] } | Extract<BatchResult, { ok: false }>;
 
 function replayInto(state: CanvasState, op: Operation): void {
-  for (const change of op.prev) state.objects[change.objectId] = change.after;
+  for (const change of op.prev) {
+    classifyObject(state, change.after);
+    state.objects[change.objectId] = change.after;
+  }
   if (op.comment) state.comments.push(op.comment);
   if (op.removedComment) state.comments = state.comments.filter((c) => c.id !== op.removedComment?.id);
   state.seq = op.seq;
@@ -101,6 +106,7 @@ export class CanvasStore {
     let state = emptyState();
     if (existsSync(this.snapshotPath))
       state = SnapshotSchema.parse(JSON.parse(readFileSync(this.snapshotPath, 'utf8'))).state;
+    indexKnownObjects(state);
     const snapshotSeq = state.seq;
     const log: Operation[] = [];
     const futureLog: FutureOperation[] = [];
@@ -129,7 +135,7 @@ export class CanvasStore {
         if (!knownKinds.has(header.kind)) {
           futureLog.push(header);
           seen.set(header.opId, { seq: header.seq });
-          state = { ...state, seq: Math.max(state.seq, header.seq) };
+          state.seq = Math.max(state.seq, header.seq);
           continue;
         }
         const op = OperationSchema.parse(record);

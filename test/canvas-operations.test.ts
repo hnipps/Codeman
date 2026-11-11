@@ -26,6 +26,55 @@ function apply(state: CanvasState, commands: Command[], author = human) {
 }
 
 describe('canvas domain operations', () => {
+  it.each(['deep', 'wide'] as const)('validates %s subtree edits within 250 ms', (shape) => {
+    const seed = apply(emptyState(), [create('n0', null, 'group')]).state.objects.n0;
+    let state = emptyState();
+    const count = shape === 'deep' ? 200 : 5000;
+    for (let i = 0; i < count; i++) {
+      const id = `n${i}`;
+      state.objects[id] = { ...seed, id, parentId: i === 0 ? null : shape === 'deep' ? `n${i - 1}` : 'n0' };
+    }
+    state.objects.destination = { ...seed, id: 'destination', parentId: null };
+    const commands: Command[] = [
+      { kind: 'delete', opId: 'delete', objectId: 'n0' },
+      { kind: 'restore', opId: 'restore', objectId: 'n0' },
+      { kind: 'move', opId: 'move', objectId: 'n0', patch: { position: { x: 30, y: 40 } } },
+      {
+        kind: 'reparent',
+        opId: 'reparent',
+        objectId: 'n0',
+        patch: { parentId: 'destination', order: 2, preserveWorld: true },
+      },
+      { kind: 'lock', opId: 'lock', objectId: 'n0', patch: { mode: 'subtree' } },
+    ];
+    for (const command of commands) {
+      const before = state;
+      const start = performance.now();
+      const result = validateBatch(state, [command], human, 100);
+      const elapsed = performance.now() - start;
+      expect(result.ok).toBe(true);
+      expect(elapsed, `${shape} ${command.kind}`).toBeLessThan(250);
+      if (!result.ok) throw new Error(JSON.stringify(result.reasons));
+      state = result.state;
+      expect(result.operations[0].prev).toHaveLength(['delete', 'restore'].includes(command.kind) ? count : 1);
+      for (let i = 1; i < count; i++) {
+        const child = state.objects[`n${i}`];
+        if (command.kind === 'delete' || command.kind === 'restore') {
+          expect(child).toEqual({
+            ...before.objects[child.id],
+            deletedAt: command.kind === 'delete' ? 100 : null,
+            deletionOpId: command.kind === 'delete' ? 'delete' : null,
+            updatedAt: 100,
+            revision: before.objects[child.id].revision + 1,
+          });
+        } else expect(child).toEqual(before.objects[child.id]);
+      }
+      expect(state.objects.destination).toEqual(before.objects.destination);
+    }
+    expect(worldTransform(state, 'n0')).toEqual({ x: 30, y: 40, rotation: 0 });
+    expect(state.objects.n0).toMatchObject({ parentId: 'destination', order: 2, lock: 'subtree', deletedAt: null });
+    expect(effectiveLock(state, `n${count - 1}`)).toEqual({ objectId: 'n0', mode: 'subtree' });
+  });
   it.each(['two-object', 'self-parent'] as const)('bounds every walk over a %s cycle', (kind) => {
     const state = apply(emptyState(), [create('a'), create('b')]).state;
     state.objects.a.parentId = kind === 'self-parent' ? 'a' : 'b';
@@ -294,6 +343,21 @@ describe('canvas domain operations', () => {
     state = apply(state, [{ kind: 'restore', opId: 'restore', objectId: 'group' }]).state;
     expect(state.objects.old?.deletedAt).toBe(100);
     expect(state.objects.live?.deletedAt).toBeNull();
+  });
+  it('rejects a restore that would leave a live descendant under an independently deleted container', () => {
+    let state = apply(emptyState(), [
+      create('root', null, 'group'),
+      create('middle', 'root', 'group'),
+      create('leaf', 'middle'),
+    ]).state;
+    state = apply(state, [{ kind: 'delete', opId: 'delete-root', objectId: 'root' }]).state;
+    state.objects.middle = { ...state.objects.middle, deletionOpId: 'independent-delete' };
+    const before = structuredClone(state);
+    expect(validateBatch(state, [{ kind: 'restore', opId: 'restore-root', objectId: 'root' }], human)).toMatchObject({
+      ok: false,
+      reasons: [{ code: 'INVALID', objectId: 'leaf' }],
+    });
+    expect(state).toEqual(before);
   });
   it('computes rotated nested group bounds in parent and world coordinates', () => {
     let state = apply(emptyState(), [

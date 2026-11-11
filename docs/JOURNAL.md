@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - Classify canvas records at the state boundary
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/model.ts`, `src/canvas/operations.ts`, `src/canvas/canvas-store.ts`
+**Why:** Delete/restore validation repeatedly parsed known objects and rewalked each changed container's descendants and their ancestors.
+**Links:** [Hierarchy performance intent](../intent/2026-11-11-canvas-hierarchy-performance.md)
+
+Private store state owns a WeakMap classification sidecar, rebuilt on load and
+updated on replay/apply. Public reads and snapshots carry no index. Mutable pure
+caller inputs are classified at validation entry unless explicitly indexed at
+their construction boundary. Subtree validation uses lookups and descendant-local
+locks, then carries depth and deletion facts through one final descendant walk.
+This preserves atomic rejection when selective restore would revive a child
+beneath an independently deleted container.
+
 ## 2026-11-10 - Keep unsafe canvas data readable and future operations replayable
 
 **Type:** intent-refinement

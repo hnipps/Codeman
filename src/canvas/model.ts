@@ -66,21 +66,25 @@ export const StoredObjectSchema = ObjectFieldsSchema.extend({
 }).passthrough();
 export type CanvasObject = z.infer<typeof StoredObjectSchema>;
 export const isKnownObject = (o: CanvasObject): boolean => validateKnownObject(o);
+const storedContentSchemas = new Map<string, z.ZodType<z.infer<typeof ContentSchema>>>(
+  ContentSchema.options.map((schema) => [schema.shape.type.value, schema.strip()])
+);
+const objectFieldNames = Object.keys(ObjectFieldsSchema.shape);
 
 export function knownContentFields(content: CanvasObject['content']) {
-  const contentSchema = ContentSchema.options.find((schema) => schema.shape.type.value === content.type);
+  const contentSchema = storedContentSchemas.get(content.type);
   if (!contentSchema) throw new Error('Unknown content type is read-only');
-  return contentSchema.strip().parse(content);
+  return contentSchema.parse(content);
 }
 
 /** Validate understood fields without discarding extensions owned by newer releases. */
 export function validateKnownObject(o: CanvasObject): boolean {
-  const contentSchema = ContentSchema.options.find((schema) => schema.shape.type.value === o.content.type);
+  const contentSchema = storedContentSchemas.get(o.content.type);
   if (!contentSchema) return false;
-  const content = contentSchema.strip().safeParse(o.content);
+  const content = contentSchema.safeParse(o.content);
   if (!content.success) return false;
   return ObjectSchema.safeParse({
-    ...Object.fromEntries(Object.keys(ObjectFieldsSchema.shape).map((key) => [key, o[key]])),
+    ...Object.fromEntries(objectFieldNames.map((key) => [key, o[key]])),
     content: content.data,
   }).success;
 }
@@ -101,6 +105,31 @@ export const StateSchema = z.object({
   comments: z.array(CommentSchema),
 });
 export type CanvasState = z.infer<typeof StateSchema>;
+const classifications = new WeakMap<CanvasState, Set<string>>();
+
+/** Private store state owns an in-memory index; public mutable inputs are classified afresh. */
+export function knownObjectIds(state: CanvasState): ReadonlySet<string> {
+  return (
+    classifications.get(state) ??
+    new Set(
+      Object.values(state.objects)
+        .filter(isKnownObject)
+        .map((o) => o.id)
+    )
+  );
+}
+
+export function indexKnownObjects(state: CanvasState, known = knownObjectIds(state)): void {
+  classifications.set(state, new Set(known));
+}
+
+export function classifyObject(state: CanvasState, object: CanvasObject): void {
+  const known = classifications.get(state);
+  if (!known) throw new Error('Canvas state must be indexed before replay');
+  if (isKnownObject(object)) known.add(object.id);
+  else known.delete(object.id);
+}
+
 export const emptyState = (): CanvasState => ({ seq: 0, objects: {}, comments: [] });
 export const sameAuthor = (a: Author, b: Author): boolean =>
   a.kind === 'human' && b.kind === 'human'
