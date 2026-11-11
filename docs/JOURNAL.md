@@ -2,6 +2,27 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - Keep canvas MCP compact and share native commands
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/commands.ts`, `src/canvas/queries.ts`, canvas routes and MCP
+**Why:** Five CRUD tools alone do not cover the required stored capability matrix.
+**Links:** [Canvas MCP intent](../intent/2026-11-11-canvas-mcp.md)
+
+Use eleven canvas tools (21 MCP tools total): the five named read/CRUD tools plus
+query, arrange, transform, lock, history and capabilities. Every tool calls the
+same typed HTTP handler available to humans. Compound edits expand to one native
+batch and append once. Schema discovery describes unsupported flips/shear,
+uniform group scaling, fixed-container bounds resize and world AABB queries.
+Undo uses explicit own-author sequences and refuses intervening revisions; redo
+inverts returned undo sequences. This avoids a second mutable undo stack.
+
+Reserve per-view viewport, selection, focus and context names for PC3/PC9 in the
+capability list. The browser owns that state; PC2 does not create a server store.
+Read/search/query/history use text-only JSON capped at 60,000 UTF-8 bytes with a
+truncation flag and omit records that do not fit. Case scope follows the longest
+registered case path containing the visible caller session's working directory;
+body workspace and author fields are forbidden.
 ## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
 
 **Type:** propagated-discovery

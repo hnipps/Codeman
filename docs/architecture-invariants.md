@@ -208,7 +208,7 @@ Session create additionally pre-seeds the skill's §0 preamble cache (`seedAgent
 
 ### MCP server (codeman mcp)
 
-**MCP server (`codeman mcp`, `src/mcp-server.ts`)**: a Model Context Protocol server on stdio for any MCP client, a CLIENT of the HTTP API like `codeman agent` (reuses its `httpRequest`, `inputRefusal`, `buildSendBody`; the MCP server adds no routes). Ten tools: `list_sessions`, `start_session`, `send_prompt`, `wait_for_session`, `read_output`, `interrupt_session`, `delete_session`, `list_extensions`, `import_extension`, `remove_extension` (the last three call `/api/v1/extensions`; `import_extension` is the only tool with `openWorldHint`). ⚠️ Dual-era: answers the legacy `initialize` handshake (2024-11-05 to 2025-11-25) AND the 2026-07-28 revision (per-request `_meta` with `protocolVersion` + `clientCapabilities`, `server/discover`, `resultType: "complete"` on every modern result); a modern `tools/list`/`server/discover` MUST carry `ttlMs` + `cacheScope` (Claude Code 2.1.296 drops every tool without them: measured). ⚠️ stdout is protocol only; logs go to stderr. ⚠️ The URL comes from `--url`/`CODEMAN_API_URL`, never a guess, and unconfigured it still lists tools (registries introspect) while every call answers how to configure it. ⚠️ Prompt/interrupt/delete only sessions the PROCESS started (in-memory allowlist, so a restart fails closed) or, inside a pane, the calling session's own children, unless `--allow-any-session`; never its own session. ⚠️ `read_output` returns text ONLY, no `structuredContent` (a client that prefers it showed the model metadata instead of the output: measured). Waits default 45 s (Codex's MCP tool timeout is 60 s). Registry manifest `config/mcp-registry/server.json` (`mcpName` in package.json, version kept by `scripts/sync-plugin.mjs`). Tests: `test/mcp-server.test.ts`.
+**MCP server (`codeman mcp`, `src/mcp-server.ts`)**: a Model Context Protocol server on stdio for any MCP client, a CLIENT of the HTTP API like `codeman agent` (reuses its `httpRequest`, `inputRefusal`, `buildSendBody`; the MCP server adds no routes). Twenty-one tools: eleven canvas tools described below plus `list_sessions`, `start_session`, `send_prompt`, `wait_for_session`, `read_output`, `interrupt_session`, `delete_session`, `list_extensions`, `import_extension`, `remove_extension` (the last three call `/api/v1/extensions`; `import_extension` is the only tool with `openWorldHint`). ⚠️ Dual-era: answers the legacy `initialize` handshake (2024-11-05 to 2025-11-25) AND the 2026-07-28 revision (per-request `_meta` with `protocolVersion` + `clientCapabilities`, `server/discover`, `resultType: "complete"` on every modern result); a modern `tools/list`/`server/discover` MUST carry `ttlMs` + `cacheScope` (Claude Code 2.1.296 drops every tool without them: measured). ⚠️ stdout is protocol only; logs go to stderr. ⚠️ The URL comes from `--url`/`CODEMAN_API_URL`, never a guess, and unconfigured it still lists tools (registries introspect) while every call answers how to configure it. ⚠️ Prompt/interrupt/delete only sessions the PROCESS started (in-memory allowlist, so a restart fails closed) or, inside a pane, the calling session's own children, unless `--allow-any-session`; never its own session. ⚠️ `read_output` returns text ONLY, no `structuredContent` (a client that prefers it showed the model metadata instead of the output: measured). Waits default 45 s (Codex's MCP tool timeout is 60 s). Registry manifest `config/mcp-registry/server.json` (`mcpName` in package.json, version kept by `scripts/sync-plugin.mjs`). Tests: `test/mcp-server.test.ts`.
 
 ### Agent preamble cache GC
 
@@ -1658,3 +1658,53 @@ The opt-in `/canvas/:workspaceId` document checks the current setting and resour
 The outline and rail use fixed overlays. Closing either never pans or fits. Fit is an explicit command (also used once on initial load). Selection and keyboard focus are separate states; search and the nonmodal reader disclose detail without board footers. Selection recolours a container edge with short corner brackets whose screen size is preserved across zoom; focus uses an offset amber outline, mirrored on the corresponding outline row. Selected tools have raised neutral fill and amber strokes. Unavailable Add and Comment controls use `aria-disabled`, remain in the tab order and announce their descriptions on activation without changing view state. Keys render platform modifiers and individual named arrow keycaps, with a labelled single-letter switch. The reader titles by type or container name, prints content once, and collapses identical created/updated times into one local timestamp with ISO metadata. Text/native controls and composition suppress canvas shortcuts. Loading, empty, retry, offline, future object types, long text and phone panels have browser coverage in `test/canvas-view.browser.test.ts`; pure contracts live in `test/canvas-viewport.test.ts`.
 
 Canvas read boundaries preserve object, content, geometry, author and operation extension keys. Unknown operation kinds advance the catch-up sequence without applying even a supplied `prev`. Unreadable catch-up records trigger one snapshot refetch; valid siblings are parsed independently. Container membership uses the pure server predicate, so subcanvas descendants participate in outline and board rendering. Unknown content is an inert labelled placeholder. Outline queries match full content strings case-insensitively through literal substring matching. Pointer taps open the reader without compatibility mouse events; pointer capture release preserves held Space state. Any gesture during the hold suppresses Space selection toggling. Selection boundaries and brackets use secondary text tokens at 1px and 1.5px screen widths. Development bundle failures print an error naming `npm run build:canvas`; missing bundles produce an actionable plain-text 503 after document authorization.
+
+### Canvas agent commands
+
+PC2 publishes eleven canvas MCP tools, bringing the total to 21. The five named
+read/CRUD tools are `canvas_read`, `canvas_search`, `canvas_create`, `canvas_update`
+and `canvas_delete`; `canvas_query`, `canvas_arrange`, `canvas_transform`,
+`canvas_lock`, `canvas_history` and `canvas_capabilities` cover the remaining stored
+capabilities without a tool per gesture. Their strict schemas come from
+`src/canvas/commands.ts`, and capabilities publishes these schemas, native command
+schemas and supported object types. Object text and URLs are untrusted data.
+
+Every tool calls `POST /api/v1/canvas/current/command`. This is the same handler as
+human `POST /api/canvas/:workspaceId/command`; native batches remain available at
+`POST /api/canvas/:workspaceId/ops`. Compound commands expand to one batch, validated
+by `validateBatch` and committed only by `CanvasStore.append`. Failures retain the
+validator's structured reasons unchanged. No partial compound commit is allowed.
+
+The server resolves `X-Codeman-Parent-Session` as an exact ID or a unique prefix of
+at least eight characters, constrained to visible sessions. A registry workspace
+must have the session's owner and contain its working directory; the longest case
+path wins. A header-bearing request cannot choose another workspace, even with an
+admin login. The resolved full session ID stamps agent operations; bodies cannot
+supply identity. Outside a registered case, the response explains how to open one.
+In single-user mode the header is a self-declared hint, not an adversarial identity
+boundary; every agent already shares the host account. `canvasEnabled` gates all
+calls before loading stores; disabled and unconfigured tools still list.
+
+Read returns one nested tree including the explicit root, typed content, labels,
+URLs, local/effective locks and comments. Read/search/query/history carry a
+`truncated` flag and stay within 60,000 UTF-8 bytes. Oversized records are omitted,
+never split into invalid JSON. MCP returns text only, without structuredContent.
+Search returns ancestor IDs/labels. Queries use inclusive world axis-aligned
+bounds for point, rectangle or simple polygon; rectangle/polygon callers choose
+whole-bounds containment or intersection, including edge contact.
+
+Overlapping target roots are normalized before compound transforms or copies.
+Group/ungroup/reparent preserve world placement. A group transform scales the
+whole subtree uniformly; fixed-container resize changes its bounds. Positive
+scales and rotation are supported; nonuniform scaling in rotated axes, affine
+shear and flips are unsupported. Ordering
+preserves unrelated relative order. Duplication allocates new IDs for the subtree.
+Undo takes explicit own-author sequence IDs and rejects changed revisions; redo
+inverts the undo result's sequence IDs. All inverses are an atomic native batch.
+Author revert remains the separate field-aware operation. Viewport, selection,
+focus and context operations are reserved for PC3/PC9 with explicit view IDs;
+there is no server-side view store. Render/session/voice/background capabilities
+are labeled with their later owning PRs rather than exposed as working commands.
+
+Tests: `test/canvas-commands.test.ts`, `test/mcp-canvas-tools.test.ts`, existing
+canvas operation/store/route tests and `test/mcp-server.test.ts`.

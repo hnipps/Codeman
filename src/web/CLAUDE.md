@@ -106,7 +106,7 @@ Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. L
 
 ## Canvas API notifications
 
-`CanvasChanged` / `CANVAS_CHANGED` names `canvas:changed` in the backend/frontend SSE registries. Its payload contains the workspace ID, committed sequence and trusted resource owner; `deriveSseHint()` routes it to that owner and admins. The synced `canvasEnabled` setting defaults off and survives saving the existing Settings form. The canvas document and case-picker entry are implemented in PC3.
+`CanvasChanged` / `CANVAS_CHANGED` names `canvas:changed` in the backend/frontend SSE registries. Its payload contains the workspace ID, committed sequence and trusted resource owner; `deriveSseHint()` routes it to that owner and admins. The synced `canvasEnabled` setting defaults off and survives saving the existing Settings form. The canvas document and case-picker entry are implemented in PC3. PC2 adds `POST /api/canvas/:workspaceId/command`, shared by human and MCP callers, with strict schemas in `src/canvas/commands.ts`. `current` resolves the parent-session header through the session working directory and registry; header-bearing requests cannot choose another workspace. Agent authors are stamped by the route. Browser viewport/selection/focus/context state stays in the browser (PC3) and the assistant rail (PC9); no server view store.
 
 ## Canvas document
 

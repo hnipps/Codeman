@@ -30,7 +30,12 @@ async function harness(username = 'user-a', role: 'user' | 'admin' = 'user') {
   });
   let enabled = true;
   const stores = new CanvasStores();
-  const port = { canvasEnabled: async () => enabled, canvasStores: vi.fn(async () => stores), broadcast: vi.fn() };
+  const port = {
+    sessions: new Map(),
+    canvasEnabled: async () => enabled,
+    canvasStores: vi.fn(async () => stores),
+    broadcast: vi.fn(),
+  };
   registerCanvasRoutes(app, port);
   installRouteErrorHandler(app);
   await app.ready();

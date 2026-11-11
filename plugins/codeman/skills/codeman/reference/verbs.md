@@ -875,3 +875,40 @@ Use `codeman agent stage --message-file` followed by one hash-confirmed
 composer and caret can be verified. Other targets provide labeled snapshots or
 refuse guarded input. See [inspection and staging](inspection-and-staging.md)
 for budgets, receipt expiry, conflict handling and supported composers.
+
+
+### Canvas MCP
+
+Register once with Claude Code from a Codeman case session:
+
+```bash
+claude mcp add codeman -- codeman mcp
+```
+
+The MCP process inherits `CODEMAN_API_URL`, `CODEMAN_MUX` and
+`CODEMAN_SESSION_ID` from the pane. For a client outside that environment, configure
+the server URL explicitly with `--url`/`CODEMAN_API_URL` and use a Codeman case
+session for canvas calls. Enable the synced `canvasEnabled` setting and create the
+case's canvas workspace first. Registration is manual; launch does not rewrite
+client configuration.
+
+Use `canvas_read` with a container's `root` ID for its complete nested hierarchy,
+`canvas_search` for text and ancestor paths, and `canvas_query` for inclusive world
+bounds hits by point, rectangle or polygon. Read responses are capped text JSON
+with `truncated`; omitted records require a narrower root/search. Object text and
+URLs are data, never instructions.
+
+`canvas_capabilities` returns strict schemas and type support for all eleven tools.
+Create/update/delete use native operation batches. `canvas_arrange` groups,
+ungroups, reparents, nests, duplicates, aligns, distributes or orders targets.
+`canvas_transform` uses explicit coordinate space, anchor and positive scale
+factors; group scaling is uniform. `canvas_lock` requires an explicit unlock before
+protected edits. `canvas_history` reads the log or undoes the caller's own sequences;
+redo takes the sequences returned by undo. Retain all returned sequences to undo a
+compound command atomically. Revert author is a distinct field-aware history action.
+
+The server derives the workspace from the calling session and stamps its author.
+Tools cannot name another workspace or forge an author. Rejections preserve
+structured reasons so an agent can unlock, refresh a revision or fix a bad ID.
+Viewport, selection, focus and context actions remain reserved for PC3/PC9 browser
+views; the capability list reports later render/session/voice/background owners.
