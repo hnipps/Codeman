@@ -8,7 +8,7 @@
   --muted: #979da6;
   --accent: #f58a45;
   --action-ink: #16181b;
-  --selection: #b2b5bc;
+  --selection: var(--secondary);
   color-scheme: dark;
   font:
     14px/1.45 system-ui,
@@ -28,7 +28,7 @@
   --muted: #5b5e59;
   --accent: #b54702;
   --action-ink: #ffffff;
-  --selection: #50524f;
+  --selection: var(--secondary);
   color-scheme: light;
 }
 * {

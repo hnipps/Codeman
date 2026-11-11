@@ -1,6 +1,6 @@
 # Intent: Repair read-only canvas audit findings
 
-**Status:** Draft
+**Status:** Complete
 
 ## Problem statement
 

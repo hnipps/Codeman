@@ -172,7 +172,7 @@ function readObject(): void {
   readerObject = o;
   readerFocus = state.focusId;
   node('readerText').textContent = o ? readable(o) : 'This object was removed from the workspace.';
-  node('readerText').hidden = !!o && container(o);
+  node('readerText').hidden = !!o && container(o) && o.content.type === o.type;
   node('readerMeta').replaceChildren();
   if (o) {
     const dates: [string, number][] = [['Created', o.createdAt]];
@@ -368,7 +368,7 @@ document.addEventListener('keyup', (e) => {
   }
 });
 const pointers = new Map<number, Point>();
-let lastTapped: string | null = null;
+let lastTap: { id: string; at: number; point: Point } | null = null;
 let drag: {
   id: number;
   start: Point;
@@ -381,6 +381,7 @@ let drag: {
 const point = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY });
 board.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 && e.button !== 1) return;
+  if (spaceHeld) spaceMoved = true;
   pointers.set(e.pointerId, point(e));
   board.setPointerCapture(e.pointerId);
   const target =
@@ -418,10 +419,21 @@ board.addEventListener('pointermove', (e) => {
   drag.previous = point(e);
 });
 board.addEventListener('pointerup', (e) => {
-  lastTapped = drag && !drag.moved ? drag.target : null;
+  const tap = drag && !drag.moved && !drag.pan ? drag.target : null;
+  const doubleTap =
+    tap &&
+    lastTap &&
+    lastTap.id === tap &&
+    e.timeStamp - lastTap.at < 500 &&
+    Math.hypot(e.clientX - lastTap.point.x, e.clientY - lastTap.point.y) < 6;
+  lastTap = tap && !doubleTap ? { id: tap, at: e.timeStamp, point: point(e) } : null;
   if (drag && !drag.moved && !spaceHeld && state.tool === 'select') {
     if (drag.target) choose(drag.target, drag.shift, false);
     else dispatch({ kind: 'selection', ids: [] });
+  }
+  if (doubleTap && tap) {
+    dispatch({ kind: 'focus', id: tap });
+    dispatch({ kind: 'rail', view: 'reader' });
   }
   pointers.delete(e.pointerId);
   drag = null;
@@ -430,21 +442,17 @@ board.addEventListener('pointerup', (e) => {
 const cancel = (): void => {
   pointers.clear();
   drag = null;
-  spaceHeld = false;
-  spaceMoved = false;
+  lastTap = null;
   board.classList.remove('dragging');
 };
 board.addEventListener('pointercancel', cancel);
-board.addEventListener('lostpointercapture', cancel);
-window.addEventListener('blur', cancel);
-board.addEventListener('dblclick', (e) => {
-  const target =
-    e.target instanceof Element ? e.target.closest<HTMLElement>('[data-object-id]')?.dataset.objectId : null;
-  const id = target ?? lastTapped;
-  if (id) {
-    dispatch({ kind: 'focus', id });
-    dispatch({ kind: 'rail', view: 'reader' });
-  }
+board.addEventListener('lostpointercapture', (e) => {
+  if (pointers.has(e.pointerId)) cancel();
+});
+window.addEventListener('blur', () => {
+  cancel();
+  spaceHeld = false;
+  spaceMoved = false;
 });
 board.addEventListener(
   'wheel',

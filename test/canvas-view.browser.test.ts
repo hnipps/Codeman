@@ -1,7 +1,7 @@
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import puppeteer from 'puppeteer';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebServer } from '../src/web/server.js';
 import { dataPath } from '../src/config/instance.js';
@@ -106,6 +106,7 @@ describe('read-only canvas document', () => {
   }, 60000);
   afterEach(async () => {
     await page?.unroute('**/api/canvas/*/objects');
+    await page?.unroute('**/api/canvas/*/ops?*');
     await page?.context().setOffline(false);
   });
   afterAll(async () => {
@@ -138,6 +139,113 @@ describe('read-only canvas document', () => {
     await page.locator('#search').fill('');
     await page.locator('#board').focus();
     await shot(page, 'selected-group');
+  });
+
+  it('opens the reader by double-click and pans twice in one Space hold without toggling selection', async () => {
+    await open();
+    await page.locator('[data-object-id="brief"] .object-body').dblclick();
+    await page.waitForSelector('#readerView:not([hidden])');
+    expect(await page.locator('#readerText').textContent()).toContain('What a saved page');
+    await page.keyboard.press('Escape');
+    await page.locator('#board').focus();
+    const selected = await page.evaluate(() => window.canvasView.read().selected);
+    await page.keyboard.down('Space');
+    for (let i = 0; i < 2; i++) {
+      const before = await page.evaluate(() => window.canvasView.read().viewport.x);
+      await page.mouse.move(1100, 700);
+      await page.mouse.down();
+      await page.mouse.move(1140, 700, { steps: 4 });
+      await page.mouse.up();
+      expect(await page.evaluate(() => window.canvasView.read().viewport.x)).toBeCloseTo(before + 40);
+    }
+    await page.keyboard.up('Space');
+    expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual(selected);
+    await page.keyboard.press('Space');
+    expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual([]);
+    await page.keyboard.down('Space');
+    await page.mouse.click(1100, 700);
+    await page.keyboard.up('Space');
+    expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual([]);
+  });
+  it('searches full text as a literal case-insensitive substring', async () => {
+    await open();
+    await page.locator('#search').fill('USEFUL EXCERPT');
+    expect(await page.locator('#tree button:visible').allTextContents()).toEqual(['What a saved page should remember']);
+    await shot(page, 'outline-search-full-text');
+    await page.locator('#search').fill('[');
+    expect(await page.locator('#tree button:visible').count()).toBe(0);
+  });
+  it('skips the exact future header, renders subcanvas children, and recovers unreadable catch-ups once', async () => {
+    const response = await page.request.get(`${origin}/x/api/canvas/${workspace}/objects`);
+    const snapshot = await response.json();
+    const first: ViewObject = snapshot.data.objects[0];
+    const parent = {
+      ...first,
+      id: 'subcanvas',
+      parentId: null,
+      type: 'subcanvas',
+      content: { type: 'subcanvas', label: 'Subcanvas' },
+    };
+    const child = {
+      ...first,
+      id: 'sub-child',
+      parentId: 'subcanvas',
+      type: 'text',
+      content: { type: 'text', text: 'Nested child' },
+    };
+    let snapshots = 0;
+    let malformed = false;
+    let since = '';
+    await page.route('**/api/canvas/*/objects', (route) => {
+      snapshots++;
+      return route.fulfill({
+        json: {
+          success: true,
+          data: { seq: snapshots === 1 ? 1 : 5, objects: snapshots === 1 ? [] : [parent, child] },
+        },
+      });
+    });
+    await page.route('**/api/canvas/*/ops?*', (route) => {
+      since = new URL(route.request().url()).searchParams.get('since') ?? '';
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            seq: malformed ? 5 : 4,
+            operations:
+              since === '5'
+                ? []
+                : malformed
+                  ? [null]
+                  : [
+                      { seq: 3, opId: 'future-op', kind: 'future-operation', futurePayload: { keep: ['all'] } },
+                      {
+                        seq: 4,
+                        kind: 'create',
+                        prev: [
+                          { objectId: parent.id, after: parent },
+                          { objectId: child.id, after: child },
+                        ],
+                      },
+                    ],
+          },
+        },
+      });
+    });
+    await open('[data-object-id="sub-child"]');
+    expect(since).toBe('1');
+    expect(await page.locator('[data-object-id="subcanvas"] > [data-object-id="sub-child"]').count()).toBe(1);
+    expect(await page.locator('#tree button').allTextContents()).toEqual(['Subcanvas', 'Nested child']);
+    malformed = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.waitForFunction(() => document.getElementById('notice')?.hidden === true);
+    await vi.waitFor(() => expect(snapshots).toBe(2));
+    expect(since).toBe('4');
+    expect(await page.locator('[data-object-id="sub-child"]').count()).toBe(1);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await vi.waitFor(() => expect(since).toBe('5'));
+    expect(snapshots).toBe(2);
+    expect(await page.locator('#notice').isVisible()).toBe(false);
   });
   it('separates keyboard focus from selection, drills into children and restores focus from the rail', async () => {
     await open();
@@ -258,11 +366,27 @@ describe('read-only canvas document', () => {
       position: { x: 400, y: 0 },
       content: { type: 'text', text: 'Long reference '.repeat(30000) },
     };
+    const unknownContent = {
+      ...unknown,
+      id: 'future-content',
+      type: 'frame',
+      position: { x: 0, y: 220 },
+      content: { type: 'future-content', script: '<img onerror=alert(1)>' },
+    };
     await page.route('**/api/canvas/*/objects', (route) =>
-      route.fulfill({ json: { success: true, data: { seq: 1000, objects: [unknown, long] } } })
+      route.fulfill({ json: { success: true, data: { seq: 1000, objects: [unknown, unknownContent, long] } } })
     );
     await open('[data-object-id="future"]');
     expect(await page.locator('[data-object-id="future"]').textContent()).toContain('Unsupported object · new-widget');
+    expect(await page.locator('[data-object-id="future-content"] .object-body').textContent()).toBe(
+      'Unsupported content · future-content'
+    );
+    await page.locator('[data-object-id="future-content"] .object-body').dblclick();
+    await page.waitForSelector('#readerView:not([hidden])');
+    expect(await page.locator('#readerText').isVisible()).toBe(true);
+    expect(await page.locator('#readerText').textContent()).toBe('Unsupported content · future-content');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#rail', { state: 'hidden' });
     await page.locator('[data-object-id="long"]').dblclick();
     await page.waitForSelector('#readerView:not([hidden])');
     expect(await page.locator('#readerText').textContent()).toContain('Long reference');
@@ -425,6 +549,17 @@ describe('read-only canvas document', () => {
         expect(
           await page.locator('[data-object-id="research"]').evaluate((el) => getComputedStyle(el, '::after').content)
         ).toBe('none');
+        const boundary = await page.locator('[data-object-id="research"]').evaluate((el) => {
+          const css = getComputedStyle(el);
+          const zoom = window.canvasView.read().viewport.zoom;
+          return {
+            color: css.borderColor,
+            secondary: css.getPropertyValue('--secondary').trim(),
+            width: parseFloat(css.borderWidth) * zoom,
+          };
+        });
+        expect(boundary.color).toBe(theme === 'dark' ? 'rgb(178, 181, 188)' : 'rgb(80, 82, 79)');
+        expect(boundary.width).toBeCloseTo(1, 0);
         await shot(page, `${slug}-selection-focus`);
         if (viewport.width === 390) await page.locator('#openOutline').click();
         await page.locator('#board').focus();
@@ -433,6 +568,11 @@ describe('read-only canvas document', () => {
         expect(await page.locator('.search-hint').isVisible()).toBe(false);
         await page.locator('#search').fill('Reading');
         expect(await page.locator('.search-hint').isVisible()).toBe(false);
+        await page.locator('#search').fill('USEFUL EXCERPT');
+        expect(await page.locator('#tree button:visible').allTextContents()).toEqual([
+          'What a saved page should remember',
+        ]);
+        await shot(page, `${slug}-outline-search`);
         await page.locator('#search').fill('');
         await page.locator('#board').focus();
         expect(await page.locator('#tree .keyboard-focus').textContent()).toBe('Reading patterns');
@@ -629,6 +769,19 @@ describe('read-only canvas document', () => {
     expect((await page.request.get(`${origin}/x/canvas/${workspace}`)).status()).toBe(404);
     expect((await page.request.get(`${origin}/x/canvas.html`)).status()).toBe(404);
     await page.request.put(`${origin}/x/api/settings`, { data: { canvasEnabled: true } });
+  });
+  it('serves an actionable plain-text error when the canvas bundle is missing', async () => {
+    const bundle = resolve('src/web/public/canvas.js');
+    const saved = resolve(MEDIA, `pc3-bundle-${stamp}.js`);
+    renameSync(bundle, saved);
+    try {
+      const response = await page.request.get(`${origin}/x/canvas/${workspace}`);
+      expect(response.status()).toBe(503);
+      expect(response.headers()['content-type']).toContain('text/plain');
+      expect(await response.text()).toContain('npm run build:canvas');
+    } finally {
+      renameSync(saved, bundle);
+    }
   });
   it('requires normal login for the canvas document', async () => {
     await server.stop();
