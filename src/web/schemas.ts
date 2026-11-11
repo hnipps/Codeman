@@ -1516,6 +1516,7 @@ export const SettingsUpdateSchema = z
      * broadcast and /api/search, which is the user's choice to make.
      */
     autoNameSessions: z.boolean().optional(),
+    canvasEnabled: z.boolean().optional(),
     /** Prompt-cache keep-warm default for sessions that have not chosen (Session Options overrides it). */
     promptCacheKeepWarm: z.boolean().optional(),
     /** Hours after the last real prompt during which keep-alives are sent (default 2, DEFAULT_KEEP_WARM_MAX_HOURS). */
@@ -2537,3 +2538,13 @@ export const AgentStageSchema = z.object({ message: z.string().min(1).max(8192) 
 export const AgentSubmitSchema = z
   .object({ stageId: z.string().uuid(), confirmSha: z.string().regex(/^[a-f0-9]{64}$/) })
   .strict();
+
+export async function loadCanvasSchemas() {
+  const { AuthorSchema } = await import('../canvas/model.js');
+  const { CommandSchema } = await import('../canvas/operations.js');
+  return {
+    CanvasBatchSchema: z.object({ operations: z.array(CommandSchema).min(1).max(1000) }).strict(),
+    CanvasRevertSchema: z.object({ author: AuthorSchema }).strict(),
+  };
+}
+export const CanvasWorkspaceSchema = z.object({ caseName: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/) }).strict();

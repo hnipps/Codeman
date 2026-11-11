@@ -501,6 +501,7 @@ export const SessionOrderChanged = 'session:orderChanged' as const;
 export const WebviewChanged = 'webview:changed' as const;
 /** Owner-scoped layout invalidation. Payload contains only `{ owner, version }`. */
 export const TabLayoutChanged = 'tab:layoutChanged' as const;
+export const CanvasChanged = 'canvas:changed' as const;
 
 // ─── Namespace Re-export ─────────────────────────────────────────────────────
 
@@ -728,4 +729,5 @@ export const SseEvent = {
   // Web tabs (dashboard URLs)
   WebviewChanged,
   TabLayoutChanged,
+  CanvasChanged,
 } as const;

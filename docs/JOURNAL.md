@@ -2,6 +2,94 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - Classify canvas records at the state boundary
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/model.ts`, `src/canvas/operations.ts`, `src/canvas/canvas-store.ts`
+**Why:** Delete/restore validation repeatedly parsed known objects and rewalked each changed container's descendants and their ancestors.
+**Links:** [Hierarchy performance intent](../intent/2026-11-11-canvas-hierarchy-performance.md)
+
+Private store state owns a WeakMap classification sidecar, rebuilt on load and
+updated on replay/apply. Public reads and snapshots carry no index. Mutable pure
+caller inputs are classified at validation entry unless explicitly indexed at
+their construction boundary. Subtree validation uses lookups and descendant-local
+locks, then carries depth and deletion facts through one final descendant walk.
+This preserves atomic rejection when selective restore would revive a child
+beneath an independently deleted container.
+
+## 2026-11-10 - Keep unsafe canvas data readable and future operations replayable
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/`, canvas route tests
+**Why:** The second PC1 audit found cycles could hang hierarchy walks, snapshots could seal unapplied future operations, and author revert could throw on opaque content.
+**Links:** [Safe replay intent](../intent/2026-11-10-canvas-safe-replay.md), [Canvas storage invariants](architecture-invariants.md#canvas-storage)
+
+All hierarchy consumers share an iterative walk with cycle detection, a depth
+of 256 objects and a 10,000-node limit. Reads retain reached records; commands
+and geometry refuse an unsafe or incomplete walk. Load diagnostics are deduplicated
+across reloads of the same store. Unknown or mismatched content is opaque,
+including before/after history, so independent author changes can still revert.
+
+A store with unknown operation kinds fsyncs its log but skips new snapshots.
+This deliberately accepts repeated replay instead of writing an inaccurately
+advanced checkpoint. The same rule applies to shutdown and handoff flushes.
+Existing checkpoints and all log records stay unchanged for a future reader.
+
+## 2026-11-10 - Preserve future canvas data across code-only rollback
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/`, `src/web/routes/canvas-routes.ts`
+**Why:** The PC1 audit found strict disk schemas would reject later object extensions on rollback.
+**Links:** [Audit fix intent](../intent/2026-11-10-canvas-audit-fixes.md), [Canvas storage invariants](architecture-invariants.md#canvas-storage)
+
+Requests retain strict schemas. Stored objects, content and operation records
+retain extension keys; known content edits merge those keys unchanged. Future
+object types are opaque and read-only to this release, including compound
+commands affecting their subtree. Unknown operation kinds remain unapplied but
+are retained in returned history and in the log, which snapshots never truncate.
+
+Sub-canvases are explicitly bounded containers so later media work can place
+blocks inside them. Resizing their bounds leaves child geometry unchanged.
+Delete inversion emits a root restore, using deletion IDs to restore only its
+own tombstones. Other ordinary undo commands use native operations; reparent
+undo restores membership and exact local geometry in one batch. Author revert
+retains its separate field-aware operation.
+Workspace creation probes case paths with bounded helpers: unknown returns a
+diagnostic 503 and never mints a workspace or claims the case is missing.
+
+## 2026-11-10 - Store canvas commands as atomic attributed transactions
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/`, `src/web/routes/canvas-routes.ts`, `src/case-rename.ts`
+**Why:** Later canvas controls need explicit hierarchy, geometry and locks without changing the meaning of existing log records.
+**Links:** [Canvas store intent](../intent/2026-11-10-canvas-store.md), [Canvas storage invariants](architecture-invariants.md#canvas-storage)
+
+The command vocabulary adds reparent, reorder, lock, unlock and remove-comment.
+A layout move never changes membership. Reparent preserves world placement by
+default. Groups derive their bounds; frames and sections have explicit sizes,
+and resizing those bounds does not scale their children. Every stored change
+uses one validation path, including author revert. Locked targets and affected
+locked descendants reject the entire batch.
+
+A compound batch occupies one versioned JSONL envelope so a torn tail cannot
+replay half a transaction. Single-operation writes remain one operation per
+line. Unknown operation kinds advance the sequence without applying state.
+Snapshots do not truncate history: deduplication and author revert still work
+after restart. Subtree tombstones carry the deletion operation ID, avoiding
+accidental restores of independently deleted children at the same timestamp.
+Workspace IDs survive case renames. Two workspace discovery/creation routes
+supply IDs before a canvas tab exists. The API stamps human authors; future
+agent tools must pass the resolved session identity through the same store.
+The flag remains default off, with no startup replay or background work.
+
+A local 10,000-object smoke probe found full-table copying and a sync of each
+append above the performance limits. Validation now stages touched records and
+materializes a full resulting table only for pure callers that ask for it.
+Normal replay records avoid constructing failed envelope-schema parses.
+Appends reach the OS synchronously; snapshot and handoff flushes fsync the log.
+This covers process restart recovery, with no per-append power-loss guarantee.
+The smoke probe is not the program's independent live or performance verdict.
+
 ## 2026-11-10 - Run the canvas program with Codex, Grok and Copilot workers
 
 **Type:** intent-refinement
@@ -86,6 +174,7 @@ Ordinary layout dragging preserves parent membership, while named targets make
 reparenting explicit. The implementation checklist was reconciled with those
 decisions. Static studies and contrast calculations are design evidence, not
 runtime, durability or performance verification.
+
 ## 2026-11-10 - Run real-iPhone tests as one scenario
 
 **Type:** propagated-discovery

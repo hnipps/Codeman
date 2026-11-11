@@ -215,7 +215,7 @@ async function readLinkedCases(): Promise<Record<string, string>> {
  * Resolve a case name to its directory path, checking linked cases first, then the
  * user's case space (per-user in multi-user mode, the shared CASES_DIR otherwise).
  */
-async function resolveCasePath(name: string, user?: AuthUser): Promise<string> {
+export async function resolveCasePath(name: string, user?: AuthUser): Promise<string> {
   const linkedCases = await readLinkedCases();
   // Linked cases carry no owner (legacy/admin-only registry): a non-admin must not
   // resolve arbitrary linked paths by name in multi-user mode (path-escape guard).
@@ -1923,9 +1923,13 @@ export function registerCaseRoutes(
               throw err;
             }
           }
+          const { rekeyCaseWorkspace } = await import('../../case-rename.js');
+          await rekeyCaseWorkspace(name, newName, ownerFor(req));
         } catch (err) {
           // The folder moved but the registries did not follow: put settings.json and the folder back
           // rather than leave a case whose name and folder disagree.
+          if (originalLinks)
+            await fs.writeFile(LINKED_CASES_FILE, JSON.stringify(originalLinks, null, 2)).catch(() => {});
           const undo = settingsUndo;
           if (undo) await mutateSettingsFile((current) => ({ ...current, ...undo })).catch(() => {});
           if (moveFolder) {

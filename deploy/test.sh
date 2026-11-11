@@ -13,6 +13,9 @@ cd "$(dirname "$0")/.."
 export CODEMAN_NO_AUTOSTART=1
 
 tests=(
+  test/canvas-operations.test.ts
+  test/canvas-store.test.ts
+  test/routes/canvas-routes.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts
