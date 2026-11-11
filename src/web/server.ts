@@ -1105,6 +1105,11 @@ export class WebServer extends EventEmitter {
       const { canAccessOwned, getAuthUser } = await import('./route-helpers.js');
       const workspace = readWorkspaces().find((w) => w.id === req.params.workspaceId);
       if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner)) return reply.code(404).send();
+      if (!existsSync(join(__dirname, 'public', 'canvas.js')))
+        return reply
+          .code(503)
+          .type('text/plain; charset=utf-8')
+          .send('Canvas bundle is missing. Run npm run build:canvas, then reload this page.');
       let html = readFileSync(join(__dirname, 'public', 'canvas.html'), 'utf8');
       html = html.replace('<base href="/" />', `<base href="${escapeHtmlText(joinBasePath(this.basePath, '/'))}" />`);
       return reply

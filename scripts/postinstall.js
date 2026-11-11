@@ -546,5 +546,5 @@ console.log('');
 try {
   execSync(`node "${join(import.meta.dirname, 'build-canvas-bundle.mjs')}"`, { stdio: 'inherit' });
 } catch (error) {
-  console.warn('Canvas bundle could not be built:', error.message);
+  console.error('ERROR: Canvas bundle build failed. Run npm run build:canvas before opening a canvas.', error.message);
 }
