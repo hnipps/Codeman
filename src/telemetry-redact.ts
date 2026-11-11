@@ -5,14 +5,15 @@
  * credential word is masked, at any length, except a short exact allowlist of
  * attribution keys. A key longer than the classifier cap is secret too, and is
  * not copied or normalised. A key may start with a digit. The masked span is
- * the whole value: a quoted string, a bracketed object or array, or an
- * unquoted token. When that end is not found, the span runs to the end of the
- * line. The inside of a quote that is not itself a secret value is scanned for
- * the same shapes, up to a fixed depth. Bearer tokens have no minimum length.
- * URL userinfo is masked through the last `@` in the authority. A hook secret
- * is removed as a literal. Odd input returns a placeholder instead of throwing.
- * A secret with no key and no known shape is not detected. Config backup keeps
- * its own key rule.
+ * the whole value: a quoted string, a bracketed object or array, or everything
+ * up to the newline for any other value. The inside of a quote that is not
+ * itself a secret value is scanned for the same shapes, up to a fixed depth.
+ * Bearer tokens have no minimum length. Known token shapes (`sk-`, `ghp_`,
+ * `github_pat_`, `xox*-`, `AKIA`, a three-part `eyJ` JWT) are masked with no
+ * key. URL userinfo is masked through the last `@` in the authority. A hook
+ * secret is removed as a literal. Odd input returns a placeholder instead of
+ * throwing. A secret with no key and none of those shapes is not detected.
+ * Config backup keeps its own key rule.
  *
  * @module telemetry-redact
  */
@@ -42,6 +43,26 @@ const PATH_LINE = /^\d+(:\d+)*\)?$/;
  * `authoredBy`, `authored_by` and `authored-by` share one entry.
  */
 const ATTRIBUTION_KEYS = new Set(['author', 'authors', 'authored', 'authoredby', 'authorid', 'authorname', 'authuser']);
+/**
+ * Exact keys after case and `-`/`_` are removed. `session` and `sessionId`
+ * are not here: those ids correlate rows and must stay readable.
+ */
+const HEADER_SECRET_KEYS = new Set(['cookie', 'setcookie', 'codemansession', 'sid']);
+/** Prefix plus this many token characters. Longer prefixes are listed first. */
+const TOKEN_PREFIXES: { prefix: string; min: number }[] = [
+  { prefix: 'github_pat_', min: 20 },
+  { prefix: 'ghp_', min: 30 },
+  { prefix: 'gho_', min: 30 },
+  { prefix: 'ghu_', min: 30 },
+  { prefix: 'ghs_', min: 30 },
+  { prefix: 'ghr_', min: 30 },
+  { prefix: 'xoxa-', min: 10 },
+  { prefix: 'xoxb-', min: 10 },
+  { prefix: 'xoxp-', min: 10 },
+  { prefix: 'xoxr-', min: 10 },
+  { prefix: 'xoxs-', min: 10 },
+  { prefix: 'sk-', min: 20 },
+];
 
 function usableSecret(hookSecret: string | undefined): string | undefined {
   if (typeof hookSecret !== 'string') return undefined;
@@ -103,8 +124,16 @@ function normalizeKey(key: string): string {
 export function isTelemetrySecretKey(key: string): boolean {
   if (key.length === 0) return false;
   if (key.length > KEY_CAP) return true;
-  if (ATTRIBUTION_KEYS.has(normalizeKey(key))) return false;
+  const normalized = normalizeKey(key);
+  if (ATTRIBUTION_KEYS.has(normalized)) return false;
+  if (HEADER_SECRET_KEYS.has(normalized)) return true;
   return CREDENTIAL_MARK.test(key);
+}
+
+function needsScan(text: string): boolean {
+  if (NEEDS_SCAN.test(text)) return true;
+  if (hasKnownToken(text) || text.includes('-u')) return true;
+  return /cookie|codeman[_-]session|(^|[^A-Za-z0-9_])sid(?![A-Za-z0-9_])/i.test(text);
 }
 
 function hexDigit(ch: string): boolean {
@@ -196,9 +225,10 @@ function readQuoted(text: string, open: number): Quoted | null {
 }
 
 /**
- * End of a value that is already being masked. The closer is a quote, a matching
- * bracket, or the next delimiter. When it is not found, the value runs to the
- * end of the text. The quote closer is an index, not a copied string.
+ * End of a value that is already being masked. A quote or a bracket ends at its
+ * closer. Any other value runs to the newline, or to a `}` or `]` that closes
+ * the structure around the assignment. It does not stop at a space. The quote
+ * closer is an index, not a copied string.
  */
 function endOfValue(text: string, i: number): number {
   if (i >= text.length) return text.length;
@@ -208,7 +238,7 @@ function endOfValue(text: string, i: number): number {
   let j = i;
   while (j < text.length) {
     const c = text[j];
-    if (isWs(c) || c === ',' || c === '}' || c === ']') break;
+    if (c === '\n' || c === '\r' || c === '}' || c === ']') break;
     j++;
   }
   return j;
@@ -467,10 +497,182 @@ function maskUrlUserinfo(text: string): string {
   return changed ? parts.join('') : text;
 }
 
+function isTokenChar(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 45 ||
+    code === 95
+  );
+}
+
+function hasKnownToken(text: string): boolean {
+  return (
+    text.includes('sk-') ||
+    text.includes('ghp_') ||
+    text.includes('gho_') ||
+    text.includes('ghu_') ||
+    text.includes('ghs_') ||
+    text.includes('ghr_') ||
+    text.includes('github_pat_') ||
+    text.includes('xoxa-') ||
+    text.includes('xoxb-') ||
+    text.includes('xoxp-') ||
+    text.includes('xoxr-') ||
+    text.includes('xoxs-') ||
+    text.includes('AKIA') ||
+    text.includes('eyJ')
+  );
+}
+
+function consumePrefixed(text: string, at: number, prefix: string, min: number): number {
+  if (at > 0 && isTokenChar(text.charCodeAt(at - 1))) return -1;
+  let j = at + prefix.length;
+  let n = 0;
+  while (j < text.length && isTokenChar(text.charCodeAt(j))) {
+    n++;
+    j++;
+  }
+  return n >= min ? j : -1;
+}
+
+function consumeAkia(text: string, at: number): number {
+  if (text.slice(at, at + 4) !== 'AKIA') return -1;
+  if (at > 0 && isTokenChar(text.charCodeAt(at - 1))) return -1;
+  let j = at + 4;
+  let n = 0;
+  while (n < 16 && j < text.length) {
+    const code = text.charCodeAt(j);
+    const upper = code >= 65 && code <= 90;
+    const digit = code >= 48 && code <= 57;
+    if (!upper && !digit) break;
+    n++;
+    j++;
+  }
+  if (n < 16) return -1;
+  if (j < text.length) {
+    const code = text.charCodeAt(j);
+    if ((code >= 65 && code <= 90) || (code >= 48 && code <= 57)) return -1;
+  }
+  return j;
+}
+
+function consumeJwt(text: string, at: number): number {
+  if (text.slice(at, at + 3) !== 'eyJ') return -1;
+  if (at > 0 && isTokenChar(text.charCodeAt(at - 1))) return -1;
+  let j = at;
+  for (let part = 0; part < 3; part++) {
+    const start = j;
+    while (j < text.length && isTokenChar(text.charCodeAt(j))) j++;
+    if (j === start) return -1;
+    if (part < 2) {
+      if (text[j] !== '.') return -1;
+      j++;
+    }
+  }
+  return j;
+}
+
+/** Known token shapes, by indexOf. A rejected hit advances past its prefix. */
+function maskKnownTokens(text: string): string {
+  if (!hasKnownToken(text)) return text;
+  const parts: string[] = [];
+  let i = 0;
+  let changed = false;
+  while (i < text.length) {
+    let at = -1;
+    let kind: 'pre' | 'akia' | 'jwt' = 'pre';
+    let which = 0;
+    for (let p = 0; p < TOKEN_PREFIXES.length; p++) {
+      const found = text.indexOf(TOKEN_PREFIXES[p].prefix, i);
+      if (found >= 0 && (at < 0 || found < at)) {
+        at = found;
+        which = p;
+        kind = 'pre';
+      }
+    }
+    const akia = text.indexOf('AKIA', i);
+    if (akia >= 0 && (at < 0 || akia < at)) {
+      at = akia;
+      kind = 'akia';
+    }
+    const ey = text.indexOf('eyJ', i);
+    if (ey >= 0 && (at < 0 || ey < at)) {
+      at = ey;
+      kind = 'jwt';
+    }
+    if (at < 0) {
+      parts.push(text.slice(i));
+      break;
+    }
+    const end =
+      kind === 'akia'
+        ? consumeAkia(text, at)
+        : kind === 'jwt'
+          ? consumeJwt(text, at)
+          : consumePrefixed(text, at, TOKEN_PREFIXES[which].prefix, TOKEN_PREFIXES[which].min);
+    if (end < 0) {
+      const step = kind === 'akia' ? 4 : kind === 'jwt' ? 3 : TOKEN_PREFIXES[which].prefix.length;
+      parts.push(text.slice(i, at + step));
+      i = at + step;
+      continue;
+    }
+    if (text.slice(at, end) !== REDACTED) changed = true;
+    parts.push(text.slice(i, at));
+    parts.push(REDACTED);
+    i = end;
+  }
+  return changed ? parts.join('') : text;
+}
+
+function maskCurlFlag(text: string, flag: string): string {
+  if (!text.includes(flag)) return text;
+  const parts: string[] = [];
+  let i = 0;
+  let changed = false;
+  while (i < text.length) {
+    const at = text.indexOf(flag, i);
+    if (at < 0) {
+      parts.push(text.slice(i));
+      break;
+    }
+    const boundary = at === 0 || isWs(text[at - 1]);
+    const insideLong = flag === '-u' && at > 0 && text.slice(at - 1, at + 5) === '--user';
+    if (!boundary || insideLong) {
+      parts.push(text.slice(i, at + flag.length));
+      i = at + flag.length;
+      continue;
+    }
+    let j = at + flag.length;
+    if (text[j] === '=') j++;
+    else while (j < text.length && isWs(text[j])) j++;
+    if (j >= text.length || isWs(text[j])) {
+      parts.push(text.slice(i, at + flag.length));
+      i = at + flag.length;
+      continue;
+    }
+    let end = j;
+    while (end < text.length && !isWs(text[end])) end++;
+    const replacement = `${flag} ${REDACTED}`;
+    if (text.slice(at, end) !== replacement) changed = true;
+    parts.push(text.slice(i, at));
+    parts.push(replacement);
+    i = end;
+  }
+  return changed ? parts.join('') : text;
+}
+
+/** `-u user:pass` and `--user user:pass`, including the `=` form. */
+function maskCurlUser(text: string): string {
+  if (!text.includes('-u')) return text;
+  return maskCurlFlag(maskCurlFlag(text, '--user'), '-u');
+}
+
 function scanInterior(interior: string, depth: number): string {
   if (interior.length === 0) return interior;
-  if (depth + 1 >= QUOTE_DEPTH) return NEEDS_SCAN.test(interior) ? REDACTED : interior;
-  if (!NEEDS_SCAN.test(interior)) return interior;
+  if (depth + 1 >= QUOTE_DEPTH) return needsScan(interior) ? REDACTED : interior;
+  if (!needsScan(interior)) return interior;
   return redactPlainOnce(interior, depth + 1);
 }
 
@@ -482,13 +684,13 @@ function redactPlainOnce(text: string, depth: number): string {
     bearer = text.replace(BEARER_RE, `Bearer ${REDACTED}`);
   }
   BEARER_RE.lastIndex = 0;
-  return maskUrlUserinfo(maskSecrets(bearer, depth));
+  return maskUrlUserinfo(maskSecrets(maskCurlUser(maskKnownTokens(bearer)), depth));
 }
 
 /** Up to three passes so a mask that uncovers a later shape still settles. */
 function redactPlain(text: string, secret: string | undefined): string {
   let out = applySecret(text, secret);
-  if (!NEEDS_SCAN.test(out)) return out;
+  if (!needsScan(out)) return out;
   for (let pass = 0; pass < 3; pass++) {
     const next = redactPlainOnce(out, 0);
     if (next === out) return out;
@@ -514,7 +716,7 @@ function redactValue(value: unknown, secretKey: boolean, secret: string | undefi
 function redactText(text: string, secret: string | undefined): string {
   const replaced = applySecret(text, secret);
   const changed = replaced !== text;
-  if (!changed && !NEEDS_SCAN.test(replaced)) return text;
+  if (!changed && !needsScan(replaced)) return text;
   const newline = replaced.endsWith('\n');
   const body = newline ? replaced.slice(0, -1) : replaced;
   try {

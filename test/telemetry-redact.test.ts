@@ -115,6 +115,12 @@ describe('redactLogLine', () => {
     }
     expect(isTelemetrySecretKey('x-auth-user')).toBe(true);
     expect(isTelemetrySecretKey('keyboard')).toBe(true);
+    for (const key of ['cookie', 'Set-Cookie', 'codeman_session', 'sid']) {
+      expect(isTelemetrySecretKey(key), key).toBe(true);
+    }
+    for (const key of ['session', 'sessionId', 'session_id', 'claudeSessionId']) {
+      expect(isTelemetrySecretKey(key), key).toBe(false);
+    }
   });
 
   it('masks bearer tokens and URL userinfo', () => {
@@ -228,6 +234,10 @@ describe('redactLogLine', () => {
       'http',
       'Error',
       '://',
+      'Basic',
+      'Cookie',
+      ';',
+      'sk-',
       '1',
       '.',
       '-',
@@ -544,6 +554,114 @@ describe('redaction before the queue', () => {
     const label = await queryLogs({ dir, stream: 'server', text: 'Error: command failed' });
     expect(label.lines).toHaveLength(1);
     expect(label.lines[0]).toContain(failed);
+  });
+
+  it('masks an unquoted secret value through the end of the line', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const messages = [
+      `Authorization: Basic ${cred}`,
+      `Proxy-Authorization: Basic ${cred}`,
+      `authorization: token ${cred}`,
+      `Authorization: Digest username="u", response="${cred}"`,
+      `password: correct horse ${cred}`,
+      `curl -H "X-Api-Key: ${cred}" http://h`,
+    ];
+    const telemetry = sink();
+    for (const msg of messages) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    expect(raw).toContain('Authorization: [redacted]');
+    expect(raw).not.toContain(`Basic ${cred}`);
+    const basic = await queryLogs({ dir, stream: 'server', text: 'Authorization: [redacted]' });
+    expect(basic.lines.length).toBeGreaterThan(0);
+    expect(basic.lines.every((line) => !line.includes(cred))).toBe(true);
+  });
+
+  it('masks cookie headers and sid, and keeps session ids', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const telemetry = sink();
+    telemetry.write('server', {
+      level: 'error',
+      buildId: 'b',
+      pid: 1,
+      msg: 'correlation',
+      session: 'sess-keep',
+      sessionId: 'sess-keep',
+      session_id: 'sess-keep',
+      claudeSessionId: 'sess-keep',
+      cookie: cred,
+      sid: cred,
+    } as never);
+    for (const msg of [
+      `Cookie: codeman_session=${cred}; theme=dark`,
+      `Set-Cookie: codeman_session=${cred}; Path=/`,
+      `cookie: sid=${cred}`,
+    ]) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    expect(raw).toContain('sess-keep');
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const kept = await queryLogs({ dir, stream: 'server', text: 'sess-keep' });
+    expect(kept.lines).toHaveLength(1);
+    const row = JSON.parse(kept.lines[0]) as Record<string, string>;
+    for (const key of ['session', 'sessionId', 'session_id', 'claudeSessionId']) {
+      expect(row[key]).toBe('sess-keep');
+    }
+    expect(row.cookie).toBe('[redacted]');
+    expect(row.sid).toBe('[redacted]');
+  });
+
+  it('masks known token shapes with no key', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N';
+    const aws = 'AKIAIOSFODNN7EXAMPLE';
+    const messages = [
+      `sk-ant-api03-${cred}`,
+      `ghp_${'A'.repeat(36)}`,
+      `github_pat_${'B'.repeat(22)}`,
+      `xoxb-${'1'.repeat(12)}`,
+      aws,
+      jwt,
+    ];
+    const telemetry = sink();
+    for (const msg of messages) {
+      telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
+    }
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    expect(raw).not.toContain('AAAAAAAA');
+    expect(raw).not.toContain(aws);
+    expect(raw).not.toContain('eyJhbGci');
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const pat = await queryLogs({ dir, stream: 'server', text: 'github_pat_' });
+    expect(pat.lines).toEqual([]);
+  });
+
+  it('masks a curl user argument', async () => {
+    const cred = 'synthetic-credential-123456789';
+    const telemetry = sink();
+    telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg: `-u admin:${cred} https://h` });
+    telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg: `--user admin:${cred} https://h` });
+    await telemetry.flush();
+    const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
+    expect(raw).not.toContain(cred);
+    expect(raw).toContain('https://h');
+    const leaked = await queryLogs({ dir, stream: 'server', text: cred });
+    expect(leaked.lines).toEqual([]);
+    const kept = await queryLogs({ dir, stream: 'server', text: 'https://h' });
+    expect(kept.lines).toHaveLength(2);
+    expect(kept.lines.every((line) => line.includes('[redacted]') && !line.includes(cred))).toBe(true);
   });
 
   it('reads at most 512 bytes of an oversized hook-secret file', async () => {
