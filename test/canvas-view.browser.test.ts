@@ -149,6 +149,37 @@ describe('read-only canvas document', () => {
     await shot(page, 'selected-group');
   });
 
+  it('keeps the real group bounds selectable between children while chrome stays outside', async () => {
+    await page.route('**/api/canvas/*/objects', async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      const child = snapshot.data.objects.find((o: ViewObject) => o.id === 'nested-text');
+      snapshot.data.objects.push({
+        ...child,
+        id: 'group-gap-child',
+        position: { x: 300, y: 40 },
+        size: { width: 100, height: 100 },
+      });
+      await route.fulfill({ json: snapshot });
+    });
+    await open();
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'viewport', viewport: { x: -600, y: 100, zoom: 1 } }));
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const hitBounds = await page.locator('[data-object-id="nested-group"] > .group-bounds').boundingBox();
+    if (!hitBounds) throw new Error('Missing group hit bounds');
+    expect(hitBounds).toEqual({ x: 380, y: 140, width: 420, height: 100 });
+    await page.mouse.click(660, 180);
+    await page.waitForFunction(() => window.canvasView.read().selected.includes('nested-group'));
+    expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual(['nested-group']);
+    const chrome = await page.locator('[data-object-id="nested-group"] > .selection-bounds').boundingBox();
+    if (!chrome) throw new Error('Missing group selection chrome');
+    expect(chrome.x).toBeCloseTo(hitBounds.x - 6);
+    expect(chrome.y).toBeCloseTo(hitBounds.y - 6);
+    expect(chrome.width).toBeCloseTo(hitBounds.width + 12);
+    expect(chrome.height).toBeCloseTo(hitBounds.height + 12);
+    expect(await page.locator('[data-object-id="nested-group"] > .resize-handle:visible').count()).toBe(0);
+  });
+
   it('opens the reader by double-click and pans twice in one Space hold without toggling selection', async () => {
     await open();
     await page.locator('[data-object-id="brief"] .object-body').dblclick();
@@ -284,11 +315,13 @@ describe('read-only canvas document', () => {
     await shot(page, 'rail-closed');
   });
   it('preserves the pointer zoom anchor and keeps view state across a live write under one second', async () => {
+    await open();
     const before = await page.evaluate(() => window.canvasView.read());
     await page.mouse.move(700, 450);
     await page.mouse.wheel(0, -150);
     await page.waitForTimeout(100);
     const after = await page.evaluate(() => window.canvasView.read());
+    expect(after.viewport.zoom).toBeGreaterThan(before.viewport.zoom);
     expect((700 - before.viewport.x) / before.viewport.zoom).toBeCloseTo(
       (700 - after.viewport.x) / after.viewport.zoom
     );
@@ -393,6 +426,10 @@ describe('read-only canvas document', () => {
     await page.waitForSelector('#readerView:not([hidden])');
     expect(await page.locator('#readerText').isVisible()).toBe(true);
     expect(await page.locator('#readerText').textContent()).toBe('Unsupported content · future-content');
+    expect(await page.locator('[data-object-id="future-content"] > .resize-handle:visible').count()).toBe(0);
+    expect(
+      await page.evaluate(() => window.canvasEdit.move({ targetIds: ['future-content'], delta: { x: 1, y: 1 } }))
+    ).toBe(false);
     await page.keyboard.press('Escape');
     await page.waitForSelector('#rail', { state: 'hidden' });
     await page.locator('[data-object-id="long"]').dblclick();
@@ -587,13 +624,13 @@ describe('read-only canvas document', () => {
         expect(
           await page.locator('[data-object-id="research"]').evaluate((el) => getComputedStyle(el, '::after').content)
         ).toBe('none');
-        const boundary = await page.locator('[data-object-id="research"]').evaluate((el) => {
+        const boundary = await page.locator('[data-object-id="research"] > .selection-bounds').evaluate((el) => {
           const css = getComputedStyle(el);
           const zoom = window.canvasView.read().viewport.zoom;
           return {
             color: css.borderColor,
             secondary: css.getPropertyValue('--secondary').trim(),
-            width: parseFloat(css.borderWidth) * zoom,
+            width: parseFloat(css.borderWidth) * new DOMMatrix(css.transform).a * zoom,
           };
         });
         expect(boundary.color).toBe(theme === 'dark' ? 'rgb(178, 181, 188)' : 'rgb(80, 82, 79)');
@@ -653,10 +690,7 @@ describe('read-only canvas document', () => {
         );
         await shot(page, `${slug}-outline-focus`);
         if (viewport.width === 390) await page.locator('#closeOutline').click();
-        for (const [id, description] of [
-          ['addTool', 'Adding objects arrives with editing'],
-          ['chatTool', 'Comments arrive with conversations'],
-        ]) {
+        for (const [id, description] of [['chatTool', 'Comments arrive with conversations']]) {
           const control = page.locator(`#${id}`);
           expect(await control.getAttribute('aria-disabled')).toBe('true');
           expect(await control.getAttribute('disabled')).toBeNull();

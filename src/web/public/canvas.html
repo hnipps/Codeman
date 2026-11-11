@@ -37,19 +37,131 @@
       <p>Loading the workspace…</p>
       <button id="retry" hidden>Try again</button>
     </section>
-    <span id="addDescription" class="sr">Adding objects arrives with editing</span>
+    <span id="addDescription" class="sr">Add text, frame, section or sub-canvas</span>
     <span id="commentDescription" class="sr">Comments arrive with conversations</span>
+    <span id="moveToReason" class="sr"></span><span id="arrangeSelectionReason" class="sr"></span
+    ><span id="groupSelectionReason" class="sr"></span><span id="editSelectionReason" class="sr"></span
+    ><span id="deleteSelectionReason" class="sr"></span>
+    <span id="undoDescription" class="sr">Undo an edit saved by this browser. Available after an edit saves.</span>
+    <span id="redoDescription" class="sr">Redo an edit undone by this browser. Available after undo saves.</span>
+    <div id="moveToMenu" class="edit-control" hidden>
+      <label for="moveDestination">Move selection to</label
+      ><select id="moveDestination"></select
+      ><button id="commitMoveTo">Move</button>
+    </div>
+    <div id="arrangeMenu" class="edit-control action-menu" role="menu" aria-label="Arrange selection" hidden>
+      <div class="menu-icons" role="group" aria-label="Align">
+        <button
+          id="alignXStart"
+          role="menuitem"
+          data-align="x-start"
+          aria-label="Align left"
+          title="Align left"
+        ></button
+        ><button
+          id="alignXCenter"
+          role="menuitem"
+          data-align="x-center"
+          aria-label="Centre horizontally"
+          title="Centre horizontally"
+        ></button
+        ><button id="alignXEnd" role="menuitem" data-align="x-end" aria-label="Align right" title="Align right"></button
+        ><button id="alignYStart" role="menuitem" data-align="y-start" aria-label="Align top" title="Align top"></button
+        ><button
+          id="alignYCenter"
+          role="menuitem"
+          data-align="y-center"
+          aria-label="Centre vertically"
+          title="Centre vertically"
+        ></button
+        ><button
+          id="alignYEnd"
+          role="menuitem"
+          data-align="y-end"
+          aria-label="Align bottom"
+          title="Align bottom"
+        ></button>
+      </div>
+      <div class="menu-icons" role="group" aria-label="Distribute">
+        <button
+          id="distributeX"
+          role="menuitem"
+          data-distribute="x"
+          aria-label="Distribute horizontally"
+          title="Distribute horizontally"
+        ></button
+        ><button
+          id="distributeY"
+          role="menuitem"
+          data-distribute="y"
+          aria-label="Distribute vertically"
+          title="Distribute vertically"
+        ></button>
+      </div>
+      <div class="menu-rows" role="group" aria-label="Order">
+        <button role="menuitem" data-order="front">
+          <span>Bring to front</span><span class="key-chord" data-keys="Mod Shift ]"></span></button
+        ><button role="menuitem" data-order="forward">
+          <span>Bring forward</span><span class="key-chord" data-keys="Mod ]"></span></button
+        ><button role="menuitem" data-order="backward">
+          <span>Send backward</span><span class="key-chord" data-keys="Mod ["></span></button
+        ><button role="menuitem" data-order="back">
+          <span>Send to back</span><span class="key-chord" data-keys="Mod Shift ["></span>
+        </button>
+      </div>
+      <div class="menu-rows" role="group" aria-label="Wrap">
+        <button id="wrapFrame" role="menuitem">Wrap in frame</button
+        ><button id="wrapSection" role="menuitem">Wrap in section</button
+        ><button id="backgroundLock" role="menuitem">Lock background only</button>
+      </div>
+    </div>
+    <p id="actionMessage" class="edit-control" role="status" hidden></p>
+    <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
+    <span id="dropName" class="edit-control" hidden></span>
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
-        <button id="selectTool" aria-label="Select" title="Select · V"></button>
-        <button id="panTool" aria-label="Pan" title="Pan · H"></button>
+        <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
+          <span id="selectionCount"></span><button id="moveTo" aria-controls="moveToMenu">Move to…</button>
+          <button id="arrangeSelection" aria-controls="arrangeMenu" aria-expanded="false">Arrange</button>
+          <button id="groupSelection" title="Group · Cmd/Ctrl+G">Group</button
+          ><button id="duplicateSelection" title="Duplicate · Cmd/Ctrl+D">Duplicate</button>
+          <button id="lockSelection">Lock</button><button id="editSelection">Edit</button
+          ><button id="deleteSelection">Delete</button>
+        </div>
         <button
-          id="addTool"
+          id="undoEdit"
+          class="edit-control"
+          aria-label="Undo"
+          aria-describedby="undoDescription"
           aria-disabled="true"
-          aria-label="Add objects"
-          aria-describedby="addDescription"
-          title="Adding objects arrives with editing"
+          title="Undo · Cmd/Ctrl+Z"
         ></button>
+        <button
+          id="redoEdit"
+          class="edit-control"
+          aria-label="Redo"
+          aria-describedby="redoDescription"
+          aria-disabled="true"
+          title="Redo · Shift+Cmd/Ctrl+Z"
+        ></button>
+        <button id="selectTool" aria-label="Select" title="Select · V; drag to select; Alt-drag to lasso"></button>
+        <button id="panTool" aria-label="Pan" title="Pan · H"></button>
+        <div class="add-anchor">
+          <div id="addMenu" class="edit-control" aria-label="Add objects" hidden>
+            <button id="addText">Text</button><button id="addFrame">Frame</button
+            ><button id="addSection">Section</button><button id="addSubcanvas">Sub-canvas</button
+            ><button id="addPaste" title="Paste · Cmd/Ctrl+V">Paste</button>
+          </div>
+          <button
+            id="addTool"
+            aria-expanded="false"
+            aria-pressed="false"
+            aria-controls="addMenu"
+            aria-label="Add objects"
+            aria-describedby="addDescription"
+            title="Add objects"
+          ></button>
+        </div>
         <button
           id="chatTool"
           aria-disabled="true"
@@ -77,6 +189,36 @@
       </div>
       <div id="readerView" class="rail-body" hidden>
         <p id="readerText"></p>
+        <div id="textEdit" class="edit-control" hidden>
+          <label class="sr" id="editorLabel" for="textEditor">Text</label>
+          <textarea id="textEditor" rows="9" spellcheck="true"></textarea>
+        </div>
+        <div id="writeFeedback" class="edit-control">
+          <p id="editStatus" role="status" class="secondary"></p>
+          <div id="conflictActions" hidden>
+            <button id="keepDraft">Keep my draft</button><button id="useServer">Use saved text</button>
+          </div>
+          <div id="retryActions" hidden>
+            <button id="retryEdit">Retry save</button><button id="discardEdit">Discard pending edits</button>
+          </div>
+        </div>
+        <div id="geometryEdit" class="edit-control" hidden>
+          <p id="geometrySpace" class="secondary">Position on canvas</p>
+          <div class="geometry-grid">
+            <label>X<input id="positionX" type="number" step="any" /></label
+            ><label>Y<input id="positionY" type="number" step="any" /></label>
+            <label>Width<input id="sizeWidth" type="number" min="0.01" step="any" /></label
+            ><label>Height<input id="sizeHeight" type="number" min="0.01" step="any" /></label
+            ><label id="rotationField"
+              >Rotation<input
+                id="rotationDegrees"
+                type="number"
+                step="any"
+                aria-label="Rotation in degrees"
+                title="Degrees"
+            /></label>
+          </div>
+        </div>
         <p id="readerCount" class="secondary" hidden></p>
         <dl id="readerMeta"></dl>
         <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button

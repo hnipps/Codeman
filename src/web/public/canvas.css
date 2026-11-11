@@ -188,11 +188,11 @@ kbd {
   text-align: left;
 }
 .object.container {
-  border: calc(1px / var(--zoom, 1)) solid var(--divider);
+  box-shadow: inset 0 0 0 calc(1px / var(--zoom, 1)) var(--divider);
   border-radius: 6px;
 }
 .object.container[data-type='group'] {
-  border-color: transparent;
+  box-shadow: none;
 }
 .object-body {
   height: 100%;
@@ -211,49 +211,64 @@ kbd {
 .object[data-type='text'] {
   font-size: 14px;
 }
-.object.selected:not(.container)::after {
-  content: '';
-  pointer-events: none;
+.group-bounds {
   position: absolute;
-  inset: 0;
-  border: calc(1px / var(--zoom, 1)) solid var(--selection);
+  z-index: -1;
+}
+.selection-bounds,
+#selectionBounds {
+  position: absolute;
+  pointer-events: none;
   border-radius: 4px;
+  transform: scale(calc(1 / var(--zoom, 1)));
+  transform-origin: 0 0;
+}
+.selection-bounds {
+  display: none;
+}
+.object.selected > .selection-bounds,
+.object.keyboard-focus > .selection-bounds {
+  display: block;
+}
+.object.selected > .selection-bounds,
+#selectionBounds {
+  border: 1px solid var(--selection);
+}
+.object.keyboard-focus > .selection-bounds {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .corner {
   display: none;
   position: absolute;
-  width: calc(8px / var(--zoom, 1));
-  height: calc(8px / var(--zoom, 1));
+  width: 8px;
+  height: 8px;
   border: 0 solid var(--selection);
-  border-width: calc(1.5px / var(--zoom, 1)) 0 0 calc(1.5px / var(--zoom, 1));
+  border-width: 1.5px 0 0 1.5px;
   pointer-events: none;
   z-index: 1;
 }
-.selected > .corner {
+.selected > .selection-bounds > .corner {
   display: block;
 }
 .corner:nth-of-type(1) {
-  left: calc(-1px / var(--zoom, 1));
-  top: calc(-1px / var(--zoom, 1));
+  left: -1px;
+  top: -1px;
 }
 .corner:nth-of-type(2) {
-  right: calc(-1px / var(--zoom, 1));
-  top: calc(-1px / var(--zoom, 1));
+  right: -1px;
+  top: -1px;
   transform: rotate(90deg);
 }
 .corner:nth-of-type(3) {
-  left: calc(-1px / var(--zoom, 1));
-  bottom: calc(-1px / var(--zoom, 1));
+  left: -1px;
+  bottom: -1px;
   transform: rotate(-90deg);
 }
 .corner:nth-of-type(4) {
-  right: calc(-1px / var(--zoom, 1));
-  bottom: calc(-1px / var(--zoom, 1));
+  right: -1px;
+  bottom: -1px;
   transform: rotate(180deg);
-}
-.object.keyboard-focus {
-  outline: calc(2px / var(--zoom, 1)) solid var(--accent);
-  outline-offset: calc(4px / var(--zoom, 1));
 }
 #outline {
   position: fixed;
@@ -529,29 +544,6 @@ dd {
     transition: none !important;
   }
 }
-.object.container.selected {
-  border-color: var(--selection);
-}
-.object.selected > .group-bounds {
-  border: calc(1px / var(--zoom, 1)) solid var(--selection);
-}
-.object[data-type='group'].keyboard-focus {
-  outline: none;
-}
-.object.keyboard-focus > .group-bounds {
-  outline: calc(2px / var(--zoom, 1)) solid var(--accent);
-  outline-offset: calc(4px / var(--zoom, 1));
-}
-.group-bounds {
-  z-index: -1;
-}
-.object[data-type='group'] > .corner {
-  display: none;
-}
-.selected > .group-bounds > .corner {
-  display: block;
-}
-
 #dock button[aria-pressed='true']:hover {
   border-color: var(--muted);
 }
@@ -603,9 +595,9 @@ dd {
   background: var(--accent);
   transform: translateX(12px);
 }
+#board:focus,
 #board:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -4px;
+  outline: none;
 }
 #openOutline:hover {
   background: var(--raised);
@@ -626,4 +618,437 @@ dd {
 }
 #retry:active {
   border-color: var(--accent);
+}
+
+#addMenu {
+  z-index: 6;
+  position: absolute;
+  bottom: calc(100% + 13px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 200px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px #0002;
+}
+#addMenu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+#contextRow {
+  width: max-content;
+  white-space: nowrap;
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  z-index: 4;
+}
+#contextRow > .primary {
+  color: var(--action-ink);
+  background: var(--accent);
+}
+#contextRow > .primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--text));
+}
+#selectionCount {
+  font-size: 12px;
+  color: var(--secondary);
+}
+textarea {
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  width: 100%;
+  padding: 12px;
+  resize: vertical;
+  caret-color: var(--accent);
+}
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+#editStatus {
+  margin: 8px 0 12px;
+  min-height: 20px;
+}
+#editStatus[data-state='failed'],
+#editStatus[data-state='refused'],
+#editStatus[data-state='conflict'] {
+  color: var(--text);
+}
+#conflictActions,
+#retryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+#conflictActions button,
+#retryActions button {
+  border-color: var(--divider);
+}
+@media (max-width: 600px) {
+  .edit-control,
+  #addTool {
+    display: none !important;
+  }
+}
+
+#selectionGesture {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 3;
+}
+#selectionGesture path {
+  stroke: var(--selection);
+  stroke-width: 1px;
+  fill: var(--selection);
+  fill-opacity: 0.06;
+}
+#moveToMenu {
+  position: fixed;
+  bottom: 132px;
+  left: 50%;
+  width: 280px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  z-index: 5;
+}
+#moveToMenu label {
+  display: block;
+  margin-bottom: 8px;
+}
+#moveToMenu button {
+  margin-top: 8px;
+}
+#moveHint {
+  position: fixed;
+  bottom: 124px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  padding: 8px 12px;
+  font-size: 12px;
+  z-index: 5;
+}
+#dropName {
+  position: fixed;
+  padding: 4px 8px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 6;
+}
+.object.drop-target {
+  outline: calc(1px / var(--zoom)) solid var(--accent);
+}
+
+.resize-handle {
+  display: none;
+  position: absolute;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  transform: translate(-50%, -50%) scale(calc(1 / var(--zoom)));
+  border: 0;
+  border-radius: 0;
+  z-index: 3;
+  background: transparent;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  inset: 4px;
+  border: 1px solid var(--selection);
+  background: var(--panel);
+}
+#layer:not(.multi-selection) .object.selected > .resize-handle {
+  display: block;
+}
+.resize-handle:hover {
+  background: var(--raised);
+}
+.handle-nw {
+  left: calc(-6px / var(--zoom));
+  top: calc(-6px / var(--zoom));
+  cursor: nwse-resize;
+}
+.handle-n {
+  left: 50%;
+  top: calc(-6px / var(--zoom));
+  cursor: ns-resize;
+}
+.handle-ne {
+  left: calc(100% + 6px / var(--zoom));
+  top: calc(-6px / var(--zoom));
+  cursor: nesw-resize;
+}
+.handle-e {
+  left: calc(100% + 6px / var(--zoom));
+  top: 50%;
+  cursor: ew-resize;
+}
+.handle-se {
+  left: calc(100% + 6px / var(--zoom));
+  top: calc(100% + 6px / var(--zoom));
+  cursor: nwse-resize;
+}
+.handle-s {
+  left: 50%;
+  top: calc(100% + 6px / var(--zoom));
+  cursor: ns-resize;
+}
+.handle-sw {
+  left: calc(-6px / var(--zoom));
+  top: calc(100% + 6px / var(--zoom));
+  cursor: nesw-resize;
+}
+.handle-w {
+  left: calc(-6px / var(--zoom));
+  top: 50%;
+  cursor: ew-resize;
+}
+.geometry-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.geometry-grid label {
+  color: var(--secondary);
+  font-size: 12px;
+}
+.geometry-grid input {
+  color: var(--text);
+  margin-top: 4px;
+  font-size: 14px;
+}
+@media (max-width: 600px) {
+  .resize-handle {
+    display: none !important;
+  }
+}
+
+.object[data-type='group'].drop-target {
+  outline: none;
+}
+.object[data-type='group'].drop-target > .selection-bounds {
+  display: block;
+  outline: 1px solid var(--accent);
+}
+.object.selection-preview > .selection-bounds {
+  display: block;
+  border: 1px solid var(--selection);
+}
+textarea[readonly] {
+  color: var(--secondary);
+  border-color: var(--divider);
+}
+
+.dock-area {
+  z-index: 5;
+}
+
+.object.container > .object-title {
+  z-index: 10001;
+}
+.resize-handle:disabled::after {
+  border-color: var(--divider);
+  background: var(--panel);
+}
+
+#dock {
+  position: relative;
+}
+.add-anchor {
+  position: relative;
+}
+@media (max-width: 600px) {
+  #undoEdit,
+  #redoEdit,
+  .add-anchor {
+    display: none;
+  }
+}
+
+.object.container > .selection-bounds {
+  border-radius: 6px;
+}
+
+.action-menu {
+  position: fixed;
+  z-index: 12;
+  bottom: 124px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 4px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px #0002;
+}
+.action-menu > div + div {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--divider);
+}
+.menu-icons {
+  display: flex;
+  gap: 4px;
+}
+.menu-icons button {
+  width: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+.menu-rows button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+.menu-rows .key-chord {
+  gap: 2px;
+}
+.action-menu button[aria-disabled='true'] svg {
+  opacity: 0.5;
+}
+#actionMessage {
+  position: fixed;
+  z-index: 15;
+  bottom: 124px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 640px;
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  font-size: 12px;
+}
+#arrangeMenu:not([hidden]) ~ #actionMessage {
+  bottom: 84px;
+}
+.multi-selection .object.selected > .selection-bounds {
+  border-color: color-mix(in srgb, var(--selection) 50%, transparent);
+}
+.multi-selection .object.selected > .selection-bounds > .corner {
+  opacity: 0.5;
+}
+#selectionBounds > .resize-handle {
+  display: block;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+#selectionBounds > .handle-nw {
+  left: 0;
+  top: 0;
+}
+#selectionBounds > .handle-n {
+  left: 50%;
+  top: 0;
+}
+#selectionBounds > .handle-ne {
+  left: 100%;
+  top: 0;
+}
+#selectionBounds > .handle-e {
+  left: 100%;
+  top: 50%;
+}
+#selectionBounds > .handle-se {
+  left: 100%;
+  top: 100%;
+}
+#selectionBounds > .handle-s {
+  left: 50%;
+  top: 100%;
+}
+#selectionBounds > .handle-sw {
+  left: 0;
+  top: 100%;
+}
+#selectionBounds > .handle-w {
+  left: 0;
+  top: 50%;
+}
+.lock-mark {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  color: var(--secondary);
+}
+.lock-mark path {
+  vector-effect: non-scaling-stroke;
+}
+.selection-bounds > .lock-mark {
+  left: calc(100% + 2px);
+  top: min(calc(-20px * var(--zoom, 1)), -18px);
+}
+.object.locked:hover:not(:has(.object:hover)) > .selection-bounds {
+  display: block;
+}
+.object:not(.selected):not(.keyboard-focus) > .selection-bounds > .lock-mark {
+  opacity: 0.6;
+}
+.alignment-guide {
+  position: fixed;
+  z-index: 2;
+  pointer-events: none;
+  background: var(--accent);
+}
+.alignment-guide[data-axis='x'] {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.alignment-guide[data-axis='y'] {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+#selectionBounds {
+  z-index: 10002;
+}
+.tree-row {
+  position: relative;
+}
+.tree-row.locked {
+  padding-right: 28px;
+}
+.tree-row > .lock-mark {
+  right: 8px;
+  top: calc(50% - 6px);
 }

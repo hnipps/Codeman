@@ -1,3 +1,4 @@
+import { wheelFactor } from '../packages/canvas/src/viewport.js';
 import { describe, expect, it } from 'vitest';
 import {
   canvasToScreen,
@@ -147,11 +148,47 @@ describe('read view commands and hierarchy', () => {
         ],
       }
     );
-    expect(result).toEqual({ state: { seq: 5, objects: [extended] }, unreadable: false });
+    expect(result).toEqual({ state: { seq: 5, textAuthors: {}, objects: [extended] }, unreadable: false });
     expect(searchText(result.state.objects[0]).toLowerCase()).toContain('findme [a.*]');
     expect(readable({ ...object('content'), content: { type: 'future-content', script: '<script>' } })).toBe(
       'Unsupported content · future-content'
     );
+  });
+  it('attributes text conflicts to the change writer and retains that attribution across unrelated moves', () => {
+    const note = { ...object('note'), content: { type: 'text', text: 'Original' } };
+    const changed = { ...note, content: { type: 'text', text: 'Changed' } };
+    const updated = replayCatchUp(
+      { seq: 1, objects: [note] },
+      {
+        seq: 2,
+        operations: [
+          {
+            seq: 2,
+            kind: 'update',
+            author: { kind: 'agent', sessionId: 'review-writer' },
+            prev: [{ objectId: 'note', after: changed }],
+          },
+        ],
+      }
+    ).state;
+    expect(updated.textAuthors).toEqual({ note: 'Agent review-writer' });
+    const moved = replayCatchUp(updated, {
+      seq: 3,
+      operations: [
+        {
+          seq: 3,
+          kind: 'move',
+          author: { kind: 'human', userId: 'another-writer' },
+          prev: [{ objectId: 'note', after: { ...changed, position: { x: 20, y: 30 } } }],
+        },
+      ],
+    }).state;
+    expect(moved.textAuthors).toEqual(updated.textAuthors);
+    const unknownWriter = replayCatchUp(moved, {
+      seq: 4,
+      operations: [{ seq: 4, kind: 'update', prev: [{ objectId: 'note', after: note }] }],
+    }).state;
+    expect(unknownWriter.textAuthors).toEqual({});
   });
   it('keeps readable records on either side of a malformed operation and requests snapshot recovery', () => {
     const result = replayCatchUp(
@@ -168,4 +205,10 @@ describe('read view commands and hierarchy', () => {
     expect(result.unreadable).toBe(true);
     expect(result.state.objects.map((o) => o.id)).toEqual(['before', 'after']);
   });
+});
+
+it('normalizes wheel line/page units to pixels', () => {
+  expect(wheelFactor(3, 1)).toBe(wheelFactor(48, 0));
+  expect(wheelFactor(1, 2, 900)).toBe(wheelFactor(900, 0));
+  expect(wheelFactor(-3, 1)).toBeGreaterThan(1.05);
 });

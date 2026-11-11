@@ -49,6 +49,35 @@ async function harness(username = 'user-a', role: 'user' | 'admin' = 'user') {
 }
 
 describe('canvas routes', () => {
+  it('deduplicates a compound request after changed state and refuses identity reuse with different arguments', async () => {
+    const workspace = workspaceForCase('compound-retry', 'user-a');
+    const { app, port } = await harness();
+    try {
+      const store = (await port.canvasStores()).get(workspace.id);
+      store.append([create('a'), create('b')], human);
+      const payload = {
+        requestId: crypto.randomUUID(),
+        tool: 'canvas_arrange',
+        arguments: { action: 'group', targetIds: ['a', 'b'], groupId: 'g', label: 'Group', parentId: null },
+      };
+      const first = await app.inject({ method: 'POST', url: `/api/canvas/${workspace.id}/command`, payload });
+      expect(first.statusCode).toBe(200);
+      const log = store.operations();
+      const replay = await app.inject({ method: 'POST', url: `/api/canvas/${workspace.id}/command`, payload });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().data.sequences).toEqual(first.json().data.sequences);
+      expect(store.operations()).toEqual(log);
+      const reused = await app.inject({
+        method: 'POST',
+        url: `/api/canvas/${workspace.id}/command`,
+        payload: { ...payload, arguments: { ...payload.arguments, label: 'Changed' } },
+      });
+      expect(reused.statusCode).toBe(409);
+      expect(store.operations()).toEqual(log);
+    } finally {
+      await app.close();
+    }
+  });
   it.each(['group', 'restore', 'redo'] as const)(
     'refuses %s history with later agent descendants atomically',
     async (variant) => {
@@ -506,5 +535,177 @@ describe('canvas routes', () => {
         .statusCode
     ).toBe(404);
     await app.close();
+  });
+});
+
+describe('canvas command acknowledgement and no-ops', () => {
+  async function seeded() {
+    const workspace = workspaceForCase('noop-case', 'user-a');
+    const h = await harness();
+    const store = (await h.port.canvasStores()).get(workspace.id);
+    const ordered = (id: string, order: number) => {
+      const command = create(id);
+      if (command.kind === 'create') command.patch.order = order;
+      return command;
+    };
+    store.append([ordered('a', 0), ordered('b', 1)], human);
+    return { ...h, store, base: `/api/canvas/${workspace.id}` };
+  }
+  const logBytes = (store: { logPath: string }) => readFileSync(store.logPath);
+  async function textSaveSucceeds(app: Awaited<ReturnType<typeof harness>>['app'], base: string, revision: number) {
+    const save = await app.inject({
+      method: 'POST',
+      url: `${base}/ops`,
+      payload: {
+        operations: [
+          {
+            kind: 'update',
+            opId: crypto.randomUUID(),
+            objectId: 'a',
+            expectedRevision: revision,
+            patch: { content: { type: 'text', text: 'Saved after a no-op' } },
+          },
+        ],
+      },
+    });
+    expect(save.statusCode).toBe(200);
+  }
+  it('answers Send backward on the backmost object as a no-op that appends nothing', async () => {
+    const { app, store, base } = await seeded();
+    try {
+      const before = store.read().objects.a;
+      const log = logBytes(store);
+      const payload = {
+        requestId: crypto.randomUUID(),
+        tool: 'canvas_arrange',
+        arguments: { action: 'order', targetIds: ['a'], placement: 'backward' },
+      };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await app.inject({ method: 'POST', url: `${base}/command`, payload });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().data).toMatchObject({ noop: true, sequences: [], seq: 2 });
+        expect(logBytes(store)).toEqual(log);
+      }
+      expect(store.read().objects.a.revision).toBe(before.revision);
+      expect(store.read().objects.a.updatedAt).toBe(before.updatedAt);
+      expect(store.read().seq).toBe(2);
+      await textSaveSucceeds(app, base, before.revision);
+    } finally {
+      await app.close();
+    }
+  });
+  it('answers a drag whose snap correction returns to the start as a no-op', async () => {
+    const { app, store, base } = await seeded();
+    try {
+      const before = store.read().objects.a;
+      const log = logBytes(store);
+      const response = await app.inject({
+        method: 'POST',
+        url: `${base}/command`,
+        payload: {
+          requestId: crypto.randomUUID(),
+          tool: 'canvas_transform',
+          arguments: {
+            targetIds: ['a'],
+            space: 'world',
+            anchor: { x: 0, y: 0 },
+            translation: { x: 0, y: 0 },
+            scale: { width: 1, height: 1 },
+            rotation: 0,
+          },
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data).toMatchObject({ noop: true, sequences: [] });
+      expect(logBytes(store)).toEqual(log);
+      expect(store.read().objects.a.revision).toBe(before.revision);
+      await textSaveSucceeds(app, base, before.revision);
+    } finally {
+      await app.close();
+    }
+  });
+  it('refuses a plain edit whose patch changes nothing instead of bumping the revision', async () => {
+    const { app, store, base } = await seeded();
+    try {
+      const log = logBytes(store);
+      for (const kind of ['update', 'revert']) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `${base}/ops`,
+          payload: { operations: [{ kind, opId: crypto.randomUUID(), objectId: 'a', patch: {} }] },
+        });
+        expect(response.statusCode).toBe(409);
+      }
+      expect(logBytes(store)).toEqual(log);
+    } finally {
+      await app.close();
+    }
+  });
+  it('writes one author revert batch for two sends with the same request id', async () => {
+    const { app, store, base } = await seeded();
+    try {
+      store.append([{ kind: 'move', opId: 'moved', objectId: 'b', patch: { position: { x: 90, y: 90 } } }], human);
+      const payload = { requestId: crypto.randomUUID(), tool: 'canvas_history', arguments: { action: 'revert' } };
+      const first = await app.inject({ method: 'POST', url: `${base}/command`, payload });
+      expect(first.statusCode).toBe(200);
+      const length = store.operations().length;
+      const second = await app.inject({ method: 'POST', url: `${base}/command`, payload });
+      expect(second.statusCode).toBe(200);
+      expect(second.json().data.sequences).toEqual(first.json().data.sequences);
+      expect(store.operations()).toHaveLength(length);
+    } finally {
+      await app.close();
+    }
+  });
+  it('caps each history answer by records and bytes and pages to the end with a cursor', async () => {
+    const { app, store, base } = await seeded();
+    try {
+      for (let batch = 0; batch < 5; batch++)
+        store.append(
+          Array.from({ length: 1000 }, (_, i) => ({
+            kind: 'move' as const,
+            opId: `bulk-${batch}-${i}`,
+            objectId: 'b',
+            patch: { position: { x: batch * 1000 + i, y: 0 } },
+          })),
+          human
+        );
+      const seen: number[] = [];
+      let since = 0;
+      let pages = 0;
+      let last: Record<string, unknown> = {};
+      for (;;) {
+        const response = await app.inject({ url: `${base}/ops?since=${since}` });
+        expect(response.statusCode).toBe(200);
+        expect(response.body.length).toBeLessThanOrEqual(1024 * 1024 + 4096);
+        last = response.json().data;
+        const operations = last.operations as { seq: number }[];
+        expect(operations.length).toBeLessThanOrEqual(500);
+        seen.push(...operations.map((o) => o.seq));
+        pages++;
+        if (!last.more) break;
+        expect(last.seq).toBeUndefined();
+        since = last.next as number;
+      }
+      expect(pages).toBeGreaterThan(1);
+      expect(seen).toEqual(Array.from({ length: 5002 }, (_, i) => i + 1));
+      expect(last.seq).toBe(5002);
+      const big = 'x'.repeat(400_000);
+      store.append(
+        [0, 1, 2, 3].map((i) => ({
+          kind: 'update' as const,
+          opId: `big-${i}`,
+          objectId: 'a',
+          patch: { content: { type: 'text' as const, text: `${big}${i}` } },
+        })),
+        human
+      );
+      const page = await app.inject({ url: `${base}/ops?since=5002` });
+      expect(page.json().data.operations.length).toBeGreaterThanOrEqual(1);
+      expect(page.json().data.operations.length).toBeLessThan(4);
+      expect(page.json().data.more).toBe(true);
+    } finally {
+      await app.close();
+    }
   });
 });

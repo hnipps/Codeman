@@ -69,7 +69,13 @@ const ReplayHeaderSchema = z
   .object({ seq: z.number().int().positive(), kind: z.string(), opId: IdSchema })
   .passthrough();
 type FutureOperation = z.infer<typeof ReplayHeaderSchema>;
-export type AppendResult = { ok: true; seq: number; operations: Operation[] } | Extract<BatchResult, { ok: false }>;
+export type AppendResult =
+  | { ok: true; seq: number; operations: Operation[]; sequences: number[] }
+  | Extract<BatchResult, { ok: false }>;
+/** One `/ops` answer holds at most this many records, and this many serialized bytes unless one record is larger. */
+export const MAX_OPS_PAGE_RECORDS = 500;
+export const MAX_OPS_PAGE_BYTES = 1024 * 1024;
+export type OperationsPage = { records: string[]; more: boolean; next: number };
 
 function replayInto(state: CanvasState, op: Operation): void {
   for (const change of op.prev) {
@@ -86,6 +92,7 @@ export class CanvasStore {
   private state: CanvasState = emptyState();
   private log: Operation[] = [];
   private futureLog: FutureOperation[] = [];
+  private ordered: (Operation | FutureOperation)[] = [];
   private seen = new Map<string, { seq: number; author?: Author }>();
   private tornOffset: number | undefined;
   readonly logPath: string;
@@ -100,10 +107,55 @@ export class CanvasStore {
   read(): CanvasState {
     return structuredClone(this.state);
   }
+  get seq(): number {
+    return this.state.seq;
+  }
+  private firstAfter(since: number): number {
+    let low = 0;
+    let high = this.ordered.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (this.ordered[mid].seq > since) high = mid;
+      else low = mid + 1;
+    }
+    return low;
+  }
   operations(since = 0): (Operation | FutureOperation)[] {
+    return structuredClone(this.ordered.slice(this.firstAfter(since)));
+  }
+  /** Records after `since`, serialized once, capped by MAX_OPS_PAGE_RECORDS and MAX_OPS_PAGE_BYTES. */
+  page(since: number): OperationsPage {
+    const records: string[] = [];
+    let bytes = 0;
+    let index = this.firstAfter(since);
+    let next = since;
+    for (; index < this.ordered.length && records.length < MAX_OPS_PAGE_RECORDS; index++) {
+      const json = JSON.stringify(this.ordered[index]);
+      const size = Buffer.byteLength(json) + 1;
+      if (records.length && bytes + size > MAX_OPS_PAGE_BYTES) break;
+      records.push(json);
+      bytes += size;
+      next = this.ordered[index].seq;
+    }
+    return { records, more: index < this.ordered.length, next };
+  }
+  /** Copies of the records at these sequences, for history commands that must not clone the whole log. */
+  records(sequences: number[]): (Operation | FutureOperation)[] {
     return structuredClone(
-      [...this.log, ...this.futureLog].filter((op) => op.seq > since).sort((a, b) => a.seq - b.seq)
+      [...new Set(sequences)].flatMap((seq) => {
+        const record = this.ordered[this.firstAfter(seq - 1)];
+        return record?.seq === seq ? [record] : [];
+      })
     );
+  }
+  /** Sequences already written under a request-id prefix, read from the opId index. */
+  sequencesWithPrefix(prefix: string): { opId: string; seq: number }[] {
+    const found: { opId: string; seq: number }[] = [];
+    for (const [opId, entry] of this.seen) if (opId.startsWith(prefix)) found.push({ opId, seq: entry.seq });
+    return found.sort((a, b) => a.seq - b.seq);
+  }
+  revertCommands(target: Author): Command[] {
+    return revertAuthor(this.state, this.log, target);
   }
   reload(): void {
     let state = emptyState();
@@ -169,6 +221,7 @@ export class CanvasStore {
     this.state = state;
     this.log = log;
     this.futureLog = futureLog;
+    this.ordered = [...log, ...futureLog].sort((a, b) => a.seq - b.seq);
     this.seen = seen;
   }
   append(input: Command[], author: Author): AppendResult {
@@ -194,7 +247,12 @@ export class CanvasStore {
             },
           ],
         };
-      return { ok: true, seq: Math.max(0, ...duplicates.map((d) => d?.seq ?? 0)), operations: [] };
+      return {
+        ok: true,
+        seq: Math.max(0, ...duplicates.map((d) => d?.seq ?? 0)),
+        operations: [],
+        sequences: [...new Set(duplicates.map((d) => d?.seq ?? 0))],
+      };
     }
     if (new Set(commands.map((c) => c.opId)).size !== commands.length)
       return {
@@ -209,7 +267,7 @@ export class CanvasStore {
       };
     const result = validateBatch(this.state, commands, author, Date.now());
     if (!result.ok) return result;
-    if (!result.operations.length) return { ok: true, seq: this.state.seq, operations: [] };
+    if (!result.operations.length) return { ok: true, seq: this.state.seq, operations: [], sequences: [] };
     requireCanvasWriter();
     mkdirSync(dirname(this.logPath), { recursive: true, mode: 0o700 });
     if (this.tornOffset !== undefined) truncateSync(this.logPath, this.tornOffset);
@@ -227,11 +285,17 @@ export class CanvasStore {
     this.tornOffset = undefined;
     for (const operation of result.operations) replayInto(this.state, operation);
     this.log.push(...result.operations);
+    this.ordered.push(...result.operations);
     for (const op of result.operations) this.seen.set(op.opId, { seq: op.seq, author: op.author });
-    return { ok: true, seq: this.state.seq, operations: structuredClone(result.operations) };
+    return {
+      ok: true,
+      seq: this.state.seq,
+      operations: structuredClone(result.operations),
+      sequences: result.operations.map((op) => op.seq),
+    };
   }
   revert(target: Author, actor: Author): AppendResult {
-    return this.appendExpanded(revertAuthor(this.state, this.log, target), actor);
+    return this.appendExpanded(this.revertCommands(target), actor);
   }
   snapshot(): void {
     requireCanvasWriter();

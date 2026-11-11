@@ -1113,6 +1113,12 @@ export class WebServer extends EventEmitter {
           .send('Canvas bundle is missing. Run npm run build:canvas, then reload this page.');
       let html = readFileSync(join(__dirname, 'public', 'canvas.html'), 'utf8');
       html = html.replace('<base href="/" />', `<base href="${escapeHtmlText(joinBasePath(this.basePath, '/'))}" />`);
+      // The canvas scopes its local queue, drafts and clipboard to this viewer.
+      const viewer = isMultiUserMode() ? getAuthUser(req).username : '@single';
+      html = html.replace(
+        '<meta charset="utf-8" />',
+        `<meta charset="utf-8" />\n    <meta name="codeman-canvas-viewer" content="${escapeHtmlText(viewer).replaceAll('"', '&quot;')}" />`
+      );
       return reply
         .header('Cache-Control', 'no-cache')
         .type('text/html; charset=utf-8')

@@ -219,6 +219,12 @@ function validateBatchUnchecked(
     )
       return reject('INVALID', 'Restore a deleted object before editing it');
     if (current?.deletedAt === null && command.kind === 'restore') return reject('INVALID', 'Object is not deleted');
+    // An empty patch would bump the revision and stale every other writer's expectedRevision for no change.
+    if (
+      (command.kind === 'update' || command.kind === 'revert') &&
+      Object.values(command.patch).every((value) => value === undefined)
+    )
+      return reject('INVALID', 'The edit changes nothing');
     const changes: Operation['prev'] = [];
     let comment: Operation['comment'];
     let removedComment: Operation['removedComment'];

@@ -1,14 +1,17 @@
+import { wheelFactor } from './viewport.js';
+import { DesktopEditor } from './edit.js';
 import { joinBasePath } from '../../../src/config/base-path.js';
 import { command, initialView, type ViewCommand, type ViewState } from './commands.js';
 import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
-import { shortcutAllowed, shortcuts } from './shortcuts.js';
+import { shortcutAllowed, shortcuts, editShortcuts } from './shortcuts.js';
 import { outline, siblings, worldBounds } from './tree.js';
 import { hit, union, type Point } from './viewport.js';
 
 declare global {
   interface Window {
+    canvasEdit: ReturnType<DesktopEditor['adapter']>;
     canvasView: { dispatch: (action: ViewCommand) => void; read: () => ViewState };
   }
 }
@@ -38,6 +41,8 @@ const mobile = matchMedia('(max-width: 600px)');
 state = command(state, { kind: 'outline', open: !mobile.matches }, objects);
 const renderer = new Renderer(layer, tree, choose);
 const icons: Record<string, string> = {
+  undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',
+  redoEdit: 'M13 4l4 4-4 4M17 8H9a5 5 0 0 0-5 5v3',
   selectTool: 'M5 3l12 8-6 1-3 6z',
   panTool:
     'M7 10V5a1 1 0 0 1 2 0v4-1-5a1 1 0 0 1 2 0v5-1-3a1 1 0 0 1 2 0v4-1-2a1 1 0 0 1 2 0v6c0 4-2 6-5 6-2 0-3-1-4-3l-3-5a1 1 0 0 1 2-1z',
@@ -47,6 +52,14 @@ const icons: Record<string, string> = {
   closeOutline: 'M13 4l-6 6 6 6',
   openOutline: 'M3 4h14v12H3zM7 4v12',
   closeRail: 'M5 5l10 10M15 5L5 15',
+  alignXStart: 'M3 3v14M6 5h9v3H6zM6 12h6v3H6z',
+  alignXCenter: 'M10 3v14M5 5h10v3H5zM7 12h6v3H7z',
+  alignXEnd: 'M17 3v14M5 5h9v3H5zM8 12h6v3H8z',
+  alignYStart: 'M3 3h14M5 6h3v9H5zM12 6h3v6h-3z',
+  alignYCenter: 'M3 10h14M5 5h3v10H5zM12 7h3v6h-3z',
+  alignYEnd: 'M3 17h14M5 5h3v9H5zM12 8h3v6h-3z',
+  distributeX: 'M3 4v12M17 4v12M8 6h4v8H8z',
+  distributeY: 'M4 3h12M4 17h12M6 8h8v4H6z',
 };
 for (const [id, path] of Object.entries(icons)) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -164,6 +177,7 @@ function paint(): void {
     pendingFocus = null;
   }
   railDepth = state.rail.length;
+  editor.paint();
 }
 let readerObject: ViewObject | undefined,
   readerFocus: string | null = null;
@@ -223,7 +237,7 @@ const keyNames: Record<string, string> = {
   '↓': 'Down arrow',
   '⌘': 'Command',
 };
-for (const [action, alternatives] of shortcuts) {
+for (const [action, alternatives] of [...shortcuts, ...(mobile.matches ? [] : editShortcuts)]) {
   const row = document.createElement('div'),
     title = document.createElement('span'),
     hints = document.createElement('span');
@@ -249,6 +263,14 @@ for (const [action, alternatives] of shortcuts) {
   row.append(title, hints);
   node('keyRows').append(row);
 }
+for (const hint of document.querySelectorAll<HTMLElement>('.action-menu [data-keys]')) {
+  hint.setAttribute('aria-hidden', 'true');
+  for (const key of hint.dataset.keys?.split(' ') ?? []) {
+    const cap = document.createElement('kbd');
+    cap.textContent = key === 'Mod' ? modifier : key;
+    hint.append(cap);
+  }
+}
 input('keysSearch').oninput = () => {
   for (const row of node('keyRows').children)
     if (row instanceof HTMLElement)
@@ -272,7 +294,7 @@ button('closeRail').onclick = () => dispatch({ kind: 'escape' });
 for (const id of ['keys', 'outlineKeys']) button(id).onclick = () => dispatch({ kind: 'rail', view: 'keys' });
 button('letters').onclick = () => dispatch({ kind: 'letters', enabled: !state.letters });
 button('selectTool').onclick = () => dispatch({ kind: 'tool', tool: 'select' });
-for (const id of ['addTool', 'chatTool'])
+for (const id of ['chatTool'])
   button(id).onclick = () => {
     node('announcement').textContent = '';
     requestAnimationFrame(() => {
@@ -472,16 +494,34 @@ board.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
-    dispatch({ kind: 'zoom', anchor: { x: e.clientX, y: e.clientY }, factor: Math.exp(-e.deltaY * 0.0015) });
+    dispatch({
+      kind: 'zoom',
+      anchor: { x: e.clientX, y: e.clientY },
+      factor: wheelFactor(e.deltaY, e.deltaMode, innerHeight),
+    });
   },
   { passive: false }
 );
-const sync = new CanvasSync(
+const editor = new DesktopEditor({
   url,
-  workspaceId,
-  (snapshot) => {
-    objects = snapshot.objects;
+  workspace: workspaceId,
+  viewer: document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single',
+  mobile,
+  view: () => state,
+  objects: () => objects,
+  dispatch,
+  focusMode: (value) => {
+    keyboard = value;
+    if (!frame) frame = requestAnimationFrame(paint);
+  },
+  display: (displayed) => {
+    objects = displayed;
+    const lostFocus =
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.matches('[data-object-id]') &&
+      !objects.some((o) => o.id === document.activeElement?.getAttribute('data-object-id'));
     renderer.objects(objects);
+    if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
     if (initial) {
       initial = false;
@@ -494,11 +534,18 @@ const sync = new CanvasSync(
     if (!objects.length) {
       node('state').querySelector('h1')!.textContent = 'A place for your work';
       node('state').querySelector('p')!.textContent =
-        'This canvas holds the ideas and references for your project. Ask an agent in this case to write to the canvas; editing by hand arrives in a later release.';
+        'A place for the ideas and references for your project. Add an object to get started.';
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
   },
+});
+window.canvasEdit = editor.adapter();
+const sync = new CanvasSync(
+  url,
+  workspaceId,
+  (snapshot) => editor.receive(snapshot),
   (status) => {
+    editor.online(status === 'ready');
     node('notice').hidden = status !== 'offline';
     node('notice').textContent = 'Connection lost. Your canvas is still here; reconnecting…';
     if (status === 'error' || status === 'loading') {

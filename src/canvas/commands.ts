@@ -1,6 +1,6 @@
 /** @fileoverview Shared compound canvas commands and machine-readable capabilities. */
 import { z } from 'zod';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import {
   IdSchema,
   PositionSchema,
@@ -40,10 +40,18 @@ export const ArrangeSchema = z.discriminatedUnion('action', [
       groupId: IdSchema,
       label: z.string().max(8192),
       parentId: IdSchema.nullable(),
+      containerType: z.enum(['group', 'frame', 'section']).optional(),
     })
     .strict(),
   z.object({ action: z.literal('ungroup'), targetIds: targets }).strict(),
-  z.object({ action: z.enum(['reparent', 'nest']), targetIds: targets, parentId: IdSchema.nullable() }).strict(),
+  z
+    .object({
+      action: z.enum(['reparent', 'nest']),
+      targetIds: targets,
+      parentId: IdSchema.nullable(),
+      translation: PositionSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       action: z.literal('order'),
@@ -258,6 +266,20 @@ function moveWorld(state: CanvasState, o: CanvasObject, x: number, y: number): E
     },
   };
 }
+export function deferCreatedLocks(commands: Command[]): Command[] {
+  const locks: Command[] = [];
+  const creates = commands.map((command) => {
+    if (command.kind !== 'create' || !command.patch.lock) return command;
+    locks.unshift({
+      kind: 'lock',
+      objectId: command.objectId,
+      opId: `lock_${createHash('sha256').update(command.opId).digest('hex')}`,
+      patch: { mode: command.patch.lock },
+    });
+    return { ...command, patch: { ...command.patch, lock: null } };
+  });
+  return [...creates, ...locks];
+}
 export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>): Command[] {
   const roots = normalizeTargets(state, input.targetIds);
   const reparent = (o: CanvasObject, parentId: string | null, order = o.order): Command => ({
@@ -266,7 +288,25 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
     patch: { parentId, order, preserveWorld: true },
   });
   switch (input.action) {
-    case 'group':
+    case 'group': {
+      const type = input.containerType ?? 'group';
+      const boxes =
+        type === 'group'
+          ? [{ x: 0, y: 0, width: 0, height: 0 }]
+          : roots.map((o) => {
+              const box = bounds(state, o.id);
+              if ('hierarchy' in box) return refuse(o.id, 'CYCLE', 'Cyclic hierarchy is read-only');
+              return box;
+            });
+      const x = Math.min(...boxes.map((b) => b.x)) - 24;
+      const y = Math.min(...boxes.map((b) => b.y)) - 48;
+      const parent =
+        input.parentId === null || type === 'group'
+          ? { x: 0, y: 0, rotation: 0 }
+          : state.objects[input.parentId]
+            ? worldTransform(state, input.parentId)
+            : refuse(input.parentId, 'NOT_FOUND', 'Destination identity is unavailable');
+      const angle = (-parent.rotation * Math.PI) / 180;
       return [
         CommandSchema.parse({
           ...op(input.groupId),
@@ -274,15 +314,39 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
           patch: {
             parentId: input.parentId,
             order: Math.min(...roots.map((o) => o.order)),
-            position: { x: 0, y: 0 },
-            content: { type: 'group', label: input.label },
+            position:
+              type === 'group'
+                ? { x: 0, y: 0 }
+                : {
+                    x: (x - parent.x) * Math.cos(angle) - (y - parent.y) * Math.sin(angle),
+                    y: (x - parent.x) * Math.sin(angle) + (y - parent.y) * Math.cos(angle),
+                  },
+            rotation: type === 'group' ? 0 : -parent.rotation,
+            ...(type === 'group'
+              ? {}
+              : {
+                  size: {
+                    width: Math.max(...boxes.map((b) => b.x + b.width)) - x + 24,
+                    height: Math.max(...boxes.map((b) => b.y + b.height)) - y + 24,
+                  },
+                }),
+            content: { type, label: input.label },
           },
         }),
         ...roots.map((o) => reparent(o, input.groupId)),
       ];
+    }
     case 'reparent':
     case 'nest':
-      return roots.map((o) => reparent(o, input.parentId));
+      return roots.flatMap((o) => {
+        const world = worldTransform(state, o.id);
+        return [
+          ...(input.translation
+            ? [moveWorld(state, o, world.x + input.translation.x, world.y + input.translation.y)]
+            : []),
+          reparent(o, input.parentId),
+        ];
+      });
     case 'ungroup':
       return roots.flatMap((o) => {
         if (o.type !== 'group') return refuse(o.id, 'INVALID', 'Ungroup requires an auto-bounded group');
@@ -299,23 +363,25 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
         .filter((o) => o.deletedAt === null);
       const ids = new Map(all.map((o) => [o.id, randomUUID()]));
       for (const o of all) if (!isKnownObject(o)) refuse(o.id, 'INVALID', 'Unknown object type is read-only');
-      return all.map((o) =>
-        CommandSchema.parse({
-          ...op(ids.get(o.id)!),
-          kind: 'create',
-          patch: {
-            parentId: ids.get(o.parentId ?? '') ?? o.parentId,
-            order: o.order,
-            position: {
-              x: o.position.x + (ids.has(o.parentId ?? '') ? 0 : input.offset.x),
-              y: o.position.y + (ids.has(o.parentId ?? '') ? 0 : input.offset.y),
+      return deferCreatedLocks(
+        all.map((o) =>
+          CommandSchema.parse({
+            ...op(ids.get(o.id)!),
+            kind: 'create',
+            patch: {
+              parentId: ids.get(o.parentId ?? '') ?? o.parentId,
+              order: o.order,
+              position: {
+                x: o.position.x + (ids.has(o.parentId ?? '') ? 0 : input.offset.x),
+                y: o.position.y + (ids.has(o.parentId ?? '') ? 0 : input.offset.y),
+              },
+              size: o.size,
+              rotation: o.rotation,
+              lock: o.lock,
+              content: knownContentFields(o.content),
             },
-            size: o.size,
-            rotation: o.rotation,
-            lock: o.lock,
-            content: knownContentFields(o.content),
-          },
-        })
+          })
+        )
       );
     }
     case 'order': {
@@ -366,23 +432,28 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
             (end - start - entries.reduce((n, e) => n + e.box[extent], 0)) / Math.max(1, entries.length - 1))
           : 0;
       let cursor = start;
-      return entries.map(({ o, box, world }) => {
-        const target =
-          input.action === 'align'
-            ? input.anchor === 'start'
-              ? start
-              : input.anchor === 'end'
-                ? end - box[extent]
-                : (start + end - box[extent]) / 2
-            : cursor;
-        cursor += box[extent] + gap;
-        return moveWorld(
-          state,
-          o,
-          world.x + (axis === 'x' ? target - box.x : 0),
-          world.y + (axis === 'y' ? target - box.y : 0)
-        );
-      });
+      return entries
+        .map(({ o, box, world }) => {
+          const target =
+            input.action === 'align'
+              ? input.anchor === 'start'
+                ? start
+                : input.anchor === 'end'
+                  ? end - box[extent]
+                  : (start + end - box[extent]) / 2
+              : cursor;
+          cursor += box[extent] + gap;
+          return moveWorld(
+            state,
+            o,
+            world.x + (axis === 'x' ? target - box.x : 0),
+            world.y + (axis === 'y' ? target - box.y : 0)
+          );
+        })
+        .filter((move) => {
+          const current = state.objects[move.objectId].position;
+          return move.patch.position.x !== current.x || move.patch.position.y !== current.y;
+        });
     }
   }
 }

@@ -1,3 +1,4 @@
+import { targets, selectRegion } from './select.js';
 import type { ViewObject } from './model.js';
 import { nextFocus, siblings } from './tree.js';
 import { pan, zoomAt, pinch, fit, type Point, type Rect, type Viewport } from './viewport.js';
@@ -21,6 +22,7 @@ export type ViewCommand =
   | { kind: 'navigate'; step: number }
   | { kind: 'selection'; ids: string[] }
   | { kind: 'toggle'; id: string }
+  | { kind: 'region'; region: Parameters<typeof selectRegion>[1]; parentId: string | null; toggle: boolean }
   | { kind: 'select-all' }
   | { kind: 'tool'; tool: ViewState['tool'] }
   | { kind: 'outline'; open: boolean }
@@ -53,14 +55,25 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
     case 'navigate':
       return { ...state, focusId: nextFocus(objects, state.focusId, action.step) };
     case 'selection':
-      return { ...state, selected: [...new Set(action.ids)] };
-    case 'toggle':
+      return { ...state, selected: targets(objects, action.ids).map((o) => o.id) };
+    case 'toggle': {
+      const ids = state.selected.includes(action.id)
+        ? state.selected.filter((id) => id !== action.id)
+        : [...state.selected, action.id];
+      return { ...state, selected: targets(objects, ids).map((o) => o.id) };
+    }
+    case 'region': {
+      const ids = selectRegion(objects, action.region, action.parentId);
       return {
         ...state,
-        selected: state.selected.includes(action.id)
-          ? state.selected.filter((id) => id !== action.id)
-          : [...state.selected, action.id],
+        selected: targets(
+          objects,
+          action.toggle
+            ? [...state.selected.filter((id) => !ids.includes(id)), ...ids.filter((id) => !state.selected.includes(id))]
+            : ids
+        ).map((o) => o.id),
       };
+    }
     case 'select-all':
       return {
         ...state,

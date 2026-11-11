@@ -16,3 +16,39 @@ export const shortcuts: [string, string[][]][] = [
   ['Zoom about pointer (wheel or pinch)', []],
   ['Close current rail view', [['Esc']]],
 ];
+
+export const editShortcuts: [string, string[][]][] = [
+  ['Selection lasso (hold and drag)', [['Alt']]],
+  ['Group selection', [['Mod', 'G']]],
+  ['Ungroup selection', [['Mod', 'Shift', 'G']]],
+  [
+    'Copy / cut / paste selection',
+    [
+      ['Mod', 'C'],
+      ['Mod', 'X'],
+      ['Mod', 'V'],
+    ],
+  ],
+  ['Duplicate selection', [['Mod', 'D']]],
+  [
+    'Bring forward / to front',
+    [
+      ['Mod', ']'],
+      ['Mod', 'Shift', ']'],
+    ],
+  ],
+  [
+    'Send backward / to back',
+    [
+      ['Mod', '['],
+      ['Mod', 'Shift', '['],
+    ],
+  ],
+  ['Disable pointer snapping (hold)', [['Ctrl']]],
+  ['Delete selection', [['Delete']]],
+  ['Undo canvas edit', [['Mod', 'Z']]],
+  ['Redo canvas edit', [['Mod', 'Shift', 'Z']]],
+  ['Move selection with arrows', [['M']]],
+  ['Move mode: coarse / fine', [['↑'], ['Shift', '↑']]],
+  ['Resize: proportional / from center', [['Shift'], ['Alt']]],
+];

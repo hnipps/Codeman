@@ -42,3 +42,5 @@ export function union(rects: Rect[]): Rect {
     height: Math.max(...rects.map((r) => r.y + r.height)) - y,
   };
 }
+export const wheelFactor = (deltaY: number, deltaMode: number, pageHeight = 800): number =>
+  Math.exp(-deltaY * (deltaMode === 1 ? 16 : deltaMode === 2 ? pageHeight : 1) * 0.0015);
