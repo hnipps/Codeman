@@ -1,6 +1,6 @@
 # Intent: Shared desktop canvas compound commands
 
-**Status:** Draft
+**Status:** Implemented
 
 ## Problem statement
 
@@ -20,4 +20,4 @@ Preserve existing operation kinds and additive disk compatibility. No push, depl
 
 ## Open questions
 
-The command endpoint has no compound retry identity. Add an optional request ID and deterministic native op IDs, recoverable from the existing operation log; no new stored record type. Grouping accepts an optional frame/section container type for wrapping, and reparent accepts world translation for placed drops. Copies stage new locks after creating their complete hierarchy so locked source groups remain copyable without unlocking them.
+None. Optional request identities use deterministic native operation IDs recovered from the existing log. Grouping accepts a frame/section type for wrapping, and reparent accepts world translation for placed drops. Copies stage their new locks after creating the complete hierarchy, preserving locked sources without unlocking them.

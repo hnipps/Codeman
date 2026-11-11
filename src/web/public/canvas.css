@@ -869,7 +869,7 @@ textarea[readonly] {
 }
 
 .object.container > .object-title {
-  z-index: 2;
+  z-index: 10001;
 }
 .resize-handle:disabled::after {
   border-color: var(--divider);
@@ -892,4 +892,133 @@ textarea[readonly] {
 
 .object.container > .selection-bounds {
   border-radius: 6px;
+}
+
+.action-menu {
+  position: fixed;
+  z-index: 12;
+  bottom: 124px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 384px;
+  max-height: calc(100dvh - 160px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px #0002;
+}
+.action-menu button {
+  text-align: left;
+}
+.action-menu label {
+  display: block;
+  margin-top: 12px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.action-menu input {
+  width: 100%;
+  margin: 4px 0 8px;
+}
+.menu-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+#actionMessage {
+  position: fixed;
+  z-index: 15;
+  bottom: 124px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 640px;
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  font-size: 12px;
+}
+#arrangeMenu:not([hidden]) ~ #actionMessage {
+  bottom: 84px;
+}
+.multi-selection .object.selected > .selection-bounds {
+  border-color: color-mix(in srgb, var(--selection) 50%, transparent);
+}
+.multi-selection .object.selected > .selection-bounds > .corner {
+  opacity: 0.5;
+}
+#selectionBounds > .resize-handle {
+  display: block;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+#selectionBounds > .handle-nw {
+  left: 0;
+  top: 0;
+}
+#selectionBounds > .handle-n {
+  left: 50%;
+  top: 0;
+}
+#selectionBounds > .handle-ne {
+  left: 100%;
+  top: 0;
+}
+#selectionBounds > .handle-e {
+  left: 100%;
+  top: 50%;
+}
+#selectionBounds > .handle-se {
+  left: 100%;
+  top: 100%;
+}
+#selectionBounds > .handle-s {
+  left: 50%;
+  top: 100%;
+}
+#selectionBounds > .handle-sw {
+  left: 0;
+  top: 100%;
+}
+#selectionBounds > .handle-w {
+  left: 0;
+  top: 50%;
+}
+.lock-mark {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  right: -4px;
+  top: -16px;
+  color: var(--secondary);
+}
+.alignment-guide {
+  position: fixed;
+  z-index: 2;
+  pointer-events: none;
+  background: var(--accent);
+}
+.alignment-guide[data-axis='x'] {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.alignment-guide[data-axis='y'] {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+#selectionBounds {
+  z-index: 10002;
+}
+.tree-row {
+  position: relative;
+}
+.tree-row > .lock-mark {
+  right: 8px;
+  top: 10px;
 }

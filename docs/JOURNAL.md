@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 — Persist compound canvas identities and use server history
+
+**Type:** intent-refinement
+**Touches:** desktop canvas queue, command endpoint and history
+**Why:** A compound command expands to server-generated operation IDs; resending after a lost response otherwise repeats grouping, pasting or history.
+**Links:** [Intent](../intent/2026-11-11-canvas-pc4-compound.md)
+
+An optional UUID request identity plus an author/payload fingerprint becomes deterministic native operation IDs. Retry recovers the original sequences directly from the existing log before expansion; mismatched reuse refuses. No-op compounds append an empty native revert guard so their acknowledgements survive retries too. Disk kinds stay unchanged. Copies stage their new locks after all creates, preserving locked subtree structure without unlocking the source. Wrapping reuses group with an optional fixed-container type, and reparent accepts world translation for one atomic placed drop.
+
+Browser history now selects acknowledged sequences and asks the server to invert them. Its stricter revision and dependent rules supersede the earlier field-scoped browser inverse. Typed internal clipboard data keeps hierarchy and world placement; new identities are allocated before one create command. Compound UI actions wait for earlier writes rather than expanding against speculative state.
+
 ## 2026-11-11 - Screenshot cleanup is bounded and answers stay path-free
 
 **Type:** propagated-discovery

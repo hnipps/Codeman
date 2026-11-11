@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { IdSchema, MutableSchema } from '../../../src/canvas/model.js';
+import type { CanvasToolName } from '../../../src/canvas/commands.js';
+import type { toolSchemas } from '../../../src/canvas/commands.js';
 import type { Command } from '../../../src/canvas/operations.js';
 import { SnapshotSchema, ViewObjectSchema, type Snapshot, type ViewObject } from './model.js';
 import { reparentPosition, worldOrigin } from './drag.js';
@@ -45,13 +47,32 @@ export const AckSchema = z.object({
 });
 export type Acknowledged = z.infer<typeof AckSchema>;
 export type QueueStatus = 'saved' | 'saving' | 'failed' | 'refused' | 'offline';
+export type CanvasRequest = {
+  [Name in CanvasToolName]: { tool: Name; arguments: z.input<(typeof toolSchemas)[Name]> };
+}[CanvasToolName];
+const RequestSchema = z.object({
+  tool: z.enum([
+    'canvas_create',
+    'canvas_update',
+    'canvas_delete',
+    'canvas_arrange',
+    'canvas_transform',
+    'canvas_lock',
+    'canvas_history',
+  ]),
+  arguments: z.unknown(),
+  requestId: z.uuid(),
+});
+export type QueuedRequest = z.infer<typeof RequestSchema>;
 const StoredSchema = z.object({
+  requests: z.record(z.string(), RequestSchema).default({}),
   operations: z.array(EditSchema),
   refusal: z.string().nullable(),
   batchSizes: z.array(z.number().int().positive()).default([]),
 });
 export class Refused extends Error {}
 export class EditQueue {
+  private requests: Record<string, QueuedRequest> = {};
   private base: Snapshot = { seq: 0, objects: [] };
   private pending: Edit[] = [];
   private batchSizes: number[] = [];
@@ -66,6 +87,7 @@ export class EditQueue {
       storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
       key: string;
       send: (operations: Edit[], since: number) => Promise<Acknowledged[]>;
+      sendCommand?: (request: QueuedRequest, since: number) => Promise<Acknowledged[]>;
       display: (objects: ViewObject[]) => void;
       status: (status: QueueStatus, message: string) => void;
       acknowledged: (operations: Acknowledged[]) => void;
@@ -83,6 +105,7 @@ export class EditQueue {
       try {
         const stored = StoredSchema.parse(JSON.parse(raw));
         this.pending = stored.operations;
+        this.requests = stored.requests;
         this.batchSizes =
           stored.batchSizes.reduce((sum, size) => sum + size, 0) === this.pending.length
             ? stored.batchSizes
@@ -136,6 +159,13 @@ export class EditQueue {
     void this.flush();
     return true;
   }
+  enqueueCommand(request: CanvasRequest): boolean {
+    const requestId = crypto.randomUUID();
+    this.requests[requestId] = RequestSchema.parse({ ...request, requestId });
+    const accepted = this.enqueue([{ kind: 'revert', opId: requestId, objectId: requestId, patch: {} }]);
+    if (!accepted) delete this.requests[requestId];
+    return accepted;
+  }
   retry(): void {
     this.refusal = null;
     this.failure = false;
@@ -146,6 +176,7 @@ export class EditQueue {
   discard(): void {
     if (this.flight) return;
     this.pending = [];
+    this.requests = {};
     this.batchSizes = [];
     this.refusal = null;
     this.failure = false;
@@ -160,7 +191,12 @@ export class EditQueue {
       if (this.pending.length || this.refusal)
         this.options.storage.setItem(
           this.options.key,
-          JSON.stringify({ operations: this.pending, refusal: this.refusal, batchSizes: this.batchSizes })
+          JSON.stringify({
+            operations: this.pending,
+            refusal: this.refusal,
+            batchSizes: this.batchSizes,
+            requests: this.requests,
+          })
         );
       else this.options.storage.removeItem(this.options.key);
       return true;
@@ -200,9 +236,10 @@ export class EditQueue {
     this.options.status('saving', 'Saving…');
     const batch = this.pending.slice(0, this.batchSizes[0] ?? this.pending.length);
     try {
-      const acknowledged = await this.options.send(batch, this.base.seq);
+      const request = this.requests[batch[0].opId];
+      const acknowledged = request ? await this.sendCommand(request) : await this.options.send(batch, this.base.seq);
       const ids = new Set(acknowledged.map((op) => op.opId));
-      if (!batch.every((op) => ids.has(op.opId))) throw new Error('Acknowledgement missing');
+      if (!request && !batch.every((op) => ids.has(op.opId))) throw new Error('Acknowledgement missing');
       const objects = new Map(this.base.objects.map((o) => [o.id, o]));
       for (const op of acknowledged) {
         if (op.seq > this.base.seq) for (const change of op.prev) objects.set(change.objectId, change.after);
@@ -211,7 +248,10 @@ export class EditQueue {
       const batchIds = new Set(batch.map((op) => op.opId));
       this.pending = this.pending.filter((op) => !batchIds.has(op.opId));
       this.batchSizes.shift();
-      this.options.acknowledged(acknowledged.filter((op) => batch.some((edit) => edit.opId === op.opId)));
+      delete this.requests[batch[0].opId];
+      this.options.acknowledged(
+        request ? acknowledged : acknowledged.filter((op) => batch.some((edit) => edit.opId === op.opId))
+      );
     } catch (error) {
       if (error instanceof Refused) {
         this.refusal = error.message;
@@ -227,6 +267,10 @@ export class EditQueue {
           void this.flush();
         }, 1500);
     }
+  }
+  private sendCommand(request: QueuedRequest): Promise<Acknowledged[]> {
+    if (!this.options.sendCommand) throw new Error('Command transport unavailable');
+    return this.options.sendCommand(request, this.base.seq);
   }
   stop(): void {
     this.stopped = true;
@@ -315,3 +359,50 @@ export async function sendEdits(
   return parseHistory(await full.json());
 }
 export const parseSnapshot = (payload: unknown): Snapshot => z.object({ data: SnapshotSchema }).parse(payload).data;
+
+export async function sendCommand(
+  url: (path: string) => string,
+  workspace: string,
+  request: QueuedRequest
+): Promise<Acknowledged[]> {
+  const response = await fetch(url(`/api/canvas/${workspace}/command`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    if (response.status >= 500) throw new Error('Command save failed');
+    const refused = z
+      .object({
+        error: z.string(),
+        reasons: z
+          .array(
+            z.object({
+              message: z.string(),
+              objectId: z.string(),
+              dependents: z.array(z.object({ objectId: z.string() })).optional(),
+            })
+          )
+          .optional(),
+      })
+      .safeParse(payload);
+    throw new Refused(
+      refused.success
+        ? `Edit refused: ${refused.data.reasons?.map((r) => `${r.message}${r.dependents?.length ? `; depends on ${r.dependents.map((d) => d.objectId).join(', ')}` : r.objectId ? ` (${r.objectId})` : ''}`).join('; ') || refused.data.error}.`
+        : 'Edit refused by the server.'
+    );
+  }
+  const result = z.object({ data: z.object({ sequences: z.array(z.number()) }) }).parse(payload).data;
+  const history = await fetch(url(`/api/canvas/${workspace}/ops?since=0`));
+  if (!history.ok) throw new Error('Command acknowledgement failed');
+  const records = z.object({ data: z.object({ operations: z.array(z.unknown()) }) }).parse(await history.json())
+    .data.operations;
+  const wanted = new Set(result.sequences);
+  const acknowledged = records.flatMap((record) => {
+    const parsed = AckSchema.safeParse(record);
+    return parsed.success && wanted.has(parsed.data.seq) ? [parsed.data] : [];
+  });
+  if (acknowledged.length !== wanted.size) throw new Error('Command acknowledgement missing');
+  return acknowledged;
+}

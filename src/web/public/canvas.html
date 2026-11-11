@@ -46,13 +46,42 @@
       ><select id="moveDestination"></select
       ><button id="commitMoveTo">Move</button>
     </div>
+    <div id="arrangeMenu" class="edit-control action-menu" aria-label="Arrange selection" hidden>
+      <button id="moveMode">Move with arrows</button>
+      <div class="menu-grid" aria-label="Alignment">
+        <button data-align="x-start">Align left</button><button data-align="y-start">Align top</button>
+        <button data-align="x-center">Center horizontally</button
+        ><button data-align="y-center">Center vertically</button> <button data-align="x-end">Align right</button
+        ><button data-align="y-end">Align bottom</button> <button data-distribute="x">Distribute horizontally</button
+        ><button data-distribute="y">Distribute vertically</button>
+      </div>
+      <label for="layoutSpacing">Equal spacing (optional)</label
+      ><input id="layoutSpacing" type="number" placeholder="Automatic" />
+      <div class="menu-grid">
+        <button data-order="forward">Bring forward</button><button data-order="backward">Send backward</button>
+        <button data-order="front">Bring to front</button><button data-order="back">Send to back</button>
+        <button id="wrapFrame">Wrap in frame</button><button id="wrapSection">Wrap in section</button>
+        <button id="copySelection">Copy</button><button id="cutSelection">Cut</button>
+        <button id="pasteSelection">Paste</button><button id="duplicateSelection">Duplicate</button>
+      </div>
+      <label for="rotationDegrees">Rotate by degrees</label><input id="rotationDegrees" type="number" value="90" />
+      <button id="rotateSelection">Rotate</button>
+      <button id="backgroundLock">Lock background only</button>
+      <p class="secondary" id="transformCapability">
+        Groups scale uniformly; frames and sections resize bounds. Flip is unsupported: the server accepts positive
+        scales only.
+      </p>
+    </div>
+    <p id="actionMessage" class="edit-control" role="status" hidden></p>
     <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
     <span id="dropName" class="edit-control" hidden></span>
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
         <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
-          <span id="selectionCount"></span><button id="moveMode">Move</button
-          ><button id="moveTo" aria-controls="moveToMenu">Move to…</button><button id="editSelection">Edit</button
+          <span id="selectionCount"></span><button id="moveTo" aria-controls="moveToMenu">Move to…</button>
+          <button id="arrangeSelection" aria-controls="arrangeMenu" aria-expanded="false">Arrange</button>
+          <button id="groupSelection" title="Group · Cmd/Ctrl+G">Group</button>
+          <button id="lockSelection">Lock</button><button id="editSelection">Edit</button
           ><button id="deleteSelection">Delete</button>
         </div>
         <button
@@ -76,7 +105,8 @@
         <div class="add-anchor">
           <div id="addMenu" class="edit-control" aria-label="Add objects" hidden>
             <button id="addText">Text</button><button id="addFrame">Frame</button
-            ><button id="addSection">Section</button><button id="addSubcanvas">Sub-canvas</button>
+            ><button id="addSection">Section</button><button id="addSubcanvas">Sub-canvas</button
+            ><button id="addPaste" title="Paste · Cmd/Ctrl+V">Paste</button>
           </div>
           <button
             id="addTool"

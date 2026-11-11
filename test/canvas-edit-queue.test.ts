@@ -3,7 +3,13 @@ import { targets, selectRegion } from '../packages/canvas/src/select.js';
 import { movedPosition, reparentPosition } from '../packages/canvas/src/drag.js';
 import { CanvasUndo } from '../packages/canvas/src/undo.js';
 import { describe, it, expect, vi } from 'vitest';
-import { EditQueue, Refused, type Edit, type Acknowledged } from '../packages/canvas/src/edit-queue.js';
+import {
+  EditQueue,
+  Refused,
+  type Edit,
+  type Acknowledged,
+  type QueuedRequest,
+} from '../packages/canvas/src/edit-queue.js';
 import type { ViewObject } from '../packages/canvas/src/model.js';
 const object: ViewObject = {
   id: 'note',
@@ -39,7 +45,11 @@ const ack = (op: Edit, seq = 1): Acknowledged => ({
     },
   ],
 });
-function fixture(send: (ops: Edit[], since: number) => Promise<Acknowledged[]>, memory = new Map<string, string>()) {
+function fixture(
+  send: (ops: Edit[], since: number) => Promise<Acknowledged[]>,
+  memory = new Map<string, string>(),
+  sendCommand?: (request: QueuedRequest) => Promise<Acknowledged[]>
+) {
   let displayed: ViewObject[] = [],
     status = '',
     message = '';
@@ -55,6 +65,7 @@ function fixture(send: (ops: Edit[], since: number) => Promise<Acknowledged[]>, 
     },
     key: 'drafts',
     send,
+    sendCommand,
     display: (objects) => {
       displayed = objects;
     },
@@ -74,6 +85,29 @@ const settle = async () => {
   await Promise.resolve();
 };
 describe('durable canvas edit queue', () => {
+  it('persists compound identity before sending and restores the same command after a lost response', async () => {
+    const transport = vi.fn(async (_request: QueuedRequest) => {
+      throw new Error('Lost response');
+    });
+    const f = fixture(async () => [], new Map(), transport);
+    f.queue.enqueueCommand({
+      tool: 'canvas_arrange',
+      arguments: { action: 'duplicate', targetIds: ['note'], offset: { x: 24, y: 24 } },
+    });
+    await settle();
+    expect(f.status()).toBe('failed');
+    const original = transport.mock.calls[0];
+    const data = JSON.parse(f.memory.get('drafts') ?? '{}');
+    expect(Object.values(data.requests)).toHaveLength(1);
+    f.queue.stop();
+    const resend = vi.fn(async (_request: QueuedRequest) => [ack(move(24))]);
+    const restored = fixture(async () => [], f.memory, resend);
+    await settle();
+    expect(resend.mock.calls[0]).toEqual(original);
+    expect(restored.memory.size).toBe(0);
+    expect(restored.display()[0].position.x).toBe(24);
+    restored.queue.stop();
+  });
   it('displays immediately, sends in order with one batch in flight, and removes only acknowledged operations', async () => {
     let release: (ops: Acknowledged[]) => void = () => {};
     const send = vi.fn(
@@ -204,33 +238,15 @@ describe('durable canvas edit queue', () => {
   });
 });
 
-describe('safe acknowledged history', () => {
-  it('undoes only acknowledged fields and refuses later conflicting edits', () => {
+describe('server sequence history', () => {
+  it('selects acknowledged sequences and moves returned undo sequences to redo', () => {
     const undo = new CanvasUndo();
-    undo.acknowledge([ack(move(10))], 'note');
-    const current = {
-      ...object,
-      position: { x: 10, y: 0 },
-      content: { type: 'text', text: 'Agent update' },
-      revision: 3,
-    };
-    const action = undo.prepare('undo', [current]);
-    expect(action?.operations[0]).toMatchObject({
-      kind: 'revert',
-      expectedRevision: 3,
-      patch: { position: { x: 0, y: 0 } },
-    });
-    expect(action?.operations[0]).not.toHaveProperty('patch.content');
+    undo.acknowledge([ack(move(10), 2), ack(move(20), 3)], 'note');
+    expect(undo.prepare('undo')).toEqual({ tool: 'canvas_history', arguments: { action: 'undo', sequences: [2, 3] } });
+    undo.acknowledge([ack(move(0), 4)], 'note');
+    expect(undo.prepare('redo')).toEqual({ tool: 'canvas_history', arguments: { action: 'redo', sequences: [4] } });
     undo.refused();
-    expect(() => undo.prepare('undo', [{ ...current, position: { x: 15, y: 0 } }])).toThrow('later change');
-  });
-  it('refuses to undo container creation when another author added a child', () => {
-    const undo = new CanvasUndo();
-    undo.acknowledge(
-      [{ ...ack(move(10)), kind: 'create', prev: [{ objectId: 'note', before: null, after: object }] }],
-      'note'
-    );
-    expect(() => undo.prepare('undo', [object, { ...object, id: 'child', parentId: 'note' }])).toThrow('later work');
+    expect(undo.available('redo')).toBe(true);
   });
 });
 
@@ -305,79 +321,46 @@ function apply(state: CanvasState, commands: Command[], author = human) {
   if (!result.ok) throw new Error(JSON.stringify(result.reasons));
   return result;
 }
-describe('history through the real command validator', () => {
-  it('undoes and redoes a resize batch as one inverse without reverting an agent text update', () => {
-    let state = apply(emptyState(), [create('note')]).state;
-    const before = state.objects.note;
-    const edit = apply(state, [
-      { kind: 'move', objectId: 'note', opId: 'resize-position', patch: { position: { x: 20, y: 40 } } },
-      { kind: 'update', objectId: 'note', opId: 'resize-size', patch: { size: { width: 400, height: 300 } } },
+import { historyCommands } from '../src/canvas/commands.js';
+describe('history through the real server command validator', () => {
+  it('refuses a changed revision, including a later author change to a different field', () => {
+    const initial = apply(emptyState(), [create('note')]);
+    const edit = apply(initial.state, [
+      { kind: 'move', opId: 'move', objectId: 'note', patch: { position: { x: 20, y: 40 } } },
     ]);
-    const undo = new CanvasUndo();
-    undo.acknowledge(edit.operations, 'note');
-    state = apply(
+    const later = apply(
       edit.state,
       [
         {
           kind: 'update',
-          objectId: 'note',
           opId: 'agent-text',
-          patch: { content: { type: 'text', text: 'An agent wrote this' } },
-        },
-      ],
-      agent
-    ).state;
-    const inverse = undo.prepare('undo', Object.values(state.objects));
-    expect(inverse?.operations).toHaveLength(1);
-    const undone = apply(state, inverse?.operations ?? []);
-    undo.acknowledge(undone.operations, 'note');
-    expect(undone.state.objects.note.position).toEqual(before.position);
-    expect(undone.state.objects.note.size).toEqual(before.size);
-    expect(undone.state.objects.note.content.text).toBe('An agent wrote this');
-    const redo = undo.prepare('redo', Object.values(undone.state.objects));
-    const redone = apply(undone.state, redo?.operations ?? []);
-    expect(redone.state.objects.note.size).toEqual({ width: 400, height: 300 });
-    expect(redone.state.objects.note.position).toEqual({ x: 20, y: 40 });
-    expect(redone.state.objects.note.content.text).toBe('An agent wrote this');
-  });
-  it('guards every descendant atomically, restores a deleted container and protects later child work from redo', () => {
-    const initial = apply(emptyState(), [create('frame', null, 'frame'), create('child', 'frame')]);
-    const deleted = apply(initial.state, [{ kind: 'delete', objectId: 'frame', opId: 'delete-frame' }]);
-    const undo = new CanvasUndo();
-    undo.acknowledge(deleted.operations, 'frame');
-    const inverse = undo.prepare('undo', Object.values(deleted.state.objects));
-    expect(inverse?.operations.map((op) => op.kind)).toEqual(['revert', 'restore']);
-    const restored = apply(deleted.state, inverse?.operations ?? []);
-    undo.acknowledge(restored.operations, 'frame');
-    expect(restored.state.objects.child.deletedAt).toBeNull();
-    const concurrent = apply(
-      restored.state,
-      [
-        {
-          kind: 'update',
-          objectId: 'child',
-          opId: 'later-child',
+          objectId: 'note',
           patch: { content: { type: 'text', text: 'Later work' } },
         },
       ],
       agent
     );
-    expect(() => undo.prepare('redo', Object.values(concurrent.state.objects))).toThrow('later work');
-    const stale = validateBatch(
-      concurrent.state,
-      [
-        {
-          kind: 'revert',
-          objectId: 'child',
-          opId: 'stale-guard',
-          expectedRevision: restored.state.objects.child.revision,
-          patch: {},
-        },
-        { kind: 'delete', objectId: 'frame', opId: 'stale-delete' },
-      ],
-      human
-    );
-    expect(stale.ok).toBe(false);
-    expect(concurrent.state.objects.frame.deletedAt).toBeNull();
+    expect(() =>
+      historyCommands(
+        later.state,
+        edit.operations,
+        edit.operations.map((o) => o.seq),
+        human
+      )
+    ).toThrow();
+    expect(later.state.objects.note.content.text).toBe('Later work');
+  });
+  it('refuses to undo container creation when a later author added a child', () => {
+    const initial = apply(emptyState(), [create('frame', null, 'frame')]);
+    const later = apply(initial.state, [create('child', 'frame')], agent);
+    expect(() =>
+      historyCommands(
+        later.state,
+        initial.operations,
+        initial.operations.map((o) => o.seq),
+        human
+      )
+    ).toThrow();
+    expect(later.state.objects.child.deletedAt).toBeNull();
   });
 });

@@ -19,6 +19,18 @@ export const shortcuts: [string, string[][]][] = [
 
 export const editShortcuts: [string, string[][]][] = [
   ['Selection lasso (hold and drag)', [['Alt']]],
+  ['Group selection', [['Mod', 'G']]],
+  ['Ungroup selection', [['Mod', 'Shift', 'G']]],
+  [
+    'Copy / cut / paste selection',
+    [
+      ['Mod', 'C'],
+      ['Mod', 'X'],
+      ['Mod', 'V'],
+    ],
+  ],
+  ['Duplicate selection', [['Mod', 'D']]],
+  ['Disable pointer snapping (hold)', [['Ctrl']]],
   ['Delete selection', [['Delete']]],
   ['Undo canvas edit', [['Mod', 'Z']]],
   ['Redo canvas edit', [['Mod', 'Shift', 'Z']]],

@@ -8,6 +8,7 @@ import { dataPath } from '../src/config/instance.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import { SnapshotSchema } from '../packages/canvas/src/model.js';
+import { selectionBox } from '../packages/canvas/src/arrange.js';
 import { CommandSchema } from '../src/canvas/operations.js';
 
 const stamp = Date.now();
@@ -99,30 +100,41 @@ describe('desktop canvas editing', () => {
     return { x: box.x + Math.min(box.width / 2, 100), y: box.y + Math.min(box.height / 2, 100) };
   }
   async function select(id: string) {
+    const heading = page.locator(`[data-object-id="${id}"] > .object-title:not([hidden])`);
+    if (await heading.count()) {
+      await heading.click();
+      return;
+    }
     const p = await objectCenter(id);
     await page.mouse.click(p.x, p.y);
   }
   async function reader(id = 'note') {
-    await select(id);
+    await page.locator(`[data-row-id="${id}"]`).click();
     await page.locator('#board').focus();
     await page.keyboard.press('Enter');
     await page.waitForSelector('#textEdit:not([hidden])');
   }
   async function closeReader() {
-    if (await page.locator('#rail').isVisible()) await page.locator('#closeRail').click();
+    if (await page.locator('#rail').isVisible()) {
+      await page.locator('#closeRail').click();
+      await page.waitForSelector('#rail', { state: 'hidden' });
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+    }
   }
   async function drag(id: string, dx: number, dy: number) {
+    await page.keyboard.down('Control');
     const p = await objectCenter(id);
     await page.mouse.move(p.x, p.y);
     await page.mouse.down();
     await page.mouse.move(p.x + dx, p.y + dy, { steps: 8 });
     await page.mouse.up();
+    await page.keyboard.up('Control');
     await saved();
   }
   async function shot(theme: string, slug: string) {
     await page.screenshot({ path: resolve(media, `pc4-review-${stamp}-${theme}-${slug}.png`), animations: 'disabled' });
   }
-  it('keeps selection chrome outside content at every zoom and shows handles only for one object', async () => {
+  it('keeps selection chrome outside content at every zoom and shows eight handles for the combined selection', async () => {
     const before = await stored();
     expect(await page.locator('.selection-bounds:visible').count()).toBe(0);
     for (const zoom of [0.5, 1, 2]) {
@@ -159,7 +171,7 @@ describe('desktop canvas editing', () => {
       expect(parseFloat(focus.width)).toBeCloseTo(2, 1);
       await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: ['note', 'other'] }));
       await page.evaluate(() => new Promise(requestAnimationFrame));
-      expect(await page.locator('.resize-handle:visible').count()).toBe(0);
+      expect(await page.locator('.resize-handle:visible').count()).toBe(8);
       expect(await page.locator('.object.selected > .selection-bounds > .corner:visible').count()).toBe(8);
       const combined = await page.locator('#selectionBounds').boundingBox();
       const other = await page.locator('[data-object-id="other"]').boundingBox();
@@ -170,6 +182,7 @@ describe('desktop canvas editing', () => {
       expect(combined.height).toBeCloseTo(other.y + other.height - box.y + 12, 1);
     }
     const combinedBefore = await page.locator('#selectionBounds').boundingBox();
+    await page.locator('#arrangeSelection').click();
     await page.locator('#moveMode').click();
     await page.keyboard.press('ArrowRight');
     const combinedMoving = await page.locator('#selectionBounds').boundingBox();
@@ -386,6 +399,7 @@ describe('desktop canvas editing', () => {
     await page.mouse.up();
     await page.keyboard.up('Alt');
     expect((await page.evaluate(() => window.canvasView.read().selected)).sort()).toEqual(['note', 'other']);
+    await page.locator('#arrangeSelection').click();
     await page.locator('#moveMode').click();
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('Escape');
@@ -720,6 +734,513 @@ describe('desktop canvas editing', () => {
       await closeReader();
     }
   }, 120000);
+  const layoutCases = [
+    ...(['x', 'y'] as const).flatMap((axis) =>
+      (['start', 'center', 'end'] as const).map((anchor) => ({
+        name: `align-${axis}-${anchor}`,
+        selector: `[data-align="${axis}-${anchor}"]`,
+        tool: 'canvas_arrange',
+        arguments: { action: 'align', targetIds: ['note', 'other', 'third'], axis, anchor },
+      }))
+    ),
+    ...(['x', 'y'] as const).map((axis) => ({
+      name: `distribute-${axis}`,
+      selector: `[data-distribute="${axis}"]`,
+      tool: 'canvas_arrange',
+      arguments: { action: 'distribute', targetIds: ['note', 'other', 'third'], axis },
+    })),
+    ...(['front', 'back', 'forward', 'backward'] as const).map((placement) => ({
+      name: `order-${placement}`,
+      selector: `[data-order="${placement}"]`,
+      tool: 'canvas_arrange',
+      arguments: { action: 'order', targetIds: ['note', 'other', 'third'], placement },
+    })),
+    {
+      name: 'equal-spacing-x',
+      selector: '[data-distribute="x"]',
+      tool: 'canvas_arrange',
+      arguments: { action: 'distribute', targetIds: ['note', 'other', 'third'], axis: 'x', spacing: 32 },
+    },
+  ];
+  async function invoke(tool: string, args: unknown, targetWorkspace = workspace) {
+    const response = await page.request.post(`${origin}/x/api/canvas/${targetWorkspace}/command`, {
+      data: { tool, arguments: args },
+    });
+    expect(response.ok(), await response.text()).toBe(true);
+    return response.json();
+  }
+  async function twin() {
+    const name = `Canvas twin ${serial}-${crypto.randomUUID()}`;
+    mkdirSync(resolve(resolveCasesDir(), name), { recursive: true });
+    const id = workspaceForCase(name).id;
+    const response = await page.request.post(`${origin}/x/api/canvas/${id}/ops`, {
+      data: {
+        operations: [
+          create('frame', 'frame', 500, 100),
+          create('note', 'text', 100, 100),
+          create('other', 'text', 100, 320),
+          create('child', 'text', 24, 56, 'frame'),
+        ],
+      },
+    });
+    expect(response.ok()).toBe(true);
+    return id;
+  }
+  async function storedAt(id: string) {
+    const response = await page.request.get(`${origin}/x/api/canvas/${id}/objects`);
+    return SnapshotSchema.parse((await response.json()).data).objects;
+  }
+  function material(objects: ReturnType<typeof SnapshotSchema.parse>['objects']) {
+    const path = (object: (typeof objects)[number], seen = new Set<string>()): string => {
+      if (seen.has(object.id)) throw new Error('Unexpected cycle');
+      seen.add(object.id);
+      const parent = objects.find((p) => p.id === object.parentId);
+      return `${parent ? path(parent, seen) : ''}/${JSON.stringify(object.content)}`;
+    };
+    return objects
+      .map((o) => ({
+        path: path(o),
+        position: { x: Math.round(o.position.x * 1e6) / 1e6, y: Math.round(o.position.y * 1e6) / 1e6 },
+        size: o.size,
+        rotation: o.rotation,
+        order: o.order,
+        lock: o.lock ?? null,
+      }))
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  }
+  async function selectMany(ids: string[]) {
+    await select(ids[0]);
+    for (const id of ids.slice(1)) {
+      await page.keyboard.down('Shift');
+      await select(id);
+      await page.keyboard.up('Shift');
+    }
+    await page.locator('#board').focus();
+    await page.waitForFunction((count) => window.canvasView.read().selected.length === count, ids.length);
+  }
+  it.each(layoutCases)('matches endpoint geometry and order for $name', async (action) => {
+    const mirror = await twin();
+    for (const id of [workspace, mirror])
+      await page.request.post(`${origin}/x/api/canvas/${id}/ops`, {
+        data: { operations: [create('third', 'text', 420, 530)] },
+      });
+    await open();
+    await selectMany(['note', 'other', 'third']);
+    const requests: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST') requests.push(r.url());
+    });
+    await page.locator('#arrangeSelection').click();
+    if ('spacing' in action.arguments) await page.locator('#layoutSpacing').fill(String(action.arguments.spacing));
+    await page.locator(action.selector).click();
+    await saved();
+    await invoke(action.tool, action.arguments, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect(requests.some((url) => url.endsWith('/command'))).toBe(true);
+    expect(requests.some((url) => url.endsWith('/ops'))).toBe(false);
+  });
+  it('groups, renames, nests, ungroups and wraps with equivalent endpoint state and stable child identities', async () => {
+    const mirror = await twin();
+    await selectMany(['note', 'other']);
+    await page.keyboard.press('Control+g');
+    await saved();
+    await invoke(
+      'canvas_arrange',
+      {
+        action: 'group',
+        targetIds: ['note', 'other'],
+        groupId: 'mirror-group',
+        parentId: null,
+        label: 'Untitled group',
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    const group = (await stored()).find((o) => o.type === 'group');
+    if (!group) throw new Error('Missing group');
+    await page.locator('#editSelection').click();
+    await page.locator('#textEditor').fill('References');
+    await page.locator('#textEditor').blur();
+    await saved();
+    await invoke(
+      'canvas_update',
+      {
+        operations: [
+          {
+            kind: 'update',
+            objectId: 'mirror-group',
+            opId: 'rename',
+            patch: { content: { type: 'group', label: 'References' } },
+          },
+        ],
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await closeReader();
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+g');
+    await saved();
+    await invoke(
+      'canvas_arrange',
+      {
+        action: 'group',
+        targetIds: ['mirror-group'],
+        groupId: 'mirror-outer',
+        parentId: null,
+        label: 'Untitled group',
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+Shift+g');
+    await saved();
+    await invoke('canvas_arrange', { action: 'ungroup', targetIds: ['mirror-outer'] }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+Shift+g');
+    await saved();
+    await invoke('canvas_arrange', { action: 'ungroup', targetIds: ['mirror-group'] }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect((await stored()).filter((o) => ['note', 'other'].includes(o.id)).map((o) => o.position)).toEqual([
+      { x: 100, y: 100 },
+      { x: 100, y: 320 },
+    ]);
+    for (const type of ['frame', 'section']) {
+      await selectMany(['note', 'other']);
+      await page.locator('#arrangeSelection').click();
+      await page.locator(type === 'frame' ? '#wrapFrame' : '#wrapSection').click();
+      await saved();
+      await invoke(
+        'canvas_arrange',
+        {
+          action: 'group',
+          targetIds: ['note', 'other'],
+          groupId: `wrap-${type}`,
+          parentId: type === 'frame' ? null : 'wrap-frame',
+          label: `Untitled ${type}`,
+          containerType: type,
+        },
+        mirror
+      );
+      expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    }
+  });
+  it('locks explicitly, refuses protected moves and content, unlocks, and supports background-only locks', async () => {
+    const mirror = await twin();
+    await select('note');
+    await page.locator('#lockSelection').click();
+    await saved();
+    await invoke('canvas_lock', { targetIds: ['note'], mode: 'subtree' }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect(await page.locator('[data-object-id="note"] > .selection-bounds .lock-mark').count()).toBe(1);
+    await dragRefusal('note', 30, 20);
+    const refused = await page.request.post(`${origin}/x/api/canvas/${mirror}/command`, {
+      data: {
+        tool: 'canvas_transform',
+        arguments: {
+          targetIds: ['note'],
+          space: 'world',
+          anchor: { x: 0, y: 0 },
+          translation: { x: 30, y: 20 },
+          scale: { width: 1, height: 1 },
+          rotation: 0,
+        },
+      },
+    });
+    expect(refused.status()).toBe(409);
+    expect((await refused.json()).reasons[0].code).toBe('LOCKED');
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect(await page.locator('#actionMessage').textContent()).toContain('unlock');
+    await reader('note');
+    await page.locator('#textEditor').fill('Protected text');
+    await page.locator('#textEditor').blur();
+    await page.waitForFunction(() => window.canvasEdit.read().status === 'refused');
+    const protectedContent = await page.request.post(`${origin}/x/api/canvas/${mirror}/command`, {
+      data: {
+        tool: 'canvas_update',
+        arguments: {
+          operations: [
+            {
+              kind: 'update',
+              opId: 'locked-content',
+              objectId: 'note',
+              patch: { content: { type: 'text', text: 'Protected text' } },
+            },
+          ],
+        },
+      },
+    });
+    expect(protectedContent.status()).toBe(409);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect(await page.locator('#editStatus').textContent()).toContain('unlock');
+    await page.locator('#lockSelection').click();
+    await saved();
+    await invoke('canvas_lock', { targetIds: ['note'], mode: 'unlock' }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await closeReader();
+    await select('frame');
+    await page.locator('#arrangeSelection').click();
+    await page.locator('#backgroundLock').click();
+    await saved();
+    await invoke('canvas_lock', { targetIds: ['frame'], mode: 'background' }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await drag('child', 30, 20);
+    await invoke(
+      'canvas_transform',
+      {
+        targetIds: ['child'],
+        space: 'world',
+        anchor: { x: 0, y: 0 },
+        translation: { x: 30, y: 20 },
+        scale: { width: 1, height: 1 },
+        rotation: 0,
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+  });
+  async function dragRefusal(id: string, dx: number, dy: number) {
+    const p = await objectCenter(id);
+    await page.mouse.move(p.x, p.y);
+    await page.mouse.down();
+    await page.mouse.move(p.x + dx, p.y + dy, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForFunction(() => window.canvasEdit.read().status === 'refused');
+  }
+  it('copies and pastes structure with fresh IDs, cuts and duplicates as single undoable commands', async () => {
+    const mirror = await twin();
+    await select('frame');
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+c');
+    await page.keyboard.press('Control+v');
+    await saved();
+    await invoke('canvas_arrange', { action: 'duplicate', targetIds: ['frame'], offset: { x: 24, y: 24 } }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    const after = await stored();
+    expect(after).toHaveLength(6);
+    const pastedFrame = after.find((o) => o.type === 'frame' && o.id !== 'frame');
+    expect(after.some((o) => o.parentId === pastedFrame?.id && o.id !== 'child')).toBe(true);
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+z');
+    await saved();
+    expect(await stored()).toHaveLength(4);
+    await page.keyboard.press('Control+Shift+z');
+    await saved();
+    expect(await stored()).toHaveLength(6);
+    await select('note');
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+x');
+    await saved();
+    await invoke('canvas_delete', { operations: [{ kind: 'delete', opId: 'cut-note', objectId: 'note' }] }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await select('other');
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+d');
+    await saved();
+    await invoke('canvas_arrange', { action: 'duplicate', targetIds: ['other'], offset: { x: 24, y: 24 } }, mirror);
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+  });
+  it('resizes a combined selection, scales groups uniformly, rotates, and keeps frame children fixed', async () => {
+    const mirror = await twin();
+    await selectMany(['note', 'other']);
+    const handle = await page.locator('#selectionBounds > .handle-se').boundingBox();
+    if (!handle) throw new Error('Missing combined handle');
+    await page.keyboard.down('Control');
+    await page.mouse.move(handle.x + 8, handle.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + 128, handle.y + 188, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up('Control');
+    await saved();
+    await invoke(
+      'canvas_transform',
+      {
+        targetIds: ['note', 'other'],
+        space: 'world',
+        anchor: { x: 100, y: 100 },
+        translation: { x: 0, y: 0 },
+        scale: { width: 1.5, height: 1.5 },
+        rotation: 0,
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+g');
+    await saved();
+    const group = (await stored()).find((o) => o.type === 'group');
+    if (!group) throw new Error('Missing group');
+    await invoke(
+      'canvas_arrange',
+      {
+        action: 'group',
+        targetIds: ['note', 'other'],
+        groupId: 'mirror-group',
+        parentId: null,
+        label: 'Untitled group',
+      },
+      mirror
+    );
+    const g = await page.locator('#selectionBounds > .handle-e').boundingBox();
+    if (!g) throw new Error('Missing group handle');
+    const box = selectionBox(await stored(), [group.id]);
+    await page.keyboard.down('Control');
+    await page.mouse.move(g.x + 8, g.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(g.x + 8 + box.width / 2, g.y + 8);
+    await page.mouse.up();
+    await page.keyboard.up('Control');
+    await saved();
+    expect((await stored()).find((o) => o.id === 'note')?.size?.width).toBe(540);
+    await invoke(
+      'canvas_transform',
+      {
+        targetIds: ['mirror-group'],
+        space: 'world',
+        anchor: { x: box.x, y: box.y },
+        translation: { x: 0, y: 0 },
+        scale: { width: 1.5, height: 1.5 },
+        rotation: 0,
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    const rotationBox = selectionBox(await storedAt(mirror), ['mirror-group']);
+    await page.locator('#arrangeSelection').click();
+    await page.locator('#rotateSelection').click();
+    await saved();
+    expect((await stored()).find((o) => o.id === group.id)?.rotation).toBe(90);
+    await invoke(
+      'canvas_transform',
+      {
+        targetIds: ['mirror-group'],
+        space: 'world',
+        anchor: { x: rotationBox.x + rotationBox.width / 2, y: rotationBox.y + rotationBox.height / 2 },
+        translation: { x: 0, y: 0 },
+        scale: { width: 1, height: 1 },
+        rotation: 90,
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect(await page.locator('#transformCapability').textContent()).toContain('Flip is unsupported');
+    await select('frame');
+    await page.locator('[data-object-id="frame"] > .handle-se').waitFor({ state: 'visible' });
+    const frameHandle = await page.locator('[data-object-id="frame"] > .handle-se').boundingBox();
+    if (!frameHandle) throw new Error('Missing frame handle');
+    const child = (await stored()).find((o) => o.id === 'child');
+    await page.keyboard.down('Control');
+    await page.mouse.move(frameHandle.x + 8, frameHandle.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(frameHandle.x + 48, frameHandle.y + 28, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up('Control');
+    await saved();
+    await invoke(
+      'canvas_update',
+      {
+        operations: [
+          { kind: 'update', opId: 'resize-frame', objectId: 'frame', patch: { size: { width: 400, height: 320 } } },
+        ],
+      },
+      mirror
+    );
+    expect(material(await stored())).toEqual(material(await storedAt(mirror)));
+    expect((await stored()).find((o) => o.id === 'child')?.position).toEqual(child?.position);
+    expect((await stored()).find((o) => o.id === 'child')?.size).toEqual(child?.size);
+  });
+  it('retains a compound retry identity across reload and refuses history with later dependents', async () => {
+    await selectMany(['note', 'other']);
+    let lost = true;
+    await page.route('**/api/canvas/*/command', async (route) => {
+      if (lost) {
+        const committed = await route.fetch();
+        expect(committed.ok()).toBe(true);
+        await route.fulfill({ status: 503, json: { error: 'Acknowledgement lost' } });
+      } else await route.continue();
+    });
+    await page.keyboard.press('Control+g');
+    await page.waitForFunction(() => window.canvasEdit.read().status === 'failed');
+    lost = false;
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await saved();
+    expect((await stored()).filter((o) => o.type === 'group')).toHaveLength(1);
+    await page.unrouteAll({ behavior: 'wait' });
+    await select('frame');
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+d');
+    await saved();
+    const duplicate = (await stored()).find((o) => o.type === 'frame' && o.id !== 'frame');
+    if (!duplicate) throw new Error('Missing duplicate');
+    await invoke('canvas_create', { operations: [create('later-child', 'text', 10, 20, duplicate.id)] });
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+z');
+    await page.waitForFunction(() => window.canvasEdit.read().status === 'refused');
+    expect(await page.locator('#actionMessage').textContent()).toContain('later-child');
+    expect((await stored()).some((o) => o.id === 'later-child')).toBe(true);
+  });
+  it('captures the six compound interaction states in both themes and scopes new shortcuts', async () => {
+    for (const theme of ['dark', 'light']) {
+      workspace = await twin();
+      await open();
+      await page.evaluate((theme) => {
+        localStorage.setItem('codeman:skin', theme === 'light' ? 'paper-gray' : 'og');
+        window.dispatchEvent(new Event('storage'));
+      }, theme);
+      await selectMany(['note', 'other']);
+      const handle = await page.locator('#selectionBounds > .handle-se').boundingBox();
+      if (!handle) throw new Error('Missing resize handle');
+      await page.keyboard.down('Control');
+      await page.mouse.move(handle.x + 8, handle.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + 68, handle.y + 98, { steps: 8 });
+      await shot(theme, 'combined-resize');
+      await page.keyboard.press('Escape');
+      await page.mouse.up();
+      await page.keyboard.up('Control');
+      await page.locator('#board').focus();
+      await page.keyboard.press('Control+g');
+      await saved();
+      await shot(theme, 'grouped-selection');
+      await page.locator('#arrangeSelection').click();
+      await shot(theme, 'arrange-menu');
+      await page.keyboard.press('Escape');
+      await page.locator('#board').focus();
+      await page.keyboard.press('Control+c');
+      await page.keyboard.press('Control+v');
+      await saved();
+      await shot(theme, 'paste-result');
+      await page.locator('#board').focus();
+      await page.keyboard.press('Control+z');
+      await saved();
+      await select('note');
+      await page.locator('#lockSelection').click();
+      await saved();
+      await dragRefusal('note', 30, 20);
+      await shot(theme, 'locked-refusal');
+      const p = await objectCenter('other');
+      await page.mouse.move(p.x, p.y);
+      await page.mouse.down();
+      await page.mouse.move(p.x, p.y + 30, { steps: 8 });
+      expect(await page.locator('.alignment-guide').count()).toBeGreaterThan(0);
+      await shot(theme, 'alignment-guide');
+      await page.keyboard.press('Escape');
+      await page.mouse.up();
+    }
+    await page.locator('#search').fill('');
+    await page.locator('#search').focus();
+    const before = await stored();
+    for (const key of ['Control+g', 'Control+Shift+g', 'Control+d', 'Control+x', 'Control+v'])
+      await page.keyboard.press(key);
+    expect(await stored()).toEqual(before);
+    await page.locator('#board').focus();
+    await page.locator('#board').dispatchEvent('compositionstart');
+    await page.keyboard.press('Control+g');
+    await page.locator('#board').dispatchEvent('compositionend');
+    expect(await stored()).toEqual(before);
+  }, 60000);
   it('omits every edit control at phone width, including a desktop-to-phone change', async () => {
     await reader();
     await page.setViewportSize({ width: 390, height: 844 });

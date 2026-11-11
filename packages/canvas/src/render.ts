@@ -1,3 +1,4 @@
+import { lockOwner } from './arrange.js';
 import { handles } from './resize.js';
 import { editable, container, label, readable, searchText, type ViewObject } from './model.js';
 import { union } from './viewport.js';
@@ -17,6 +18,15 @@ export class Renderer {
   ) {
     this.combined.id = 'selectionBounds';
     this.combined.hidden = true;
+    for (const handle of handles) {
+      const control = document.createElement('button');
+      control.className = `resize-handle handle-${handle}`;
+      control.dataset.combinedResize = handle;
+      control.setAttribute('aria-label', `Resize selection ${handle}`);
+      control.title = 'Resize selection · Shift proportional · Alt from center';
+      control.tabIndex = -1;
+      this.combined.append(control);
+    }
     this.layer.append(this.combined);
   }
   objects(objects: ViewObject[]): void {
@@ -32,7 +42,7 @@ export class Renderer {
         this.rows.get(id)?.remove();
         this.rows.delete(id);
       }
-    for (const { object: o, depth } of live) {
+    for (const [stack, { object: o, depth }] of live.entries()) {
       let el = this.elements.get(o.id);
       if (!el) {
         el = document.createElement('article');
@@ -66,10 +76,16 @@ export class Renderer {
         this.elements.set(o.id, el);
         const row = document.createElement('button');
         row.className = 'tree-row';
+        row.dataset.rowId = o.id;
         row.onclick = (e) => this.choose(o.id, e.shiftKey, true);
         this.rows.set(o.id, row);
       }
       el.dataset.type = o.type;
+      el.style.zIndex = String(stack);
+      const locked = lockOwner(objects, o);
+      const boundary = el.querySelector('.selection-bounds');
+      boundary?.querySelector('.lock-mark')?.remove();
+      if (locked && boundary) boundary.append(lockMark());
       for (const handle of el.querySelectorAll<HTMLElement>(':scope > .resize-handle'))
         handle.hidden = !o.size || !editable(o);
       el.classList.toggle('container', container(o));
@@ -121,6 +137,8 @@ export class Renderer {
       const row = this.rows.get(o.id);
       if (row) {
         row.textContent = label(o);
+        if (locked) row.append(lockMark());
+        row.setAttribute('aria-label', `${label(o)}${locked ? ` · Locked by ${label(locked)}` : ''}`);
         if (container(o)) row.dataset.containerId = o.id;
         else delete row.dataset.containerId;
         row.dataset.searchText = searchText(o).toLowerCase();
@@ -141,7 +159,8 @@ export class Renderer {
     this.lastSelection = selected;
     this.lastFocus = focus;
     this.layer.classList.toggle('multi-selection', state.selected.length > 1);
-    this.combined.hidden = state.selected.length < 2;
+    this.combined.hidden =
+      state.selected.length < 2 && !this.objectsState.some((o) => state.selected.includes(o.id) && o.type === 'group');
     if (!this.combined.hidden) {
       const bounds = union(
         this.objectsState.filter((o) => state.selected.includes(o.id)).map((o) => worldBounds(this.objectsState, o))
@@ -161,4 +180,18 @@ export class Renderer {
   filter(query: string): void {
     for (const row of this.rows.values()) row.hidden = !row.dataset.searchText?.includes(query.toLowerCase());
   }
+}
+
+function lockMark(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('lock-mark');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-label', 'Locked');
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', 'M5 7V5a3 3 0 0 1 6 0v2M4 7h8v7H4Z');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.5');
+  svg.append(path);
+  return svg;
 }

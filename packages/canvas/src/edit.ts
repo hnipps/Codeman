@@ -1,13 +1,24 @@
 import { knownContentFields } from '../../../src/canvas/model.js';
+import { copied, pasted, selectionBox, snapped, lockOwner } from './arrange.js';
+import { worldBounds } from './tree.js';
+import { worldOrigin } from './drag.js';
 import { handles, resized } from './resize.js';
 import { movedPosition } from './drag.js';
-import { label } from './model.js';
+import { label, ViewObjectSchema } from './model.js';
 import { targets, selectRegion } from './select.js';
 import { type Point, union } from './viewport.js';
 import { CanvasUndo } from './undo.js';
 import { parseSnapshot } from './edit-queue.js';
 import { z } from 'zod';
-import { EditQueue, sendEdits, type Edit, type QueueStatus, type Acknowledged } from './edit-queue.js';
+import {
+  EditQueue,
+  sendEdits,
+  sendCommand,
+  type CanvasRequest,
+  type Edit,
+  type QueueStatus,
+  type Acknowledged,
+} from './edit-queue.js';
 import { editable, container, type Snapshot, type ViewObject } from './model.js';
 import type { ViewState, ViewCommand } from './commands.js';
 import { screenToCanvas } from './viewport.js';
@@ -32,12 +43,28 @@ type Draft = z.infer<typeof DraftSchema> & { sent?: string };
 export class DesktopEditor {
   readonly queue: EditQueue;
   private history = new CanvasUndo();
+  private clipboard: ViewObject[] = [];
+  private pasteCount = 0;
+  private compoundResize: {
+    pointerId: number;
+    start: Point;
+    box: ReturnType<typeof selectionBox>;
+    objects: ViewObject[];
+    ids: string[];
+    handle: string;
+    result: ReturnType<typeof resized>;
+  } | null = null;
+  private guides: HTMLElement[] = [];
+  private selectCreated = false;
+  private commandFocus: string | null | undefined;
+  private nextSelection: string[] | null = null;
   private submittedFocus = new Map<string, string | null>();
   private drafts = new Map<string, Draft>();
   private currentId: string | null = null;
   private authoritative: ViewObject[] = [];
   private status: QueueStatus = 'offline';
   private message = '';
+  private readerRefusal = false;
   private connected = false;
   private availability = '';
   private handlesDirty = true;
@@ -123,6 +150,7 @@ export class DesktopEditor {
       storage: localStorage,
       key: `codeman:canvas:${options.workspace}:edits`,
       send: (ops, since) => sendEdits(options.url, options.workspace, ops, since),
+      sendCommand: (request) => sendCommand(options.url, options.workspace, request),
       display: (objects) => {
         if (this.loaded) {
           options.display(objects);
@@ -134,11 +162,15 @@ export class DesktopEditor {
         this.message = message;
         this.paintStatus();
         this.paintAvailability();
-        if ((status === 'failed' || status === 'refused') && !options.mobile.matches)
-          options.dispatch({ kind: 'rail', view: 'reader' });
+        if (status === 'failed' || status === 'refused')
+          this.say(status === 'refused' && this.readerRefusal ? '' : message);
       },
       acknowledged: (ops) => this.acknowledge(ops),
       refused: (ops, message) => {
+        this.readerRefusal = ops.some((op) => op.kind === 'update' && !!op.patch.content);
+        this.history.refused();
+        this.selectCreated = false;
+        this.nextSelection = null;
         if (/revision/i.test(message))
           for (const op of ops) {
             const draft = this.drafts.get(op.objectId);
@@ -174,7 +206,11 @@ export class DesktopEditor {
       const field = node(id);
       if (field instanceof HTMLInputElement) field.onchange = () => this.numericGeometry();
     }
-    btn('moveMode').onclick = () => this.startKeyboardMove();
+    btn('moveMode').onclick = () => {
+      this.showArrange(false);
+      this.startKeyboardMove();
+    };
+    this.installArrange();
     btn('moveTo').onclick = () => {
       this.refreshDestinations();
       node('moveToMenu').hidden = !node('moveToMenu').hidden;
@@ -191,6 +227,9 @@ export class DesktopEditor {
     btn('discardEdit').onclick = () => {
       this.queue.discard();
       this.history.refused();
+      this.commandFocus = undefined;
+      this.selectCreated = false;
+      this.nextSelection = null;
       for (const draft of this.drafts.values())
         if (draft.sent !== undefined) {
           draft.value = draft.base;
@@ -241,6 +280,7 @@ export class DesktopEditor {
   }
   adapter() {
     return {
+      command: (request: CanvasRequest) => this.compound(request),
       apply: (operations: Edit[]) => this.submit(operations.map((op) => EditSchema.parse(op))),
       read: () =>
         structuredClone({
@@ -248,30 +288,39 @@ export class DesktopEditor {
           status: this.status,
           pending: this.queue.busy || this.actions > 0,
           drafts: Object.fromEntries(this.drafts),
+          locks: this.options
+            .objects()
+            .map((o) => ({ id: o.id, local: o.lock, effective: lockOwner(this.options.objects(), o)?.id ?? null })),
           readOnlyIds: this.options
             .objects()
             .filter((o) => !editable(o))
             .map((o) => o.id),
         }),
       move: (args: { targetIds: string[]; delta: Point }) =>
-        this.submit(
-          targets(this.options.objects(), args.targetIds).map((o) => ({
-            kind: 'move',
-            opId: crypto.randomUUID(),
-            objectId: o.id,
-            patch: { position: movedPosition(this.options.objects(), o, args.delta) },
-          }))
-        ),
+        this.compound({
+          tool: 'canvas_transform',
+          arguments: {
+            targetIds: args.targetIds,
+            space: 'world',
+            anchor: { x: 0, y: 0 },
+            translation: args.delta,
+            scale: { width: 1, height: 1 },
+            rotation: 0,
+          },
+        }),
       reparent: (args: { targetIds: string[]; parentId: string | null }) =>
         this.reparent(args.parentId, args.targetIds),
       delete: (targetIds: string[]) =>
-        this.submit(
-          targets(this.options.objects(), targetIds).map((o) => ({
-            kind: 'delete',
-            opId: crypto.randomUUID(),
-            objectId: o.id,
-          }))
-        ),
+        this.compound({
+          tool: 'canvas_delete',
+          arguments: {
+            operations: targets(this.options.objects(), targetIds).map((o) => ({
+              kind: 'delete',
+              opId: crypto.randomUUID(),
+              objectId: o.id,
+            })),
+          },
+        }),
       undo: () => this.undo('undo'),
       redo: () => this.undo('redo'),
       resize: (args: {
@@ -303,9 +352,225 @@ export class DesktopEditor {
         polygonSelection: 'object-center',
         overlappingTargets: 'ancestor-only',
         resizeDeltaSpace: 'world',
-        autoBoundedGroupResize: false,
+        autoBoundedGroupResize: 'uniform-subtree',
+        flip: 'Unsupported: the server accepts positive scales only',
+        backgroundLock: ['frame', 'section'],
       },
     };
+  }
+  private say(message: string): void {
+    node('actionMessage').textContent = message;
+    node('actionMessage').hidden = !message;
+  }
+  private compound(request: CanvasRequest): boolean {
+    if (!this.available()) return false;
+    if (this.queue.busy || this.actions) {
+      this.say('Wait for pending edits to save before this action.');
+      return false;
+    }
+    const requested = z
+      .object({ targetIds: z.array(z.string()).optional() })
+      .passthrough()
+      .safeParse(request.arguments);
+    if (
+      requested.success &&
+      requested.data.targetIds?.some((id) => this.options.objects().some((o) => o.id === id && !editable(o)))
+    ) {
+      this.say('Unsupported objects are read-only.');
+      return false;
+    }
+    const accepted = this.queue.enqueueCommand(request);
+    if (accepted) this.commandFocus = this.options.view().focusId;
+    return accepted;
+  }
+  private showArrange(open: boolean): void {
+    node('arrangeMenu').hidden = !open;
+    btn('arrangeSelection').setAttribute('aria-expanded', String(open));
+  }
+  private ids(): string[] {
+    return targets(this.options.objects(), this.options.view().selected).map((o) => o.id);
+  }
+  private installArrange(): void {
+    btn('arrangeSelection').onclick = () => {
+      this.say('');
+      const open = node('arrangeMenu').hidden;
+      this.showArrange(open);
+      if (open) btn('moveMode').focus();
+    };
+    btn('groupSelection').onclick = () =>
+      this.group(targets(this.options.objects(), this.ids()).every((o) => o.type === 'group'));
+    btn('lockSelection').onclick = () => {
+      const selected = targets(this.options.objects(), this.ids());
+      this.compound({
+        tool: 'canvas_lock',
+        arguments: {
+          targetIds: selected.map((o) => o.id),
+          mode: selected.some((o) => lockOwner(this.options.objects(), o)) ? 'unlock' : 'subtree',
+        },
+      });
+    };
+    btn('backgroundLock').onclick = () => {
+      this.showArrange(false);
+      this.compound({ tool: 'canvas_lock', arguments: { targetIds: this.ids(), mode: 'background' } });
+    };
+    btn('wrapFrame').onclick = () => this.group(false, 'frame');
+    btn('wrapSection').onclick = () => this.group(false, 'section');
+    btn('addPaste').onclick = () => {
+      this.showAddMenu(false);
+      this.paste();
+    };
+    btn('copySelection').onclick = () => this.copy(false);
+    btn('cutSelection').onclick = () => this.copy(true);
+    btn('pasteSelection').onclick = () => this.paste();
+    btn('duplicateSelection').onclick = () => this.duplicate();
+    btn('rotateSelection').onclick = () => {
+      const field = node('rotationDegrees');
+      if (!(field instanceof HTMLInputElement) || !Number.isFinite(field.valueAsNumber)) {
+        this.say('Enter a finite rotation in degrees.');
+        return;
+      }
+      const box = selectionBox(this.options.objects(), this.ids());
+      this.showArrange(false);
+      this.compound({
+        tool: 'canvas_transform',
+        arguments: {
+          targetIds: this.ids(),
+          space: 'world',
+          anchor: { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+          translation: { x: 0, y: 0 },
+          scale: { width: 1, height: 1 },
+          rotation: field.valueAsNumber,
+        },
+      });
+    };
+    for (const button of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('[data-align]'))
+      button.onclick = () => {
+        const [axis, anchor] = (button.dataset.align ?? '').split('-');
+        this.showArrange(false);
+        this.compound({
+          tool: 'canvas_arrange',
+          arguments: {
+            action: 'align',
+            targetIds: this.ids(),
+            axis: z.enum(['x', 'y']).parse(axis),
+            anchor: z.enum(['start', 'center', 'end']).parse(anchor),
+          },
+        });
+      };
+    for (const button of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('[data-distribute]'))
+      button.onclick = () => {
+        const spacing = node('layoutSpacing');
+        this.showArrange(false);
+        this.compound({
+          tool: 'canvas_arrange',
+          arguments: {
+            action: 'distribute',
+            targetIds: this.ids(),
+            axis: z.enum(['x', 'y']).parse(button.dataset.distribute),
+            ...(spacing instanceof HTMLInputElement && spacing.value !== '' ? { spacing: spacing.valueAsNumber } : {}),
+          },
+        });
+      };
+    for (const button of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('[data-order]'))
+      button.onclick = () => {
+        this.showArrange(false);
+        this.compound({
+          tool: 'canvas_arrange',
+          arguments: {
+            action: 'order',
+            targetIds: this.ids(),
+            placement: z.enum(['front', 'back', 'forward', 'backward']).parse(button.dataset.order),
+          },
+        });
+      };
+  }
+  private group(ungroup: boolean, containerType: 'group' | 'frame' | 'section' = 'group'): void {
+    const targetIds = this.ids();
+    if (!targetIds.length) return;
+    this.showArrange(false);
+    if (ungroup) {
+      const children = this.options
+        .objects()
+        .filter((o) => targetIds.includes(o.parentId ?? ''))
+        .map((o) => o.id);
+      if (this.compound({ tool: 'canvas_arrange', arguments: { action: 'ungroup', targetIds } }))
+        this.nextSelection = children;
+    } else {
+      const selected = targets(this.options.objects(), targetIds);
+      const parentId = selected.every((o) => o.parentId === selected[0].parentId) ? selected[0].parentId : null;
+      if (
+        this.compound({
+          tool: 'canvas_arrange',
+          arguments: {
+            action: 'group',
+            targetIds,
+            parentId,
+            groupId: crypto.randomUUID(),
+            label: `Untitled ${containerType}`,
+            containerType,
+          },
+        })
+      )
+        this.selectCreated = true;
+    }
+  }
+  private copy(cut: boolean): void {
+    this.showArrange(false);
+    this.clipboard = copied(this.options.objects(), this.ids());
+    if (!this.clipboard.length) return;
+    try {
+      localStorage.setItem('codeman:canvas:clipboard', JSON.stringify(this.clipboard));
+    } catch {
+      this.say('Clipboard storage is unavailable.');
+      return;
+    }
+    this.pasteCount = 0;
+    if (cut) {
+      if (
+        this.compound({
+          tool: 'canvas_delete',
+          arguments: {
+            operations: this.ids().map((objectId) => ({ kind: 'delete', objectId, opId: crypto.randomUUID() })),
+          },
+        })
+      )
+        this.nextSelection = [];
+    } else this.say(`Copied ${this.ids().length} selected.`);
+  }
+  private paste(): void {
+    this.showArrange(false);
+    try {
+      this.clipboard = z
+        .array(ViewObjectSchema)
+        .parse(JSON.parse(localStorage.getItem('codeman:canvas:clipboard') ?? '[]'));
+      if (!this.clipboard.length) {
+        this.say('Copy a canvas selection before pasting.');
+        return;
+      }
+      const offset = 24 * (this.pasteCount + 1);
+      const operations = pasted(this.clipboard, { x: offset, y: offset });
+      if (
+        this.compound({
+          tool: 'canvas_create',
+          arguments: { operations: operations.filter((o) => o.kind === 'create') },
+        })
+      ) {
+        this.selectCreated = true;
+        this.pasteCount++;
+      }
+    } catch {
+      this.say('This clipboard cannot be pasted as editable canvas content.');
+    }
+  }
+  private duplicate(): void {
+    this.showArrange(false);
+    if (
+      this.compound({
+        tool: 'canvas_arrange',
+        arguments: { action: 'duplicate', targetIds: this.ids(), offset: { x: 24, y: 24 } },
+      })
+    )
+      this.selectCreated = true;
   }
   private get draftKey(): string {
     return `codeman:canvas:${this.options.workspace}:drafts`;
@@ -372,7 +637,16 @@ export class DesktopEditor {
   }
   private available(): boolean {
     if (this.options.mobile.matches) return false;
-    if (this.connected && this.status !== 'refused') return true;
+    if (this.connected) {
+      if (this.status === 'refused') {
+        this.queue.discard();
+        this.history.refused();
+        this.commandFocus = undefined;
+      }
+      this.readerRefusal = false;
+      this.say('');
+      return true;
+    }
     node('announcement').textContent = this.message || 'Offline. Reconnect before editing.';
     return false;
   }
@@ -434,7 +708,14 @@ export class DesktopEditor {
     if (!this.available()) return;
     const ids = this.options.view().selected;
     const selected = targets(this.options.objects(), ids);
-    this.submit(selected.map((o) => ({ kind: 'delete', opId: crypto.randomUUID(), objectId: o.id })));
+    if (!selected.length) return;
+    if (
+      this.compound({
+        tool: 'canvas_delete',
+        arguments: { operations: selected.map((o) => ({ kind: 'delete', opId: crypto.randomUUID(), objectId: o.id })) },
+      })
+    )
+      this.nextSelection = [];
   }
   private field(o: ViewObject): string | null {
     if (o.content.type !== o.type) return null;
@@ -487,10 +768,15 @@ export class DesktopEditor {
       delete draft.sent;
   }
   private acknowledge(operations: Acknowledged[]): void {
+    const created = this.selectCreated ? operations.filter((o) => o.kind === 'create').map((o) => o.objectId) : [];
+    this.selectCreated = false;
     const focusId = this.history.acknowledge(
       operations,
-      this.submittedFocus.get(operations[0]?.opId ?? '') ?? operations[0]?.objectId ?? null
+      this.commandFocus !== undefined
+        ? this.commandFocus
+        : (this.submittedFocus.get(operations[0]?.opId ?? '') ?? operations[0]?.objectId ?? null)
     );
+    this.commandFocus = undefined;
     for (const op of operations) this.submittedFocus.delete(op.opId);
     if (focusId) {
       this.options.focusMode(true);
@@ -519,6 +805,20 @@ export class DesktopEditor {
         delete draft.sent;
         if (!draft.conflict && draft.value !== draft.base) this.debounce = setTimeout(() => this.saveText(), 50);
       }
+    }
+    if (created.length || this.nextSelection)
+      this.options.display(this.authoritative.filter((o) => o.deletedAt === null));
+    if (this.nextSelection) {
+      this.options.dispatch({ kind: 'selection', ids: this.nextSelection });
+      this.nextSelection = null;
+    }
+    if (created.length) {
+      const createdSet = new Set(created);
+      const roots = operations
+        .flatMap((op) => op.prev.map((c) => c.after))
+        .filter((o) => createdSet.has(o.id) && !createdSet.has(o.parentId ?? ''));
+      this.options.dispatch({ kind: 'selection', ids: [...new Set(roots.map((o) => o.id))] });
+      this.options.dispatch({ kind: 'focus', id: roots[0]?.id ?? null });
     }
     this.persistDrafts();
   }
@@ -556,7 +856,9 @@ export class DesktopEditor {
       ? `${draft.conflictAuthor || 'Someone'} changed this text while you were editing. Your draft is kept.`
       : this.status === 'saved' && draft && draft.value !== draft.base
         ? 'Draft · waiting to save'
-        : this.message;
+        : this.status === 'refused' && !this.readerRefusal
+          ? ''
+          : this.message;
     node('editStatus').dataset.state = draft?.conflict ? 'conflict' : this.status;
     node('conflictActions').hidden = !draft?.conflict;
     node('retryActions').hidden = this.status !== 'failed' && this.status !== 'refused';
@@ -568,7 +870,7 @@ export class DesktopEditor {
     btn('addTool').setAttribute('aria-pressed', String(open));
   }
   private paintAvailability(): void {
-    const unavailable = !this.connected || this.status === 'refused';
+    const unavailable = !this.connected;
     for (const direction of ['undo', 'redo'] as const)
       btn(`${direction}Edit`).setAttribute(
         'aria-disabled',
@@ -588,6 +890,9 @@ export class DesktopEditor {
       'moveMode',
       'moveTo',
       'commitMoveTo',
+      'arrangeSelection',
+      'groupSelection',
+      'lockSelection',
     ])
       btn(id).disabled = unavailable;
     for (const handle of node('layer').querySelectorAll<HTMLButtonElement>('[data-resize]'))
@@ -600,10 +905,21 @@ export class DesktopEditor {
     node('contextRow').hidden = this.options.mobile.matches || !this.options.view().selected.length;
     btn('editSelection').hidden = this.options.view().selected.length !== 1;
     node('selectionCount').textContent = `${this.options.view().selected.length} selected`;
+    const selected = targets(this.options.objects(), this.options.view().selected);
+    const ungroup = selected.length > 0 && selected.every((o) => o.type === 'group');
+    btn('groupSelection').textContent = ungroup ? 'Ungroup' : 'Group';
+    btn('groupSelection').title = ungroup ? 'Ungroup · Shift+Cmd/Ctrl+G' : 'Group · Cmd/Ctrl+G';
+    btn('lockSelection').textContent = selected.some((o) => lockOwner(this.options.objects(), o)) ? 'Unlock' : 'Lock';
+    btn('backgroundLock').hidden =
+      !selected.length || !selected.every((o) => o.type === 'frame' || o.type === 'section');
+    for (const control of node('arrangeMenu').querySelectorAll<HTMLButtonElement>('button'))
+      control.disabled = !this.connected;
+    if (this.options.mobile.matches || !selected.length) this.showArrange(false);
     this.read(this.options.objects().find((o) => o.id === this.options.view().focusId));
     this.paintAvailability();
     this.previewMove();
     this.previewResize();
+    this.previewCombined();
     this.paintGeometry();
   }
   private selectionStart(e: PointerEvent): void {
@@ -620,6 +936,29 @@ export class DesktopEditor {
       e.target instanceof Element ? e.target.closest<HTMLElement>('[data-object-id]')?.dataset.objectId : undefined;
     const handle =
       e.target instanceof Element ? e.target.closest<HTMLElement>('[data-resize]')?.dataset.resize : undefined;
+    const combinedHandle =
+      e.target instanceof Element
+        ? e.target.closest<HTMLElement>('[data-combined-resize]')?.dataset.combinedResize
+        : undefined;
+    if (combinedHandle) {
+      if (!this.available()) return;
+      const ids = this.ids();
+      if (!ids.length) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.compoundResize = {
+        pointerId: e.pointerId,
+        start: { x: e.clientX, y: e.clientY },
+        box: selectionBox(this.options.objects(), ids),
+        objects: this.options.objects(),
+        ids,
+        handle: combinedHandle,
+        result: null,
+      };
+      node('board').setPointerCapture(e.pointerId);
+      node('board').focus({ preventScroll: true });
+      return;
+    }
     if (targetId && handle) {
       const object = this.options.objects().find((o) => o.id === targetId);
       if (!object?.size || !editable(object) || !this.available()) return;
@@ -682,6 +1021,32 @@ export class DesktopEditor {
       : { kind: 'rectangle' as const, rect: union(points.map((p) => ({ ...p, width: 0, height: 0 }))) };
   }
   private selectionMove(e: PointerEvent): void {
+    const combined = this.compoundResize;
+    if (combined?.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const sample = combined.objects.find((o) => combined.ids.includes(o.id));
+      if (!sample) return;
+      const zoom = this.options.view().viewport.zoom;
+      let delta = { x: (e.clientX - combined.start.x) / zoom, y: (e.clientY - combined.start.y) / zoom };
+      delta = this.snapResize(combined.objects, combined.ids, combined.box, delta, combined.handle, e.ctrlKey);
+      combined.result = resized(
+        [],
+        {
+          ...sample,
+          parentId: null,
+          position: { x: combined.box.x, y: combined.box.y },
+          size: { width: combined.box.width, height: combined.box.height },
+          rotation: 0,
+        },
+        combined.handle,
+        delta,
+        e.shiftKey || combined.objects.some((o) => combined.ids.includes(o.id) && o.type === 'group'),
+        e.altKey
+      );
+      this.previewCombined();
+      return;
+    }
     const resize = this.resizeGesture;
     if (resize?.pointerId === e.pointerId) {
       e.preventDefault();
@@ -691,7 +1056,14 @@ export class DesktopEditor {
         resize.all,
         resize.object,
         resize.handle,
-        { x: (e.clientX - resize.start.x) / zoom, y: (e.clientY - resize.start.y) / zoom },
+        this.snapResize(
+          resize.all,
+          [resize.object.id],
+          worldBounds(resize.all, resize.object),
+          { x: (e.clientX - resize.start.x) / zoom, y: (e.clientY - resize.start.y) / zoom },
+          resize.handle,
+          e.ctrlKey
+        ),
         e.shiftKey,
         e.altKey
       );
@@ -722,6 +1094,31 @@ export class DesktopEditor {
       el.classList.toggle('selection-preview', ids.includes(el.dataset.objectId ?? ''));
   }
   private selectionEnd(e: PointerEvent): void {
+    const combined = this.compoundResize;
+    if (combined?.pointerId === e.pointerId) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (combined.result)
+        this.compound({
+          tool: 'canvas_transform',
+          arguments: {
+            targetIds: combined.ids,
+            space: 'world',
+            anchor: { x: combined.box.x, y: combined.box.y },
+            translation: {
+              x: combined.result.position.x - combined.box.x,
+              y: combined.result.position.y - combined.box.y,
+            },
+            scale: {
+              width: combined.result.size.width / combined.box.width,
+              height: combined.result.size.height / combined.box.height,
+            },
+            rotation: 0,
+          },
+        });
+      this.cancelSelection();
+      return;
+    }
     const resize = this.resizeGesture;
     if (resize?.pointerId === e.pointerId) {
       e.preventDefault();
@@ -759,10 +1156,11 @@ export class DesktopEditor {
     this.cancelSelection();
   }
   private cancelSelection(): void {
-    if (this.moveGesture || this.resizeGesture) {
+    if (this.moveGesture || this.resizeGesture || this.compoundResize) {
       for (const object of this.options.objects()) {
         const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${object.id}"]`);
         if (el) {
+          el.style.scale = '';
           el.style.left = `${object.position.x}px`;
           el.style.top = `${object.position.y}px`;
           if (object.size) {
@@ -773,6 +1171,16 @@ export class DesktopEditor {
       }
     }
     node('selectionBounds').style.translate = '';
+    if (this.compoundResize) {
+      const box = selectionBox(this.options.objects(), this.options.view().selected),
+        chrome = node('selectionBounds');
+      chrome.style.left = `calc(${box.x}px - 6px / var(--zoom))`;
+      chrome.style.top = `calc(${box.y}px - 6px / var(--zoom))`;
+      chrome.style.width = `calc(${box.width}px * var(--zoom) + 12px)`;
+      chrome.style.height = `calc(${box.height}px * var(--zoom) + 12px)`;
+    }
+    this.compoundResize = null;
+    this.paintGuides([]);
     this.moveGesture = null;
     this.resizeGesture = null;
     for (const el of node('layer').querySelectorAll('.drop-target')) el.classList.remove('drop-target');
@@ -781,6 +1189,71 @@ export class DesktopEditor {
     this.selectionGesture = null;
     this.selectionPath.removeAttribute('d');
     for (const el of node('layer').querySelectorAll('.selection-preview')) el.classList.remove('selection-preview');
+  }
+  private paintGuides(guides: { axis: 'x' | 'y'; value: number }[]): void {
+    for (const el of this.guides) el.remove();
+    const viewport = this.options.view().viewport;
+    this.guides = guides.map(({ axis, value }) => {
+      const el = document.createElement('div');
+      el.className = 'alignment-guide';
+      el.dataset.axis = axis;
+      el.style[axis === 'x' ? 'left' : 'top'] = `${viewport[axis] + value * viewport.zoom}px`;
+      node('board').append(el);
+      return el;
+    });
+  }
+  private snapResize(
+    objects: ViewObject[],
+    ids: string[],
+    box: ReturnType<typeof selectionBox>,
+    delta: Point,
+    handle: string,
+    disabled: boolean
+  ): Point {
+    const edge = {
+      x: box.x + (handle.includes('e') ? box.width : 0),
+      y: box.y + (handle.includes('s') ? box.height : 0),
+      width: 0,
+      height: 0,
+    };
+    const snap = snapped(objects, ids, edge, delta, this.options.view().viewport.zoom, disabled);
+    const guides = snap.guides.filter((g) =>
+      g.axis === 'x' ? handle.includes('e') || handle.includes('w') : handle.includes('n') || handle.includes('s')
+    );
+    this.paintGuides(guides);
+    return {
+      x: guides.some((g) => g.axis === 'x') ? snap.delta.x : delta.x,
+      y: guides.some((g) => g.axis === 'y') ? snap.delta.y : delta.y,
+    };
+  }
+  private previewCombined(): void {
+    const gesture = this.compoundResize;
+    if (!gesture?.result) return;
+    const { box, result, objects, ids } = gesture;
+    const sx = result.size.width / box.width,
+      sy = result.size.height / box.height;
+    for (const object of targets(objects, ids)) {
+      const world = worldOrigin(objects, object);
+      const delta = {
+        x: result.position.x + (world.x - box.x) * sx - world.x,
+        y: result.position.y + (world.y - box.y) * sy - world.y,
+      };
+      const position = movedPosition(objects, object, delta);
+      const el = node('layer').querySelector<HTMLElement>(`[data-object-id="${object.id}"]`);
+      if (!el) continue;
+      el.style.left = `${position.x}px`;
+      el.style.top = `${position.y}px`;
+      if (object.type === 'group') el.style.scale = String(sx);
+      else if (object.size) {
+        el.style.width = `${object.size.width * sx}px`;
+        el.style.height = `${object.size.height * sy}px`;
+      }
+    }
+    const chrome = node('selectionBounds');
+    chrome.style.left = `calc(${result.position.x}px - 6px / var(--zoom))`;
+    chrome.style.top = `calc(${result.position.y}px - 6px / var(--zoom))`;
+    chrome.style.width = `calc(${result.size.width}px * var(--zoom) + 12px)`;
+    chrome.style.height = `calc(${result.size.height}px * var(--zoom) + 12px)`;
   }
   private previewResize(): void {
     const resize = this.resizeGesture;
@@ -835,7 +1308,7 @@ export class DesktopEditor {
       operations.push({ kind: 'move', opId: crypto.randomUUID(), objectId: object.id, patch: { position } });
     if (size && (size.width !== object.size?.width || size.height !== object.size?.height))
       operations.push({ kind: 'update', opId: crypto.randomUUID(), objectId: object.id, patch: { size } });
-    return operations.length ? this.submit(operations) : true;
+    return operations.length ? this.compound({ tool: 'canvas_update', arguments: { operations } }) : true;
   }
   private validDestination(id: string, targetIds?: string[]): boolean {
     const selected = targetIds
@@ -864,16 +1337,8 @@ export class DesktopEditor {
     }
   }
   private reparent(parentId: string | null, targetIds = this.options.view().selected): boolean {
-    const selected = targets(this.options.objects(), targetIds);
     if (parentId && !this.validDestination(parentId, targetIds)) return false;
-    return this.submit(
-      selected.map((o) => ({
-        kind: 'reparent',
-        opId: crypto.randomUUID(),
-        objectId: o.id,
-        patch: { parentId, order: Date.now(), preserveWorld: true },
-      }))
-    );
+    return this.compound({ tool: 'canvas_arrange', arguments: { action: 'reparent', targetIds, parentId } });
   }
   private movePointer(e: PointerEvent): void {
     const gesture = this.moveGesture;
@@ -886,6 +1351,19 @@ export class DesktopEditor {
     };
     if (Math.hypot(e.clientX - gesture.start.x, e.clientY - gesture.start.y) > 4) gesture.moved = true;
     if (!gesture.moved) return;
+    const snapping = snapped(
+      gesture.all,
+      gesture.originals.map((o) => o.id),
+      selectionBox(
+        gesture.all,
+        gesture.originals.map((o) => o.id)
+      ),
+      gesture.delta,
+      this.options.view().viewport.zoom,
+      e.ctrlKey
+    );
+    gesture.delta = snapping.delta;
+    this.paintGuides(snapping.guides);
     this.options.dispatch({ kind: 'selection', ids: gesture.originals.map((o) => o.id) });
     const moving = gesture.originals.map((o) => node('layer').querySelector<HTMLElement>(`[data-object-id="${o.id}"]`));
     for (const el of moving) if (el) el.style.pointerEvents = 'none';
@@ -921,22 +1399,30 @@ export class DesktopEditor {
   private commitMove(): void {
     const gesture = this.moveGesture;
     if (!gesture) return;
-    const operations: Edit[] = gesture.originals.map((o) => ({
-      kind: 'move',
-      opId: crypto.randomUUID(),
-      objectId: o.id,
-      patch: { position: movedPosition(gesture.all, o, gesture.delta) },
-    }));
-    if (gesture.destination)
-      for (const o of gesture.originals)
-        operations.push({
-          kind: 'reparent',
-          opId: crypto.randomUUID(),
-          objectId: o.id,
-          patch: { parentId: gesture.destination, order: Date.now(), preserveWorld: true },
-        });
-    this.submit(operations);
+    if (gesture.destination) {
+      this.compound({
+        tool: 'canvas_arrange',
+        arguments: {
+          action: 'reparent',
+          targetIds: gesture.originals.map((o) => o.id),
+          parentId: gesture.destination,
+          translation: gesture.delta,
+        },
+      });
+    } else
+      this.compound({
+        tool: 'canvas_transform',
+        arguments: {
+          targetIds: gesture.originals.map((o) => o.id),
+          space: 'world',
+          anchor: { x: 0, y: 0 },
+          translation: gesture.delta,
+          scale: { width: 1, height: 1 },
+          rotation: 0,
+        },
+      });
   }
+
   private startKeyboardMove(): void {
     if (!this.available()) return;
     const selected = targets(this.options.objects(), this.options.view().selected);
@@ -959,37 +1445,53 @@ export class DesktopEditor {
   private async undo(direction: 'undo' | 'redo'): Promise<void> {
     if (!this.available()) return;
     if (this.queue.busy || this.actions) {
-      node('announcement').textContent = 'Wait for pending edits to save before changing history.';
+      this.say('Wait for pending edits to save before changing history.');
       return;
     }
     if (!this.history.available(direction)) {
       node('announcement').textContent = direction === 'undo' ? 'Nothing to undo.' : 'Nothing to redo.';
       return;
     }
-    this.actions++;
-    try {
-      const response = await fetch(
-        this.options.url(`/api/canvas/${this.options.workspace}/objects?includeDeleted=true`)
-      );
-      if (!response.ok) throw new Error('History could not load the latest objects.');
-      const snapshot = parseSnapshot(await response.json());
-      this.receive(snapshot);
-      const action = this.history.prepare(direction, snapshot.objects);
-      if (action && !this.submit(action.operations)) this.history.refused();
-    } catch (error) {
-      this.history.refused();
-      node('announcement').textContent = error instanceof Error ? error.message : 'History could not be changed.';
-    } finally {
-      this.actions--;
-      this.paintAvailability();
-    }
+    const request = this.history.prepare(direction);
+    if (request && !this.compound(request)) this.history.refused();
   }
   private key(e: KeyboardEvent): void {
     if (this.composing || e.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Escape' && (this.selectionGesture || this.moveGesture || this.resizeGesture)) {
+    if (
+      e.key === 'Escape' &&
+      (this.selectionGesture || this.moveGesture || this.resizeGesture || this.compoundResize)
+    ) {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.cancelSelection();
+      return;
+    }
+    if (!node('arrangeMenu').hidden && e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.showArrange(false);
+      btn('arrangeSelection').focus();
+      return;
+    }
+    if (
+      !node('arrangeMenu').hidden &&
+      e.target instanceof HTMLButtonElement &&
+      e.target.closest('#arrangeMenu') &&
+      ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)
+    ) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const items = [...node('arrangeMenu').querySelectorAll<HTMLButtonElement>('button')].filter(
+        (item) => !item.hidden && !item.disabled
+      );
+      const index = items.findIndex((item) => item === document.activeElement);
+      const next =
+        e.key === 'Home'
+          ? 0
+          : e.key === 'End'
+            ? items.length - 1
+            : (index + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+      items[next]?.focus();
       return;
     }
     if (e.key === 'Escape' && !node('addMenu').hidden) {
@@ -1021,6 +1523,18 @@ export class DesktopEditor {
       this.options.mobile.matches
     )
       return;
+    if ((e.ctrlKey || e.metaKey) && ['g', 'c', 'x', 'v', 'd'].includes(e.key.toLowerCase())) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat) {
+        const key = e.key.toLowerCase();
+        if (key === 'g') this.group(e.shiftKey);
+        else if (key === 'd') this.duplicate();
+        else if (key === 'v') this.paste();
+        else this.copy(key === 'x');
+      }
+      return;
+    }
     if (this.moveGesture?.pointerId === null) {
       const gesture = this.moveGesture;
       if (e.key === 'Enter') {
