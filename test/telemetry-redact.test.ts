@@ -704,12 +704,16 @@ describe('redaction before the queue', () => {
       totalTokens: 16155,
     } as never);
     telemetry.write('server', { level: 'log', buildId: 'b', pid: 1, msg: max });
+    telemetry.write('server', { level: 'log', buildId: 'b', pid: 1, msg: 'tokens: 174k' });
     for (const msg of [
       `token: ${cred}`,
       `access_token=${cred}`,
       `refreshTokens: ${cred}`,
       `authTokens: ["${cred}"]`,
       `{"tokens":{"access":"${cred}"}}`,
+      `tokens: 1${cred}`,
+      'tokens: 12ab34cd56ef',
+      'max_tokens=4096abcdef',
     ]) {
       telemetry.write('server', { level: 'error', buildId: 'b', pid: 1, msg });
     }
@@ -724,6 +728,9 @@ describe('redaction before the queue', () => {
     const raw = readFileSync(join(dir, 'server.jsonl'), 'utf8');
     expect(raw).toContain(usage);
     expect(raw).toContain(max);
+    expect(raw).toContain('tokens: 174k');
+    expect(raw).not.toContain('12ab34cd56ef');
+    expect(raw).not.toContain('4096abcdef');
     expect(raw).toContain('"inputTokens":15234');
     expect(raw).toContain('"outputTokens":921');
     expect(raw).toContain('"totalTokens":16155');
@@ -744,6 +751,13 @@ describe('redaction before the queue', () => {
     const cap = await queryLogs({ dir, stream: 'server', text: max });
     expect(cap.lines).toHaveLength(1);
     expect(cap.lines[0]).toContain(max);
+    const kilo = await queryLogs({ dir, stream: 'server', text: 'tokens: 174k' });
+    expect(kilo.lines).toHaveLength(1);
+    expect(kilo.lines[0]).toContain('tokens: 174k');
+    const glued = await queryLogs({ dir, stream: 'server', text: '12ab34cd56ef' });
+    expect(glued.lines).toEqual([]);
+    const junk = await queryLogs({ dir, stream: 'server', text: '4096abcdef' });
+    expect(junk.lines).toEqual([]);
     const nested = await queryLogs({ dir, stream: 'server', text: '"tokens":"[redacted]"' });
     expect(nested.lines.length).toBeGreaterThan(0);
     expect(nested.lines.every((line) => !line.includes(cred))).toBe(true);

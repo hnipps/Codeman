@@ -3,8 +3,8 @@
  *
  * One function, no I/O, no caller-supplied pattern. A key that contains a
  * credential word is masked, at any length, except a short exact allowlist of
- * attribution keys. A key that only counts tokens is not one, when its value
- * starts with a digit. A key longer than the classifier cap is secret too, and is
+ * attribution keys. A key that only counts tokens is not one, when the first
+ * value token is a number. A key longer than the classifier cap is secret too, and is
  * not copied or normalised. A key may start with a digit. The masked span is
  * the whole value: a quoted string, a bracketed object or array, or everything
  * up to the newline for any other value. The inside of a quote that is not
@@ -142,23 +142,54 @@ function isTokenCountKey(normalized: string): boolean {
   return true;
 }
 
-function startsWithDigit(text: string, i: number): boolean {
-  if (i < 0 || i >= text.length) return false;
-  const code = text.charCodeAt(i);
+function isDigitCode(code: number): boolean {
   return code >= 48 && code <= 57;
+}
+
+/**
+ * The first value token is a count: digits, with `.` `,` `_` only between
+ * digits, and an optional `k`/`m` suffix. It must end at whitespace, `,`,
+ * `;`, `)`, `}`, `]`, a quote, or the end of the text. `174k` is one.
+ * `1synthetic…` is not.
+ */
+function isCountToken(text: string, i: number): boolean {
+  if (i < 0 || i >= text.length || !isDigitCode(text.charCodeAt(i))) return false;
+  let j = i;
+  while (j < text.length) {
+    const code = text.charCodeAt(j);
+    if (isDigitCode(code)) {
+      j++;
+      continue;
+    }
+    const c = text[j];
+    if ((c === '.' || c === ',' || c === '_') && j + 1 < text.length && isDigitCode(text.charCodeAt(j + 1))) {
+      j++;
+      continue;
+    }
+    if (c === 'k' || c === 'K' || c === 'm' || c === 'M') {
+      j++;
+      break;
+    }
+    break;
+  }
+  if (j >= text.length) return true;
+  const end = text[j];
+  return (
+    isWs(end) || end === ',' || end === ';' || end === ')' || end === '}' || end === ']' || end === '"' || end === "'"
+  );
 }
 
 /** A parsed count. A string, object, or array is not one, even when it looks numeric. */
 function parsedCount(value: unknown): boolean {
   if (typeof value !== 'number' || !Number.isFinite(value)) return false;
-  return startsWithDigit(String(value), 0);
+  return isCountToken(String(value), 0);
 }
 
 /**
  * A telemetry key names a credential when it contains one, at any length.
  * A key longer than `KEY_CAP` is secret without normalisation. Attribution
  * keys in `ATTRIBUTION_KEYS` do not match. A token-count key is not a secret
- * key; the caller still masks it unless the value starts with a digit.
+ * key; the caller still masks it unless the first value token is a number.
  * Config backup's `SECRET_KEY_RE` is a different rule and still matches `author`.
  */
 export function isTelemetrySecretKey(key: string): boolean {
@@ -369,9 +400,9 @@ function readUnquotedKey(text: string, i: number): UnquotedKey | null {
 }
 
 /**
- * Mask a secret assignment. A token-count key is masked too, unless its value
- * starts with a digit: `tokens: 15234 input, 921 output` stays, and
- * `{"tokens":{"access":"…"}}` does not.
+ * Mask a secret assignment. A token-count key is masked too, unless its first
+ * value token is a number: `tokens: 15234 input, 921 output` stays, and
+ * `tokens: 1synthetic…` does not.
  */
 function shouldMaskAssignment(
   secret: boolean,
@@ -380,7 +411,7 @@ function shouldMaskAssignment(
   valueStart: number,
   pathLike: boolean
 ): boolean {
-  if (count && !secret && startsWithDigit(text, valueStart)) return false;
+  if (count && !secret && isCountToken(text, valueStart)) return false;
   if (!secret && !count) return false;
   if (secret && isExemptValue(text, valueStart, pathLike)) return false;
   return true;

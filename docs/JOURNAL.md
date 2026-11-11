@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-11 - A token count is a whole number
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`
+**Why:** Round 5 kept any value that started with a digit, so `tokens: 1synthetic-credential-123456789` stayed on the line.
+**Links:** [Intent](../intent/2026-11-11-pc8-log-redaction-fix-round6.md)
+
+The first value token under a token-count key must be entirely a number: digits, group separators only between digits, and an optional `k` or `m`. `174k` stays. Anything else is masked like a secret value.
+
 ## 2026-11-11 - A token count is not a credential
 
 **Type:** intent-refinement
