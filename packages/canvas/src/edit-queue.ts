@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { IdSchema, MutableSchema } from '../../../src/canvas/model.js';
 import type { Command } from '../../../src/canvas/operations.js';
 import { SnapshotSchema, ViewObjectSchema, type Snapshot, type ViewObject } from './model.js';
-import { reparentPosition } from './drag.js';
+import { reparentPosition, worldOrigin } from './drag.js';
 const fields = { opId: IdSchema, objectId: IdSchema, expectedRevision: z.number().int().nonnegative().optional() };
 export const EditSchema = z.discriminatedUnion('kind', [
   z
@@ -45,11 +45,16 @@ export const AckSchema = z.object({
 });
 export type Acknowledged = z.infer<typeof AckSchema>;
 export type QueueStatus = 'saved' | 'saving' | 'failed' | 'refused' | 'offline';
-const StoredSchema = z.object({ operations: z.array(EditSchema), refusal: z.string().nullable() });
+const StoredSchema = z.object({
+  operations: z.array(EditSchema),
+  refusal: z.string().nullable(),
+  batchSizes: z.array(z.number().int().positive()).default([]),
+});
 export class Refused extends Error {}
 export class EditQueue {
   private base: Snapshot = { seq: 0, objects: [] };
   private pending: Edit[] = [];
+  private batchSizes: number[] = [];
   private refusal: string | null = null;
   private flight = false;
   private connected = false;
@@ -64,14 +69,26 @@ export class EditQueue {
       display: (objects: ViewObject[]) => void;
       status: (status: QueueStatus, message: string) => void;
       acknowledged: (operations: Acknowledged[]) => void;
+      refused?: (operations: Edit[], message: string) => void;
       id?: () => string;
     }
   ) {
-    const raw = options.storage.getItem(options.key);
+    let raw: string | null = null;
+    try {
+      raw = options.storage.getItem(options.key);
+    } catch {
+      this.refusal = 'Draft storage is unavailable. Editing is paused until storage is available.';
+    }
     if (raw) {
       try {
         const stored = StoredSchema.parse(JSON.parse(raw));
         this.pending = stored.operations;
+        this.batchSizes =
+          stored.batchSizes.reduce((sum, size) => sum + size, 0) === this.pending.length
+            ? stored.batchSizes
+            : this.pending.length
+              ? [this.pending.length]
+              : [];
         this.refusal = stored.refusal;
       } catch {
         this.refusal = 'Saved edits could not be read. Discard them before editing.';
@@ -79,7 +96,13 @@ export class EditQueue {
     }
   }
   receive(snapshot: Snapshot): void {
-    if (snapshot.seq >= this.base.seq) this.base = snapshot;
+    if (snapshot.seq >= this.base.seq) {
+      const ids = new Set(snapshot.objects.map((o) => o.id));
+      this.base = {
+        seq: snapshot.seq,
+        objects: [...this.base.objects.filter((o) => o.deletedAt !== null && !ids.has(o.id)), ...snapshot.objects],
+      };
+    }
     this.render();
   }
   online(connected: boolean): void {
@@ -88,6 +111,7 @@ export class EditQueue {
     if (connected) void this.flush();
   }
   enqueue(operations: Edit[]): boolean {
+    if (!operations.length) return true;
     if (!this.connected || this.refusal) {
       this.options.status(
         this.connected ? 'refused' : 'offline',
@@ -95,13 +119,15 @@ export class EditQueue {
       );
       return false;
     }
-    this.pending.push(
-      ...operations.map((op) =>
-        EditSchema.parse({ ...op, opId: op.opId || (this.options.id?.() ?? crypto.randomUUID()) })
-      )
-    );
+    const edits = z
+      .array(EditSchema)
+      .max(1000)
+      .parse(operations.map((op) => ({ ...op, opId: op.opId || (this.options.id?.() ?? crypto.randomUUID()) })));
+    this.batchSizes.push(edits.length);
+    this.pending.push(...edits);
     if (!this.persist()) {
       this.pending.splice(-operations.length);
+      this.batchSizes.pop();
       this.render();
       this.options.status('failed', 'Edit was not sent because local draft storage is unavailable.');
       return false;
@@ -120,6 +146,7 @@ export class EditQueue {
   discard(): void {
     if (this.flight) return;
     this.pending = [];
+    this.batchSizes = [];
     this.refusal = null;
     this.failure = false;
     this.persist();
@@ -133,7 +160,7 @@ export class EditQueue {
       if (this.pending.length || this.refusal)
         this.options.storage.setItem(
           this.options.key,
-          JSON.stringify({ operations: this.pending, refusal: this.refusal })
+          JSON.stringify({ operations: this.pending, refusal: this.refusal, batchSizes: this.batchSizes })
         );
       else this.options.storage.removeItem(this.options.key);
       return true;
@@ -142,7 +169,9 @@ export class EditQueue {
     }
   }
   private render(): void {
-    this.options.display(this.refusal ? this.base.objects : optimistic(this.base.objects, this.pending));
+    this.options.display(
+      this.refusal ? this.base.objects.filter((o) => o.deletedAt === null) : optimistic(this.base.objects, this.pending)
+    );
     const status: QueueStatus = !this.connected
       ? 'offline'
       : this.refusal
@@ -168,7 +197,8 @@ export class EditQueue {
     if (this.stopped || this.flight || !this.connected || this.refusal || !this.pending.length) return;
     this.flight = true;
     this.failure = false;
-    const batch = this.pending.slice();
+    this.options.status('saving', 'Saving…');
+    const batch = this.pending.slice(0, this.batchSizes[0] ?? this.pending.length);
     try {
       const acknowledged = await this.options.send(batch, this.base.seq);
       const ids = new Set(acknowledged.map((op) => op.opId));
@@ -178,11 +208,15 @@ export class EditQueue {
         if (op.seq > this.base.seq) for (const change of op.prev) objects.set(change.objectId, change.after);
       }
       this.base = { seq: Math.max(this.base.seq, ...acknowledged.map((op) => op.seq)), objects: [...objects.values()] };
-      this.pending = this.pending.filter((op) => !ids.has(op.opId));
+      const batchIds = new Set(batch.map((op) => op.opId));
+      this.pending = this.pending.filter((op) => !batchIds.has(op.opId));
+      this.batchSizes.shift();
       this.options.acknowledged(acknowledged.filter((op) => batch.some((edit) => edit.opId === op.opId)));
     } catch (error) {
-      if (error instanceof Refused) this.refusal = error.message;
-      else this.failure = true;
+      if (error instanceof Refused) {
+        this.refusal = error.message;
+        this.options.refused?.(batch, error.message);
+      } else this.failure = true;
     } finally {
       this.flight = false;
       this.persist();
@@ -233,7 +267,12 @@ export function optimistic(source: ViewObject[], operations: Edit[]): ViewObject
         const position = op.patch.preserveWorld
           ? reparentPosition([...objects.values()], current, op.patch.parentId)
           : current.position;
-        objects.set(current.id, { ...current, parentId: op.patch.parentId, order: op.patch.order, position });
+        const parent = objects.get(op.patch.parentId ?? '');
+        const rotation = op.patch.preserveWorld
+          ? worldOrigin([...objects.values()], current).rotation -
+            (parent ? worldOrigin([...objects.values()], parent).rotation : 0)
+          : current.rotation;
+        objects.set(current.id, { ...current, parentId: op.patch.parentId, order: op.patch.order, position, rotation });
       } else objects.set(current.id, { ...current, ...op.patch });
     }
   }
@@ -263,11 +302,16 @@ export async function sendEdits(
   }
   const history = await fetch(url(`/api/canvas/${workspace}/ops?since=${since}`));
   if (!history.ok) throw new Error('Acknowledgement failed');
-  const schema = z.object({ data: z.object({ operations: z.array(AckSchema) }) });
-  const acknowledged = schema.parse(await history.json()).data.operations;
+  const schema = z.object({ data: z.object({ operations: z.array(z.unknown()) }) });
+  const parseHistory = (payload: unknown): Acknowledged[] =>
+    schema.parse(payload).data.operations.flatMap((record) => {
+      const parsed = AckSchema.safeParse(record);
+      return parsed.success ? [parsed.data] : [];
+    });
+  const acknowledged = parseHistory(await history.json());
   if (operations.every((edit) => acknowledged.some((op) => op.opId === edit.opId))) return acknowledged;
   const full = await fetch(url(`/api/canvas/${workspace}/ops?since=0`));
   if (!full.ok) throw new Error('Acknowledgement recovery failed');
-  return schema.parse(await full.json()).data.operations;
+  return parseHistory(await full.json());
 }
 export const parseSnapshot = (payload: unknown): Snapshot => z.object({ data: SnapshotSchema }).parse(payload).data;

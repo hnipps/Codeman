@@ -5,12 +5,13 @@ import { command, initialView, type ViewCommand, type ViewState } from './comman
 import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
-import { shortcutAllowed, shortcuts } from './shortcuts.js';
+import { shortcutAllowed, shortcuts, editShortcuts } from './shortcuts.js';
 import { outline, siblings, worldBounds } from './tree.js';
 import { hit, union, type Point } from './viewport.js';
 
 declare global {
   interface Window {
+    canvasEdit: ReturnType<DesktopEditor['adapter']>;
     canvasView: { dispatch: (action: ViewCommand) => void; read: () => ViewState };
   }
 }
@@ -226,7 +227,7 @@ const keyNames: Record<string, string> = {
   '↓': 'Down arrow',
   '⌘': 'Command',
 };
-for (const [action, alternatives] of shortcuts) {
+for (const [action, alternatives] of [...shortcuts, ...(mobile.matches ? [] : editShortcuts)]) {
   const row = document.createElement('div'),
     title = document.createElement('span'),
     hints = document.createElement('span');
@@ -490,6 +491,9 @@ const editor = new DesktopEditor({
   view: () => state,
   objects: () => objects,
   dispatch,
+  focusMode: (value) => {
+    keyboard = value;
+  },
   display: (displayed) => {
     objects = displayed;
     const lostFocus =
@@ -515,6 +519,7 @@ const editor = new DesktopEditor({
     dispatch({ kind: 'viewport', viewport: state.viewport });
   },
 });
+window.canvasEdit = editor.adapter();
 const sync = new CanvasSync(
   url,
   workspaceId,

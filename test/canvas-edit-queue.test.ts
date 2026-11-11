@@ -114,6 +114,49 @@ describe('durable canvas edit queue', () => {
     expect(restored.display()[0].position.x).toBe(30);
     restored.queue.stop();
   });
+  it('retries the original batch separately from newer writes after a lost acknowledgement', async () => {
+    const send = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Lost acknowledgement'))
+      .mockImplementation(async (ops: Edit[]) => ops.map((op) => ack(op, op.opId === 'move-20' ? 2 : 1)));
+    const f = fixture(send);
+    f.queue.enqueue([move(10)]);
+    await settle();
+    f.queue.enqueue([move(20)]);
+    await settle();
+    expect(send.mock.calls[1][0].map((op: Edit) => op.opId)).toEqual(['move-10']);
+    expect(send.mock.calls[2][0].map((op: Edit) => op.opId)).toEqual(['move-20']);
+    expect(f.display()[0].position.x).toBe(20);
+    f.queue.stop();
+  });
+  it('shows Saving during an automatic resend so in-flight edits are not offered for discard', async () => {
+    vi.useFakeTimers();
+    let release: (ops: Acknowledged[]) => void = () => {};
+    const send = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Disconnected'))
+      .mockImplementation(
+        () =>
+          new Promise<Acknowledged[]>((resolve) => {
+            release = resolve;
+          })
+      );
+    const f = fixture(send);
+    try {
+      f.queue.enqueue([move(10)]);
+      await settle();
+      expect(f.status()).toBe('failed');
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(f.status()).toBe('saving');
+      expect(f.memory.get('drafts')).toContain('move-10');
+      release([ack(move(10))]);
+      await settle();
+      expect(f.status()).toBe('saved');
+    } finally {
+      f.queue.stop();
+      vi.useRealTimers();
+    }
+  });
   it('rolls back refused optimistic writes, explains why, and offers retry or discard', async () => {
     const send = vi.fn().mockRejectedValue(new Refused('Edit refused: object is locked.'));
     const f = fixture(send);
@@ -251,5 +294,90 @@ describe('resize geometry', () => {
     expect(result?.position).toEqual({ x: -100, y: -50 });
     expect(child.position).toEqual({ x: 0, y: 0 });
     expect(resized([object], object, 'w', { x: -20, y: 0 }, false, false)?.position.x).toBe(-20);
+  });
+});
+
+import { emptyState, type CanvasState } from '../src/canvas/model.js';
+import { validateBatch, type Command } from '../src/canvas/operations.js';
+import { human, agent, create } from './canvas-fixtures.js';
+function apply(state: CanvasState, commands: Command[], author = human) {
+  const result = validateBatch(state, commands, author, state.seq + 100);
+  if (!result.ok) throw new Error(JSON.stringify(result.reasons));
+  return result;
+}
+describe('history through the real command validator', () => {
+  it('undoes and redoes a resize batch as one inverse without reverting an agent text update', () => {
+    let state = apply(emptyState(), [create('note')]).state;
+    const before = state.objects.note;
+    const edit = apply(state, [
+      { kind: 'move', objectId: 'note', opId: 'resize-position', patch: { position: { x: 20, y: 40 } } },
+      { kind: 'update', objectId: 'note', opId: 'resize-size', patch: { size: { width: 400, height: 300 } } },
+    ]);
+    const undo = new CanvasUndo();
+    undo.acknowledge(edit.operations, 'note');
+    state = apply(
+      edit.state,
+      [
+        {
+          kind: 'update',
+          objectId: 'note',
+          opId: 'agent-text',
+          patch: { content: { type: 'text', text: 'An agent wrote this' } },
+        },
+      ],
+      agent
+    ).state;
+    const inverse = undo.prepare('undo', Object.values(state.objects));
+    expect(inverse?.operations).toHaveLength(1);
+    const undone = apply(state, inverse?.operations ?? []);
+    undo.acknowledge(undone.operations, 'note');
+    expect(undone.state.objects.note.position).toEqual(before.position);
+    expect(undone.state.objects.note.size).toEqual(before.size);
+    expect(undone.state.objects.note.content.text).toBe('An agent wrote this');
+    const redo = undo.prepare('redo', Object.values(undone.state.objects));
+    const redone = apply(undone.state, redo?.operations ?? []);
+    expect(redone.state.objects.note.size).toEqual({ width: 400, height: 300 });
+    expect(redone.state.objects.note.position).toEqual({ x: 20, y: 40 });
+    expect(redone.state.objects.note.content.text).toBe('An agent wrote this');
+  });
+  it('guards every descendant atomically, restores a deleted container and protects later child work from redo', () => {
+    const initial = apply(emptyState(), [create('frame', null, 'frame'), create('child', 'frame')]);
+    const deleted = apply(initial.state, [{ kind: 'delete', objectId: 'frame', opId: 'delete-frame' }]);
+    const undo = new CanvasUndo();
+    undo.acknowledge(deleted.operations, 'frame');
+    const inverse = undo.prepare('undo', Object.values(deleted.state.objects));
+    expect(inverse?.operations.map((op) => op.kind)).toEqual(['revert', 'restore']);
+    const restored = apply(deleted.state, inverse?.operations ?? []);
+    undo.acknowledge(restored.operations, 'frame');
+    expect(restored.state.objects.child.deletedAt).toBeNull();
+    const concurrent = apply(
+      restored.state,
+      [
+        {
+          kind: 'update',
+          objectId: 'child',
+          opId: 'later-child',
+          patch: { content: { type: 'text', text: 'Later work' } },
+        },
+      ],
+      agent
+    );
+    expect(() => undo.prepare('redo', Object.values(concurrent.state.objects))).toThrow('later work');
+    const stale = validateBatch(
+      concurrent.state,
+      [
+        {
+          kind: 'revert',
+          objectId: 'child',
+          opId: 'stale-guard',
+          expectedRevision: restored.state.objects.child.revision,
+          patch: {},
+        },
+        { kind: 'delete', objectId: 'frame', opId: 'stale-delete' },
+      ],
+      human
+    );
+    expect(stale.ok).toBe(false);
+    expect(concurrent.state.objects.frame.deletedAt).toBeNull();
   });
 });

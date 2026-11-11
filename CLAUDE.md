@@ -441,3 +441,5 @@ Desktop selection supports enclosed marquee and Alt-drag freehand lasso (center 
 Ordinary canvas drags submit position only. Named container headings/outline rows preview explicit reparent destinations; Move to includes Canvas root. Keyboard Move previews coarse 10-unit or Shift fine 1-unit steps until Enter; Escape cancels. Containers move through their own local position, keeping child membership and geometry.
 
 Sized canvas objects expose eight neutral resize handles with fixed 16px screen hit areas and 8px visible squares. Shift preserves proportion; Alt resizes from center. Pointer geometry is converted through zoom and ancestor rotation. Frame/section resize changes bounds only. Numeric local position and size share the reader; auto-bounded groups have no size handles.
+
+`window.canvasEdit` exposes the same queued operation, constrained resize and history paths with cloned readable state. `canvasView` also accepts typed region selection. Keep browser editing tests registered with the browser runner, never the default gate.

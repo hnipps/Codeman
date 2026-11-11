@@ -1,4 +1,5 @@
-import { resized } from './resize.js';
+import { knownContentFields } from '../../../src/canvas/model.js';
+import { handles, resized } from './resize.js';
 import { movedPosition } from './drag.js';
 import { label } from './model.js';
 import { targets, selectRegion } from './select.js';
@@ -7,7 +8,7 @@ import { CanvasUndo } from './undo.js';
 import { parseSnapshot } from './edit-queue.js';
 import { z } from 'zod';
 import { EditQueue, sendEdits, type Edit, type QueueStatus, type Acknowledged } from './edit-queue.js';
-import { container, type Snapshot, type ViewObject } from './model.js';
+import { editable, container, type Snapshot, type ViewObject } from './model.js';
 import type { ViewState, ViewCommand } from './commands.js';
 import { screenToCanvas } from './viewport.js';
 const node = (id: string): HTMLElement => {
@@ -32,6 +33,12 @@ export class DesktopEditor {
   private status: QueueStatus = 'offline';
   private message = '';
   private connected = false;
+  private availability = '';
+  private handlesDirty = true;
+  private loaded = false;
+  private sequence = 0;
+  private composing = false;
+  private actions = 0;
   private selectionGesture: {
     pointerId: number;
     start: Point;
@@ -72,13 +79,14 @@ export class DesktopEditor {
       view: () => ViewState;
       objects: () => ViewObject[];
       dispatch: (action: ViewCommand) => void;
+      focusMode: (keyboard: boolean) => void;
       display: (objects: ViewObject[]) => void;
     }
   ) {
     const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     overlay.id = 'selectionGesture';
     overlay.setAttribute('aria-hidden', 'true');
-    this.selectionPath = document.createElementNS(overlay.namespaceURI, 'path');
+    this.selectionPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     overlay.append(this.selectionPath);
     node('board').append(overlay);
     node('board').addEventListener('pointerdown', (e) => this.selectionStart(e), true);
@@ -109,14 +117,32 @@ export class DesktopEditor {
       storage: localStorage,
       key: `codeman:canvas:${options.workspace}:edits`,
       send: (ops, since) => sendEdits(options.url, options.workspace, ops, since),
-      display: options.display,
+      display: (objects) => {
+        if (this.loaded) {
+          options.display(objects);
+          this.handlesDirty = true;
+        }
+      },
       status: (status, message) => {
         this.status = status;
         this.message = message;
         this.paintStatus();
         this.paintAvailability();
+        if ((status === 'failed' || status === 'refused') && !options.mobile.matches)
+          options.dispatch({ kind: 'rail', view: 'reader' });
       },
       acknowledged: (ops) => this.acknowledge(ops),
+      refused: (ops, message) => {
+        if (/revision/i.test(message))
+          for (const op of ops) {
+            const draft = this.drafts.get(op.objectId);
+            if (op.kind === 'update' && op.patch.content && draft) {
+              draft.conflict = true;
+              delete draft.sent;
+            }
+          }
+        this.persistDrafts();
+      },
     });
     btn('addTool').onclick = () => {
       if (!this.available()) return;
@@ -160,10 +186,17 @@ export class DesktopEditor {
     btn('discardEdit').onclick = () => {
       this.queue.discard();
       this.history.refused();
+      for (const draft of this.drafts.values())
+        if (draft.sent !== undefined) {
+          draft.value = draft.base;
+          delete draft.sent;
+        }
+      this.persistDrafts();
+      this.read(this.options.objects().find((o) => o.id === this.currentId));
       this.paintStatus();
     };
-    btn('useServer').onclick = () => this.resolve(false);
-    btn('keepDraft').onclick = () => this.resolve(true);
+    btn('useServer').onclick = () => void this.resolve(false);
+    btn('keepDraft').onclick = () => void this.resolve(true);
     this.editor.oninput = () => {
       const draft = this.currentId ? this.drafts.get(this.currentId) : undefined;
       if (!draft) return;
@@ -174,10 +207,19 @@ export class DesktopEditor {
       this.debounce = setTimeout(() => this.saveText(), 600);
     };
     this.editor.onblur = () => this.saveText();
+    document.addEventListener('compositionstart', () => {
+      this.composing = true;
+    });
+    document.addEventListener('compositionend', () => {
+      this.composing = false;
+      clearTimeout(this.debounce);
+      this.debounce = setTimeout(() => this.saveText(), 600);
+    });
     document.addEventListener('keydown', (e) => this.key(e), true);
     options.mobile.addEventListener('change', () => {
       if (options.mobile.matches) {
         clearTimeout(this.debounce);
+        this.cancelSelection();
         node('addMenu').hidden = true;
       }
       this.paint();
@@ -191,6 +233,74 @@ export class DesktopEditor {
       },
       { once: true }
     );
+  }
+  adapter() {
+    return {
+      apply: (operations: Edit[]) => this.submit(operations.map((op) => EditSchema.parse(op))),
+      read: () =>
+        structuredClone({
+          objects: this.options.objects(),
+          status: this.status,
+          pending: this.queue.busy || this.actions > 0,
+          drafts: Object.fromEntries(this.drafts),
+          readOnlyIds: this.options
+            .objects()
+            .filter((o) => !editable(o))
+            .map((o) => o.id),
+        }),
+      move: (args: { targetIds: string[]; delta: Point }) =>
+        this.submit(
+          targets(this.options.objects(), args.targetIds).map((o) => ({
+            kind: 'move',
+            opId: crypto.randomUUID(),
+            objectId: o.id,
+            patch: { position: movedPosition(this.options.objects(), o, args.delta) },
+          }))
+        ),
+      reparent: (args: { targetIds: string[]; parentId: string | null }) =>
+        this.reparent(args.parentId, args.targetIds),
+      delete: (targetIds: string[]) =>
+        this.submit(
+          targets(this.options.objects(), targetIds).map((o) => ({
+            kind: 'delete',
+            opId: crypto.randomUUID(),
+            objectId: o.id,
+          }))
+        ),
+      undo: () => this.undo('undo'),
+      redo: () => this.undo('redo'),
+      resize: (args: {
+        objectId: string;
+        handle: string;
+        delta: Point;
+        proportional: boolean;
+        fromCenter: boolean;
+      }) => {
+        if (!this.available() || !handles.includes(args.handle)) return false;
+        const object = this.options.objects().find((o) => o.id === args.objectId);
+        if (!object?.size) return false;
+        const geometry = resized(
+          this.options.objects(),
+          object,
+          args.handle,
+          args.delta,
+          args.proportional,
+          args.fromCenter
+        );
+        if (!geometry) return false;
+        return this.setGeometry(object, geometry.position, geometry.size);
+      },
+      capabilities: {
+        edits: ['create', 'update', 'move', 'reparent', 'delete', 'restore', 'revert'],
+        selection: ['selection', 'toggle', 'select-all', 'region'],
+        geometrySpace: 'parent-local',
+        rectangleSelection: 'enclosed-bounds',
+        polygonSelection: 'object-center',
+        overlappingTargets: 'ancestor-only',
+        resizeDeltaSpace: 'world',
+        autoBoundedGroupResize: false,
+      },
+    };
   }
   private get draftKey(): string {
     return `codeman:canvas:${this.options.workspace}:drafts`;
@@ -214,6 +324,9 @@ export class DesktopEditor {
     }
   }
   receive(snapshot: Snapshot): void {
+    if (snapshot.seq < this.sequence) return;
+    this.loaded = true;
+    this.sequence = snapshot.seq;
     this.authoritative = snapshot.objects;
     for (const [id, draft] of this.drafts) {
       const object = snapshot.objects.find((o) => o.id === id);
@@ -223,7 +336,12 @@ export class DesktopEditor {
       }
       const text = this.field(object);
       if (text === null) continue;
-      if (text !== draft.base && text !== draft.sent && draft.value !== draft.base) draft.conflict = true;
+      if (text === draft.value) {
+        draft.base = text;
+        draft.revision = this.revision(object);
+        draft.conflict = false;
+        delete draft.sent;
+      } else if (text !== draft.base && text !== draft.sent && draft.value !== draft.base) draft.conflict = true;
       else if (draft.value === draft.base && !draft.sent) {
         draft.base = text;
         draft.value = text;
@@ -245,6 +363,15 @@ export class DesktopEditor {
   }
   submit(operations: Edit[]): boolean {
     if (!this.available()) return false;
+    if (
+      operations.some((op) => {
+        const object = this.options.objects().find((o) => o.id === op.objectId);
+        return object && !editable(object);
+      })
+    ) {
+      node('announcement').textContent = 'Unsupported objects are read-only.';
+      return false;
+    }
     const focusId = this.options.view().focusId;
     for (const op of operations) this.submittedFocus.set(op.opId, focusId);
     return this.queue.enqueue(operations);
@@ -315,9 +442,8 @@ export class DesktopEditor {
       this.drafts.set(o.id, draft);
     }
     this.currentId = o.id;
-    if (document.activeElement !== this.editor || this.editor.dataset.objectId !== o.id)
-      this.editor.value = draft.value;
-    this.editor.dataset.objectId = o.id;
+    if (document.activeElement !== this.editor || this.editor.dataset.draftId !== o.id) this.editor.value = draft.value;
+    this.editor.dataset.draftId = o.id;
     this.editor.setAttribute('aria-label', o.type === 'text' ? 'Text' : 'Name');
     node('editorLabel').textContent = o.type === 'text' ? 'Text' : 'Name';
     this.editor.rows = o.type === 'text' ? 9 : 2;
@@ -327,11 +453,11 @@ export class DesktopEditor {
   }
   private saveText(): void {
     clearTimeout(this.debounce);
-    if (!this.currentId || !this.available()) return;
+    if (!this.currentId || this.composing || !this.available()) return;
     const draft = this.drafts.get(this.currentId),
       object = this.authoritative.find((o) => o.id === this.currentId);
     if (!draft || !object || draft.conflict || draft.sent !== undefined || draft.value === draft.base) return;
-    const content = { ...object.content, [object.type === 'text' ? 'text' : 'label']: draft.value };
+    const content = { ...knownContentFields(object.content), [object.type === 'text' ? 'text' : 'label']: draft.value };
     draft.sent = draft.value;
     if (
       !this.submit([
@@ -353,14 +479,28 @@ export class DesktopEditor {
     );
     for (const op of operations) this.submittedFocus.delete(op.opId);
     if (focusId) {
+      this.options.focusMode(true);
       this.options.dispatch({ kind: 'focus', id: focusId });
-      node('board').focus({ preventScroll: true });
+      requestAnimationFrame(() => {
+        const target = node('layer').querySelector<HTMLElement>(`[data-object-id="${focusId}"]`);
+        (target ?? node('board')).focus({ preventScroll: true });
+      });
     }
+    const latest = new Map(this.authoritative.map((o) => [o.id, o]));
+    for (const op of operations) {
+      if (op.seq >= this.sequence) for (const change of op.prev) latest.set(change.objectId, change.after);
+      this.sequence = Math.max(this.sequence, op.seq);
+    }
+    this.authoritative = [...latest.values()];
     for (const op of operations) {
       const draft = this.drafts.get(op.objectId);
       const after = op.prev.find((c) => c.objectId === op.objectId)?.after;
-      if (draft && after && draft.sent !== undefined && this.field(after) === draft.sent) {
-        draft.base = draft.sent;
+      if (
+        draft &&
+        after &&
+        ((draft.sent !== undefined && this.field(after) === draft.sent) || this.field(after) === draft.value)
+      ) {
+        draft.base = this.field(after) ?? draft.base;
         draft.revision = this.revision(after);
         delete draft.sent;
         if (!draft.conflict && draft.value !== draft.base) this.debounce = setTimeout(() => this.saveText(), 50);
@@ -368,28 +508,38 @@ export class DesktopEditor {
     }
     this.persistDrafts();
   }
-  private resolve(keep: boolean): void {
-    const draft = this.currentId ? this.drafts.get(this.currentId) : undefined;
-    const object = this.authoritative.find((o) => o.id === this.currentId);
-    if (!draft || !object || !this.connected) return;
-    if (this.status === 'refused') this.queue.discard();
-    draft.base = this.field(object) ?? '';
-    if (!keep) draft.value = draft.base;
-    draft.conflict = false;
-    delete draft.sent;
-    this.editor.value = draft.value;
-    this.persistDrafts();
-    this.paintStatus();
-    if (keep) this.saveText();
+  private async resolve(keep: boolean): Promise<void> {
+    if (!this.connected || this.options.mobile.matches || this.actions) return;
+    this.actions++;
+    try {
+      const response = await fetch(this.options.url(`/api/canvas/${this.options.workspace}/objects`));
+      if (!response.ok) throw new Error('Latest text could not load.');
+      this.receive(parseSnapshot(await response.json()));
+      const draft = this.currentId ? this.drafts.get(this.currentId) : undefined;
+      const object = this.authoritative.find((o) => o.id === this.currentId);
+      if (!draft || !object) return;
+      if (this.status === 'refused') {
+        this.queue.discard();
+        this.history.refused();
+      }
+      draft.base = this.field(object) ?? '';
+      if (!keep) draft.value = draft.base;
+      draft.conflict = false;
+      delete draft.sent;
+      this.editor.value = draft.value;
+      this.persistDrafts();
+      this.paintStatus();
+      if (keep) this.saveText();
+    } catch {
+      node('editStatus').textContent = 'Latest text could not load. Reconnect and try again.';
+    } finally {
+      this.actions--;
+    }
   }
   private paintStatus(): void {
     const draft = this.currentId ? this.drafts.get(this.currentId) : undefined;
-    if (this.status === 'refused' && draft?.sent !== undefined) {
-      draft.conflict = true;
-      delete draft.sent;
-    }
     node('editStatus').textContent = draft?.conflict
-      ? 'Conflict: this field changed elsewhere. Your draft is preserved.'
+      ? `Conflict: this field changed elsewhere. Your draft is preserved.${this.status === 'refused' ? ` ${this.message}` : ''}`
       : this.status === 'saved' && draft && draft.value !== draft.base
         ? 'Draft · waiting to save'
         : this.message;
@@ -400,6 +550,10 @@ export class DesktopEditor {
   }
   private paintAvailability(): void {
     const unavailable = !this.connected || this.status === 'refused';
+    const key = `${unavailable}:${this.connected}`;
+    if (this.availability === key && !this.handlesDirty) return;
+    this.availability = key;
+    this.handlesDirty = false;
     for (const id of [
       'addTool',
       'addText',
@@ -407,11 +561,18 @@ export class DesktopEditor {
       'addSection',
       'addSubcanvas',
       'deleteSelection',
-      'keepDraft',
-      'useServer',
+      'moveMode',
+      'moveTo',
+      'commitMoveTo',
+      'undoEdit',
+      'redoEdit',
     ])
       btn(id).disabled = unavailable;
+    for (const handle of node('layer').querySelectorAll<HTMLButtonElement>('[data-resize]'))
+      handle.disabled = unavailable;
     this.editor.readOnly = unavailable;
+    btn('keepDraft').disabled = !this.connected;
+    btn('useServer').disabled = !this.connected;
   }
   paint(): void {
     node('contextRow').hidden = this.options.mobile.matches || !this.options.view().selected.length;
@@ -431,13 +592,14 @@ export class DesktopEditor {
       this.space
     )
       return;
+    this.options.focusMode(false);
     const targetId =
       e.target instanceof Element ? e.target.closest<HTMLElement>('[data-object-id]')?.dataset.objectId : undefined;
     const handle =
       e.target instanceof Element ? e.target.closest<HTMLElement>('[data-resize]')?.dataset.resize : undefined;
     if (targetId && handle) {
       const object = this.options.objects().find((o) => o.id === targetId);
-      if (!object?.size || !this.available()) return;
+      if (!object?.size || !editable(object) || !this.available()) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       this.resizeGesture = {
@@ -453,7 +615,8 @@ export class DesktopEditor {
       return;
     }
     if (targetId && !e.altKey) {
-      if (!this.available()) return;
+      const object = this.options.objects().find((o) => o.id === targetId);
+      if (!object || !editable(object) || !this.available()) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       const selected = this.options.view().selected.includes(targetId) ? this.options.view().selected : [targetId];
@@ -567,7 +730,7 @@ export class DesktopEditor {
     e.preventDefault();
     e.stopImmediatePropagation();
     const region = this.region();
-    if (region && Math.hypot(e.clientX - gesture.start.x, e.clientY - gesture.start.y) > 4)
+    if (region && gesture.points.some((p) => Math.hypot(p.x - gesture.start.x, p.y - gesture.start.y) > 4))
       this.options.dispatch({ kind: 'region', region, parentId: gesture.parentId, toggle: gesture.toggle });
     else if (!gesture.toggle) this.options.dispatch({ kind: 'selection', ids: [] });
     this.cancelSelection();
@@ -607,7 +770,7 @@ export class DesktopEditor {
   }
   private paintGeometry(): void {
     const object = this.options.objects().find((o) => o.id === this.options.view().focusId);
-    node('geometryEdit').hidden = this.options.mobile.matches || !object;
+    node('geometryEdit').hidden = this.options.mobile.matches || !object || !editable(object);
     if (!object) return;
     node('geometrySpace').textContent = object.parentId ? 'Position in parent' : 'Position on canvas';
     for (const [id, value] of [
@@ -619,7 +782,7 @@ export class DesktopEditor {
       if (typeof id !== 'string') continue;
       const field = node(id);
       if (!(field instanceof HTMLInputElement)) continue;
-      field.disabled = !this.connected || value === undefined;
+      field.disabled = !this.connected || this.status === 'refused' || value === undefined;
       if (document.activeElement !== field)
         field.value = typeof value === 'number' ? String(Math.round(value * 100) / 100) : '';
     }
@@ -642,16 +805,18 @@ export class DesktopEditor {
     }
     this.setGeometry(object, position, size);
   }
-  private setGeometry(object: ViewObject, position: Point, size: ViewObject['size']): void {
+  private setGeometry(object: ViewObject, position: Point, size: ViewObject['size']): boolean {
     const operations: Edit[] = [];
     if (object.position.x !== position.x || object.position.y !== position.y)
       operations.push({ kind: 'move', opId: crypto.randomUUID(), objectId: object.id, patch: { position } });
     if (size && (size.width !== object.size?.width || size.height !== object.size?.height))
       operations.push({ kind: 'update', opId: crypto.randomUUID(), objectId: object.id, patch: { size } });
-    if (operations.length) this.submit(operations);
+    return operations.length ? this.submit(operations) : true;
   }
-  private validDestination(id: string): boolean {
-    const selected = this.moveGesture?.originals ?? targets(this.options.objects(), this.options.view().selected);
+  private validDestination(id: string, targetIds?: string[]): boolean {
+    const selected = targetIds
+      ? targets(this.options.objects(), targetIds)
+      : (this.moveGesture?.originals ?? targets(this.options.objects(), this.options.view().selected));
     const ids = new Set(selected.map((o) => o.id));
     let parent: string | null = id;
     const seen = new Set<string>();
@@ -674,10 +839,10 @@ export class DesktopEditor {
       select.append(option);
     }
   }
-  private reparent(parentId: string | null): void {
-    const selected = targets(this.options.objects(), this.options.view().selected);
-    if (parentId && !this.validDestination(parentId)) return;
-    this.submit(
+  private reparent(parentId: string | null, targetIds = this.options.view().selected): boolean {
+    const selected = targets(this.options.objects(), targetIds);
+    if (parentId && !this.validDestination(parentId, targetIds)) return false;
+    return this.submit(
       selected.map((o) => ({
         kind: 'reparent',
         opId: crypto.randomUUID(),
@@ -762,30 +927,35 @@ export class DesktopEditor {
       shift: false,
       target: selected[0].id,
     };
+    this.options.focusMode(true);
     node('moveHint').hidden = false;
     node('board').focus({ preventScroll: true });
   }
   private async undo(direction: 'undo' | 'redo'): Promise<void> {
     if (!this.available()) return;
-    if (this.queue.busy) {
+    if (this.queue.busy || this.actions) {
       node('announcement').textContent = 'Wait for pending edits to save before changing history.';
       return;
     }
+    this.actions++;
     try {
       const response = await fetch(
         this.options.url(`/api/canvas/${this.options.workspace}/objects?includeDeleted=true`)
       );
       if (!response.ok) throw new Error('History could not load the latest objects.');
       const snapshot = parseSnapshot(await response.json());
+      this.receive(snapshot);
       const action = this.history.prepare(direction, snapshot.objects);
       if (action && !this.submit(action.operations)) this.history.refused();
     } catch (error) {
       this.history.refused();
       node('announcement').textContent = error instanceof Error ? error.message : 'History could not be changed.';
+    } finally {
+      this.actions--;
     }
   }
   private key(e: KeyboardEvent): void {
-    if (e.isComposing || e.keyCode === 229) return;
+    if (this.composing || e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape' && (this.selectionGesture || this.moveGesture || this.resizeGesture)) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -803,7 +973,7 @@ export class DesktopEditor {
     if (
       !(target instanceof Element) ||
       !target.closest('#board') ||
-      target.closest('input,textarea,select,[contenteditable]') ||
+      target.closest('input,textarea,select,button,a,[contenteditable]') ||
       this.options.mobile.matches
     )
       return;

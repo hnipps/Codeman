@@ -647,7 +647,7 @@ dd {
 #contextRow {
   position: fixed;
   bottom: 84px;
-  left: calc(50% + var(--outline-space) / 2);
+  left: 50%;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
@@ -799,7 +799,7 @@ textarea:focus-visible {
   display: block;
 }
 .resize-handle:hover {
-  background: transparent;
+  background: var(--raised);
 }
 .handle-nw {
   left: 0;
@@ -859,4 +859,30 @@ textarea:focus-visible {
   .resize-handle {
     display: none !important;
   }
+}
+
+.object[data-type='group'].drop-target {
+  outline: none;
+}
+.object.drop-target > .group-bounds {
+  outline: calc(1px / var(--zoom)) solid var(--accent);
+}
+.object.selection-preview > .group-bounds {
+  outline: calc(1px / var(--zoom)) solid var(--selection);
+}
+textarea[readonly] {
+  color: var(--secondary);
+  border-color: var(--divider);
+}
+
+.dock-area {
+  z-index: 5;
+}
+
+.object.container > .object-title {
+  z-index: 2;
+}
+.resize-handle:disabled::after {
+  border-color: var(--divider);
+  background: var(--panel);
 }

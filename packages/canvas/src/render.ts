@@ -1,5 +1,5 @@
 import { handles } from './resize.js';
-import { container, label, readable, searchText, type ViewObject } from './model.js';
+import { editable, container, label, readable, searchText, type ViewObject } from './model.js';
 import { localBounds, outline } from './tree.js';
 import type { ViewState } from './commands.js';
 export class Renderer {
@@ -59,7 +59,8 @@ export class Renderer {
         this.rows.set(o.id, row);
       }
       el.dataset.type = o.type;
-      for (const handle of el.querySelectorAll<HTMLElement>(':scope > .resize-handle')) handle.hidden = !o.size;
+      for (const handle of el.querySelectorAll<HTMLElement>(':scope > .resize-handle'))
+        handle.hidden = !o.size || !editable(o);
       el.classList.toggle('container', container(o));
       el.setAttribute('aria-label', label(o));
       el.style.left = `${o.position.x}px`;

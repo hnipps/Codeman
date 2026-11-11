@@ -16,6 +16,8 @@ tests=(
   test/canvas-commands.test.ts
   test/canvas-screenshot.test.ts
   test/mcp-canvas-tools.test.ts
+  test/canvas-edit-queue.test.ts
+  test/canvas-viewport.test.ts
   test/canvas-operations.test.ts
   test/canvas-store.test.ts
   test/routes/canvas-routes.test.ts

@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { AuthorSchema, IdSchema, PositionSchema, SizeSchema, isContainer } from '../../../src/canvas/model.js';
+import {
+  AuthorSchema,
+  IdSchema,
+  PositionSchema,
+  SizeSchema,
+  isContainer,
+  knownContentFields,
+} from '../../../src/canvas/model.js';
 
 // The read boundary accepts future content types without interpreting their payload.
 export const ViewObjectSchema = z
@@ -49,5 +56,13 @@ export function readable(o: ViewObject): string {
     }
     default:
       return `Unsupported object · ${o.type}`;
+  }
+}
+
+export function editable(object: ViewObject): boolean {
+  try {
+    return knownContentFields(object.content).type === object.type;
+  } catch {
+    return false;
   }
 }

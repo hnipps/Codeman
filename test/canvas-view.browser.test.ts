@@ -284,6 +284,7 @@ describe('read-only canvas document', () => {
     await shot(page, 'rail-closed');
   });
   it('preserves the pointer zoom anchor and keeps view state across a live write under one second', async () => {
+    await open();
     const before = await page.evaluate(() => window.canvasView.read());
     await page.mouse.move(700, 450);
     await page.mouse.wheel(0, -150);
@@ -394,6 +395,10 @@ describe('read-only canvas document', () => {
     await page.waitForSelector('#readerView:not([hidden])');
     expect(await page.locator('#readerText').isVisible()).toBe(true);
     expect(await page.locator('#readerText').textContent()).toBe('Unsupported content · future-content');
+    expect(await page.locator('[data-object-id="future-content"] > .resize-handle:visible').count()).toBe(0);
+    expect(
+      await page.evaluate(() => window.canvasEdit.move({ targetIds: ['future-content'], delta: { x: 1, y: 1 } }))
+    ).toBe(false);
     await page.keyboard.press('Escape');
     await page.waitForSelector('#rail', { state: 'hidden' });
     await page.locator('[data-object-id="long"]').dblclick();
@@ -654,10 +659,7 @@ describe('read-only canvas document', () => {
         );
         await shot(page, `${slug}-outline-focus`);
         if (viewport.width === 390) await page.locator('#closeOutline').click();
-        for (const [id, description] of [
-          ['addTool', 'Adding objects arrives with editing'],
-          ['chatTool', 'Comments arrive with conversations'],
-        ]) {
+        for (const [id, description] of [['chatTool', 'Comments arrive with conversations']]) {
           const control = page.locator(`#${id}`);
           expect(await control.getAttribute('aria-disabled')).toBe('true');
           expect(await control.getAttribute('disabled')).toBeNull();

@@ -43,6 +43,11 @@ export class CanvasUndo {
       );
       if (fields.some((field) => !same(current[field], change.after[field])))
         throw new Error('History would overwrite a later change. That change has been kept.');
+      if (
+        roots.some((op) => (op.kind === 'create' || op.kind === 'restore') && op.prev.some((c) => c.objectId === id)) &&
+        current.revision !== change.after.revision
+      )
+        throw new Error('History would delete later work. That change has been kept.');
       const revision = typeof current.revision === 'number' ? current.revision : undefined;
       if (covered.has(id)) {
         guards.push({ kind: 'revert', opId: crypto.randomUUID(), objectId: id, expectedRevision: revision, patch: {} });

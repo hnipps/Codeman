@@ -71,6 +71,20 @@ Read/search/query/history use text-only JSON capped at 60,000 UTF-8 bytes with a
 truncation flag and omit records that do not fit. Case scope follows the longest
 registered case path containing the visible caller session's working directory;
 body workspace and author fields are forbidden.
+## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
+
+**Type:** intent-refinement
+**Touches:** canvas edit queue, reader and history
+**Why:** PC4 needs recoverable writes and safe inverse batches using the existing API.
+**Links:** [intent](../intent/2026-11-11-canvas-pc4-edit.md)
+
+The desktop queue persists each submitted batch boundary because the server rejects mixed duplicate/new batches. It uses existing operation IDs for retries and recovers an acknowledgement from history when an SSE snapshot arrived before the POST response. A server refusal quarantines pending edits and rolls back their optimistic display. Explicit reparenting uses the existing `reparent` kind rather than adding a parent field to `move`.
+
+PC4 history aggregates a gesture’s changes per object before inversion, so resize position and size undo together. Existing empty `revert` patches serve as revision guards for descendants in the same atomic inverse batch; no server command kind is added.
+
+Alt-drag selects with a freehand lasso; Q remains reserved for future chat context capture. Named container headings stay above child content so an explicit drop cannot make its destination heading unreachable.
+
+
 ## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
 
 **Type:** propagated-discovery
@@ -634,9 +648,3 @@ The short rules now match in all three instruction files.
 **Links:** [intent/2026-11-04-light-assurance.md](../intent/2026-11-04-light-assurance.md)
 
 Per-change intent files are in `intent/`. That directory is separate from Read My Mind. The rules that already hold stay in `CLAUDE.md` and `docs/architecture-invariants.md`. Drafts for promises that are still moving go in `docs/invariants/` and carry no numbered promises yet. Every Crosscheck skill can be run by name. No new hook and no failing assurance job is installed.
-
-## 2026-11-11 — Keep canvas edits recoverable across acknowledgement races
-
-The desktop queue uses existing operation IDs for retries and recovers an acknowledgement from history when an SSE snapshot arrived before the POST response. A server refusal quarantines pending edits and rolls back their optimistic display. Explicit reparenting uses the existing `reparent` kind rather than adding a parent field to `move`.
-
-PC4 history aggregates a gesture’s changes per object before inversion, so resize position and size undo together. Existing empty `revert` patches serve as revision guards for descendants in the same atomic inverse batch; no server command kind is added.
