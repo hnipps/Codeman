@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-10 - Mask the secret shapes the first log audit still found
+
+**Type:** intent-refinement
+**Touches:** `src/telemetry-redact.ts`, `src/telemetry-query.ts`, `src/telemetry.ts`, `src/config/hook-secret.ts`
+**Why:** The first audit showed credential-shaped lines still reaching disk, a 30 second blind spot after the hook secret was created, and a query that dropped the newest rows once a file passed its byte cap.
+**Links:** [Intent](../intent/2026-11-10-pc8-log-redaction-fix.md)
+
+URL userinfo is masked with or without a password, and the scheme match is case-insensitive. Bearer tokens are too. Secret-shaped keys are recognized in the quoted, escaped, and whitespace-separated forms `util.format` actually prints. A hook-secret miss is not cached, and `getHookSecret()` supplies the value it just stored, so the next line cannot keep a secret that appeared a moment earlier. `queryLogs` reads each generation from the tail. Telemetry's key rule is no longer config backup's: `author`, `authored`, `authUser`, and `authorId` keep their values, while `auth`, `authorization`, and `x-auth-*` stay masked. Config backup's `SECRET_KEY_RE` is unchanged.
+
 ## 2026-11-10 - Query redacted telemetry without a second intake route
 
 **Type:** intent-refinement
