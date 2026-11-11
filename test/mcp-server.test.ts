@@ -1,6 +1,7 @@
+import { canvasToolNames } from '../src/canvas/commands.js';
 /**
  * @fileoverview `codeman mcp` (src/mcp-server.ts): the dual-era MCP protocol core, the
- * eleven tools against a recording fake transport, and one end-to-end run of the real
+ * tools against a recording fake transport, and one end-to-end run of the real
  * CLI over stdio against a local fake Codeman.
  *
  * Pinned invariants: no guessed URL (unconfigured = tools answer how to configure, list
@@ -165,13 +166,14 @@ describe('protocol: both eras', () => {
     expect(out[0]).toMatchObject({ id: 4, error: { code: RPC_ERROR.invalidParams } });
   });
 
-  it('lists the same eleven tools in a fixed order, decorated for the era', async () => {
+  it('lists the same twenty-two tools in a fixed order, decorated for the era', async () => {
     const { out, send } = server();
     await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: MODERN_META } });
     const legacy = (out[0] as { result: { tools: Array<{ name: string }>; resultType?: string } }).result;
     const modern = (out[1] as { result: { tools: Array<{ name: string }>; resultType?: string } }).result;
     const names = [
+      ...canvasToolNames,
       'list_sessions',
       'start_session',
       'send_prompt',

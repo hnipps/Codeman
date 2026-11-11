@@ -29,6 +29,9 @@ import {
   type CanvasState,
 } from './model.js';
 
+export const MAX_CALLER_OPERATIONS = 1000;
+export const MAX_EXPANDED_OPERATIONS = MAX_CALLER_OPERATIONS * 10;
+
 const fields = { opId: IdSchema, objectId: IdSchema, expectedRevision: z.number().int().nonnegative().optional() };
 export const CommandSchema = z.discriminatedUnion('kind', [
   z
@@ -98,9 +101,10 @@ export const OperationSchema = z
 export type Operation = z.infer<typeof OperationSchema>;
 export const knownKinds: ReadonlySet<string> = new Set(CommandSchema.options.map((o) => o.shape.kind.value));
 export type Rejection = {
-  code: 'LOCKED' | 'CYCLE' | 'HIERARCHY_LIMIT' | 'REVISION' | 'NOT_FOUND' | 'INVALID' | 'DUPLICATE';
+  code: 'LOCKED' | 'CYCLE' | 'HIERARCHY_LIMIT' | 'REVISION' | 'NOT_FOUND' | 'INVALID' | 'DUPLICATE' | 'DEPENDENTS';
   objectId: string;
   message: string;
+  dependents?: { objectId: string; author: Author }[];
 };
 export type BatchResult =
   | { ok: true; state: CanvasState; operations: Operation[] }
@@ -149,18 +153,38 @@ function hierarchyReason(state: CanvasState, o: CanvasObject, isKnown: (id: stri
   return null;
 }
 
-export function validateBatch(initial: CanvasState, commands: Command[], author: Author, now = 0): BatchResult {
+export function validateBatch(
+  initial: CanvasState,
+  commands: Command[],
+  author: Author,
+  now = 0,
+  historyRemovals?: ReadonlySet<string>
+): BatchResult {
   try {
-    return validateBatchUnchecked(initial, commands, author, now);
+    return validateBatchUnchecked(initial, commands, author, now, historyRemovals);
   } catch (error) {
     if (error instanceof HierarchyError) return { ok: false, reasons: [error.reason] };
     throw error;
   }
 }
 
-function validateBatchUnchecked(initial: CanvasState, commands: Command[], author: Author, now = 0): BatchResult {
+function validateBatchUnchecked(
+  initial: CanvasState,
+  commands: Command[],
+  author: Author,
+  now = 0,
+  historyRemovals?: ReadonlySet<string>
+): BatchResult {
   const known = knownObjectIds(initial);
   const staged = new Map<string, CanvasObject>();
+  const children = new Map<string, Set<string>>();
+  const addChild = (parentId: string | null, id: string) => {
+    if (parentId === null) return;
+    const siblings = children.get(parentId) ?? new Set<string>();
+    siblings.add(id);
+    children.set(parentId, siblings);
+  };
+  for (const object of Object.values(initial.objects)) addChild(object.parentId, object.id);
   const isKnown = (id: string): boolean => staged.has(id) || known.has(id);
   const objects = new Proxy<Record<string, CanvasObject>>(
     {},
@@ -298,8 +322,25 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
       isContainer(current) &&
       (['move', 'reparent', 'delete', 'restore', 'revert'].includes(command.kind) ||
         (command.kind === 'update' && command.patch.rotation !== undefined))
-        ? descendants(state, current.id, true).slice(1)
+        ? requireHierarchy(walkHierarchy(state, [current.id], 'children', false, children)).slice(1)
         : [];
+    if (historyRemovals && (command.kind === 'delete' || (command.kind === 'revert' && proposed.deletedAt !== null))) {
+      const dependents = subtree
+        .filter((child) => child.deletedAt === null && !historyRemovals.has(child.id))
+        .map((child) => ({ objectId: child.id, author: child.author }));
+      if (dependents.length)
+        return {
+          ok: false,
+          reasons: [
+            {
+              code: 'DEPENDENTS',
+              objectId: command.objectId,
+              message: 'History would remove later dependent objects',
+              dependents,
+            },
+          ],
+        };
+    }
     for (const child of subtree) {
       if (!isKnown(child.id)) return reject('INVALID', 'Unknown descendant type is read-only');
       if (child.lock) return reject('LOCKED', `Protected descendant ${child.id}`);
@@ -327,7 +368,13 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
       ...(comment ? { comment } : {}),
       ...(removedComment ? { removedComment } : {}),
     };
-    for (const change of changes) staged.set(change.objectId, change.after);
+    for (const change of changes) {
+      if (change.before?.parentId !== change.after.parentId) {
+        if (change.before?.parentId) children.get(change.before.parentId)?.delete(change.objectId);
+        addChild(change.after.parentId, change.objectId);
+      }
+      staged.set(change.objectId, change.after);
+    }
     state = {
       seq: op.seq,
       objects,
@@ -357,7 +404,7 @@ function validateBatchUnchecked(initial: CanvasState, commands: Command[], autho
     const ancestors = requireHierarchy(walkHierarchy(state, [id], 'parents'));
     facts.set(id, { depth: ancestors.length, deleted: ancestors.some((o) => o.deletedAt !== null) });
   }
-  for (const o of roots.size ? requireHierarchy(walkHierarchy(state, roots, 'children')) : []) {
+  for (const o of roots.size ? requireHierarchy(walkHierarchy(state, roots, 'children', false, children)) : []) {
     if (roots.has(o.id)) continue;
     const parent = o.parentId === null ? undefined : state.objects[o.parentId];
     const inherited = parent ? facts.get(parent.id) : undefined;
@@ -470,22 +517,13 @@ export function invertOperation(op: Operation): Command[] {
       return [
         {
           ...inverse,
-          kind: 'reparent',
-          patch: { parentId: before.parentId, order: before.order, preserveWorld: false },
-        },
-        {
-          ...inverse,
-          opId: historyId(`inverse-position:${op.opId}`),
-          expectedRevision: changedObject.after.revision + 1,
-          kind: 'move',
-          patch: { position: before.position },
-        },
-        {
-          ...inverse,
-          opId: historyId(`inverse-rotation:${op.opId}`),
-          expectedRevision: changedObject.after.revision + 2,
-          kind: 'update',
-          patch: { rotation: before.rotation },
+          kind: 'revert',
+          patch: {
+            parentId: before.parentId,
+            order: before.order,
+            position: before.position,
+            rotation: before.rotation,
+          },
         },
       ];
     case 'revert':

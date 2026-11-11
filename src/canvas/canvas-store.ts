@@ -24,6 +24,7 @@ import {
   indexKnownObjects,
   classifyObject,
   walkHierarchy,
+  hierarchyCycles,
   emptyState,
   sameAuthor,
   type Author,
@@ -31,6 +32,8 @@ import {
 } from './model.js';
 import {
   CommandSchema,
+  MAX_CALLER_OPERATIONS,
+  MAX_EXPANDED_OPERATIONS,
   OperationSchema,
   knownKinds,
   revertAuthor,
@@ -147,8 +150,10 @@ export class CanvasStore {
       }
       offset += Buffer.byteLength(line) + 1;
     }
-    const unsafe = new Set<string>();
+    const cycles = hierarchyCycles(state);
+    const unsafe = new Set(cycles.cycles);
     for (const id of Object.keys(state.objects)) {
+      if (cycles.affected.has(id)) continue;
       const walk = walkHierarchy(state, [id], 'parents');
       for (const member of walk.cycles) unsafe.add(member);
       if (walk.issue?.code === 'HIERARCHY_LIMIT') unsafe.add(id);
@@ -167,9 +172,15 @@ export class CanvasStore {
     this.seen = seen;
   }
   append(input: Command[], author: Author): AppendResult {
+    return this.appendBatch(input, author, MAX_CALLER_OPERATIONS);
+  }
+  appendExpanded(input: Command[], author: Author): AppendResult {
+    return this.appendBatch(input, author, MAX_EXPANDED_OPERATIONS);
+  }
+  private appendBatch(input: Command[], author: Author, limit: number): AppendResult {
     requireCanvasWriter();
     author = AuthorSchema.parse(author);
-    const commands = z.array(CommandSchema).max(1000).parse(input);
+    const commands = z.array(CommandSchema).max(limit).parse(input);
     const duplicates = commands.map((c) => this.seen.get(c.opId));
     if (duplicates.some(Boolean)) {
       if (!duplicates.every((d) => d?.author && sameAuthor(d.author, author)))
@@ -220,7 +231,7 @@ export class CanvasStore {
     return { ok: true, seq: this.state.seq, operations: structuredClone(result.operations) };
   }
   revert(target: Author, actor: Author): AppendResult {
-    return this.append(revertAuthor(this.state, this.log, target), actor);
+    return this.appendExpanded(revertAuthor(this.state, this.log, target), actor);
   }
   snapshot(): void {
     requireCanvasWriter();

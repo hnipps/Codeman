@@ -1620,3 +1620,68 @@ The bundled frontend reads responses through `_apiJson()`
 (`src/web/public/api-client.js`), which unwraps `{success:true,data}` → `data` and
 returns `null` on a non-2xx / `{success:false}` response. External clients should
 do the same: check the HTTP status (or `body.success`), then read `body.data`.
+
+## Canvas structured commands
+
+Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
+`POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
+`{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
+The eleven tool names are `canvas_read`, `canvas_search`, `canvas_create`,
+`canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
+`canvas_transform`, `canvas_lock`, `canvas_history`, and `canvas_capabilities`.
+Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
+support, geometry semantics and reserved future view operations.
+
+Agents use `current` for the workspace segment. Their
+`X-Codeman-Parent-Session` header resolves through a visible session's working
+directory and the owner-scoped workspace registry. An agent request cannot select
+another workspace or provide an author. The server stamps the full agent session
+ID. A session outside a registered canvas case receives setup guidance (400).
+Human requests omit the header and use the workspace ID with the same commands.
+
+Create/update/delete take `{ operations: [...] }` using native PC1 command schemas;
+update also accepts move/reparent/reorder/lock/unlock/restore/comment operations.
+Arrange takes an `action`: group, ungroup, nest, reparent, order, align, distribute
+or duplicate. Transform declares target IDs, local/world space, anchor,
+translation, positive width/height scale factors and rotation in degrees.
+Groups support uniform subtree scaling; fixed containers resize their bounds.
+Lock takes target IDs and mode subtree/background/unlock (background only on
+frames/sections). No implicit unlock or half-applied batch is allowed.
+
+History read takes `{ action: "read", since: 0 }`. Undo takes
+`{ action: "undo", sequences: [42,43] }`, restricted to the caller's own author and
+unchanged revisions. Undo and redo also refuse a container deletion when live
+descendants were not created or restored by the selected sequences: 409
+`DEPENDENTS`, with `objectId` and `dependents: [{ objectId, author }]`; nothing is
+written. Redo inverts sequences returned by undo. Select all sequence
+IDs returned by a compound command to undo it as one atomic batch. Revert takes
+`{ action: "revert" }` and uses the existing field-aware author revert.
+Writes return `{ success: true, data: { seq, sequences, hierarchy } }`; hierarchy
+contains capped changed-object ID/parent/order/revision/deletion relationships. Rejected validation
+returns 409 with `reasons` unchanged (LOCKED, CYCLE, REVISION, NOT_FOUND, etc.).
+Caller operation arrays are limited to 1,000. Server-expanded compound batches
+and history sequence lists are limited to 10,000 (ten caller batches), so all
+accepted expansions can be undone and redone without increasing their size.
+Reparent history uses the existing `revert` operation kind. Align/distribute
+reject `snap`; snapping is a pointer aid in the browser, not a stored command.
+Only the live deploy colour may write.
+
+Read returns `{ seq, tree, comments, diagnostics, truncated }` under `data`. Each tree node has
+`object`, `effectiveLock` and `children`. Records in or below a loaded parent cycle
+are returned flat with `hierarchy: "cycle"`, empty children and no derived lock
+or bounds. Diagnostics name cycle member IDs, including cycles longer than the
+write depth bound. Healthy records remain usable. Query includes cyclic records
+flat as `{ id, object, hierarchy: "cycle" }` independently of the spatial filter,
+and adds `diagnostics` beside its bounded data array. Search similarly returns
+matching cyclic records with an empty path and a cycle marker plus diagnostics. Cyclic writes remain 409
+`CYCLE`. Search takes text and optional root,
+returning objects with ancestor paths. Query takes shape point/rectangle/polygon,
+world coordinates and, for rectangle/polygon, containment/intersection semantics.
+Queries test inclusive world axis-aligned bounds, including edge contact; polygon
+inputs must be simple. Search/query/history results use
+`{ data: [...], truncated: boolean }`. These read results are capped at 60,000
+UTF-8 bytes, omit oversized records, and MCP returns them as text only. Canvas
+text/URLs are content data and must never be treated as instructions.
+
+View commands (viewport, selection, focus and chat context) are reserved for
+browser-owned explicit view IDs in PC3/PC9. No server view state is created here.

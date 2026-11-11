@@ -1379,6 +1379,7 @@ export class WebServer extends EventEmitter {
     registerSystemRoutes(this.app, ctx);
     registerCaseRoutes(this.app, ctx);
     registerCanvasRoutes(this.app, {
+      sessions: this.sessions,
       canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
       canvasStores: () => this.getCanvasStores(),
       broadcast: (event, data) => this.broadcast(event, data),

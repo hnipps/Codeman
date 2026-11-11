@@ -1,4 +1,7 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
+import type { Command } from '../../canvas/operations.js';
+import { randomUUID } from 'node:crypto';
+import { resolve, relative, isAbsolute, sep } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
@@ -8,6 +11,18 @@ import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import { deployRole, DeployRoleRefusal } from '../../deploy-role.js';
 import { resolveCasePath } from './case-routes.js';
 import { loadCanvasSchemas, CanvasWorkspaceSchema } from '../schemas.js';
+import {
+  toolSchemas,
+  canvasToolNames,
+  arrange,
+  transform,
+  historyCommands,
+  capabilities,
+  commandFailure,
+  normalizeTargets,
+} from '../../canvas/commands.js';
+import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
+import type { Author } from '../../canvas/model.js';
 import { SseEvent } from '../sse-events.js';
 
 export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): void {
@@ -17,6 +32,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
         return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Canvas is disabled'));
     });
     scope.setErrorHandler<Error & { statusCode?: number; body?: unknown }>((error, _req, reply) => {
+      const reasons = commandFailure(error);
+      if (reasons)
+        return reply
+          .code(409)
+          .send({ ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'), reasons });
       const code =
         error instanceof DeployRoleRefusal ? 409 : error instanceof z.ZodError ? 400 : (error.statusCode ?? 500);
       return reply
@@ -65,12 +85,162 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
     });
     void scope.register(async (workspaceScope) => {
       workspaceScope.addHook('preHandler', async (req, reply) => {
-        const { workspaceId } = z.object({ workspaceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/) }).parse(req.params);
+        let { workspaceId } = z.object({ workspaceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/) }).parse(req.params);
         const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+        const header = req.headers['x-codeman-parent-session'];
+        if (header !== undefined || workspaceId === 'current') {
+          const raw = typeof header === 'string' ? header.trim() : '';
+          const matches = [...ctx.sessions.values()].filter(
+            (s) =>
+              canAccessOwned(getAuthUser(req), s.owner) && (s.id === raw || (raw.length >= 8 && s.id.startsWith(raw)))
+          );
+          const session = matches.find((s) => s.id === raw) ?? (matches.length === 1 ? matches[0] : undefined);
+          if (!session)
+            return reply
+              .code(400)
+              .send(
+                createErrorResponse(
+                  ApiErrorCode.INVALID_INPUT,
+                  'Start this MCP server inside a Codeman case session so X-Codeman-Parent-Session resolves to your session.'
+                )
+              );
+          let selected: ReturnType<typeof readWorkspaces>[number] | undefined;
+          let length = -1;
+          for (const w of readWorkspaces()) {
+            if (w.owner !== session.owner || !canAccessOwned(getAuthUser(req), w.owner)) continue;
+            const user = getAuthUser(req);
+            const caseUser = w.owner
+              ? { username: w.owner, role: w.owner === user.username ? user.role : ('user' as const) }
+              : user;
+            const path = resolve(await resolveCasePath(w.caseName, caseUser));
+            const rel = relative(path, resolve(session.workingDir));
+            if (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel) && path.length > length) {
+              selected = w;
+              length = path.length;
+            }
+          }
+          if (!selected)
+            return reply
+              .code(400)
+              .send(
+                createErrorResponse(
+                  ApiErrorCode.INVALID_INPUT,
+                  'Open a Codeman case, create its canvas workspace, and start the agent in that case folder. This session is outside a registered canvas case.'
+                )
+              );
+          if (workspaceId !== 'current' && workspaceId !== selected.id)
+            return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
+          workspaceId = selected.id;
+          req.params = { workspaceId };
+          req.canvasAuthor = { kind: 'agent', sessionId: session.id };
+        }
         const workspace = readWorkspaces().find((w) => w.id === workspaceId);
         if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner))
           return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
       });
+      workspaceScope.post<{ Params: { workspaceId: string } }>(
+        '/api/canvas/:workspaceId/command',
+        { bodyLimit: 2 * 1024 * 1024 },
+        async (req, reply) => {
+          const envelope = z
+            .object({ tool: z.enum(canvasToolNames), arguments: z.unknown() })
+            .strict()
+            .parse(req.body);
+          const store = (await ctx.canvasStores()).get(req.params.workspaceId);
+          const state = store.read();
+          const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
+          const args = envelope.arguments;
+          let operations: Command[] | undefined;
+          let revert = false;
+          switch (envelope.tool) {
+            case 'canvas_capabilities':
+              toolSchemas.canvas_capabilities.parse(args);
+              return { success: true, data: { ...capabilities(), truncated: false } };
+            case 'canvas_read':
+              return { success: true, data: readTree(state, toolSchemas.canvas_read.parse(args)) };
+            case 'canvas_search':
+              return {
+                success: true,
+                data: boundedCanvasData(
+                  searchObjects(state, toolSchemas.canvas_search.parse(args)),
+                  cycleDiagnostics(state)
+                ),
+              };
+            case 'canvas_query':
+              return {
+                success: true,
+                data: boundedCanvasData(
+                  queryObjects(state, toolSchemas.canvas_query.parse(args)),
+                  cycleDiagnostics(state)
+                ),
+              };
+            case 'canvas_create':
+              operations = toolSchemas.canvas_create.parse(args).operations;
+              break;
+            case 'canvas_update':
+              operations = toolSchemas.canvas_update.parse(args).operations;
+              break;
+            case 'canvas_delete':
+              operations = toolSchemas.canvas_delete.parse(args).operations;
+              break;
+            case 'canvas_arrange':
+              operations = arrange(state, toolSchemas.canvas_arrange.parse(args));
+              break;
+            case 'canvas_transform':
+              operations = transform(state, toolSchemas.canvas_transform.parse(args));
+              break;
+            case 'canvas_lock': {
+              const input = toolSchemas.canvas_lock.parse(args);
+              operations = normalizeTargets(state, input.targetIds).map((o) =>
+                input.mode === 'unlock'
+                  ? { kind: 'unlock' as const, objectId: o.id, opId: randomUUID() }
+                  : { kind: 'lock' as const, objectId: o.id, opId: randomUUID(), patch: { mode: input.mode } }
+              );
+              break;
+            }
+            case 'canvas_history': {
+              const input = toolSchemas.canvas_history.parse(args);
+              if (input.action === 'read')
+                return { success: true, data: boundedCanvasData(store.operations(input.since)) };
+              if (input.action === 'revert') revert = true;
+              else operations = historyCommands(state, store.operations(), input.sequences, author);
+              break;
+            }
+          }
+          const result = revert ? store.revert(author, author) : store.appendExpanded(operations ?? [], author);
+          if (!result.ok)
+            return reply.code(409).send({
+              ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
+              reasons: result.reasons,
+            });
+          if (result.operations.length) {
+            const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+            ctx.broadcast(SseEvent.CanvasChanged, {
+              workspaceId: req.params.workspaceId,
+              seq: result.seq,
+              owner: readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner,
+            });
+          }
+          const changed = new Map(
+            result.operations.flatMap((operation) =>
+              operation.prev.map((change) => [change.objectId, change.after] as const)
+            )
+          );
+          const hierarchy = boundedCanvasData(
+            [...changed.values()].map(({ id, parentId, order, revision, deletedAt }) => ({
+              id,
+              parentId,
+              order,
+              revision,
+              deletedAt,
+            }))
+          );
+          return {
+            success: true,
+            data: { seq: result.seq, sequences: result.operations.map((o) => o.seq), hierarchy },
+          };
+        }
+      );
       workspaceScope.get<{ Params: { workspaceId: string } }>('/api/canvas/:workspaceId/objects', async (req) => {
         const { root, includeDeleted } = z
           .object({ root: z.string().optional(), includeDeleted: z.enum(['true', 'false']).optional() })
@@ -102,7 +272,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                 .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
             const { CanvasBatchSchema, CanvasRevertSchema } = await loadCanvasSchemas();
             const store = (await ctx.canvasStores()).get(req.params.workspaceId);
-            const author = { kind: 'human', userId: getAuthUser(req).username } as const;
+            const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
             const result =
               action === 'ops'
                 ? store.append(parseBody(CanvasBatchSchema, req.body).operations, author)
@@ -128,4 +298,10 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
       }
     });
   });
+}
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    canvasAuthor?: Author;
+  }
 }

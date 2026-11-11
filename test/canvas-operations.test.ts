@@ -82,11 +82,11 @@ describe('canvas domain operations', () => {
     expect(descendants(state, 'a').map((o) => o.id)).toEqual(['a', 'b']);
     expect(() => effectiveLock(state, 'a')).toThrow('Cyclic');
     expect(() => worldTransform(state, 'a')).toThrow('Cyclic');
-    expect(() => bounds(state, 'a')).toThrow('Cyclic');
+    expect(bounds(state, 'a')).toEqual({ hierarchy: 'cycle' });
     // Auto-bounded geometry has its own child traversal through the same helper.
     state.objects.a.size = null;
     state.objects.b.size = null;
-    expect(() => bounds(state, 'a', 'local')).toThrow('Cyclic');
+    expect(bounds(state, 'a', 'local')).toEqual({ hierarchy: 'cycle' });
     expect(
       validateBatch(
         state,
@@ -105,7 +105,7 @@ describe('canvas domain operations', () => {
     const last = `n${MAX_HIERARCHY_DEPTH - 1}`;
     expect(descendants(state, 'n0')).toHaveLength(MAX_HIERARCHY_DEPTH);
     expect(worldTransform(state, last).x).toBe(MAX_HIERARCHY_DEPTH * 10);
-    expect(bounds(state, 'n0').x).toBe(MAX_HIERARCHY_DEPTH * 10);
+    expect(bounds(state, 'n0')).toMatchObject({ x: MAX_HIERARCHY_DEPTH * 10 });
     expect(effectiveLock(state, last)).toBeNull();
     expect(
       validateBatch(
@@ -201,7 +201,7 @@ describe('canvas domain operations', () => {
     const op = next.operations[0];
     if (!op) throw new Error('missing reparent');
     const inverse = invertOperation(op);
-    expect(inverse.map((command) => command.kind)).toEqual(['reparent', 'move', 'update']);
+    expect(inverse.map((command) => command.kind)).toEqual(['revert']);
     const restored = apply(next.state, inverse).state.objects.child;
     expect(restored).toMatchObject({
       parentId: before?.parentId,
@@ -326,7 +326,7 @@ describe('canvas domain operations', () => {
       },
     ]).state;
     expect(worldTransform(state, 'child')).toEqual(original);
-    expect(bounds(state, 'group').width).toBe(0);
+    expect(bounds(state, 'group')).toMatchObject({ width: 0 });
     state = apply(state, [{ kind: 'delete', objectId: 'frame', opId: 'delete' }]).state;
     expect(state.objects.child?.deletedAt).toBe(100);
     state = apply(state, [{ kind: 'restore', objectId: 'frame', opId: 'restore' }]).state;
@@ -368,6 +368,7 @@ describe('canvas domain operations', () => {
     state = apply(state, [{ kind: 'update', opId: 'rotate', objectId: 'group', patch: { rotation: 90 } }]).state;
     const local = bounds(state, 'group', 'local');
     const world = bounds(state, 'group');
+    if ('hierarchy' in local || 'hierarchy' in world) throw new Error('Healthy geometry must have bounds');
     expect(local.x).toBeCloseTo(-90);
     expect(local.y).toBeCloseTo(30);
     expect(local.width).toBeCloseTo(80);

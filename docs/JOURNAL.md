@@ -11,6 +11,48 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 The assignment is measured on the original text, before any placeholder is written. A credential header that holds a bearer token gets one `[redacted]`. A `]` that was already in the input, such as the closer of `headers: [Authorization: Bearer …]`, stays. Free-standing bearer tokens are unchanged.
 
+## 2026-11-11 - Bound canvas expansion separately and preserve later descendants
+
+**Type:** propagated-discovery
+**Touches:** canvas history, validation, model reads and command routes
+**Why:** The PC2 audit reproduced undo deleting another author's later child,
+maximum-target history exceeding caller limits, and cycles hiding healthy objects.
+**Links:** [Audit fix intent](../intent/2026-11-11-canvas-audit-fixes.md)
+
+History checks the staged subtree against identities created/restored by the
+selected sequences, refusing later dependents before append. An existing `revert`
+restores reparent geometry in one operation, keeping undo/redo size stable.
+Caller operation arrays retain their 1,000 limit; server expansions and history
+sequence lists use 10,000, ten caller batches and the hierarchy node bound.
+A CPU profile of maximum-target ungroup found repeated whole-state child scans;
+validation now maintains a batch-local child index as staged parents change.
+The final maximum-target probe still exceeds the literal PC1 5 ms whole-append
+rule; this audit round records that limit rather than normalizing time per object.
+Cycle classification is independent of the write depth bound, so even long
+loaded cycles remain flat and diagnosed while healthy discovery works. Browser
+pointer snapping is described separately from deterministic stored arrangement.
+
+## 2026-11-11 - Keep canvas MCP compact and share native commands
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/commands.ts`, `src/canvas/queries.ts`, canvas routes and MCP
+**Why:** Five CRUD tools alone do not cover the required stored capability matrix.
+**Links:** [Canvas MCP intent](../intent/2026-11-11-canvas-mcp.md)
+
+Use eleven canvas tools (21 MCP tools total): the five named read/CRUD tools plus
+query, arrange, transform, lock, history and capabilities. Every tool calls the
+same typed HTTP handler available to humans. Compound edits expand to one native
+batch and append once. Schema discovery describes unsupported flips/shear,
+uniform group scaling, fixed-container bounds resize and world AABB queries.
+Undo uses explicit own-author sequences and refuses intervening revisions; redo
+inverts returned undo sequences. This avoids a second mutable undo stack.
+
+Reserve per-view viewport, selection, focus and context names for PC3/PC9 in the
+capability list. The browser owns that state; PC2 does not create a server store.
+Read/search/query/history use text-only JSON capped at 60,000 UTF-8 bytes with a
+truncation flag and omit records that do not fit. Case scope follows the longest
+registered case path containing the visible caller session's working directory;
+body workspace and author fields are forbidden.
 ## 2026-11-11 — Remove empty canvas reader sections and stacked review fixtures
 
 **Type:** propagated-discovery
