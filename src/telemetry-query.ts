@@ -2,10 +2,10 @@
  * @fileoverview Bounded read of one telemetry stream and its rotated `.1` file.
  *
  * Matches a literal substring, a time range and a level. It never compiles the
- * caller's text into a RegExp. The read is chunked: a generation is not loaded
- * whole, and a line over the line cap is skipped. The row cap keeps the newest
- * matches. Results are passed through `redactLogLine` again so a line written
- * by an older release is masked on the way out.
+ * caller's text into a RegExp. Each generation is read from its tail, in chunks,
+ * so a byte cap keeps the newest rows and a generation is not loaded whole. A
+ * line over the line cap is skipped. Results are passed through `redactLogLine`
+ * again so a line written by an older release is masked on the way out.
  *
  * @module telemetry-query
  */
@@ -220,38 +220,44 @@ function matchedLines(state: MatchState): string[] {
 }
 
 /**
- * Read one generation. Stops after `maxFileBytes` (the chunk that crosses the
- * cap is still scanned). A line longer than `maxLineBytes` is dropped.
+ * Read the tail of one generation, at most `maxFileBytes`. A start in the
+ * middle of a line drops that partial line. A line longer than `maxLineBytes`
+ * is dropped. Older bytes outside the window set `truncated`.
  */
 async function scanFile(path: string, q: NormalizedQuery, state: MatchState): Promise<void> {
   let file;
+  let size = 0;
   try {
     const st = await lstat(path);
     if (!st.isFile()) return;
+    size = st.size;
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ELOOP' || code === 'EINVAL') return;
     throw new LogQueryError('Could not read a log file');
   }
+  const startAt = size > q.maxFileBytes ? size - q.maxFileBytes : 0;
+  if (startAt > 0) state.truncated = true;
   const chunk = Buffer.alloc(READ_CHUNK_BYTES);
   let pending = Buffer.alloc(0);
-  let skipping = false;
-  let readBytes = 0;
+  let skipping = startAt > 0;
+  let position = startAt;
   try {
-    for (;;) {
-      const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+    while (position < size) {
+      const want = Math.min(chunk.length, size - position);
+      const { bytesRead } = await file.read(chunk, 0, want, position);
       if (bytesRead === 0) break;
-      readBytes += bytesRead;
+      position += bytesRead;
       pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
       if (skipping) {
         const nl = pending.indexOf(0x0a);
         if (nl === -1) {
           pending = Buffer.alloc(0);
-        } else {
-          skipping = false;
-          pending = pending.subarray(nl + 1);
+          continue;
         }
+        skipping = false;
+        pending = pending.subarray(nl + 1);
       }
       let start = 0;
       for (let i = 0; i < pending.length; i++) {
@@ -270,11 +276,6 @@ async function scanFile(path: string, q: NormalizedQuery, state: MatchState): Pr
         } else {
           pending = pending.subarray(nl + 1);
         }
-      }
-      if (readBytes >= q.maxFileBytes) {
-        const extra = await file.read(chunk, 0, 1, null);
-        if (extra.bytesRead > 0) state.truncated = true;
-        return;
       }
     }
     if (!skipping && pending.length > 0) consider(pending, q, state);
@@ -298,8 +299,9 @@ function consider(lineBuf: Buffer, q: NormalizedQuery, state: MatchState): void 
 }
 
 /**
- * Read `stream.jsonl.1` then `stream.jsonl`. `dir` empty means nothing is configured.
- * The newest `limit` matches are returned. There is no switch that returns the raw line.
+ * Read the tail of `stream.jsonl.1`, then the tail of `stream.jsonl`, so the
+ * newest rows win a byte cap. `dir` empty means nothing is configured. There is
+ * no switch that returns the raw line.
  */
 export async function queryLogs(opts: LogQueryOptions): Promise<LogQueryResult> {
   if (!opts.dir) return { lines: [], truncated: false, reason: NO_LOG_DIR_REASON };

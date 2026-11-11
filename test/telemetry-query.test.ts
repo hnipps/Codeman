@@ -140,7 +140,35 @@ describe('queryLogs', () => {
       maxFileBytes: 70 * 1024,
     });
     expect(capped.truncated).toBe(true);
-    expect(capped.lines.map((line) => JSON.parse(line).msg)).toEqual(['head-needle']);
+    expect(capped.lines.map((line) => JSON.parse(line).msg)).toEqual(['tail-needle']);
+  });
+
+  it('returns a match that sits past the default byte cap', async () => {
+    const { openSync, writeSync, closeSync } = await import('node:fs');
+    const path = join(dir, 'server.jsonl');
+    const fd = openSync(path, 'w');
+    const head = Buffer.from(`${row('2026-11-10T00:00:00.000Z', { msg: 'head-audit-only' })}\n`);
+    const pad = Buffer.from(`${row('2026-11-10T00:00:01.000Z', { msg: 'pad' })}\n`);
+    const tail = Buffer.from(`${row('2026-11-10T00:00:02.000Z', { msg: 'latest-error-audit' })}\n`);
+    let written = 0;
+    writeSync(fd, head);
+    written += head.length;
+    const target = 22 * 1024 * 1024;
+    while (written + pad.length + tail.length < target) {
+      writeSync(fd, pad);
+      written += pad.length;
+    }
+    writeSync(fd, tail);
+    closeSync(fd);
+
+    const found = await queryLogs({ dir, stream: 'server', text: 'latest-error-audit' });
+    expect(found.truncated).toBe(true);
+    expect(found.lines).toHaveLength(1);
+    expect(found.lines[0]).toContain('latest-error-audit');
+
+    const dropped = await queryLogs({ dir, stream: 'server', text: 'head-audit-only' });
+    expect(dropped.lines).toEqual([]);
+    expect(dropped.truncated).toBe(true);
   });
 
   it('does not follow a symlink', async () => {
