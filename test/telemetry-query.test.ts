@@ -143,6 +143,32 @@ describe('queryLogs', () => {
     expect(capped.lines.map((line) => JSON.parse(line).msg)).toEqual(['tail-needle']);
   });
 
+  it('keeps a row when the window starts on a newline and drops a partial row', async () => {
+    writeFileSync(join(dir, 'server.jsonl'), 'older\nnewest\n');
+    const boundary = await queryLogs({ dir, stream: 'server', maxFileBytes: 7 });
+    expect(boundary.lines).toEqual(['newest']);
+    expect(boundary.truncated).toBe(true);
+
+    writeFileSync(join(dir, 'server.jsonl'), 'older\nnewest');
+    const boundaryNoNl = await queryLogs({ dir, stream: 'server', maxFileBytes: 6 });
+    expect(boundaryNoNl.lines).toEqual(['newest']);
+
+    writeFileSync(join(dir, 'server.jsonl'), 'older\npartial\nkept');
+    const mid = await queryLogs({ dir, stream: 'server', maxFileBytes: 10 });
+    expect(mid.lines).toEqual(['kept']);
+    expect(mid.truncated).toBe(true);
+
+    writeFileSync(join(dir, 'server.jsonl.1'), 'older\nnewest\n');
+    writeFileSync(join(dir, 'server.jsonl'), 'older\nsecond\n');
+    const across = await queryLogs({ dir, stream: 'server', maxFileBytes: 7 });
+    expect(across.lines).toEqual(['newest', 'second']);
+
+    writeFileSync(join(dir, 'server.jsonl.1'), 'older\npartial\nkept');
+    writeFileSync(join(dir, 'server.jsonl'), 'zz');
+    const acrossMid = await queryLogs({ dir, stream: 'server', maxFileBytes: 10 });
+    expect(acrossMid.lines).toEqual(['kept', 'zz']);
+  });
+
   it('returns a match that sits past the default byte cap', async () => {
     const { openSync, writeSync, closeSync } = await import('node:fs');
     const path = join(dir, 'server.jsonl');

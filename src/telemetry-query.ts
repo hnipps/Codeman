@@ -220,9 +220,10 @@ function matchedLines(state: MatchState): string[] {
 }
 
 /**
- * Read the tail of one generation, at most `maxFileBytes`. A start in the
- * middle of a line drops that partial line. A line longer than `maxLineBytes`
- * is dropped. Older bytes outside the window set `truncated`.
+ * Read the tail of one generation, at most `maxFileBytes`. A window that
+ * starts on a row boundary (the byte before it is a newline) keeps that row.
+ * A start in the middle of a line drops that partial line. A line longer than
+ * `maxLineBytes` is dropped. Older bytes outside the window set `truncated`.
  */
 async function scanFile(path: string, q: NormalizedQuery, state: MatchState): Promise<void> {
   let file;
@@ -241,7 +242,12 @@ async function scanFile(path: string, q: NormalizedQuery, state: MatchState): Pr
   if (startAt > 0) state.truncated = true;
   const chunk = Buffer.alloc(READ_CHUNK_BYTES);
   let pending = Buffer.alloc(0);
-  let skipping = startAt > 0;
+  let skipping = false;
+  if (startAt > 0) {
+    const prev = Buffer.alloc(1);
+    const { bytesRead } = await file.read(prev, 0, 1, startAt - 1);
+    skipping = bytesRead !== 1 || prev[0] !== 0x0a;
+  }
   let position = startAt;
   try {
     while (position < size) {
