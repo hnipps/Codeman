@@ -445,11 +445,12 @@ describe('read-only canvas document', () => {
     await open();
     expect(await page.locator('#outline').isVisible()).toBe(false);
     await shot(page, 'phone-board');
-    await page.locator('#openOutline').click();
+    await page.locator('#sectionsTool').click();
     await shot(page, 'phone-outline');
     expect(await page.locator('#outline').evaluate((el) => el.getBoundingClientRect().width)).toBe(390);
     await page.locator('#closeOutline').click();
-    await page.locator('#keys').click();
+    expect(await page.locator('#keys').isVisible()).toBe(false);
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'keys' }));
     await page.waitForSelector('#rail:not([hidden])');
     expect(await page.locator('#rail').evaluate((el) => el.getBoundingClientRect().width)).toBe(390);
     expect(await page.locator('#closeRail').evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(
@@ -650,7 +651,7 @@ describe('read-only canvas document', () => {
         expect(await page.locator('[data-object-id="review-markup"] img').count()).toBe(0);
         expect(await page.locator('[data-object-id="research"] > [data-type="text"]').count()).toBe(2);
         await shot(page, `${slug}-selection-focus`);
-        if (viewport.width === 390) await page.locator('#openOutline').click();
+        if (viewport.width === 390) await page.locator('#sectionsTool').click();
         await page.locator('#board').focus();
         expect(await page.locator('.search-hint').isVisible()).toBe(true);
         await page.locator('#search').focus();
@@ -692,32 +693,10 @@ describe('read-only canvas document', () => {
         );
         await shot(page, `${slug}-outline-focus`);
         if (viewport.width === 390) await page.locator('#closeOutline').click();
-        for (const [id, description] of [['chatTool', 'Comments arrive with conversations']]) {
-          const control = page.locator(`#${id}`);
-          expect(await control.getAttribute('aria-disabled')).toBe('true');
-          expect(await control.getAttribute('disabled')).toBeNull();
-          const contrast = await control.evaluate((el) => {
-            const luminance = (color: string) => {
-              const [r, g, b] = (color.match(/\d+/g) ?? []).slice(0, 3).map((n) => {
-                const c = Number(n) / 255;
-                return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-              });
-              return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-            };
-            const foreground = luminance(getComputedStyle(el).color);
-            const background = luminance(getComputedStyle(el.parentElement ?? el).backgroundColor);
-            return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
-          });
-          expect(contrast).toBeGreaterThanOrEqual(3);
-          await control.focus();
-          await page.keyboard.press('Enter');
-          await page.waitForFunction(
-            (text) => document.getElementById('announcement')?.textContent === text,
-            description
-          );
-          expect(await page.evaluate(() => window.canvasView.read().selected)).toEqual(['research']);
-        }
-        await page.locator('#keys').click();
+        expect(await page.locator('#chatTool').getAttribute('aria-disabled')).toBeNull();
+        if (viewport.width === 390)
+          await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'keys' }));
+        else await page.locator('#keys').click();
         await page.waitForSelector('#keysView:not([hidden])');
         expect(await page.locator('#keysView h1').count()).toBe(0);
         expect(await page.getByRole('img', { name: 'Right arrow', exact: true }).textContent()).toBe('→');
@@ -750,10 +729,12 @@ describe('read-only canvas document', () => {
         await session.send('CSS.enable');
         const states: unknown[] = [];
         for (const view of ['board', 'outline', 'keys', 'reader', 'container', 'error']) {
-          if (view === 'outline' && viewport.width === 390) await page.locator('#openOutline').click();
+          if (view === 'outline' && viewport.width === 390) await page.locator('#sectionsTool').click();
           if (view === 'keys') {
-            if (viewport.width === 390) await page.locator('#closeOutline').click();
-            await page.locator('#keys').click();
+            if (viewport.width === 390) {
+              await page.locator('#closeOutline').click();
+              await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'keys' }));
+            } else await page.locator('#keys').click();
           }
           if (view === 'reader') {
             await page.keyboard.press('Escape');

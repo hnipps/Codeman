@@ -569,12 +569,40 @@ export function invertOperation(op: Operation): Command[] {
   }));
 }
 
+export type RevertSummary = {
+  removed: string[];
+  restored: { objectId: string; fields: string[] }[];
+  skipped: { objectId: string; fields: string[] }[];
+  kept: string[];
+  comments: number;
+};
+
 export function revertAuthor(state: CanvasState, log: Operation[], author: Author): Command[] {
+  return revertPlan(state, log, author).commands;
+}
+
+/** Field-aware author revert: later edits by other authors protect their fields and keep shared objects. */
+export function revertPlan(
+  state: CanvasState,
+  log: Operation[],
+  author: Author
+): { commands: Command[]; summary: RevertSummary } {
   const known = knownObjectIds(state);
   const patches = new Map<string, Partial<z.infer<typeof MutableSchema>>>();
   const protectedFields = new Set<string>();
-  for (const op of [...log].reverse()) {
+  const protectedObjects = new Set<string>();
+  const skippedFields = new Map<string, Set<string>>();
+  const kept = new Set<string>();
+  const unsafe = new Map<string, boolean>();
+  const isUnsafe = (id: string): boolean => {
+    let result = unsafe.get(id);
+    if (result === undefined) unsafe.set(id, (result = !!walkHierarchy(state, [id], 'parents').issue));
+    return result;
+  };
+  for (let index = log.length - 1; index >= 0; index--) {
+    const op = log[index];
     if (!knownKinds.has(op.kind)) continue;
+    const mine = sameAuthor(op.author, author);
     for (const change of op.prev) {
       const current = state.objects[change.objectId];
       if (
@@ -582,37 +610,43 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
         !known.has(current.id) ||
         !isKnownObject(change.after) ||
         (change.before && !isKnownObject(change.before)) ||
-        walkHierarchy(state, [current.id], 'parents').issue
+        isUnsafe(current.id)
       )
         continue;
       for (const key of mutableKeys) {
         if (change.before && equal(change.before[key], change.after[key])) continue;
         const field = `${change.objectId}:${key}`;
-        if (!sameAuthor(op.author, author)) {
+        if (!mine) {
           protectedFields.add(field);
+          protectedObjects.add(change.objectId);
           continue;
         }
-        if (protectedFields.has(field)) continue;
+        if (protectedFields.has(field)) {
+          const fields = skippedFields.get(current.id) ?? new Set<string>();
+          fields.add(key);
+          skippedFields.set(current.id, fields);
+          continue;
+        }
         const patch = patches.get(current.id) ?? {};
         if (change.before)
           Object.assign(patch, {
             [key]: key === 'content' ? knownContentFields(change.before.content) : change.before[key],
           });
         else if (
-          ![...protectedFields].some((f) => f.startsWith(`${current.id}:`)) &&
-          !descendants(state, current.id).some(
-            (child) =>
-              child.id !== current.id &&
-              child.deletedAt === null &&
-              (!known.has(child.id) ||
-                !sameAuthor(child.author, author) ||
-                [...protectedFields].some((f) => f.startsWith(`${child.id}:`)))
-          )
+          !protectedObjects.has(current.id) &&
+          (!isContainer(current) ||
+            !descendants(state, current.id).some(
+              (child) =>
+                child.id !== current.id &&
+                child.deletedAt === null &&
+                (!known.has(child.id) || !sameAuthor(child.author, author) || protectedObjects.has(child.id))
+            ))
         )
           Object.assign(patch, {
             deletedAt: current.updatedAt + 1,
             deletionOpId: historyId(`revert:${state.seq}:${current.id}`),
           });
+        else if (current.deletedAt === null) kept.add(current.id);
         patches.set(current.id, patch);
       }
     }
@@ -623,7 +657,7 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
         sameAuthor(c.author, author) &&
         !!state.objects[c.objectId] &&
         isKnownObject(state.objects[c.objectId]) &&
-        !walkHierarchy(state, [c.objectId], 'parents').issue
+        !isUnsafe(c.objectId)
     )
     .map((c) => ({
       kind: 'remove-comment',
@@ -631,16 +665,34 @@ export function revertAuthor(state: CanvasState, log: Operation[], author: Autho
       objectId: c.objectId,
       patch: { id: c.id },
     }));
-  return [
-    ...comments,
-    ...[...patches]
-      .filter(([, patch]) => Object.keys(patch).length > 0)
-      .map<Command>(([objectId, patch]) => ({
+  const writes = [...patches].filter(([, patch]) => Object.keys(patch).length > 0);
+  const summary: RevertSummary = {
+    removed: writes
+      .filter(([id, patch]) => patch.deletedAt !== undefined && state.objects[id]?.deletedAt === null)
+      .map(([id]) => id),
+    restored: writes
+      .filter(([, patch]) => patch.deletedAt === undefined)
+      .map(([objectId, patch]) => ({ objectId, fields: Object.keys(patch) })),
+    skipped: [...skippedFields]
+      .map(([objectId, fields]) => ({
+        objectId,
+        fields: [...fields].filter((field) => !(field in (patches.get(objectId) ?? {}))),
+      }))
+      .filter((entry) => entry.fields.length > 0),
+    kept: [...kept].filter((id) => patches.get(id)?.deletedAt === undefined),
+    comments: comments.length,
+  };
+  return {
+    summary,
+    commands: [
+      ...comments,
+      ...writes.map<Command>(([objectId, patch]) => ({
         kind: 'revert',
         opId: historyId(`revert:${state.seq}:${objectId}`),
         objectId,
         expectedRevision: state.objects[objectId]?.revision,
         patch,
       })),
-  ];
+    ],
+  };
 }

@@ -2544,7 +2544,7 @@ export async function loadCanvasSchemas() {
   const { CommandSchema } = await import('../canvas/operations.js');
   return {
     CanvasBatchSchema: z.object({ operations: z.array(CommandSchema).min(1).max(1000) }).strict(),
-    CanvasRevertSchema: z.object({ author: AuthorSchema }).strict(),
+    CanvasRevertSchema: z.object({ author: AuthorSchema, requestId: z.uuid().optional() }).strict(),
   };
 }
 export const CanvasWorkspaceSchema = z.object({ caseName: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/) }).strict();

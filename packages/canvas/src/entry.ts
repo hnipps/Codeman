@@ -7,12 +7,17 @@ import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
 import { shortcutAllowed, shortcuts, editShortcuts } from './shortcuts.js';
 import { outline, siblings, worldBounds } from './tree.js';
-import { hit, union, type Point } from './viewport.js';
+import { hit, union, type Point, type Rect } from './viewport.js';
+import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } from './mobile.js';
+import { CommentsView, commentCounts } from './comments.js';
+import { HistoryView } from './history.js';
+import { snapshotComments } from './sync.js';
 
 declare global {
   interface Window {
     canvasEdit: ReturnType<DesktopEditor['adapter']>;
     canvasView: { dispatch: (action: ViewCommand) => void; read: () => ViewState };
+    canvasComments: { read: () => CommentsView['all']; post: (objectId: string, text: string) => Promise<boolean> };
   }
 }
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
@@ -34,10 +39,25 @@ let state = initialView(),
   keyboard = false,
   frame = 0;
 const railOrigins = new Map<string, HTMLElement>();
+// A tapped button takes no focus on iOS, so the control a tap pressed stands in as the opener.
+let pressed: HTMLElement | null = null;
+document.addEventListener(
+  'click',
+  (e) => {
+    pressed = e.target instanceof Element ? e.target.closest<HTMLElement>('button') : null;
+  },
+  true
+);
+function opener(): HTMLElement {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body) return active;
+  return pressed?.isConnected ? pressed : board;
+}
 let initial = true,
   pendingFocus: HTMLElement | null = null,
   railDepth = 0;
-const mobile = matchMedia('(max-width: 600px)');
+const mobile = phoneMode();
+trackKeyboard();
 state = command(state, { kind: 'outline', open: !mobile.matches }, objects);
 const assetUrl = (assetId: string): string | null =>
   /^[a-f0-9]{64}$/.test(assetId) ? url(`/api/canvas/${workspaceId}/assets/${assetId}`) : null;
@@ -64,6 +84,17 @@ function viewScoped(before: ViewState, next: ViewState): ViewState {
   const focusId = next.focusId && !members.has(next.focusId) ? before.focusId : next.focusId;
   return selected.length === next.selected.length && focusId === next.focusId ? next : { ...next, selected, focusId };
 }
+const comments = new CommentsView({
+  url,
+  workspace: workspaceId,
+  objects: () => objects,
+  choose: (id) => {
+    dispatch({ kind: 'focus', id });
+    dispatch({ kind: 'selection', ids: [id] });
+    reveal(id);
+  },
+});
+const history = new HistoryView({ url, workspace: workspaceId, phone: mobile, objects: () => objects });
 const icons: Record<string, string> = {
   undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',
   redoEdit: 'M13 4l4 4-4 4M17 8H9a5 5 0 0 0-5 5v3',
@@ -76,6 +107,9 @@ const icons: Record<string, string> = {
   closeOutline: 'M13 4l-6 6 6 6',
   openOutline: 'M3 4h14v12H3zM7 4v12',
   closeRail: 'M5 5l10 10M15 5L5 15',
+  closeSheet: 'M5 5l10 10M15 5L5 15',
+  sectionsTool: 'M4 5h12M7 10h9M7 15h9M4 10h.01M4 15h.01',
+  findTool: 'M9 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM13.5 13.5L17 17',
   alignXStart: 'M3 3v14M6 5h9v3H6zM6 12h6v3H6z',
   alignXCenter: 'M10 3v14M5 5h10v3H5zM7 12h6v3H7z',
   alignXEnd: 'M17 3v14M5 5h9v3H5zM8 12h6v3H8z',
@@ -92,8 +126,28 @@ for (const [id, path] of Object.entries(icons)) {
   const p = document.createElementNS(svg.namespaceURI, 'path');
   p.setAttribute('d', path);
   svg.append(p);
-  node(id).append(svg);
+  node(id).prepend(svg);
 }
+node('outline').tabIndex = -1;
+const safeProbe = document.createElement('div');
+safeProbe.id = 'safeProbe';
+safeProbe.setAttribute('aria-hidden', 'true');
+document.body.append(safeProbe);
+function insets() {
+  const style = getComputedStyle(safeProbe);
+  return {
+    top: parseFloat(style.paddingTop) || 0,
+    right: parseFloat(style.paddingRight) || 0,
+    bottom: parseFloat(style.paddingBottom) || 0,
+    left: parseFloat(style.paddingLeft) || 0,
+  };
+}
+const rectOf = (id: string): Rect | null => {
+  const el = document.getElementById(id);
+  if (!el || el.hidden) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.x, y: r.y, width: r.width, height: r.height };
+};
 function theme(): void {
   try {
     const skin = localStorage.getItem('codeman:skin') ?? 'daylight-blue';
@@ -112,7 +166,15 @@ function theme(): void {
 }
 theme();
 window.addEventListener('storage', theme);
-function area() {
+function area(): Rect {
+  if (mobile.matches) {
+    paintSheet();
+    return visibleRect({ width: innerWidth, height: innerHeight }, insets(), [
+      rectOf('dock'),
+      rectOf('fit'),
+      rectOf('sheet'),
+    ]);
+  }
   return {
     x: state.outlineOpen && !mobile.matches ? 192 : 0,
     y: 0,
@@ -124,18 +186,38 @@ function fit(ids?: string[]): void {
   const targets = (ids ? objects : inView()).filter((o) => o.deletedAt === null && (!ids || ids.includes(o.id)));
   dispatch({ kind: 'fit', bounds: union(targets.map((o) => worldBounds(objects, o))), area: area() });
 }
+function firstPhoneView(): void {
+  const live = objects.filter((o) => o.deletedAt === null);
+  const top = outline(live).filter((e) => e.depth === 0);
+  const first = (top.find((e) => container(e.object)) ?? top[0])?.object;
+  const viewport = phoneFirstView(
+    union(live.map((o) => worldBounds(objects, o))),
+    first ? worldBounds(objects, first) : null,
+    area()
+  );
+  dispatch({ kind: 'viewport', viewport });
+}
 function reveal(id: string): void {
   const o = objects.find((o) => o.id === id);
   if (!o) return;
   const r = worldBounds(objects, o),
     v = state.viewport,
     a = area();
+  if (mobile.matches) {
+    const delta = revealDelta(
+      { x: r.x * v.zoom + v.x, y: r.y * v.zoom + v.y, width: r.width * v.zoom, height: r.height * v.zoom },
+      a
+    );
+    if (delta.x || delta.y) dispatch({ kind: 'pan', delta });
+    return;
+  }
   const x = (r.x + r.width / 2) * v.zoom + v.x,
     y = (r.y + r.height / 2) * v.zoom + v.y;
   if (!hit({ x: a.x + 32, y: 48, width: Math.max(1, a.width - 64), height: a.height - 144 }, { x, y }))
     dispatch({ kind: 'pan', delta: { x: a.x + a.width / 2 - x, y: a.height / 2 - y } });
 }
 function choose(id: string, toggle: boolean, bring: boolean): void {
+  const read = bring && mobile.matches && state.focusId === id && state.selected.includes(id);
   keyboard = false;
   dispatch({ kind: 'focus', id });
   dispatch(toggle ? { kind: 'toggle', id } : { kind: 'selection', ids: [id] });
@@ -144,10 +226,10 @@ function choose(id: string, toggle: boolean, bring: boolean): void {
     reveal(id);
   }
   board.focus({ preventScroll: true });
+  if (read) dispatch({ kind: 'rail', view: 'reader' });
 }
 function dispatch(action: ViewCommand): void {
-  if (action.kind === 'rail' && state.rail.at(-1) !== action.view)
-    railOrigins.set(action.view, document.activeElement instanceof HTMLElement ? document.activeElement : board);
+  if (action.kind === 'rail' && state.rail.at(-1) !== action.view) railOrigins.set(action.view, opener());
   const closing = state.rail.at(-1);
   const previous = state.rail.length;
   const root = state.root;
@@ -179,7 +261,8 @@ function dispatch(action: ViewCommand): void {
   }
   if (action.kind === 'outline') {
     node('outline').hidden = !action.open;
-    (action.open ? input('search') : board).focus({ preventScroll: true });
+    // A touch keyboard would cover half the outline; search takes focus only when tapped or asked for.
+    (action.open ? (mobile.touch ? node('outline') : input('search')) : board).focus({ preventScroll: true });
   }
   if (!frame) frame = requestAnimationFrame(paint);
 }
@@ -246,15 +329,30 @@ function paint(): void {
   node('rail').hidden = !state.rail.length;
   node('keysView').hidden = state.rail.at(-1) !== 'keys';
   node('readerView').hidden = state.rail.at(-1) !== 'reader';
+  node('threadView').hidden = state.rail.at(-1) !== 'thread';
+  node('historyView').hidden = state.rail.at(-1) !== 'history';
   const focused = objects.find((o) => o.id === state.focusId);
+  const top = state.rail.at(-1);
+  if (top === 'thread') comments.show(focused?.id ?? null);
+  else comments.hide();
+  if (top === 'history') {
+    if (railView !== 'history') history.show();
+  } else history.hide();
+  railView = top;
+  const commentCount = focused ? (commentCounts(comments.all).get(focused.id) ?? 0) : 0;
+  button('readerComments').textContent = commentCount ? `Comments · ${commentCount}` : 'Comments';
   node('railTitle').textContent =
-    state.rail.at(-1) === 'reader'
-      ? focused
-        ? container(focused)
-          ? label(focused)
-          : focused.type.charAt(0).toUpperCase() + focused.type.slice(1)
-        : 'Object no longer available'
-      : 'Keys';
+    top === 'thread'
+      ? comments.title(focused?.id ?? null)
+      : top === 'history'
+        ? 'History'
+        : state.rail.at(-1) === 'reader'
+          ? focused
+            ? container(focused)
+              ? label(focused)
+              : focused.type.charAt(0).toUpperCase() + focused.type.slice(1)
+            : 'Object no longer available'
+          : 'Keys';
   document.documentElement.style.setProperty('--outline-space', state.outlineOpen && !mobile.matches ? '192px' : '0px');
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
@@ -266,12 +364,50 @@ function paint(): void {
   )
     readObject();
   if (state.rail.length > railDepth && state.rail.at(-1) === 'keys') input('keysSearch').focus();
+  paintSheet();
   if (pendingFocus) {
     pendingFocus.focus({ preventScroll: true });
     pendingFocus = null;
   }
   railDepth = state.rail.length;
   editor.paint();
+}
+let railView: string | undefined;
+function paintSheet(): void {
+  const o = objects.find((o) => o.id === state.focusId);
+  const show =
+    mobile.matches &&
+    !!o &&
+    state.selected.length === 1 &&
+    state.selected[0] === o.id &&
+    !state.rail.length &&
+    !state.outlineOpen;
+  const sheet = node('sheet');
+  if (sheet.hidden === !show && (!show || sheet.dataset.sheetFor === o?.id)) {
+    if (show && o) paintSheetCount(o.id);
+    return;
+  }
+  sheet.hidden = !show;
+  if (!show || !o) {
+    delete sheet.dataset.sheetFor;
+    return;
+  }
+  sheet.dataset.sheetFor = o.id;
+  node('sheetTitle').textContent = label(o);
+  const count = siblings(objects, o.id).length;
+  const excerpt = readable(o).replace(/\s+/g, ' ').trim();
+  node('sheetMeta').textContent = container(o)
+    ? `${o.type.charAt(0).toUpperCase() + o.type.slice(1)} · ${count ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Empty'}`
+    : excerpt === label(o)
+      ? ''
+      : excerpt.slice(0, 120);
+  node('sheetMeta').hidden = !node('sheetMeta').textContent;
+  button('sheetParent').hidden = !o.parentId;
+  paintSheetCount(o.id);
+}
+function paintSheetCount(id: string): void {
+  const n = commentCounts(comments.all).get(id) ?? 0;
+  button('sheetComments').textContent = n ? `Comments · ${n}` : 'Comments';
 }
 let readerObject: ViewObject | undefined,
   readerFocus: string | null = null;
@@ -376,25 +512,42 @@ button('clearSearch').onclick = () => {
   renderer.filter('');
   input('search').focus();
 };
-button('openOutline').onclick = () => {
-  dispatch({ kind: 'outline', open: true });
-  input('search').focus();
-};
+button('openOutline').onclick = () => dispatch({ kind: 'outline', open: true });
 button('closeOutline').onclick = () => {
   dispatch({ kind: 'outline', open: false });
   board.focus();
 };
 button('closeRail').onclick = () => dispatch({ kind: 'escape' });
+button('outlineHistory').onclick = () => dispatch({ kind: 'rail', view: 'history' });
+button('sectionsTool').onclick = () => dispatch({ kind: 'outline', open: true });
+button('findTool').onclick = () => {
+  dispatch({ kind: 'outline', open: true });
+  input('search').focus();
+};
+function openThread(): void {
+  const id = state.focusId ?? state.selected[0] ?? null;
+  if (id && id !== state.focusId) dispatch({ kind: 'focus', id });
+  dispatch({ kind: 'rail', view: 'thread' });
+  if (id && !mobile.touch) requestAnimationFrame(() => comments.focusComposer());
+}
+button('chatTool').onclick = openThread;
+button('readerComments').onclick = openThread;
+button('sheetComments').onclick = openThread;
+button('sheetRead').onclick = () => dispatch({ kind: 'rail', view: 'reader' });
+button('sheetParent').onclick = () => {
+  const o = objects.find((o) => o.id === state.focusId);
+  if (o?.parentId) {
+    choose(o.parentId, false, true);
+    button('sheetRead').focus({ preventScroll: true });
+  }
+};
+button('closeSheet').onclick = () => {
+  dispatch({ kind: 'selection', ids: [] });
+  board.focus({ preventScroll: true });
+};
 for (const id of ['keys', 'outlineKeys']) button(id).onclick = () => dispatch({ kind: 'rail', view: 'keys' });
 button('letters').onclick = () => dispatch({ kind: 'letters', enabled: !state.letters });
 button('selectTool').onclick = () => dispatch({ kind: 'tool', tool: 'select' });
-for (const id of ['chatTool'])
-  button(id).onclick = () => {
-    node('announcement').textContent = '';
-    requestAnimationFrame(() => {
-      node('announcement').textContent = node(id === 'addTool' ? 'addDescription' : 'commentDescription').textContent;
-    });
-  };
 button('panTool').onclick = () => dispatch({ kind: 'tool', tool: 'pan' });
 button('fit').onclick = () => fit(state.selected.length ? state.selected : undefined);
 function parent(): void {
@@ -535,7 +688,8 @@ board.addEventListener('pointerdown', (e) => {
     start: point(e),
     previous: point(e),
     target,
-    pan: state.tool === 'pan' || spaceHeld || e.button === 1 || e.pointerType === 'touch',
+    // A phone never moves objects: every one-finger drag pans, and only a tap selects.
+    pan: state.tool === 'pan' || spaceHeld || e.button === 1 || e.pointerType === 'touch' || mobile.matches,
     moved: false,
     shift: e.shiftKey,
   };
@@ -554,7 +708,8 @@ board.addEventListener('pointermove', (e) => {
     return;
   }
   if (!drag || drag.id !== e.pointerId) return;
-  if (Math.hypot(e.clientX - drag.start.x, e.clientY - drag.start.y) > 4) drag.moved = true;
+  if (Math.hypot(e.clientX - drag.start.x, e.clientY - drag.start.y) > (e.pointerType === 'touch' ? 8 : 4))
+    drag.moved = true;
   if (drag.pan && drag.moved) {
     dispatch({ kind: 'pan', delta: { x: e.clientX - drag.previous.x, y: e.clientY - drag.previous.y } });
     spaceMoved = true;
@@ -641,14 +796,13 @@ const editor = new DesktopEditor({
     renderer.root(state.root);
     paintedRoot = state.root;
     editor.media.forget(new Set(objects.map((o) => o.id)));
+    comments.mark(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
     if (initial) {
       initial = false;
-      const firstReadable = mobile.matches
-        ? outline(objects).find(({ object }) => !container(object))?.object
-        : undefined;
-      fit(firstReadable ? [firstReadable.id] : undefined);
+      if (mobile.matches) firstPhoneView();
+      else fit();
     }
     node('state').hidden = !!objects.length;
     if (!objects.length) {
@@ -660,10 +814,27 @@ const editor = new DesktopEditor({
   },
 });
 window.canvasEdit = editor.adapter();
+window.canvasComments = {
+  read: () => structuredClone(comments.all),
+  post: async (objectId, text) => {
+    dispatch({ kind: 'focus', id: objectId });
+    dispatch({ kind: 'rail', view: 'thread' });
+    paint();
+    (node('commentDraft') as HTMLTextAreaElement).value = text;
+    node('commentDraft').dispatchEvent(new Event('input'));
+    return comments.post();
+  },
+};
 const sync = new CanvasSync(
   url,
   workspaceId,
-  (snapshot) => editor.receive(snapshot),
+  (snapshot) => {
+    comments.update(snapshotComments(snapshot));
+    editor.receive(snapshot);
+    comments.mark(renderer.elements);
+    history.changed();
+    if (!frame) frame = requestAnimationFrame(paint);
+  },
   (status) => {
     editor.online(status === 'ready');
     node('notice').hidden = status !== 'offline';

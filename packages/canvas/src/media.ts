@@ -8,6 +8,7 @@
  * takes focus by itself: a shield covers it until a click on an already selected embed, and
  * Escape inside the page (relayed by the proxy) hands focus back to the board.
  */
+import type { PhoneQuery } from './mobile.js';
 import { z } from 'zod';
 import { knownContentFields } from '../../../src/canvas/model.js';
 import type { CanvasRequest, Edit } from './edit-queue.js';
@@ -38,7 +39,7 @@ const TEXT_SIZE = { width: 280, height: 180 };
 export type MediaHost = {
   url: (path: string) => string;
   workspace: string;
-  mobile: MediaQueryList;
+  mobile: PhoneQuery;
   objects: () => ViewObject[];
   view: () => ViewState;
   dispatch: (action: ViewCommand) => void;

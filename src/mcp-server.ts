@@ -193,7 +193,7 @@ const timeoutProperty = {
  */
 const canvasToolDescriptions = {
   canvas_read:
-    'Read an explicit container root and all descendants as one nested tree, or discover the workspace with no root.',
+    'Read an explicit container root and all descendants as one nested tree with their comments, or discover the workspace with no root.',
   canvas_search: 'Search typed content by text and optional root; returns objects and ancestor ID/label paths.',
   canvas_create: 'Create typed objects in one atomic native operation batch. Supply new object and operation IDs.',
   canvas_update: 'Edit content, resize, move, reparent, reorder, restore or comment through native operation batches.',
@@ -207,7 +207,9 @@ const canvasToolDescriptions = {
   canvas_lock:
     'Explicitly lock or unlock target IDs. Subtree locks protect descendants; background locks are for frames/sections.',
   canvas_history:
-    'Read history, undo own operation sequences, redo using undo result sequences, or separately revert the caller author.',
+    'Read history, list authors with operation counts and last activity, preview what reverting one author would remove, restore and skip, undo own operation sequences, redo using undo result sequences, or separately revert the caller author.',
+  canvas_comment:
+    'Post an ordinary comment on one object (a reply in its thread). It starts no agent work. Comments appear in canvas_read results.',
   canvas_capabilities:
     'Get machine-readable command/tool schemas, supported object types, restrictions and reserved future view commands.',
   canvas_link_preview:

@@ -108,8 +108,8 @@ async function harness() {
 }
 const parse = (result: { text: string }) => JSON.parse(result.text);
 describe('canvas MCP HTTP parity', () => {
-  it('lists twelve strict command tools on both protocol eras, including when unconfigured', async () => {
-    expect(canvasToolNames).toHaveLength(12);
+  it('lists thirteen strict command tools on both protocol eras, including when unconfigured', async () => {
+    expect(canvasToolNames).toHaveLength(13);
     for (const name of canvasToolNames) {
       const def = buildToolDefinitions(['claude']).find((t) => t.name === name)!;
       expect(def.description).toContain('untrusted data');

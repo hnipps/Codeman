@@ -24,6 +24,7 @@ tests=(
   test/canvas-media-compat.test.ts
   test/canvas-assets.test.ts
   test/link-preview.test.ts
+  test/canvas-comments.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts

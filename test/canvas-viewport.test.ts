@@ -148,7 +148,10 @@ describe('read view commands and hierarchy', () => {
         ],
       }
     );
-    expect(result).toEqual({ state: { seq: 5, textAuthors: {}, objects: [extended] }, unreadable: false });
+    expect(result).toEqual({
+      state: { seq: 5, textAuthors: {}, comments: [], objects: [extended] },
+      unreadable: false,
+    });
     expect(searchText(result.state.objects[0]).toLowerCase()).toContain('findme [a.*]');
     expect(readable({ ...object('content'), content: { type: 'future-content', script: '<script>' } })).toBe(
       'Unsupported content · future-content'

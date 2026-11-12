@@ -28,7 +28,7 @@
       </div>
       <nav id="tree" aria-label="Canvas objects"></nav>
       <div class="outline-foot">
-        <button id="outlineKeys">Keys <kbd>?</kbd></button>
+        <button id="outlineHistory">History</button><button id="outlineKeys">Keys <kbd>?</kbd></button>
       </div>
     </aside>
     <button id="openOutline" aria-label="Open outline" title="Open outline"></button>
@@ -41,7 +41,6 @@
     <span id="addDescription" class="sr"
       >Add text, frame, section, sub-canvas or image. Paste or drop an image, a web address or text.</span
     >
-    <span id="commentDescription" class="sr">Comments arrive with conversations</span>
     <span id="moveToReason" class="sr"></span><span id="arrangeSelectionReason" class="sr"></span
     ><span id="groupSelectionReason" class="sr"></span><span id="editSelectionReason" class="sr"></span
     ><span id="deleteSelectionReason" class="sr"></span>
@@ -149,6 +148,9 @@
           aria-disabled="true"
           title="Redo · Shift+Cmd/Ctrl+Z"
         ></button>
+        <button id="sectionsTool" class="phone-only" aria-label="Sections">
+          <span class="dock-label">Sections</span></button
+        ><button id="findTool" class="phone-only" aria-label="Find"><span class="dock-label">Find</span></button>
         <button id="selectTool" aria-label="Select" title="Select · V; drag to select; Alt-drag to lasso"></button>
         <button id="panTool" aria-label="Pan" title="Pan · H"></button>
         <div class="add-anchor">
@@ -167,18 +169,25 @@
             title="Add objects"
           ></button>
         </div>
-        <button
-          id="chatTool"
-          aria-disabled="true"
-          aria-label="Comment"
-          aria-describedby="commentDescription"
-          title="Comments arrive with conversations"
-        ></button>
+        <button id="chatTool" aria-label="Comments" title="Comments on the focused object">
+          <span class="dock-label">Comments</span>
+        </button>
         <button id="keys" aria-label="Keys" title="Keys · ? or F1"></button>
       </div>
       <button id="fit" title="Fit selection or canvas">Fit</button>
     </div>
-    <aside id="rail" aria-label="Canvas reader and Keys" hidden>
+    <section id="sheet" class="phone-only" aria-labelledby="sheetTitle" hidden>
+      <div class="sheet-head">
+        <p id="sheetTitle"></p>
+        <button id="closeSheet" aria-label="Close" title="Close"></button>
+      </div>
+      <p id="sheetMeta" class="secondary"></p>
+      <div class="sheet-actions">
+        <button id="sheetRead" class="quiet">Read</button><button id="sheetComments" class="quiet">Comments</button
+        ><button id="sheetParent" class="quiet">Focus parent</button>
+      </div>
+    </section>
+    <aside id="rail" aria-label="Canvas reader, comments, history and Keys" hidden>
       <div class="panel-head">
         <span id="railTitle">Keys</span
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
@@ -191,6 +200,26 @@
         <button id="letters" role="switch" aria-checked="true">
           <span>Single-letter shortcuts</span><span class="switch-track" aria-hidden="true"><span></span></span>
         </button>
+      </div>
+      <div id="threadView" class="rail-body" tabindex="-1" hidden>
+        <p id="threadTarget" class="thread-target"></p>
+        <div id="threadPicker"></div>
+        <ol id="threadList" aria-label="Comments"></ol>
+        <p id="threadEmpty" class="thread-empty" hidden>No comments yet. Leave the first note on this object.</p>
+        <form id="commentForm" class="composer">
+          <label class="sr" for="commentDraft">Comment</label>
+          <textarea id="commentDraft" rows="3" placeholder="Add a comment" spellcheck="true"></textarea>
+          <div class="composer-row">
+            <p id="commentStatus" class="secondary" role="status"></p>
+            <button id="retryComment" type="button" class="primary" hidden>Retry</button
+            ><button id="postComment" type="submit" class="primary">Post</button>
+          </div>
+        </form>
+      </div>
+      <div id="historyView" class="rail-body" hidden>
+        <p class="secondary">Who changed this canvas. Reverting a session removes only what it made and changed.</p>
+        <ul id="historyList" aria-label="Authors"></ul>
+        <p id="historyStatus" class="secondary" role="status"></p>
       </div>
       <div id="readerView" class="rail-body" hidden>
         <p id="readerText"></p>
@@ -226,6 +255,7 @@
         </div>
         <p id="readerCount" class="secondary" hidden></p>
         <dl id="readerMeta"></dl>
+        <button id="readerComments" class="quiet">Comments</button>
         <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button
         ><button id="children" class="quiet">Explore children <kbd role="img" aria-label="Right arrow">→</kbd></button>
       </div>

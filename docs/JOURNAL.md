@@ -11,6 +11,24 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 Image bytes are workspace assets named by their SHA-256 and served by id; no request carries a path, and an object can name only an asset its own workspace holds. Unreferenced assets are kept, because undo and revert can bring an object back and the log does not record which bytes went away. A link preview goes through the web-tab egress guard and writes nothing itself: the browser or agent writes the title with an ordinary update, so there is still one write path. An embed's frame is a web tab record with a new `canvas` origin rather than a `managed` row, because its lifetime follows a canvas object and it must never appear in the tab strip. Link and embed switch type in place so the object keeps its id, history and position. A sub-canvas opens as a view root in the browser and changes no stored data. MCP grows to 25 tools (`canvas_upload_image`, `canvas_link_preview`).
 
+## 2026-11-12 — Canvas comments, author revert and a read-only phone view
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/operations.ts`, `src/canvas/commands.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/{comments,history,mobile,entry}.ts`, `src/web/public/mobile-overview.js`
+**Why:** Comments and author revert were stored but invisible, and a real iPhone showed the phone canvas as a desktop editor with its controls hidden.
+**Links:** [Intent](../intent/2026-11-11-canvas-pc6-comments.md)
+
+Comments post as ordinary `comment` operations (MCP gains `canvas_comment`, 24 tools) and never start agent work. Author revert has one planner, `revertPlan()`, whose summary (removed, kept, restored, skipped, comments) backs both the History view's inline confirm and the `canvas_history` `preview` action. The lock policy stays the existing atomic one: a locked target refuses the whole revert, and the preview runs the same validation so the confirm says so first. `POST /revert` gained the command route's request identity. Phone mode is one helper (`isPhone()`); the phone reads, navigates and comments, and the editor refuses writes there. Two phone findings changed shared code: the sheet no longer carries `data-object-id` (it matched object selectors), and the rail's opener falls back to the last pressed button because iOS gives a tapped button no focus.
+
+## 2026-11-12 — The root CLAUDE.md keeps only what every change needs
+
+**Type:** status-transition
+**Touches:** `CLAUDE.md`, `docs/subsystem-rules.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.prettierignore`, `test/docker-entrypoint.test.ts`
+**Why:** The file was about 157 KB and is loaded whole into every agent session and subagent, most of it about subsystems that session never touches.
+**Links:** [Intent](../intent/2026-11-12-slim-claude-md.md)
+
+The per-subsystem paragraphs moved verbatim to `docs/subsystem-rules.md`; nothing was reworded or dropped. `CLAUDE.md` keeps the self-deploy rule, assurance, commands, session safety, test-before-deploy, the release pointer, a short list of universal rules, testing essentials and an index of the moved titles. A new subsystem rule is written in `docs/subsystem-rules.md` and its title added to that index. The rules there bind as before. `src/web/CLAUDE.md` is unchanged.
+
 ## 2026-11-11 — A canvas refusal drops one submission, and acknowledgement reads only what it wrote
 
 **Type:** intent-refinement

@@ -36,7 +36,7 @@ import {
   MAX_EXPANDED_OPERATIONS,
   OperationSchema,
   knownKinds,
-  revertAuthor,
+  revertPlan,
   validateBatch,
   type Command,
   type Operation,
@@ -168,7 +168,23 @@ export class CanvasStore {
     this.requests.set(key, entries);
   }
   revertCommands(target: Author): Command[] {
-    return revertAuthor(this.state, this.log, target);
+    return this.revertPlan(target).commands;
+  }
+  revertPlan(target: Author): ReturnType<typeof revertPlan> {
+    return revertPlan(this.state, this.log, target);
+  }
+  /** Operation counts and last activity per author, for the history view and `canvas_history authors`. */
+  authors(): { author: Author; operations: number; lastActivity: number }[] {
+    const byAuthor = new Map<string, { author: Author; operations: number; lastActivity: number }>();
+    for (const op of this.log) {
+      const key = op.author.kind === 'human' ? `h:${op.author.userId}` : `a:${op.author.sessionId}`;
+      const entry = byAuthor.get(key) ?? { author: op.author, operations: 0, lastActivity: 0 };
+      entry.operations++;
+      for (const change of op.prev) entry.lastActivity = Math.max(entry.lastActivity, change.after.updatedAt);
+      if (op.comment) entry.lastActivity = Math.max(entry.lastActivity, op.comment.createdAt);
+      byAuthor.set(key, entry);
+    }
+    return structuredClone([...byAuthor.values()].sort((a, b) => b.lastActivity - a.lastActivity));
   }
   reload(): void {
     let state = emptyState();
@@ -312,8 +328,8 @@ export class CanvasStore {
       sequences: result.operations.map((op) => op.seq),
     };
   }
-  revert(target: Author, actor: Author): AppendResult {
-    return this.appendExpanded(this.revertCommands(target), actor);
+  revert(target: Author, actor: Author, commands = this.revertCommands(target)): AppendResult {
+    return this.appendExpanded(commands, actor);
   }
   snapshot(): void {
     requireCanvasWriter();
