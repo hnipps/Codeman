@@ -11,7 +11,8 @@
  * caller, which stores them only after the asset byte check.
  */
 import type { RequestInit, Response } from 'undici';
-import { egressBlockedReason, webviewFetch } from '../web/webview-egress.js';
+import { WebviewEgressBlockedError, egressBlockedReason, webviewFetch } from '../web/webview-egress.js';
+import { blockedWebviewHostReason } from '../web/webview-egress-policy.js';
 import { parseWebviewUrl } from '../web/webview-proxy.js';
 import { assetExtension } from './canvas-assets.js';
 
@@ -36,6 +37,9 @@ class PreviewUnavailable extends Error {}
 async function follow(target: URL, fetcher: PreviewFetch, accept: string, signal: AbortSignal): Promise<Response> {
   let current = target;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    // Judged here as well as inside webviewFetch, so no fetcher ever sees a refused host.
+    const blocked = blockedWebviewHostReason(current.hostname);
+    if (blocked) throw new WebviewEgressBlockedError(blocked);
     const response = await fetcher(current, {
       method: 'GET',
       redirect: 'manual',

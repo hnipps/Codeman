@@ -11,6 +11,9 @@ import { readWorkspaces, workspaceForCase } from '../../src/canvas/workspace-reg
 import { deployRole } from '../../src/deploy-role.js';
 import { resolveCasesDir } from '../../src/web/route-helpers.js';
 import { create, human, agent } from '../canvas-fixtures.js';
+import { png } from '../canvas-media-fixtures.js';
+import { readWebviews } from '../../src/webview-store.js';
+import { webviewCapabilities } from '../../src/webview-capabilities.js';
 
 let dir: string;
 beforeEach(() => {
@@ -635,6 +638,9 @@ describe('canvas command acknowledgement and no-ops', () => {
           payload: { operations: [{ kind, opId: crypto.randomUUID(), objectId: 'a', patch: {} }] },
         });
         expect(response.statusCode).toBe(409);
+        expect(response.json().reasons).toEqual([
+          expect.objectContaining({ code: 'INVALID', objectId: 'a', message: 'The edit changes nothing' }),
+        ]);
       }
       expect(logBytes(store)).toEqual(log);
     } finally {
@@ -704,6 +710,235 @@ describe('canvas command acknowledgement and no-ops', () => {
       expect(page.json().data.operations.length).toBeGreaterThanOrEqual(1);
       expect(page.json().data.operations.length).toBeLessThan(4);
       expect(page.json().data.more).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('canvas no-op request identity', () => {
+  it('holds a no-op answer for its request id: a retry repeats it and a different payload is refused', async () => {
+    const workspace = workspaceForCase('noop-identity', 'user-a');
+    const { app, port } = await harness();
+    try {
+      const store = (await port.canvasStores()).get(workspace.id);
+      const backmost = create('a');
+      if (backmost.kind === 'create') backmost.patch.order = 0;
+      store.append([backmost], human);
+      const url = `/api/canvas/${workspace.id}/command`;
+      const payload = {
+        requestId: crypto.randomUUID(),
+        tool: 'canvas_arrange',
+        arguments: { action: 'order', targetIds: ['a'], placement: 'backward' },
+      };
+      const first = await app.inject({ method: 'POST', url, payload });
+      expect(first.json().data).toMatchObject({ noop: true, sequences: [] });
+      const retry = await app.inject({ method: 'POST', url, payload });
+      expect(retry.statusCode).toBe(200);
+      expect(retry.json().data).toEqual(first.json().data);
+      const reused = await app.inject({
+        method: 'POST',
+        url,
+        payload: { ...payload, arguments: { ...payload.arguments, placement: 'front' } },
+      });
+      expect(reused.statusCode).toBe(409);
+      expect(reused.json().error).toMatch(/already used for a different command/);
+      expect(store.operations()).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('canvas media', () => {
+  async function media(name = 'media-case') {
+    const workspace = workspaceForCase(name, 'user-a');
+    const h = await harness();
+    const store = (await h.port.canvasStores()).get(workspace.id);
+    const base = `/api/canvas/${workspace.id}`;
+    const command = (tool: string, args: unknown) =>
+      h.app.inject({ method: 'POST', url: `${base}/command`, payload: { tool, arguments: args } });
+    return { ...h, store, base, command, workspace };
+  }
+  const upload = (app: Awaited<ReturnType<typeof harness>>['app'], base: string, body: Buffer, type = 'image/png') =>
+    app.inject({ method: 'POST', url: `${base}/assets`, headers: { 'content-type': type }, payload: body });
+
+  it('stores an uploaded image, serves it by id with nosniff and ranges, and refuses forged bytes', async () => {
+    const { app, base } = await media();
+    try {
+      const bytes = png(6, 4);
+      const stored = await upload(app, base, bytes);
+      expect(stored.statusCode).toBe(200);
+      const { assetId, width, height } = stored.json().data;
+      expect({ width, height }).toEqual({ width: 6, height: 4 });
+      const read = await app.inject({ method: 'GET', url: `${base}/assets/${assetId}` });
+      expect(read.statusCode).toBe(200);
+      expect(read.headers['content-type']).toBe('image/png');
+      expect(read.headers['x-content-type-options']).toBe('nosniff');
+      expect(read.rawPayload.equals(bytes)).toBe(true);
+      const ranged = await app.inject({
+        method: 'GET',
+        url: `${base}/assets/${assetId}`,
+        headers: { range: 'bytes=0-3' },
+      });
+      expect(ranged.statusCode).toBe(206);
+      expect(ranged.rawPayload).toHaveLength(4);
+      const octet = await app.inject({
+        method: 'POST',
+        url: `${base}/assets?type=image/png`,
+        headers: { 'content-type': 'application/octet-stream' },
+        payload: bytes,
+      });
+      expect(octet.json().data.assetId).toBe(assetId);
+      const forged = await upload(app, base, Buffer.from('<script>alert(1)</script>'.padEnd(64)));
+      expect(forged.statusCode).toBe(400);
+      expect(forged.json().refusal).toBe('bytes');
+      const svg = await upload(app, base, Buffer.from('<svg/>'), 'image/svg+xml');
+      expect(svg.statusCode).toBe(415);
+      expect((await app.inject({ method: 'GET', url: `${base}/assets/${'0'.repeat(64)}` })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'GET', url: `${base}/assets/..%2F..%2Fstate.json` })).statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+  it("hides another owner's workspace from upload and read", async () => {
+    const own = await media('media-owned');
+    const { assetId } = (await upload(own.app, own.base, png(2, 2))).json().data;
+    await own.app.close();
+    const other = await harness('user-b');
+    try {
+      expect((await upload(other.app, own.base, png(2, 2))).statusCode).toBe(404);
+      expect((await other.app.inject({ method: 'GET', url: `${own.base}/assets/${assetId}` })).statusCode).toBe(404);
+    } finally {
+      await other.app.close();
+    }
+  });
+  it('refuses an image object whose asset is not stored, and accepts it after upload', async () => {
+    const { app, base, command, store } = await media();
+    try {
+      const bytes = png(3, 3);
+      const { createHash } = await import('node:crypto');
+      const assetId = createHash('sha256').update(bytes).digest('hex');
+      const operation = {
+        kind: 'create',
+        opId: 'img',
+        objectId: 'img',
+        patch: {
+          parentId: null,
+          order: 0,
+          position: { x: 0, y: 0 },
+          size: { width: 30, height: 30 },
+          content: { type: 'image', url: '', alt: 'Chart', assetId },
+        },
+      };
+      const refused = await command('canvas_create', { operations: [operation] });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().reasons[0]).toMatchObject({ code: 'NOT_FOUND', objectId: 'img' });
+      expect(store.operations()).toHaveLength(0);
+      await upload(app, base, bytes);
+      expect((await command('canvas_create', { operations: [operation] })).statusCode).toBe(200);
+      expect(store.read().objects.img.content).toMatchObject({ type: 'image', assetId });
+    } finally {
+      await app.close();
+    }
+  });
+  it('switches a link to an embed and back keeping its id, refuses other type switches, and undo restores the link', async () => {
+    const { app, command, store } = await media();
+    try {
+      const link = {
+        kind: 'create',
+        opId: 'l',
+        objectId: 'l',
+        patch: {
+          parentId: null,
+          order: 0,
+          position: { x: 0, y: 0 },
+          size: { width: 320, height: 96 },
+          content: { type: 'link', url: 'https://example.com/docs', label: 'Docs', preview: 'ready' },
+        },
+      };
+      await command('canvas_create', { operations: [link, create('t')] });
+      const embed = await command('canvas_update', {
+        operations: [
+          {
+            kind: 'update',
+            opId: 'to-embed',
+            objectId: 'l',
+            patch: { content: { type: 'embed', url: 'https://example.com/docs', label: 'Docs' } },
+          },
+        ],
+      });
+      expect(embed.statusCode).toBe(200);
+      expect(store.read().objects.l).toMatchObject({ type: 'embed', content: { type: 'embed' } });
+      expect(store.read().objects.l.content).not.toHaveProperty('preview');
+      const other = await command('canvas_update', {
+        operations: [
+          {
+            kind: 'update',
+            opId: 'bad',
+            objectId: 't',
+            patch: { content: { type: 'embed', url: 'https://example.com' } },
+          },
+        ],
+      });
+      expect(other.statusCode).toBe(409);
+      expect(other.json().reasons[0].message).toBe('Only a link and an embed can change into each other');
+      const undo = await command('canvas_history', { action: 'undo', sequences: embed.json().data.sequences });
+      expect(undo.statusCode).toBe(200);
+      expect(store.read().objects.l).toMatchObject({
+        type: 'link',
+        content: { type: 'link', label: 'Docs', preview: 'ready' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+  it('mints a frame only for a live embed, never trusted and out of the tab list, and retires it on delete', async () => {
+    const { app, command, base, store } = await media();
+    try {
+      const embed = (id: string, url: string) => ({
+        kind: 'create',
+        opId: id,
+        objectId: id,
+        patch: {
+          parentId: null,
+          order: 0,
+          position: { x: 0, y: 0 },
+          size: { width: 480, height: 320 },
+          content: { type: 'embed', url },
+        },
+      });
+      await command('canvas_create', {
+        operations: [embed('e', 'https://example.com/'), embed('meta', 'http://169.254.169.254/'), create('t')],
+      });
+      expect((await app.inject({ method: 'POST', url: `${base}/objects/t/frame` })).statusCode).toBe(409);
+      expect((await app.inject({ method: 'POST', url: `${base}/objects/meta/frame` })).statusCode).toBe(400);
+      const frame = await app.inject({ method: 'POST', url: `${base}/objects/e/frame` });
+      expect(frame.statusCode).toBe(200);
+      const { webviewId, embedUrl } = frame.json().data;
+      expect(embedUrl).toMatch(/^\/webview\/[^/]+\/$/);
+      const again = await app.inject({ method: 'POST', url: `${base}/objects/e/frame` });
+      expect(again.json().data.webviewId).toBe(webviewId);
+      const records = await readWebviews(dir);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ trusted: false, origin: { kind: 'canvas', objectId: 'e' } });
+      const cap = embedUrl.split('/')[2];
+      expect(webviewCapabilities.resolve(cap)).toBeTruthy();
+      await command('canvas_delete', { operations: [{ kind: 'delete', opId: 'del-e', objectId: 'e' }] });
+      expect(await readWebviews(dir)).toHaveLength(0);
+      expect(webviewCapabilities.resolve(cap)).toBeFalsy();
+      expect(store.read().objects.e.deletedAt).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+  it('answers a link preview through the command route and refuses metadata targets', async () => {
+    const { app, command } = await media();
+    try {
+      const refused = await command('canvas_link_preview', { url: 'http://169.254.169.254/' });
+      expect(refused.statusCode).toBe(200);
+      expect(refused.json().data).toMatchObject({ status: 'unavailable' });
+      expect(refused.json().data.reason).toMatch(/link-local or cloud-metadata/);
     } finally {
       await app.close();
     }

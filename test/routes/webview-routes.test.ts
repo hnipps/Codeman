@@ -343,3 +343,60 @@ describe('egress policy: link-local and cloud-metadata targets', () => {
     }
   });
 });
+
+describe('canvas-origin frames', () => {
+  it('are never trusted, never listed, refused by PATCH, and not counted against the tab cap', async () => {
+    const { openCanvasWebview, removeCanvasWebviews } = await import('../../src/web/routes/webview-routes.js');
+    const opened = await openCanvasWebview({
+      workspaceId: 'ws',
+      objectId: 'embed-1',
+      url: 'https://example.com/',
+      name: 'Docs',
+      basePath: '',
+    });
+    expect(opened.embedUrl).toMatch(/^\/webview\/[^/]+\/$/);
+    // A record edited on disk to claim trust reads back untrusted.
+    const raw = JSON.parse(await fs.readFile(path.join(tmpDir, 'webviews.json'), 'utf8'));
+    (Array.isArray(raw) ? raw : raw.webviews)[0].trusted = true;
+    await fs.writeFile(path.join(tmpDir, 'webviews.json'), JSON.stringify(raw));
+    const { readWebviews } = await import('../../src/webview-store.js');
+    expect((await readWebviews(tmpDir))[0]).toMatchObject({
+      trusted: false,
+      origin: { kind: 'canvas', objectId: 'embed-1' },
+    });
+    const list = await app.inject({ method: 'GET', url: '/api/webviews' });
+    expect(list.json().data.webviews).toEqual([]);
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/api/webviews/${opened.webviewId}`,
+      payload: { name: 'x' },
+    });
+    expect(patch.statusCode).toBe(400);
+    expect(patch.json().error).toMatch(/through its canvas object/);
+    const user = await create({ name: 'Mine', url: 'https://example.com/' });
+    expect(user.statusCode).toBe(200);
+    // A URL change keeps the record id and revokes the old capability.
+    const cap = opened.embedUrl.split('/')[2];
+    const moved = await openCanvasWebview({
+      workspaceId: 'ws',
+      objectId: 'embed-1',
+      url: 'https://example.org/',
+      name: 'Docs',
+      basePath: '',
+    });
+    expect(moved.webviewId).toBe(opened.webviewId);
+    expect(webviewCapabilities.resolve(cap)).toBeUndefined();
+    const removed = await removeCanvasWebviews((origin) => origin.objectId === 'embed-1');
+    expect(removed).toHaveLength(1);
+    expect(webviewCapabilities.resolve(moved.embedUrl.split('/')[2])).toBeUndefined();
+    expect((await readWebviews(tmpDir)).map((w) => w.name)).toEqual(['Mine']);
+  });
+  it('cannot be created through POST /api/webviews', async () => {
+    const res = await create({
+      name: 'x',
+      url: 'https://example.com/',
+      origin: { kind: 'canvas', workspaceId: 'ws', objectId: 'o' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});

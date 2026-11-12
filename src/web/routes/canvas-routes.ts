@@ -372,6 +372,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
               reasons: result.reasons,
             });
+          if (!result.operations.length && noopKey) noopRequests.set(noopKey, fingerprint);
           if (result.operations.length) {
             await retireFrames(req.params.workspaceId, result.operations);
             const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
