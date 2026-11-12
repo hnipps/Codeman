@@ -544,6 +544,7 @@ Object.assign(CodemanApp.prototype, {
     document.getElementById('appSettingsAgentInboxPersist').checked = settings.agentInboxPersistEnabled === true;
     // Experimental agent coordination (inspect/stage/submit routes): synced, default OFF.
     document.getElementById('appSettingsAgentCoordination').checked = settings.agentCoordinationEnabled === true;
+    document.getElementById('appSettingsCanvas').checked = settings.canvasEnabled === true;
     // Custom Model Endpoint Profiles: synced, default OFF. The toggle governs both
     // the Run-menu picker's generated entries and this settings panel's visibility;
     // the endpoint list itself is server state, loaded on demand below.
@@ -3012,7 +3013,7 @@ Object.assign(CodemanApp.prototype, {
       showRedrawButton: document.getElementById('appSettingsShowRedrawButton').checked,
       mobileOverviewEnabled: document.getElementById('appSettingsMobileOverview').checked,
       sessionLineageLines: document.getElementById('appSettingsLineageLines').checked,
-      canvasEnabled: _prev.canvasEnabled === true,
+      canvasEnabled: document.getElementById('appSettingsCanvas').checked,
       autoNameSessions: document.getElementById('appSettingsAutoNameSessions').checked,
       spawnedTabsFollowParent: document.getElementById('appSettingsSpawnedTabsFollowParent').checked,
       showSessionButton: document.getElementById('appSettingsShowSessionButton').checked,
