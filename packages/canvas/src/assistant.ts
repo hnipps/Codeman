@@ -11,8 +11,8 @@ import {
   type SentMessage,
   type TranscriptRow,
 } from './conversation.js';
-import { nextAttempt, parseAttempt, type Attempt } from './outbox.js';
-import { promptRefusal } from '../../../src/canvas/conversation-schema.js';
+import { nextAttempt, parseAttempt, parseSent, type Attempt } from './outbox.js';
+import { promptRefusal, splitPrompt } from '../../../src/canvas/conversation-schema.js';
 
 type Summary = { id: string; sessionId: string; createdAt: number; session: 'live' | 'ended' };
 type Approval = {
@@ -91,12 +91,15 @@ export class AssistantView {
   private transcriptTimer: ReturnType<typeof setTimeout> | undefined;
   private threadSignature = '';
   private stopped = false;
+  /** The thread was at its end when it last changed, so a resize or new row keeps it there. */
+  private stick = true;
   constructor(private options: Options) {
     this.keys = canvasStorageKeys(options.viewer, options.workspace);
     this.draft.value = read(this.keys.assistantDraft) ?? '';
     // Read once, before the first paint can overwrite the stored list with the empty starting state.
     this.restored = parseStoredContext(read(this.keys.assistantContext));
     this.attempt = parseAttempt(read(this.keys.assistantOutbox));
+    this.sent = parseSent(read(this.keys.assistantSent));
     this.draft.addEventListener('input', () => {
       write(this.keys.assistantDraft, this.draft.value);
       this.say('');
@@ -127,6 +130,15 @@ export class AssistantView {
       this.options.dispatch({ kind: 'conversation', id: id || null });
       void this.open();
     });
+    const thread = node('thread');
+    thread.addEventListener('scroll', () => {
+      this.stick = thread.scrollHeight - thread.scrollTop - thread.clientHeight <= NEAR_END_PX;
+    });
+    // A composer that grows (a failure line, chips) shrinks the thread under it; at its end it stays at its end.
+    if (typeof ResizeObserver !== 'undefined')
+      new ResizeObserver(() => {
+        if (this.stick) thread.scrollTop = thread.scrollHeight;
+      }).observe(thread);
     void this.refreshList();
   }
   restoredContext(): string[] {
@@ -211,16 +223,33 @@ export class AssistantView {
       this.loadTranscript(conversation),
       this.loadApproval(conversation),
     ]);
+    this.pruneSent();
     this.paintThread();
+  }
+  /** A message the transcript now shows no longer needs the text this page kept for it. */
+  private pruneSent(): void {
+    if (!this.sent.length) return;
+    const shown = new Set(
+      this.rows.flatMap((r) => (r.role === 'user' ? [splitPrompt(r.text).messageId?.toLowerCase() ?? ''] : []))
+    );
+    const kept = this.sent.filter((m) => !shown.has(m.messageId.toLowerCase()));
+    if (kept.length !== this.sent.length) {
+      this.sent = kept;
+      this.persistSent();
+    }
+  }
+  private persistSent(): void {
+    write(this.keys.assistantSent, this.sent.length ? JSON.stringify(this.sent) : null);
   }
   private async loadRecord(c: Summary): Promise<void> {
     try {
       const { body } = await this.json(`/api/canvas/${this.options.workspace}/conversations/${c.id}`);
       const conversation = this.data(body).conversation as
-        | { messages?: ConversationMessage[]; session?: string }
+        | { messages?: ConversationMessage[]; session?: string; working?: boolean }
         | undefined;
       if (this.current?.id !== c.id || !conversation) return;
       this.messages = conversation.messages ?? [];
+      this.working = conversation.working === true;
       if (conversation.session) c.session = conversation.session as Summary['session'];
     } catch {
       /* The thread still shows the transcript without its chips. */
@@ -273,9 +302,11 @@ export class AssistantView {
     if (id !== conversation.sessionId) return;
     switch (name) {
       case 'session:working':
+      case 'hook:prompt_submitted':
         this.working = true;
         break;
       case 'session:idle':
+      case 'hook:idle_prompt':
       case 'hook:stop':
         this.working = false;
         break;
@@ -328,7 +359,11 @@ export class AssistantView {
         body: JSON.stringify({ messageId: attempt.messageId, text, refIds: ids }),
       });
       if (answer.status >= 400) throw new SendError(errorMessage(answer.body), answer.status);
-      this.sent = [...this.sent, { messageId: attempt.messageId, text, refIds: ids }].slice(-20);
+      this.sent = [
+        ...this.sent.filter((m) => m.messageId !== attempt.messageId),
+        { messageId: attempt.messageId, text, refIds: ids },
+      ].slice(-10);
+      this.persistSent();
       this.attempt = null;
       write(this.keys.assistantOutbox, null);
       // Only what was sent goes: text typed while it travelled would have made the field read-only, so nothing is lost.
@@ -357,6 +392,29 @@ export class AssistantView {
       this.draft.readOnly = false;
       node('assistantSend').toggleAttribute('disabled', false);
     }
+  }
+  /** Retry for a message the server accepted but could not deliver: same id, same text, so the server checks the composer first and never pastes twice. */
+  private async retryMessage(messageId: string): Promise<void> {
+    const kept = this.sent.find((m) => m.messageId === messageId);
+    const conversation = this.current;
+    if (!kept || !conversation) return;
+    try {
+      const answer = await this.json(
+        `/api/canvas/${this.options.workspace}/conversations/${conversation.id}/messages`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ messageId, text: kept.text, refIds: kept.refIds }),
+        }
+      );
+      if (answer.status >= 400) {
+        const failure = sendFailure(errorMessage(answer.body), answer.status);
+        this.say(failure.text, 'failed');
+      }
+    } catch {
+      this.say('Could not reach the server. Try again.', 'failed');
+    }
+    void this.open();
   }
   private paintPicker(): void {
     const picker = node('conversationPicker') as HTMLSelectElement;
@@ -388,7 +446,7 @@ export class AssistantView {
     if (signature === this.threadSignature) return;
     this.threadSignature = signature;
     const list = node('thread');
-    const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight <= NEAR_END_PX;
+    const atEnd = this.stick;
     list.replaceChildren();
     for (const turn of turns) {
       const item = document.createElement('li');
@@ -396,7 +454,7 @@ export class AssistantView {
       item.dataset.who = turn.who;
       const who = document.createElement('span');
       who.className = 'turn-who';
-      who.textContent = turn.who === 'you' ? (turn.queued ? 'You · queued' : 'You') : 'Claude';
+      who.textContent = turn.label;
       const text = document.createElement('p');
       text.className = 'turn-text';
       text.textContent = turn.text;
@@ -407,6 +465,15 @@ export class AssistantView {
         refs.textContent = turn.refs.join(' · ');
         refs.setAttribute('aria-label', 'Context sent with this message');
         item.append(refs);
+      }
+      if (turn.pending === 'failed' && turn.messageId && this.sent.some((m) => m.messageId === turn.messageId)) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'quiet turn-retry';
+        retry.textContent = 'Retry';
+        const id = turn.messageId;
+        retry.addEventListener('click', () => void this.retryMessage(id));
+        item.append(retry);
       }
       list.append(item);
     }

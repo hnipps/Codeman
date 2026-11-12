@@ -47,3 +47,25 @@ export function nextAttempt(
     return stored;
   return { conversationId, createRequestId: makeId(), messageId: makeId(), text, refIds };
 }
+/** Messages the server accepted that this page has not yet seen in the transcript: kept so a failed one can be retried with its own text. */
+export function parseSent(raw: string | null): { messageId: string; text: string; refIds: string[] }[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v
+      .filter(
+        (m): m is { messageId: string; text: string; refIds: string[] } =>
+          typeof m === 'object' &&
+          m !== null &&
+          typeof m.messageId === 'string' &&
+          /^[0-9a-fA-F-]{36}$/.test(m.messageId) &&
+          typeof m.text === 'string' &&
+          Array.isArray(m.refIds) &&
+          m.refIds.every((id: unknown) => typeof id === 'string')
+      )
+      .slice(-10);
+  } catch {
+    return [];
+  }
+}

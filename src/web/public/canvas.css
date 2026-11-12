@@ -1922,15 +1922,27 @@ textarea[readonly] {
   flex-wrap: wrap;
   gap: 8px;
 }
+#assistantStatus {
+  margin: 8px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+#assistantStatus:empty {
+  display: none;
+}
 #assistantStatus[data-state='failed'] {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   color: var(--critical);
 }
-#assistantStatus {
-  margin: 0;
-  font-size: 12px;
+.composer-actions {
+  justify-content: flex-end;
+}
+.turn-retry {
+  margin: 4px 0 0 10px;
+  min-height: 28px;
+}
+#thread {
+  padding-bottom: 12px;
+  scroll-padding-bottom: 12px;
 }
 #contextChips {
   flex: 0 0 auto;

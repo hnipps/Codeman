@@ -999,6 +999,8 @@ for (const name of [
   'session:deleted',
   'session:error',
   'hook:stop',
+  'hook:prompt_submitted',
+  'hook:idle_prompt',
   'approval:pending',
   'approval:updated',
   'approval:resolved',

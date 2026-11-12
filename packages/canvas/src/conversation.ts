@@ -6,19 +6,28 @@ export type TranscriptRow = { role: 'user' | 'assistant'; text: string; queued?:
 export type SentMessage = { messageId: string; text: string; refIds: string[] };
 export type Turn = {
   key: string;
-  who: 'you' | 'agent';
+  who: 'you' | 'agent' | 'claude';
+  /** The small label: You, Agent or Claude, with a quiet suffix for a queued or unconfirmed message. */
+  label: string;
   text: string;
   /** Labels of the objects the message carried, from the recorded manifest, never from the transcript text. */
   refs: string[];
-  queued: boolean;
+  /** Set for a message the transcript does not hold yet. */
+  pending?: 'queued' | 'sending' | 'failed';
+  messageId?: string;
 };
 const refLabel = (m: ConversationMessage['refs'][number]): string =>
   m.descendants.length ? `${m.label} +${m.descendants.length}` : m.label;
+const stateOf = (m: ConversationMessage): NonNullable<ConversationMessage['state']> =>
+  m.state ?? (m.deliveredAt !== null ? 'delivered' : 'failed');
+const who = (m: ConversationMessage | undefined): 'you' | 'agent' => (m?.author.kind === 'agent' ? 'agent' : 'you');
+const labelFor = (kind: 'you' | 'agent', suffix = ''): string => `${kind === 'agent' ? 'Agent' : 'You'}${suffix}`;
 
 /**
- * The thread is the session's own transcript; the record adds only the chips a prompt carried. A prompt the
- * transcript does not hold yet (sent a moment ago) is shown from what was sent, and dropped the moment its
- * row appears: by the message id in its context block, or by identical text when it carried no context.
+ * The thread is the session's own transcript; the record adds the chips a prompt carried, who sent it, and where a
+ * message that has not reached the transcript is (queued, sending, not delivered). Such a message is shown from the
+ * text this page still holds, and is replaced the moment its row appears, matched by the message id in its context
+ * block, which survives the CLI's own wrapper around a long paste.
  */
 export function buildThread(
   rows: readonly TranscriptRow[],
@@ -27,24 +36,45 @@ export function buildThread(
 ): Turn[] {
   const byId = new Map(messages.map((m) => [m.messageId.toLowerCase(), m]));
   const seen = new Set<string>();
-  const seenText = new Set<string>();
-  const turns: Turn[] = rows.map((row, index) => {
-    if (row.role === 'assistant') return { key: `r${index}`, who: 'agent', text: row.text, refs: [], queued: false };
+  const turns: Turn[] = rows.map((row, index): Turn => {
+    if (row.role === 'assistant') return { key: `r${index}`, who: 'claude', label: 'Claude', text: row.text, refs: [] };
     const { messageId, text } = splitPrompt(row.text);
     if (messageId) seen.add(messageId.toLowerCase());
-    else seenText.add(text);
     const record = messageId ? byId.get(messageId.toLowerCase()) : undefined;
-    return { key: `r${index}`, who: 'you', text, refs: record?.refs.map(refLabel) ?? [], queued: row.queued === true };
+    const kind = who(record);
+    return {
+      key: `r${index}`,
+      who: kind,
+      label: labelFor(kind, row.queued ? ' · queued' : ''),
+      text,
+      refs: record?.refs.map(refLabel) ?? [],
+    };
   });
-  for (const m of sent) {
-    if (seen.has(m.messageId.toLowerCase()) || (!m.refIds.length && seenText.has(m.text))) continue;
-    const record = byId.get(m.messageId.toLowerCase());
+  const local = new Map(sent.map((m) => [m.messageId.toLowerCase(), m]));
+  for (const m of messages) {
+    const id = m.messageId.toLowerCase();
+    if (seen.has(id)) continue;
+    const state = stateOf(m);
+    const text = local.get(id)?.text;
+    // A delivered message the transcript has not caught up with yet still shows, if this page knows its text.
+    if (state === 'delivered' && text === undefined) continue;
+    const kind = who(m);
+    const word =
+      state === 'queued'
+        ? ' · Queued'
+        : state === 'sending'
+          ? ' · Sending'
+          : state === 'failed'
+            ? ' · Not delivered'
+            : '';
     turns.push({
       key: `s${m.messageId}`,
-      who: 'you',
-      text: m.text,
-      refs: record?.refs.map(refLabel) ?? [],
-      queued: false,
+      who: kind,
+      label: labelFor(kind, word),
+      text: text ?? 'This message was sent from another page; its text is not kept here.',
+      refs: m.refs.map(refLabel),
+      ...(state === 'delivered' ? {} : { pending: state }),
+      messageId: m.messageId,
     });
   }
   return turns;
@@ -76,6 +106,10 @@ export function sendFailure(message: string, status: number): { text: string; en
       return plain('The message and its context are too large to send. Remove some context or shorten it.');
     case 'START_FAILED':
       return plain(`The assistant session could not start. ${message.replace(/^START_FAILED:\s*/, '')}`.trim());
+    case 'CASE_UNSUPPORTED':
+      return plain('Conversations are not available for Docker or remote cases yet.');
+    case 'RATE_LIMITED':
+      return plain('Too many messages in a short time. Your message is kept; try again in a moment.');
     case 'TOO_MANY':
       return plain('This canvas has too many conversations. Close some sessions first.');
     case 'MESSAGE_CHANGED':

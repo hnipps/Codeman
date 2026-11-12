@@ -1,4 +1,5 @@
 {"type": "user", "timestamp": "2026-11-12T10:00:00Z", "message": {"role": "user", "content": "__FIRST__"}}
 {"type": "assistant", "timestamp": "2026-11-12T10:00:05Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Those two notes are about reading and reference. I would group them under one heading."}]}}
+{"type": "user", "timestamp": "2026-11-12T10:00:30Z", "message": {"role": "user", "content": "__AGENT__"}}
 {"type": "user", "timestamp": "2026-11-12T10:01:00Z", "message": {"role": "user", "content": "Thanks. Now compare them."}}
 {"type": "attachment", "timestamp": "2026-11-12T10:01:30Z", "attachment": {"type": "queued_command", "prompt": "Also keep it short.", "commandMode": "prompt", "origin": {"kind": "human"}}}

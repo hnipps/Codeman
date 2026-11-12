@@ -30,6 +30,8 @@ tests=(
   test/canvas-conversations.test.ts
   test/canvas-context-resolve.test.ts
   test/canvas-conversation-thread.test.ts
+  test/canvas-conversation-delivery.test.ts
+  test/canvas-conversation-session.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts
