@@ -18,7 +18,7 @@ import { isCliEntryInstalled, probeStockCliAvailability } from '../../utils/cli-
 import {
   DEFAULT_CONVERSATION_CLI,
   launchFields,
-  providerRow,
+  modelIdRefusal,
   providerRows,
   type ProviderRow,
 } from '../../canvas/providers.js';
@@ -137,13 +137,26 @@ export async function currentProviders(): Promise<ProviderRow[]> {
   const installed = await probeStockCliAvailability();
   return providerRows(enabledClis(), (entry) => isCliEntryInstalled(entry, installed));
 }
-export async function listProviders(): Promise<Outcome> {
-  return ok({ providers: await currentProviders() });
+/** The refusal for a named provider and model: not listed, cannot start a conversation, or a model it cannot take. Shared by create and the agent's `model set`, so the texts cannot drift. */
+export function checkChoice(rows: readonly ProviderRow[], cliId: string, model: string): Outcome | undefined {
+  const row = rows.find((r) => r.id === cliId);
+  if (!row)
+    return refuse(
+      400,
+      ApiErrorCode.INVALID_INPUT,
+      `UNKNOWN_CLI: ${cliId} is not an enabled, installed agent CLI on this server`
+    );
+  if (!row.available) return conflict(`CLI_UNAVAILABLE: ${row.reason ?? `${row.label} cannot start a conversation`}`);
+  if (model !== '' && !row.model.editable)
+    return refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_MODEL: ${row.model.reason ?? 'no model choice'}`);
+  const bad = modelIdRefusal(row.model.source, model);
+  return bad ? refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_MODEL: ${bad}`) : undefined;
 }
 /**
  * Which CLI and launch fields a create request means. A request naming no CLI is what every conversation was before
- * the choice existed and is not probed; one that names a CLI must name an enabled, installed agent that delivery can
- * confirm, and a model id that CLI's launch accepts. Refusals are stated, never replaced by another CLI.
+ * the choice existed: it is not probed for installation, but the default CLI must still be enabled in the registry.
+ * One that names a CLI must name an enabled, installed agent that delivery can confirm, and a model id that CLI's
+ * launch accepts. Refusals are stated, never replaced by another CLI.
  */
 async function resolveLaunch(
   cliId: string | undefined,
@@ -151,23 +164,14 @@ async function resolveLaunch(
 ): Promise<{ ok: true; entryId: string; model: string; launch: Record<string, unknown> } | Outcome> {
   const wanted = model ?? '';
   if (cliId !== undefined) {
-    const row = (await currentProviders()).find((r) => r.id === cliId);
-    if (!row)
-      return refuse(
-        400,
-        ApiErrorCode.INVALID_INPUT,
-        `UNKNOWN_CLI: ${cliId} is not an enabled, installed agent CLI on this server`
-      );
-    if (!row.available) return conflict(`CLI_UNAVAILABLE: ${row.reason ?? `${row.label} cannot start a conversation`}`);
+    const refused = checkChoice(await currentProviders(), cliId, wanted);
+    if (refused) return refused;
   }
-  const entry = getCli(cliId ?? DEFAULT_CONVERSATION_CLI);
-  if (!entry) return refuse(400, ApiErrorCode.INVALID_INPUT, 'UNKNOWN_CLI: the default CLI is not available');
-  if (wanted !== '' && !providerRow(entry).model.editable)
-    return refuse(
-      400,
-      ApiErrorCode.INVALID_INPUT,
-      `INVALID_MODEL: ${providerRow(entry).model.reason ?? 'no model choice'}`
-    );
+  const entry = cliId === undefined ? enabledClis().find((e) => e.id === DEFAULT_CONVERSATION_CLI) : getCli(cliId);
+  if (!entry)
+    return cliId === undefined
+      ? conflict('CLI_UNAVAILABLE: the default CLI is not enabled on this server')
+      : refuse(400, ApiErrorCode.INVALID_INPUT, 'UNKNOWN_CLI: the default CLI is not available');
   const fields = launchFields(entry, wanted);
   if (!fields.ok) return refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_MODEL: ${fields.reason}`);
   return { ok: true, entryId: entry.id as string, model: wanted, launch: fields.fields };
@@ -410,14 +414,13 @@ function accepted(messageId: string, message: ConversationMessage, missing: stri
   });
 }
 
-/** The `canvas_conversation` tool: the same operations as the routes, for an agent caller. */
+/** The `canvas_conversation` tool: the same operations as the routes, for an agent caller. `model` steers a view and is answered by the view route, so it never reaches here. */
 export async function conversationTool(
   ctx: CanvasPort,
   req: FastifyRequest,
   workspaceId: string,
-  args: unknown
+  input: Exclude<z.infer<typeof ConversationToolSchema>, { action: 'model' }>
 ): Promise<Outcome> {
-  const input = ConversationToolSchema.parse(args);
   switch (input.action) {
     case 'list':
       return listConversations(ctx, req, workspaceId);
@@ -429,8 +432,6 @@ export async function conversationTool(
         ...(input.cliId !== undefined ? { cliId: input.cliId } : {}),
         ...(input.model !== undefined ? { model: input.model } : {}),
       });
-    case 'model':
-      return refuse(400, ApiErrorCode.INVALID_INPUT, 'The model action is handled with the view it steers');
     case 'send': {
       const { conversationId, action: _action, ...message } = input;
       void _action;

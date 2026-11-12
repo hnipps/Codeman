@@ -11,7 +11,7 @@ import { readConversations } from '../src/canvas/conversations.js';
 import { SseEvent } from '../src/web/sse-events.js';
 import { deployRole } from '../src/deploy-role.js';
 
-const installed = vi.hoisted(() => ({ map: {} as Record<string, boolean> }));
+const installed = vi.hoisted(() => ({ map: {} as Record<string, boolean>, claudeDisabled: false }));
 vi.mock('../src/utils/cli-installed-probes.js', async (original) => ({
   ...(await original<typeof import('../src/utils/cli-installed-probes.js')>()),
   probeStockCliAvailability: async () => installed.map,
@@ -31,7 +31,7 @@ vi.mock('../src/config/cli-registry/registry.js', async (original) => {
   } as unknown as import('../src/config/cli-registry/types.js').CliEntry;
   return {
     ...real,
-    enabledClis: () => [...real.enabledClis(), acme],
+    enabledClis: () => [...real.enabledClis(), acme].filter((e) => !(installed.claudeDisabled && e.id === 'claude')),
     getCli: (id: string) => (id === 'acme' ? acme : real.getCli(id)),
   };
 });
@@ -41,6 +41,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'canvas-prov-'));
   vi.stubEnv('CODEMAN_DATA_DIR', dir);
   installed.map = { claude: true, copilot: true, codex: false, acme: true };
+  installed.claudeDisabled = false;
 });
 afterEach(() => {
   deployRole.enter('live');
@@ -178,6 +179,20 @@ describe('starting a conversation on a chosen CLI and model', () => {
       expect(response.statusCode).toBe(200);
       expect(h.started[0]).toMatchObject({ mode: 'claude', launch: {} });
       expect(response.json().data.conversation.model).toBeUndefined();
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('refuses a create that names no CLI when the default CLI is disabled in the registry', async () => {
+    installed.claudeDisabled = true;
+    const h = await harness();
+    try {
+      const refused = await h.create();
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatch(/^CLI_UNAVAILABLE: /);
+      expect((await h.create({ cliId: 'claude' })).statusCode).toBe(400);
+      expect(h.started).toHaveLength(0);
     } finally {
       await h.app.close();
     }

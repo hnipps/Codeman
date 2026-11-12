@@ -32,8 +32,12 @@ import { renderContainer, screenshotFailure } from '../../canvas/canvas-screensh
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
 import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
-import { conversationTool, currentProviders, registerConversationRoutes } from './canvas-conversation-routes.js';
-import { modelIdRefusal } from '../../canvas/providers.js';
+import {
+  checkChoice,
+  conversationTool,
+  currentProviders,
+  registerConversationRoutes,
+} from './canvas-conversation-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
@@ -134,6 +138,39 @@ const viewGone = (reply: FastifyReply) =>
     .send(
       createErrorResponse(ApiErrorCode.NOT_FOUND, 'VIEW_GONE: that canvas view is closed or has stopped reporting')
     );
+/** Applies one view command and answers it: closed view, rate limit, reused request identity, or the broadcast and commandId. */
+function applyViewCommand(
+  reply: FastifyReply,
+  ctx: CanvasPort,
+  views: ViewRegistry,
+  workspaceId: string,
+  viewId: string,
+  canSee: (owner: string | undefined) => boolean,
+  action: z.infer<typeof ViewActionSchema>,
+  requestId: string | undefined
+) {
+  const result = views.command(workspaceId, viewId, canSee, action, requestId);
+  if (!result.ok) {
+    if (result.code === 'VIEW_GONE') return viewGone(reply);
+    if (result.code === 'RATE_LIMITED')
+      return reply
+        .code(429)
+        .header('Retry-After', '1')
+        .send(createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many view commands. Try again in a second.'));
+    return reply
+      .code(409)
+      .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Request identity was already used for a different command'));
+  }
+  if (!result.duplicate)
+    ctx.broadcast(SseEvent.CanvasViewCommand, {
+      workspaceId,
+      viewId,
+      commandId: result.commandId,
+      owner: result.owner,
+      command: action,
+    });
+  return { success: true, data: { commandId: result.commandId, duplicate: result.duplicate } };
+}
 const objectLabel = (o: { type: string; content: Record<string, unknown> }): string => {
   const text = (v: unknown): string => (typeof v === 'string' ? v : '');
   return (text(o.content.label) || text(o.content.alt) || text(o.content.text).split('\n')[0] || o.type).slice(0, 80);
@@ -384,54 +421,17 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                     },
                   };
                 }
-                const model = conversation.model ?? '';
-                const rows = await currentProviders();
-                const row =
-                  conversation.cliId === undefined ? undefined : rows.find((r) => r.id === conversation.cliId);
-                const refusal = (message: string, code = 400) =>
-                  reply
-                    .code(code)
-                    .send(
-                      createErrorResponse(code === 409 ? ApiErrorCode.CONFLICT : ApiErrorCode.INVALID_INPUT, message)
-                    );
-                if (conversation.cliId === undefined) return refusal('INVALID_INPUT: set needs a cliId');
-                if (!row) return refusal(`UNKNOWN_CLI: ${conversation.cliId} is not an enabled, installed agent CLI`);
-                if (!row.available) return refusal(`CLI_UNAVAILABLE: ${row.reason ?? 'not available'}`, 409);
-                if (model !== '' && !row.model.editable)
-                  return refusal(`INVALID_MODEL: ${row.model.reason ?? 'this CLI takes no model choice'}`);
-                const bad = modelIdRefusal(row.model.source, model);
-                if (bad) return refusal(`INVALID_MODEL: ${bad}`);
-                const action = ViewActionSchema.parse({ action: 'assistant-choice', cliId: row.id, model });
-                const result = views.command(req.params.workspaceId, viewId, canSee, action, requestId);
-                if (!result.ok) {
-                  if (result.code === 'VIEW_GONE') return viewGone(reply);
-                  if (result.code === 'RATE_LIMITED')
-                    return reply
-                      .code(429)
-                      .header('Retry-After', '1')
-                      .send(
-                        createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many view commands. Try again in a second.')
-                      );
+                if (conversation.cliId === undefined)
                   return reply
-                    .code(409)
-                    .send(
-                      createErrorResponse(
-                        ApiErrorCode.CONFLICT,
-                        'Request identity was already used for a different command'
-                      )
-                    );
-                }
-                if (!result.duplicate)
-                  ctx.broadcast(SseEvent.CanvasViewCommand, {
-                    workspaceId: req.params.workspaceId,
-                    viewId,
-                    commandId: result.commandId,
-                    owner: result.owner,
-                    command: action,
-                  });
-                return { success: true, data: { commandId: result.commandId, duplicate: result.duplicate } };
+                    .code(400)
+                    .send(createErrorResponse(ApiErrorCode.INVALID_INPUT, 'INVALID_INPUT: set needs a cliId'));
+                const model = conversation.model ?? '';
+                const refused = checkChoice(await currentProviders(), conversation.cliId, model);
+                if (refused) return reply.code(refused.code).send(refused.body);
+                const action = ViewActionSchema.parse({ action: 'assistant-choice', cliId: conversation.cliId, model });
+                return applyViewCommand(reply, ctx, views, req.params.workspaceId, viewId, canSee, action, requestId);
               }
-              const outcome = await conversationTool(ctx, req, req.params.workspaceId, args);
+              const outcome = await conversationTool(ctx, req, req.params.workspaceId, conversation);
               return reply.code(outcome.code).send(outcome.body);
             }
             case 'canvas_view':
@@ -471,34 +471,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               if ('targetIds' in action && action.targetIds && action.action !== 'context-remove')
                 normalizeTargets(state, action.targetIds);
               if (action.action === 'focus' && action.targetId) normalizeTargets(state, [action.targetId]);
-              const result = views.command(req.params.workspaceId, viewId, canSee, action, requestId);
-              if (!result.ok) {
-                if (result.code === 'VIEW_GONE') return viewGone(reply);
-                if (result.code === 'RATE_LIMITED')
-                  return reply
-                    .code(429)
-                    .header('Retry-After', '1')
-                    .send(
-                      createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many view commands. Try again in a second.')
-                    );
-                return reply
-                  .code(409)
-                  .send(
-                    createErrorResponse(
-                      ApiErrorCode.CONFLICT,
-                      'Request identity was already used for a different command'
-                    )
-                  );
-              }
-              if (!result.duplicate)
-                ctx.broadcast(SseEvent.CanvasViewCommand, {
-                  workspaceId: req.params.workspaceId,
-                  viewId,
-                  commandId: result.commandId,
-                  owner: result.owner,
-                  command: action,
-                });
-              return { success: true, data: { commandId: result.commandId, duplicate: result.duplicate } };
+              return applyViewCommand(reply, ctx, views, req.params.workspaceId, viewId, canSee, action, requestId);
             }
             case 'canvas_read':
               return { success: true, data: readTree(state, toolSchemas.canvas_read.parse(args)) };
