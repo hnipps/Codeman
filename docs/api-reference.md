@@ -1626,10 +1626,10 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
-The fifteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
+The sixteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
 `canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
 `canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_comment`,
-`canvas_capabilities`, `canvas_link_preview`, `canvas_view` and `canvas_context`.
+`canvas_capabilities`, `canvas_link_preview`, `canvas_view`, `canvas_context` and `canvas_conversation`.
 Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
 support, geometry semantics and reserved future view operations. `canvas_screenshot`
 is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
@@ -1637,6 +1637,11 @@ is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
 and `X-Canvas-Screenshot-Meta`. Unknown or deleted objects are 404. The canvas off is
 404. No Chromium, or a missing canvas bundle, is 503. The MCP tool of the same name
 returns that PNG as image content.
+
+### Canvas conversations
+
+`GET /api/canvas/:workspaceId/conversations` lists the canvas's conversations (`id`, `sessionId`, `cliId`, `createdAt`, `createdBy`, `messageCount`, `session`: `live` or `ended`); `GET .../conversations/:conversationId` adds `messages`: per message `messageId`, `sentAt`, `deliveredAt` (null until written), `author`, `textSha256`, `textBytes` and `refs` (`id`, `label`, `type`, `revision`, `descendants`, `truncated`). No prompt or reply text is stored; read the session's transcript with `GET /api/sessions/:id/last-response?context=full`.
+`POST .../conversations` `{ requestId }` (people only, an agent gets 403; 409 `CASE_UNSUPPORTED` for a Docker or remote case) starts one Claude session in the case folder through the ordinary create and start routes (a retry with the same `requestId` returns the same conversation). `POST .../conversations/:conversationId/messages` `{ messageId, text, refIds }` composes the context block, records the message `queued` and answers at once (`state`, `deliveredAt`); the paste is delivered and confirmed as submitted in the background, and each message's `state` (`queued`, `sending`, `delivered`, `failed`) is in the read. A retry of a failed id checks the composer first and never pastes twice. More than a few messages a minute to one conversation is 429. Refusals carry a stable prefix in `error`: `SESSION_ENDED`, `APPROVAL_PENDING`, `NOT_DELIVERED`, `BUSY`, `MESSAGE_CHANGED`, `TOO_LARGE`, `START_FAILED`, `CASE_UNSUPPORTED`, `RATE_LIMITED`, `TOO_MANY`, `FILE_UNREADABLE`. Only the workspace owner may start or send (404 otherwise); a retired or candidate colour answers 409. The `canvas_conversation` MCP tool (`list | read | create | send`) is the same operations. SSE: `canvas:conversation` `{ workspaceId, conversationId, change, owner }` carries no text.
 
 ### Canvas media
 

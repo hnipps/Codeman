@@ -32,6 +32,7 @@ import { renderContainer, screenshotFailure } from '../../canvas/canvas-screensh
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
 import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
+import { conversationTool, registerConversationRoutes } from './canvas-conversation-routes.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
@@ -255,6 +256,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
         if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner))
           return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
       });
+      registerConversationRoutes(workspaceScope, ctx);
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
         { bodyLimit: 64 * 1024 },
@@ -359,6 +361,10 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             case 'canvas_capabilities':
               toolSchemas.canvas_capabilities.parse(args);
               return { success: true, data: { ...capabilities(), truncated: false } };
+            case 'canvas_conversation': {
+              const outcome = await conversationTool(ctx, req, req.params.workspaceId, args);
+              return reply.code(outcome.code).send(outcome.body);
+            }
             case 'canvas_view':
             case 'canvas_context': {
               const input: z.infer<typeof toolSchemas.canvas_view> | z.infer<typeof toolSchemas.canvas_context> =

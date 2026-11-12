@@ -259,8 +259,6 @@ describe('canvas direct context and the view registry', () => {
     await page.locator('#addToChat').click();
     expect(await chips()).toEqual(['Reading patterns', 'Reference notes', 'Quiet capture']);
     await page.locator('#assistantDraft').fill('summarise these');
-    await page.locator('#assistantSend').click();
-    expect(await page.locator('#assistantStatus').textContent()).toContain('Conversations arrive next');
     expect(await page.locator('#assistantDraft').inputValue()).toBe('summarise these');
     expect(await chips()).toHaveLength(3);
     expect(writes).toEqual([]);

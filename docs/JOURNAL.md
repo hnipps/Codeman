@@ -2,6 +2,24 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Canvas conversations fix round (PC9b)
+
+**Type:** drift
+**Touches:** `src/canvas/conversation-delivery.ts`, `src/canvas/send-limit.ts`, `src/web/routes/canvas-conversation-routes.ts`, `src/session.ts`, `src/web/routes/hook-event-routes.ts`, `packages/canvas/src/{assistant,conversation,outbox}.ts`
+**Why:** A live run against a real Claude session showed the first message stranded in the composer while recorded delivered, the transcript's paste wrapper leaking the context block, no working line, and two ways a conversation could cost money or loop.
+**Links:** [Intent](../intent/2026-11-12-canvas-pc9b-conversations.md)
+
+Delivered now means submitted. Send answers at once and a per-conversation chain pastes once after the composer is ready, then confirms from the prompt-submitted hook or an empty composer, pressing Enter alone while text remains; a timeout leaves the conversation stuck so nothing is pasted behind it and Retry checks the composer first. Docker and remote cases are refused before anything starts. Starting is human-only; an agent inside any conversation cannot send; sends are rate limited per conversation. The context block is now always present so every prompt row carries its message id, which gives the rail author labels and survives the CLI's wrapper. Working comes from the hooks that fire (`hook:prompt_submitted`, `hook:stop`), with `Session.hookTurnRunning` after a reload. Not decided here: the permission mode these sessions launch with (the owner's call).
+
+## 2026-11-12 — Canvas conversations and projection (PC9b)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{conversation-schema,conversations,context-resolve}.ts`, `src/web/routes/canvas-conversation-routes.ts`, `src/web/routes/canvas-routes.ts`, `src/web/ports/canvas-port.ts`, `src/web/server.ts`, `src/canvas/commands.ts`, `src/mcp-server.ts`, `packages/canvas/src/{assistant,conversation,outbox}.ts`, `src/web/public/canvas.{html,css}`
+**Why:** The assistant rail kept chips and a draft but Send did nothing; a person could not hold a conversation with an agent about their canvas.
+**Links:** [Intent](../intent/2026-11-12-canvas-pc9b-conversations.md)
+
+Decisions the PC9 plan did not settle. Create goes through `app.inject` on the same app with the caller's own `authorization`, `cookie` and `host` headers instead of a copy of the create route, so the existing launch rules apply untouched (the port method is optional, so older test ports compile). The send body drops the plan's `viewId`, which nothing used; create takes only `requestId` (Claude only, no `cliId` or `model` until PC9c). The record carries `namedSha256` so a retry is compared by the ids the sender named, not by what resolved. The `message` attribute in the context block is how a prompt row is matched to its manifest and stripped for display; a message with no context carries no block and is matched to its transcript row by identical text. A multi-line paste is allowed (line breaks only), which means `SubmitVerifier` cannot confirm it; this is recorded as a risk, not solved. An ended conversation refuses a send (`SESSION_ENDED`) and the rail offers Start a new conversation rather than starting one silently. After a reload the rail rebinds to the newest conversation. Tool activity rows are not built; the manifest line is the "Sources used". `canvas_conversation send` is provided for agents because the plan lists it, with the same ownership checks and a refusal to message the caller's own session. The duplicate `threadEmpty` id (Comments owns it) was caught in review captures and the assistant's is `assistantEmpty`.
+
 ## 2026-11-12 — Canvas view registry and direct context (PC9a)
 
 **Type:** intent-refinement

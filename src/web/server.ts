@@ -1390,6 +1390,8 @@ export class WebServer extends EventEmitter {
       canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
       canvasStores: () => this.getCanvasStores(),
       broadcast: (event, data) => this.broadcast(event, data),
+      startConversationSession: (headers, request) => this.startConversationSession(headers, request),
+      discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
       basePath: this.basePath,
     });
     registerWorktreeRoutes(this.app, ctx);
@@ -2406,6 +2408,57 @@ export class WebServer extends EventEmitter {
   // post-save reload) pass forceFresh=true to bypass the cache.
   private _settingsCache: { data: Record<string, unknown>; ts: number } | null = null;
   private canvasStoreService?: CanvasStores;
+
+  /**
+   * One Claude session for a canvas conversation, started through `POST /api/sessions` and `.../interactive` with the
+   * asking person's own credentials: there is no second spawn path, so caps, ownership and launch rules are the
+   * ordinary ones. Nothing about respawn, auto-resume or Ralph is sent.
+   */
+  private async startConversationSession(
+    headers: Readonly<Record<string, string | string[] | undefined>>,
+    request: { workingDir: string; name: string }
+  ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
+    const forwarded: Record<string, string> = { 'content-type': 'application/json' };
+    for (const name of ['authorization', 'cookie', 'host']) {
+      const value = headers[name];
+      if (typeof value === 'string') forwarded[name] = value;
+    }
+    const call = async (url: string, payload?: unknown) => {
+      const response = await this.app.inject({ method: 'POST', url, headers: forwarded, payload: payload ?? {} });
+      let body: { success?: boolean; error?: string; data?: { session?: { id?: unknown } } } = {};
+      try {
+        body = response.json();
+      } catch {
+        /* A non-JSON answer is reported below as a failure with no detail. */
+      }
+      return { status: response.statusCode, body };
+    };
+    const created = await call('/api/sessions', { workingDir: request.workingDir, mode: 'claude', name: request.name });
+    const sessionId = created.body.data?.session?.id;
+    if (created.status >= 400 || created.body.success === false || typeof sessionId !== 'string')
+      return { ok: false, message: created.body.error || 'The session could not be created' };
+    const started = await call(`/api/sessions/${encodeURIComponent(sessionId)}/interactive`);
+    if (started.status >= 400 || started.body.success === false) {
+      // The tab this call just made would otherwise sit in the strip as a stopped session nobody asked for.
+      await this.discardConversationSession(headers, sessionId);
+      return { ok: false, message: started.body.error || 'The session could not be started' };
+    }
+    return { ok: true, sessionId };
+  }
+
+  private async discardConversationSession(
+    headers: Readonly<Record<string, string | string[] | undefined>>,
+    sessionId: string
+  ): Promise<void> {
+    const forwarded: Record<string, string> = {};
+    for (const name of ['authorization', 'cookie', 'host']) {
+      const value = headers[name];
+      if (typeof value === 'string') forwarded[name] = value;
+    }
+    await this.app
+      .inject({ method: 'DELETE', url: `/api/sessions/${encodeURIComponent(sessionId)}`, headers: forwarded })
+      .catch(() => undefined);
+  }
 
   private async getCanvasStores(): Promise<CanvasStores> {
     if (!this.canvasStoreService) {
