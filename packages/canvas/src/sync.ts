@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SnapshotSchema, ViewObjectSchema, type Snapshot } from './model.js';
+import { ViewCommentSchema, type ViewComment } from './comments.js';
 const envelope = <T extends z.ZodType>(data: T) => z.object({ success: z.literal(true), data }).passthrough();
 const OpsSchema = z
   .object({
@@ -11,8 +12,15 @@ const HeaderSchema = z.object({ seq: z.number().int().nonnegative(), kind: z.str
 const ChangesSchema = z
   .object({
     prev: z.array(z.object({ objectId: z.string(), after: ViewObjectSchema }).passthrough()),
+    comment: ViewCommentSchema.optional(),
+    removedComment: ViewCommentSchema.optional(),
   })
   .passthrough();
+/** Comments the snapshot carried; an unreadable list reads as none rather than failing the board. */
+export function snapshotComments(state: Snapshot): ViewComment[] {
+  const parsed = z.array(ViewCommentSchema).safeParse(state.comments);
+  return parsed.success ? parsed.data : [];
+}
 export const viewOperationKinds = new Set([
   'create',
   'update',
@@ -64,6 +72,7 @@ export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snaps
   const data = OpsSchema.parse(payload);
   const objects = new Map(state.objects.map((o) => [o.id, o]));
   const textAuthors = { ...state.textAuthors };
+  let comments = snapshotComments(state);
   let unreadable = false;
   for (const record of data.operations) {
     const header = HeaderSchema.safeParse(record);
@@ -77,6 +86,9 @@ export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snaps
       unreadable = true;
       continue;
     }
+    if (operation.data.comment) comments = [...comments, operation.data.comment];
+    const removed = operation.data.removedComment;
+    if (removed) comments = comments.filter((c) => c.id !== removed.id);
     const author = ViewObjectSchema.shape.author.safeParse(operation.data.author);
     for (const change of operation.data.prev) {
       if (objects.get(change.objectId)?.content.text !== change.after.content.text) {
@@ -89,7 +101,12 @@ export function replayCatchUp(state: Snapshot, payload: unknown): { state: Snaps
     }
   }
   return {
-    state: { seq: data.seq, textAuthors, objects: [...objects.values()].filter((o) => o.deletedAt === null) },
+    state: {
+      seq: data.seq,
+      textAuthors,
+      comments,
+      objects: [...objects.values()].filter((o) => o.deletedAt === null),
+    },
     unreadable,
   };
 }
