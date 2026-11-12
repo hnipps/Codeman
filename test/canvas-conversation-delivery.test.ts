@@ -115,6 +115,11 @@ describe('transcript wrapper', () => {
       messageId: id,
       text: 'hello\nthere',
     });
+    // Seen from a real session: the closing tag repeats the opener's id.
+    expect(
+      splitPrompt(`[Pasted text #1 +4 lines]\n<pasted_content id="0cbb">${row('hello')}</pasted_content id="0cbb">`)
+        .text
+    ).toBe('hello');
     expect(splitPrompt(`[Pasted text #1]\n<pasted_content id="2">\n${row('hi')}\n</pasted_content>\n`)).toEqual({
       messageId: id,
       text: 'hi',

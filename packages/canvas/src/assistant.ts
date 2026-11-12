@@ -333,7 +333,6 @@ export class AssistantView {
     this.attempt = attempt;
     write(this.keys.assistantOutbox, JSON.stringify(attempt));
     this.sending = true;
-    this.draft.readOnly = true;
     node('assistantSend').toggleAttribute('disabled', true);
     this.say('Sending…', 'sending');
     try {
@@ -366,9 +365,11 @@ export class AssistantView {
       this.persistSent();
       this.attempt = null;
       write(this.keys.assistantOutbox, null);
-      // Only what was sent goes: text typed while it travelled would have made the field read-only, so nothing is lost.
-      this.draft.value = '';
-      write(this.keys.assistantDraft, null);
+      // Only what was sent goes. The field stays editable while the message travels, so whatever was typed after
+      // it is kept as the next draft; a draft edited in the middle is left whole rather than guessed at.
+      const now = this.draft.value;
+      if (now.startsWith(text)) this.draft.value = now.slice(text.length).replace(/^\s+/, '');
+      write(this.keys.assistantDraft, this.draft.value || null);
       this.options.dispatch({ kind: 'context-clear-sent', ids });
       this.say('');
       void this.open();

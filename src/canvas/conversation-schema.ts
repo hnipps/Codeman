@@ -115,6 +115,8 @@ export function splitPrompt(row: string): { messageId: string | null; text: stri
   if (end < 0) return { messageId: null, text: row };
   let text = row.slice(end + TAIL.length);
   const wrapper = /<([a-z_][a-z0-9_]*)(?:\s[^>]*)?>\s*$/i.exec(row.slice(0, head.index));
-  if (wrapper) text = text.replace(new RegExp(`\\s*</${wrapper[1]}>\\s*$`, 'i'), '');
+  // The CLI has been seen closing its wrapper with the opener's attributes repeated (`</pasted_content id="…">`).
+  if (wrapper) text = text.replace(new RegExp(`\\s*</${wrapper[1]}(?:\\s[^>]*)?>\\s*$`, 'i'), '');
+  text = text.replace(/\s*<\/pasted_content(?:\s[^>]*)?>\s*$/i, '');
   return { messageId: head[1], text: text.trim() };
 }
