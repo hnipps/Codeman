@@ -7,7 +7,7 @@
  * on demand by the route handlers.
  *
  * Records written before `origin` existed are given one as they are read (see
- * `withOrigin`), and a session-origin record always reads as untrusted. Nothing is written back here, so the file on disk keeps its old
+ * `withOrigin`), and a session- or canvas-origin record always reads as untrusted. Nothing is written back here, so the file on disk keeps its old
  * shape until the next ordinary write.
  *
  * The file lives under the instance data dir, so a beta instance started with a
@@ -65,6 +65,12 @@ function withOrigin(record: Webview & { managed?: unknown }): Webview {
     const name = typeof origin.name === 'string' ? origin.name : origin.sessionId;
     return { ...rest, trusted: false, origin: { kind: 'session', sessionId: origin.sessionId, name } };
   }
+  if (origin?.kind === 'canvas' && typeof origin.workspaceId === 'string' && typeof origin.objectId === 'string')
+    return {
+      ...rest,
+      trusted: false,
+      origin: { kind: 'canvas', workspaceId: origin.workspaceId, objectId: origin.objectId },
+    };
   if (isOrigin(rest.origin)) return rest;
   if (managed === 'deepseek-web') return { ...rest, origin: { kind: 'managed', managed } };
   return { ...rest, origin: { kind: 'user' } };

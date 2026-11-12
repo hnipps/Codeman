@@ -241,6 +241,69 @@ export async function removeSessionWebviews(ctx: WebviewWriteContext, sessionId:
 }
 
 /**
+ * The live frame of one canvas embed object. Created on the first open and reused
+ * after that; a changed URL replaces the record's URL and revokes its old
+ * capability. Never a tab: it touches no layout and is kept out of the list.
+ */
+export async function openCanvasWebview(input: {
+  workspaceId: string;
+  objectId: string;
+  url: string;
+  name: string;
+  owner?: string;
+  basePath: string;
+}): Promise<{ webviewId: string; embedUrl: string }> {
+  const webview = await withWebviews(async (list) => {
+    const matches = (w: Webview) =>
+      w.origin.kind === 'canvas' && w.origin.workspaceId === input.workspaceId && w.origin.objectId === input.objectId;
+    const index = list.findIndex(matches);
+    if (index >= 0 && list[index].url === input.url) return list[index];
+    if (index >= 0) webviewCapabilities.revokeWebview(list[index].id);
+    const record: Webview = {
+      id: index >= 0 ? list[index].id : randomUUID(),
+      name: input.name.slice(0, 60) || 'Embedded page',
+      url: input.url,
+      embedMode: 'proxy',
+      trusted: false,
+      origin: { kind: 'canvas', workspaceId: input.workspaceId, objectId: input.objectId },
+      owner: input.owner,
+      createdAt: index >= 0 ? list[index].createdAt : Date.now(),
+    };
+    if (index >= 0) list[index] = record;
+    else list.push(record);
+    await writeWebviews(configDir(), list);
+    return record;
+  });
+  const capability = webviewCapabilities.mint(webview.id, webview.owner);
+  return { webviewId: webview.id, embedUrl: proxyPrefixFor(capability, input.basePath) };
+}
+
+/** Remove canvas frames whose embed is gone, deleted or a link again, and revoke their capabilities. */
+export async function removeCanvasWebviews(
+  match: (origin: { workspaceId: string; objectId: string }) => boolean
+): Promise<Webview[]> {
+  const removed = await withWebviews(async (list) => {
+    const owned = list.filter((w) => w.origin.kind === 'canvas' && match(w.origin));
+    if (owned.length)
+      await writeWebviews(
+        configDir(),
+        list.filter((w) => !owned.includes(w))
+      );
+    return owned;
+  });
+  for (const webview of removed) {
+    webviewCapabilities.revokeWebview(webview.id);
+    socketCounts.delete(webview.id);
+  }
+  return removed;
+}
+
+/** Canvas frame records, for the boot sweep that removes those whose object is no longer a live embed. */
+export async function canvasWebviewOrigins(): Promise<{ workspaceId: string; objectId: string }[]> {
+  return (await readWebviews(configDir())).flatMap((w) => (w.origin.kind === 'canvas' ? [w.origin] : []));
+}
+
+/**
  * `/api/v1` shipped a top-level `managed` field before `origin` existed, and the
  * stable API only grows, so managed rows keep it on the wire. Deprecated.
  */
@@ -255,7 +318,8 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
   app.get('/api/webviews', async (req) => {
     const user = getAuthUser(req);
     const all = await readWebviews(configDir());
-    const webviews = all.filter((w) => canAccessOwned(user, w.owner)).map(toResponse);
+    // A canvas frame belongs to its canvas object, not to the tab strip.
+    const webviews = all.filter((w) => w.origin.kind !== 'canvas' && canAccessOwned(user, w.owner)).map(toResponse);
     return { success: true, data: { webviews, maxLiveFrames: MAX_LIVE_WEBVIEW_FRAMES } };
   });
 
@@ -272,7 +336,7 @@ function registerCrudRoutes(app: FastifyInstance, ctx: WebviewRouteContext, base
     }
 
     const created = await withWebviews(async (list) => {
-      const mine = list.filter((w) => canAccessOwned(user, w.owner));
+      const mine = list.filter((w) => w.origin.kind !== 'canvas' && canAccessOwned(user, w.owner));
       if (mine.length >= MAX_WEBVIEWS) return null;
 
       const webview: Webview = {
@@ -777,7 +841,10 @@ async function proxyRequest(
     const html = await response.text();
     return reply.send(
       html.length <= MAX_WEBVIEW_HTML_REWRITE_BYTES
-        ? rewriteHtml(html, cap, basePath, { moduleMap: webview.origin.kind === 'session' })
+        ? rewriteHtml(html, cap, basePath, {
+            moduleMap: webview.origin.kind === 'session',
+            escapeRelay: webview.origin.kind === 'canvas',
+          })
         : html
     );
   }
