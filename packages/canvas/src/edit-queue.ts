@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import { z } from 'zod';
 import { IdSchema, MutableSchema } from '../../../src/canvas/model.js';
 import type { CanvasToolName } from '../../../src/canvas/commands.js';
@@ -171,7 +172,7 @@ export class EditQueue {
     const edits = z
       .array(EditSchema)
       .max(1000)
-      .parse(operations.map((op) => ({ ...op, opId: op.opId || (this.options.id?.() ?? crypto.randomUUID()) })));
+      .parse(operations.map((op) => ({ ...op, opId: op.opId || (this.options.id?.() ?? uuid()) })));
     this.batchSizes.push(edits.length);
     this.pending.push(...edits);
     if (!this.persist()) {
@@ -186,7 +187,7 @@ export class EditQueue {
     return true;
   }
   enqueueCommand(request: CanvasRequest): boolean {
-    const requestId = crypto.randomUUID();
+    const requestId = uuid();
     this.requests[requestId] = RequestSchema.parse({ ...request, requestId });
     const accepted = this.enqueue([{ kind: 'revert', opId: requestId, objectId: requestId, patch: {} }]);
     if (!accepted) delete this.requests[requestId];

@@ -57,6 +57,8 @@ export const ConversationSchema = z
     id: z.uuid(),
     sessionId: z.string().min(1).max(128),
     cliId: z.string().min(1).max(64),
+    /** The model the session was launched on; absent means the CLI's own default (and every conversation of an earlier release). */
+    model: z.string().max(100).optional(),
     title: z.string().max(200).optional(),
     /** Reserved for a later release that starts a conversation from a comment thread. */
     origin: z.unknown().optional(),
@@ -78,11 +80,26 @@ export const SendBodySchema = z
     refIds: z.array(IdSchema).max(MAX_CONTEXT_OBJECTS).default([]),
   })
   .strict();
-export const CreateConversationBodySchema = z.object({ requestId: z.uuid() }).strict();
+const CreateShape = {
+  requestId: z.uuid(),
+  cliId: z.string().min(1).max(64).optional(),
+  model: z.string().max(100).optional(),
+};
+export const CreateConversationBodySchema = z.object(CreateShape).strict();
 export const ConversationToolSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list') }).strict(),
   z.object({ action: z.literal('read'), conversationId: z.uuid() }).strict(),
-  z.object({ action: z.literal('create'), requestId: z.uuid() }).strict(),
+  z.object({ action: z.literal('create'), ...CreateShape }).strict(),
+  z
+    .object({
+      action: z.literal('model'),
+      operation: z.enum(['read', 'set']),
+      viewId: z.uuid(),
+      cliId: z.string().min(1).max(64).optional(),
+      model: z.string().max(100).optional(),
+      requestId: z.uuid().optional(),
+    })
+    .strict(),
   z.object({ action: z.literal('send'), conversationId: z.uuid(), ...SendBodySchema.shape }).strict(),
 ]);
 

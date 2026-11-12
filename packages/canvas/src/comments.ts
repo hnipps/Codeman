@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import { z } from 'zod';
 import { label, type ViewObject } from './model.js';
 
@@ -430,7 +431,7 @@ export class CommentsView {
     if (object) composer.name = label(object);
     composer.draft = text;
     if (!composer.pending || composer.pending.text !== text)
-      composer.pending = { requestId: crypto.randomUUID(), commentId: crypto.randomUUID(), text, objectId };
+      composer.pending = { requestId: uuid(), commentId: uuid(), text, objectId };
     const pending = composer.pending;
     composer.sending = true;
     composer.failure = null;

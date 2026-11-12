@@ -2,7 +2,9 @@ export type KeyScope = { composing: boolean; editable: boolean; canvas: boolean;
 export function shortcutAllowed(scope: KeyScope): boolean {
   return !scope.composing && !scope.editable && scope.canvas && !scope.control;
 }
-export const shortcuts: [string, string[][]][] = [
+/** `later` marks a binding the Keys view lists but nothing handles yet. */
+export type Shortcut = [string, string[][], 'later'?];
+export const shortcuts: Shortcut[] = [
   ['Navigate siblings', [['J'], ['K'], ['↑'], ['↓']]],
   ['Toggle selection', [['X'], ['Space']]],
   ['Select immediate siblings', [['Mod', 'A']]],
@@ -19,10 +21,16 @@ export const shortcuts: [string, string[][]][] = [
   ['Close current rail view', [['Esc']]],
 ];
 
-export const editShortcuts: [string, string[][]][] = [
+export const editShortcuts: Shortcut[] = [
   ['Toggle assistant', [['C'], ['Mod', '.']]],
   ['Add selection to chat', [['Mod', 'Enter']]],
   ['Add objects to chat (hold and drag a loop)', [['Q']]],
+  ['Send chat message / line break', [['Enter'], ['Shift', 'Enter']]],
+  ['Choose chat provider / model (focus the selector)', [['P'], ['Shift', 'P']]],
+  ['Dictate into chat', [['B']], 'later'],
+  ['Voice conversation in chat', [['Shift', 'B']], 'later'],
+  ['Inspect chat background agents', [['G']], 'later'],
+  ['Run chat message in the background', [['Mod', 'Shift', 'Enter']], 'later'],
   ['Selection lasso (hold and drag)', [['Alt']]],
   ['Group selection', [['Mod', 'G']]],
   ['Ungroup selection', [['Mod', 'Shift', 'G']]],

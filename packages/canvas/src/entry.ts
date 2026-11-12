@@ -74,9 +74,6 @@ function inView(all: ViewObject[] = objects): ViewObject[] {
 let paintedRoot: string | null | undefined;
 /** Inside a sub-canvas, keyboard walks and select-all start from its contents, not the workspace. */
 function scopedAction(action: ViewCommand): ViewCommand {
-  // The phone is read-only and has no assistant until PC9c; an agent cannot open one there either.
-  if (action.kind === 'rail' && action.view === 'assistant' && mobile.matches)
-    return { kind: 'rail-close', view: 'assistant' };
   if (state.root === null || state.focusId) return action;
   const first = siblings(objects, state.root)[0];
   if (action.kind === 'navigate' && first) return { kind: 'focus', id: first.id };
@@ -105,6 +102,8 @@ const history = new HistoryView({ url, workspace: workspaceId, phone: mobile, ob
 const viewer = document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single';
 const assistant = new AssistantView({
   url,
+  phone: () => mobile.matches,
+  addSelection: () => addSelectionOnPhone(),
   dispatch: (action) => dispatch(action),
   workspace: workspaceId,
   viewer,
@@ -498,7 +497,7 @@ const keyNames: Record<string, string> = {
   '↓': 'Down arrow',
   '⌘': 'Command',
 };
-for (const [action, alternatives] of [...shortcuts, ...(mobile.matches ? [] : editShortcuts)]) {
+for (const [action, alternatives, later] of [...shortcuts, ...(mobile.matches ? [] : editShortcuts)]) {
   const row = document.createElement('div'),
     title = document.createElement('span'),
     hints = document.createElement('span');
@@ -520,6 +519,13 @@ for (const [action, alternatives] of [...shortcuts, ...(mobile.matches ? [] : ed
       group.append(cap);
     }
     hints.append(group);
+  }
+  if (later) {
+    row.classList.add('key-later');
+    const note = document.createElement('span');
+    note.className = 'key-note';
+    note.textContent = 'Not bound yet';
+    title.append(note);
   }
   row.append(title, hints);
   node('keyRows').append(row);
@@ -582,12 +588,11 @@ button('selectTool').onclick = () => dispatch({ kind: 'tool', tool: 'select' });
 button('panTool').onclick = () => dispatch({ kind: 'tool', tool: 'pan' });
 button('fit').onclick = () => fit(state.selected.length ? state.selected : undefined);
 function openAssistant(focusComposer: boolean): void {
-  if (mobile.matches) return;
   if (state.rail.at(-1) !== 'assistant') dispatch({ kind: 'rail', view: 'assistant' });
-  if (focusComposer) requestAnimationFrame(() => assistant.focusComposer());
+  // A phone keyboard that rises as the view opens would cover it; the composer takes focus when it is tapped.
+  if (focusComposer && !mobile.matches) requestAnimationFrame(() => assistant.focusComposer());
 }
 function toggleAssistant(): void {
-  if (mobile.matches) return;
   if (state.rail.at(-1) === 'assistant') dispatch({ kind: 'escape' });
   else openAssistant(false);
 }
@@ -600,6 +605,13 @@ function addSelectionToChat(): void {
   }
   dispatch({ kind: 'context-add', ids });
   openAssistant(true);
+}
+/** The phone's stand-in for Q and Cmd/Ctrl+Enter: it lives in the open assistant, so it never raises the keyboard. */
+function addSelectionOnPhone(): boolean {
+  const ids = state.selected.length ? state.selected : state.focusId ? [state.focusId] : [];
+  if (!ids.length) return false;
+  dispatch({ kind: 'context-add', ids });
+  return true;
 }
 button('assistantTool').onclick = () => (state.rail.at(-1) === 'assistant' ? toggleAssistant() : openAssistant(true));
 button('addToChat').onclick = addSelectionToChat;
@@ -637,11 +649,17 @@ function applyViewAction(action: ViewAction): void {
         // The person's own switch: an agent cannot turn their shortcuts off.
         break;
       case 'context-add':
-        if (!mobile.matches) dispatch({ kind: 'context-add', ids: action.targetIds });
+        dispatch({ kind: 'context-add', ids: action.targetIds });
         break;
       case 'context-remove':
         dispatch({ kind: 'context-remove', ids: action.targetIds });
         break;
+      case 'assistant-choice': {
+        const was = state.choice;
+        if (was?.cliId !== action.cliId || was?.model !== action.model) assistant.noteAgentChoice();
+        dispatch({ kind: 'assistant-choice', choice: { cliId: action.cliId, model: action.model } });
+        break;
+      }
     }
   } finally {
     keyboard = was;
@@ -662,6 +680,7 @@ const views = new ViewSync({
     letters: state.letters,
     draftBytes: assistant.draftBytes(),
     phone: mobile.matches,
+    choice: state.choice ?? { cliId: null, model: '' },
   }),
 });
 new ContextCapture({
@@ -792,6 +811,10 @@ document.addEventListener('keydown', (e) => {
     } else if (key === 'c' && !e.repeat && !mobile.matches) {
       e.preventDefault();
       toggleAssistant();
+    } else if (key === 'p' && !e.repeat && !mobile.matches) {
+      e.preventDefault();
+      openAssistant(false);
+      requestAnimationFrame(() => assistant.focusChoice(e.shiftKey ? 'model' : 'provider'));
     } else if (key === 'v' || key === 'h') dispatch({ kind: 'tool', tool: key === 'v' ? 'select' : 'pan' });
   }
 });
@@ -937,6 +960,7 @@ const editor = new DesktopEditor({
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
     const restore = initial ? assistant.restoredContext() : [];
+    const restoredChoice = initial ? assistant.restoredChoice() : null;
     if (initial) {
       initial = false;
       if (mobile.matches) firstPhoneView();
@@ -950,6 +974,7 @@ const editor = new DesktopEditor({
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
     dispatch({ kind: 'context-add', ids: restore });
+    if (restoredChoice) dispatch({ kind: 'assistant-choice', choice: restoredChoice });
     assistant.restoreDone();
   },
 });

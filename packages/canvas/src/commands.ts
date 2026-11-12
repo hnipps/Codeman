@@ -18,6 +18,8 @@ export type ViewState = {
   context: string[];
   /** The conversation the assistant rail shows; none until conversations arrive. */
   conversationId: string | null;
+  /** The provider and model the NEXT new conversation starts on; null until a person or an agent chooses. A view setting: nothing is written. */
+  choice: { cliId: string | null; model: string } | null;
 };
 export type ViewCommand =
   | { kind: 'pan'; delta: Point }
@@ -39,6 +41,7 @@ export type ViewCommand =
   | { kind: 'context-remove'; ids: string[] }
   | { kind: 'context-clear-sent'; ids?: string[] }
   | { kind: 'conversation'; id: string | null }
+  | { kind: 'assistant-choice'; choice: ViewState['choice'] }
   | { kind: 'escape' }
   | { kind: 'letters'; enabled: boolean }
   | { kind: 'enter'; id: string }
@@ -54,6 +57,7 @@ export const initialView = (): ViewState => ({
   root: null,
   context: [],
   conversationId: null,
+  choice: null,
 });
 export function command(state: ViewState, action: ViewCommand, objects: ViewObject[]): ViewState {
   switch (action.kind) {
@@ -112,6 +116,8 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
       return { ...state, context: action.ids ? contextRemove(state.context, action.ids) : [] };
     case 'conversation':
       return { ...state, conversationId: action.id };
+    case 'assistant-choice':
+      return { ...state, choice: action.choice };
     case 'escape':
       return { ...state, rail: state.rail.slice(0, -1) };
     case 'letters':

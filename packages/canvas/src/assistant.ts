@@ -1,3 +1,5 @@
+import { uuid } from './ids.js';
+import { MAX_MODEL_ID_LENGTH } from '../../../src/canvas/providers.js';
 import { chips, type Chip } from './context.js';
 import type { ViewCommand, ViewState } from './commands.js';
 import type { ViewObject } from './model.js';
@@ -13,8 +15,25 @@ import {
 } from './conversation.js';
 import { nextAttempt, parseAttempt, parseSent, type Attempt } from './outbox.js';
 import { promptRefusal, splitPrompt } from '../../../src/canvas/conversation-schema.js';
+import {
+  agentLabel,
+  modelField,
+  modelSuggestions,
+  newConversationNotice,
+  selection,
+  type Choice,
+  type ProviderRow,
+} from './providers.js';
 
-type Summary = { id: string; sessionId: string; createdAt: number; session: 'live' | 'ended' };
+type Summary = {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  session: 'live' | 'ended';
+  cliId: string;
+  cliLabel?: string;
+  model?: string;
+};
 type Approval = {
   id: string;
   sessionId: string;
@@ -27,6 +46,10 @@ type Approval = {
 };
 type Options = {
   url: (path: string) => string;
+  /** The phone has no hardware keys: Return is a line break there and Send submits. */
+  phone: () => boolean;
+  /** The phone's stand-in for Q and Cmd/Ctrl+Enter; false when nothing is selected. */
+  addSelection: () => boolean;
   /** Applies a view command (conversation binding, clearing sent context). */
   dispatch: (action: ViewCommand) => void;
   workspace: string;
@@ -70,6 +93,19 @@ export function parseStoredContext(raw: string | null): string[] {
 }
 const NEAR_END_PX = 24;
 const TRANSCRIPT_DEBOUNCE_MS = 400;
+/** The stored provider and model; anything that is not exactly that reads as no choice. */
+export function parseChoice(raw: string | null): Choice | null {
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (typeof v !== 'object' || v === null) return null;
+    const { cliId, model } = v as Record<string, unknown>;
+    if ((cliId !== null && typeof cliId !== 'string') || typeof model !== 'string' || model.length > 100) return null;
+    return { cliId: typeof cliId === 'string' && cliId.length <= 64 ? cliId : null, model };
+  } catch {
+    return null;
+  }
+}
 /** What the rail shows of a conversation: the session's own transcript, the chips each prompt carried, and one calm state line. */
 export class AssistantView {
   private keys: CanvasStorageKeys;
@@ -78,6 +114,14 @@ export class AssistantView {
   private restoring = true;
   private refocus: number | null = null;
   private restored: string[];
+  private restoredChoiceValue: Choice | null;
+  private storedChoice = '';
+  private choiceSignature = '';
+  /** The current choice came from an agent's view command; the person's next change or another conversation clears it. */
+  private agentChose = false;
+  private providers: ProviderRow[] = [];
+  private providersLoaded = false;
+  private onFocus = (): void => void this.loadProviders();
   readonly draft = node('assistantDraft') as HTMLTextAreaElement;
   private conversations: Summary[] = [];
   private messages: ConversationMessage[] = [];
@@ -98,6 +142,7 @@ export class AssistantView {
     this.draft.value = read(this.keys.assistantDraft) ?? '';
     // Read once, before the first paint can overwrite the stored list with the empty starting state.
     this.restored = parseStoredContext(read(this.keys.assistantContext));
+    this.restoredChoiceValue = parseChoice(read(this.keys.assistantChoice));
     this.attempt = parseAttempt(read(this.keys.assistantOutbox));
     this.sent = parseSent(read(this.keys.assistantSent));
     this.draft.addEventListener('input', () => {
@@ -106,6 +151,7 @@ export class AssistantView {
     });
     this.draft.addEventListener('keydown', (e) => {
       // Enter sends; Shift+Enter is a line break. A key that ends an IME composition or repeats never sends.
+      if (this.options.phone()) return;
       if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229 || e.repeat) return;
       e.preventDefault();
       void this.submit();
@@ -115,7 +161,31 @@ export class AssistantView {
       void this.submit();
     });
     node('assistantRetry').addEventListener('click', () => void this.submit());
+    const providerSelect = node('providerSelect') as HTMLSelectElement;
+    const modelInput = node('modelInput') as HTMLInputElement;
+    providerSelect.addEventListener('change', () => {
+      this.agentChose = false;
+      // Model ids belong to a provider, so a new provider starts on its own default.
+      this.options.dispatch({ kind: 'assistant-choice', choice: { cliId: providerSelect.value || null, model: '' } });
+    });
+    modelInput.addEventListener('input', () => {
+      this.agentChose = false;
+      const sel = selection(this.providers, this.options.view().choice);
+      this.options.dispatch({
+        kind: 'assistant-choice',
+        choice: {
+          cliId: sel.row?.id ?? this.options.view().choice?.cliId ?? null,
+          model: modelInput.value.trim().slice(0, MAX_MODEL_ID_LENGTH),
+        },
+      });
+    });
+    node('addSelection').addEventListener('click', () => {
+      if (!this.options.addSelection()) this.say('Select an object on the canvas first, then add it here.');
+    });
+    window.addEventListener('focus', this.onFocus);
+    void this.loadProviders();
     const fresh = (): void => {
+      this.agentChose = false;
       this.options.dispatch({ kind: 'conversation', id: null });
       this.say('The next message starts a new conversation.');
       this.threadSignature = '';
@@ -127,7 +197,10 @@ export class AssistantView {
     node('endedNew').addEventListener('click', fresh);
     (node('conversationPicker') as HTMLSelectElement).addEventListener('change', (e) => {
       const id = (e.target as HTMLSelectElement).value;
+      this.agentChose = false;
       this.options.dispatch({ kind: 'conversation', id: id || null });
+      // The selectors steer only the NEXT new conversation: opening an old one never carries a pending choice over to it.
+      this.options.dispatch({ kind: 'assistant-choice', choice: null });
       void this.open();
     });
     const thread = node('thread');
@@ -144,6 +217,33 @@ export class AssistantView {
   restoredContext(): string[] {
     return this.restored;
   }
+  restoredChoice(): Choice | null {
+    return this.restoredChoiceValue;
+  }
+  /** An agent's `assistant-choice` command changed the selectors: say so until the person changes them. */
+  noteAgentChoice(): void {
+    this.agentChose = true;
+  }
+  focusChoice(which: 'provider' | 'model'): void {
+    const model = node('modelInput') as HTMLInputElement;
+    ((which === 'model' && !model.disabled ? model : node('providerSelect')) as HTMLElement).focus({
+      preventScroll: true,
+    });
+  }
+  /** The providers a conversation can start on, from the server's registry as it is now. */
+  private async loadProviders(): Promise<void> {
+    try {
+      const { status, body } = await this.json('/api/canvas/assistant/providers');
+      const list = this.data(body).providers;
+      if (status >= 400 || !Array.isArray(list)) return;
+      this.providers = list as ProviderRow[];
+      this.providersLoaded = true;
+      this.choiceSignature = '';
+      this.paintChoice();
+    } catch {
+      /* The selectors keep what they last showed; a send names no CLI and starts the default. */
+    }
+  }
   draftBytes(): number {
     return Math.min(draftBytes(this.draft.value), MAX_DRAFT_BYTES * 4);
   }
@@ -156,6 +256,7 @@ export class AssistantView {
   }
   stop(): void {
     this.stopped = true;
+    window.removeEventListener('focus', this.onFocus);
     clearTimeout(this.transcriptTimer);
   }
   private say(text: string, state: 'failed' | 'sending' | '' = ''): void {
@@ -225,6 +326,12 @@ export class AssistantView {
     ]);
     this.pruneSent();
     this.paintThread();
+  }
+  /** The text this page still holds for messages sent from it: accepted ones, and the one attempt a reload interrupted, so its row keeps Retry. */
+  private keptMessages(): SentMessage[] {
+    const attempt = this.attempt;
+    if (!attempt || this.sent.some((m) => m.messageId === attempt.messageId)) return this.sent;
+    return [...this.sent, { messageId: attempt.messageId, text: attempt.text, refIds: attempt.refIds }];
   }
   /** A message the transcript now shows no longer needs the text this page kept for it. */
   private pruneSent(): void {
@@ -329,19 +436,41 @@ export class AssistantView {
     const ids = chips(this.options.objects(), this.options.view().context).map((c) => c.id);
     if (typeof navigator !== 'undefined' && navigator.onLine === false)
       return this.say('You are offline. Your message is kept; retry when the connection is back.', 'failed');
-    const attempt = nextAttempt(this.attempt, this.current?.id ?? null, text, ids, () => crypto.randomUUID());
+    const choice = this.options.view().choice;
+    const sel = selection(this.providers, choice);
+    // A choice that no longer matches the bound conversation starts a new one: the old conversation and its session are left as they are.
+    const fresh = newConversationNotice(this.current, choice, sel) !== '';
+    const target = fresh ? null : (this.current?.id ?? null);
+    // With nothing listed (a probe that found none) the server starts its default exactly as it always did.
+    if (target === null && this.providersLoaded && sel.row) {
+      if (!sel.row.available)
+        return this.say(
+          `${sel.row.reason ?? 'That provider cannot start a conversation.'} Pick another provider.`,
+          'failed'
+        );
+      const field = modelField(sel.row, choice?.model ?? '');
+      if (field.invalid) return this.say(field.reason, 'failed');
+    }
+    // A failed attempt against the bound conversation is not carried into the new one the choice now asks for.
+    const stored = fresh && this.attempt?.conversationId === (this.current?.id ?? null) ? null : this.attempt;
+    const attempt = nextAttempt(stored, target, text, ids, () => uuid());
     this.attempt = attempt;
     write(this.keys.assistantOutbox, JSON.stringify(attempt));
     this.sending = true;
     node('assistantSend').toggleAttribute('disabled', true);
     this.say('Sending…', 'sending');
     try {
-      let conversationId = this.current?.id ?? null;
+      let conversationId = target;
       if (!conversationId) {
+        const model = choice?.model ?? '';
         const made = await this.json(`/api/canvas/${this.options.workspace}/conversations`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: attempt.createRequestId }),
+          body: JSON.stringify({
+            requestId: attempt.createRequestId,
+            ...(this.providersLoaded && sel.row ? { cliId: sel.row.id } : {}),
+            ...(model ? { model } : {}),
+          }),
         });
         const conversation = this.data(made.body).conversation as Summary | undefined;
         if (made.status >= 400 || !conversation) throw new SendError(errorMessage(made.body), made.status);
@@ -396,7 +525,7 @@ export class AssistantView {
   }
   /** Retry for a message the server accepted but could not deliver: same id, same text, so the server checks the composer first and never pastes twice. */
   private async retryMessage(messageId: string): Promise<void> {
-    const kept = this.sent.find((m) => m.messageId === messageId);
+    const kept = this.keptMessages().find((m) => m.messageId === messageId);
     const conversation = this.current;
     if (!kept || !conversation) return;
     try {
@@ -437,7 +566,7 @@ export class AssistantView {
   }
   private paintThread(): void {
     const conversation = this.current;
-    const turns = buildThread(this.rows, this.messages, this.sent);
+    const turns = buildThread(this.rows, this.messages, this.keptMessages(), agentLabel(conversation));
     const status = threadStatus({
       ended: conversation?.session === 'ended',
       waiting: !!this.approval,
@@ -467,7 +596,11 @@ export class AssistantView {
         refs.setAttribute('aria-label', 'Context sent with this message');
         item.append(refs);
       }
-      if (turn.pending === 'failed' && turn.messageId && this.sent.some((m) => m.messageId === turn.messageId)) {
+      if (
+        turn.pending === 'failed' &&
+        turn.messageId &&
+        this.keptMessages().some((m) => m.messageId === turn.messageId)
+      ) {
         const retry = document.createElement('button');
         retry.type = 'button';
         retry.className = 'quiet turn-retry';
@@ -541,6 +674,13 @@ export class AssistantView {
       this.storedContext = stored;
       write(this.keys.assistantContext, ids.length ? stored : null);
     }
+    const choice = this.options.view().choice;
+    const choiceKey = JSON.stringify(choice);
+    if (!this.restoring && choiceKey !== this.storedChoice) {
+      this.storedChoice = choiceKey;
+      write(this.keys.assistantChoice, choice ? choiceKey : null);
+    }
+    this.paintChoice();
     const rows = chips(this.options.objects(), ids);
     const signature = JSON.stringify(rows);
     if (signature !== this.signature) {
@@ -554,6 +694,73 @@ export class AssistantView {
       (removers[Math.min(this.refocus, removers.length - 1)] ?? this.draft).focus({ preventScroll: true });
       this.refocus = null;
     }
+  }
+  /** The provider and model selectors, the reason a choice cannot be used, and the new-conversation notice above Send. */
+  private paintChoice(): void {
+    const view = this.options.view();
+    const sel = selection(this.providers, view.choice);
+    const model = view.choice?.model ?? '';
+    const field = modelField(sel.row, model);
+    const bound = this.current;
+    const notice = newConversationNotice(bound, view.choice, sel);
+    const signature = JSON.stringify([
+      this.providers,
+      this.providersLoaded,
+      sel,
+      model,
+      field,
+      bound?.id ?? null,
+      notice,
+      this.agentChose,
+      this.conversations.map((c) => [c.cliId, c.model]),
+    ]);
+    if (signature === this.choiceSignature) return;
+    this.choiceSignature = signature;
+    const provider = node('providerSelect') as HTMLSelectElement;
+    provider.replaceChildren();
+    for (const row of this.providers) {
+      const option = document.createElement('option');
+      option.value = row.id;
+      option.textContent = row.available ? row.label : `${row.label} (unavailable)`;
+      provider.append(option);
+    }
+    if (!this.providers.length) {
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = this.providersLoaded ? 'No agent CLI installed' : 'Loading providers…';
+      provider.append(none);
+    }
+    provider.value = sel.row?.id ?? '';
+    provider.disabled = !this.providers.length;
+    const input = node('modelInput') as HTMLInputElement;
+    if (input.value !== model) input.value = model;
+    input.disabled = field.disabled;
+    input.setAttribute('aria-invalid', String(field.invalid));
+    input.placeholder = field.disabled && sel.row ? 'No model choice' : 'Session default';
+    const list = node('modelSuggestions');
+    list.replaceChildren();
+    for (const name of modelSuggestions(this.conversations, sel.row?.id)) {
+      const option = document.createElement('option');
+      option.value = name;
+      list.append(option);
+    }
+    const reasons = [
+      sel.stale
+        ? `That provider is no longer available${sel.alternative ? `; ${sel.alternative.label} is selected instead` : ''}.`
+        : '',
+      sel.row && !sel.row.available ? (sel.row.reason ?? '') : '',
+      field.reason,
+      this.agentChose ? 'Set by an agent.' : '',
+    ].filter(Boolean);
+    const note = node('choiceNote');
+    note.textContent = reasons.join(' ');
+    note.hidden = !reasons.length;
+    const banner = node('newConversationNotice');
+    // A provider that cannot start says why in the note; promising a new conversation on it would contradict that.
+    const promised =
+      sel.row?.available === false ? '' : notice && this.agentChose ? `${notice} (set by an agent)` : notice;
+    banner.textContent = promised;
+    banner.hidden = !promised;
   }
   private paintChips(rows: Chip[]): void {
     const list = node('contextChips');

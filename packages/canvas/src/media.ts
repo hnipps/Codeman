@@ -8,6 +8,7 @@
  * takes focus by itself: a shield covers it until a click on an already selected embed, and
  * Escape inside the page (relayed by the proxy) hands focus back to the board.
  */
+import { uuid } from './ids.js';
 import type { PhoneQuery } from './mobile.js';
 import { z } from 'zod';
 import { knownContentFields } from '../../../src/canvas/model.js';
@@ -192,10 +193,10 @@ export class MediaEditor {
     place: { parentId: string | null; at: Point },
     index = 0
   ): string | null {
-    const id = crypto.randomUUID();
+    const id = uuid();
     const operation = EditSchema.parse({
       kind: 'create',
-      opId: crypto.randomUUID(),
+      opId: uuid(),
       objectId: id,
       patch: {
         parentId: place.parentId,
@@ -391,7 +392,7 @@ export class MediaEditor {
     return this.host.submit([
       EditSchema.parse({
         kind: 'update',
-        opId: crypto.randomUUID(),
+        opId: uuid(),
         objectId: object.id,
         patch: size ? { content, size } : { content },
       }),

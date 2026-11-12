@@ -2416,7 +2416,7 @@ export class WebServer extends EventEmitter {
    */
   private async startConversationSession(
     headers: Readonly<Record<string, string | string[] | undefined>>,
-    request: { workingDir: string; name: string }
+    request: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
   ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
     const forwarded: Record<string, string> = { 'content-type': 'application/json' };
     for (const name of ['authorization', 'cookie', 'host']) {
@@ -2433,7 +2433,12 @@ export class WebServer extends EventEmitter {
       }
       return { status: response.statusCode, body };
     };
-    const created = await call('/api/sessions', { workingDir: request.workingDir, mode: 'claude', name: request.name });
+    const created = await call('/api/sessions', {
+      workingDir: request.workingDir,
+      mode: request.mode,
+      name: request.name,
+      ...request.launch,
+    });
     const sessionId = created.body.data?.session?.id;
     if (created.status >= 400 || created.body.success === false || typeof sessionId !== 'string')
       return { ok: false, message: created.body.error || 'The session could not be created' };

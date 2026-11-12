@@ -7,7 +7,10 @@ import { resolveCasesDir } from '../src/web/route-helpers.js';
 
 type Started = { ok: true; sessionId: string } | { ok: false; message: string };
 type Internals = {
-  startConversationSession(h: Record<string, string>, r: { workingDir: string; name: string }): Promise<Started>;
+  startConversationSession(
+    h: Record<string, string>,
+    r: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
+  ): Promise<Started>;
   discardConversationSession(h: Record<string, string>, id: string): Promise<void>;
   app: { inject: (...a: unknown[]) => Promise<unknown> };
   sessions: Map<string, Session>;
@@ -36,7 +39,10 @@ describe('WebServer.startConversationSession', () => {
       return inject(opts);
     });
     try {
-      const started = await internals.startConversationSession({}, { workingDir, name: 'Canvas · test' });
+      const started = await internals.startConversationSession(
+        {},
+        { workingDir, name: 'Canvas · test', mode: 'claude', launch: {} }
+      );
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       expect(bodies[0].url).toBe('/api/sessions');
@@ -55,11 +61,36 @@ describe('WebServer.startConversationSession', () => {
     }
   });
 
+  it('sends a chosen model as the per-session field and never modelOverride', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const inject = internals.app.inject.bind(internals.app);
+    const spy = vi.spyOn(internals.app, 'inject').mockImplementation((opts: unknown) => {
+      const o = opts as { url: string; payload?: Record<string, unknown> };
+      if (o.url === '/api/sessions') bodies.push(o.payload ?? {});
+      return inject(opts);
+    });
+    try {
+      const started = await internals.startConversationSession(
+        {},
+        { workingDir, name: 'Canvas · model', mode: 'claude', launch: { model: 'opus[1m]' } }
+      );
+      expect(started.ok).toBe(true);
+      expect(bodies[0]).toEqual({ workingDir, mode: 'claude', name: 'Canvas · model', model: 'opus[1m]' });
+      expect(bodies[0]).not.toHaveProperty('modelOverride');
+      if (started.ok) await internals.discardConversationSession({}, started.sessionId);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('deletes the session it created when the start fails', async () => {
     const before = internals.sessions.size;
     const start = vi.spyOn(Session.prototype, 'startInteractive').mockRejectedValue(new Error('cannot start'));
     try {
-      const started = await internals.startConversationSession({}, { workingDir, name: 'Canvas · fail' });
+      const started = await internals.startConversationSession(
+        {},
+        { workingDir, name: 'Canvas · fail', mode: 'claude', launch: {} }
+      );
       expect(started.ok).toBe(false);
       expect(internals.sessions.size).toBe(before);
     } finally {

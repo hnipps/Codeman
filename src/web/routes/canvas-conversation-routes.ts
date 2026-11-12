@@ -13,7 +13,15 @@ import { resolveCasePath } from './case-routes.js';
 import { resolveContext } from '../../canvas/context-resolve.js';
 import { deliver, retryPlan, type DeliveryDeps, type DeliveryResult } from '../../canvas/conversation-delivery.js';
 import { SendLimiter } from '../../canvas/send-limit.js';
-import { getCli } from '../../config/cli-registry/registry.js';
+import { enabledClis, getCli } from '../../config/cli-registry/registry.js';
+import { isCliEntryInstalled, probeStockCliAvailability } from '../../utils/cli-installed-probes.js';
+import {
+  DEFAULT_CONVERSATION_CLI,
+  launchFields,
+  modelIdRefusal,
+  providerRows,
+  type ProviderRow,
+} from '../../canvas/providers.js';
 import { getDataDir } from '../../config/instance.js';
 import { readDockerCases } from '../../docker-hosts.js';
 import { readRemoteCases } from '../../remote-hosts.js';
@@ -71,6 +79,8 @@ const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => ({
   id: c.id,
   sessionId: c.sessionId,
   cliId: c.cliId,
+  cliLabel: getCli(c.cliId)?.label ?? c.cliId,
+  ...(c.model ? { model: c.model } : {}),
   ...(c.title ? { title: c.title } : {}),
   createdAt: c.createdAt,
   createdBy: c.createdBy,
@@ -108,7 +118,7 @@ export async function createConversation(
   const workspace = await writeGuard(req, workspaceId);
   if (isOutcome(workspace)) return workspace;
   const previous = createChains.get(workspaceId) ?? Promise.resolve();
-  const work = previous.then(() => start(ctx, req, workspace, body.requestId));
+  const work = previous.then(() => start(ctx, req, workspace, body));
   const tail = work.catch(() => undefined);
   createChains.set(workspaceId, tail);
   void tail.then(() => {
@@ -122,13 +132,65 @@ async function caseRunsElsewhere(req: FastifyRequest, caseName: string): Promise
   const same = (c: { name: string; owner?: string }) => c.name === caseName && canAccessOwned(user, c.owner);
   return (await readDockerCases(getDataDir())).some(same) || (await readRemoteCases(getDataDir())).some(same);
 }
-async function start(ctx: CanvasPort, req: FastifyRequest, workspace: Workspace, requestId: string): Promise<Outcome> {
+/** The enabled, installed agent CLIs a conversation could start on, each with whether it can and why not. */
+export async function currentProviders(): Promise<ProviderRow[]> {
+  const installed = await probeStockCliAvailability();
+  return providerRows(enabledClis(), (entry) => isCliEntryInstalled(entry, installed));
+}
+/** The refusal for a named provider and model: not listed, cannot start a conversation, or a model it cannot take. Shared by create and the agent's `model set`, so the texts cannot drift. */
+export function checkChoice(rows: readonly ProviderRow[], cliId: string, model: string): Outcome | undefined {
+  const row = rows.find((r) => r.id === cliId);
+  if (!row)
+    return refuse(
+      400,
+      ApiErrorCode.INVALID_INPUT,
+      `UNKNOWN_CLI: ${cliId} is not an enabled, installed agent CLI on this server`
+    );
+  if (!row.available) return conflict(`CLI_UNAVAILABLE: ${row.reason ?? `${row.label} cannot start a conversation`}`);
+  if (model !== '' && !row.model.editable)
+    return refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_MODEL: ${row.model.reason ?? 'no model choice'}`);
+  const bad = modelIdRefusal(row.model.source, model);
+  return bad ? refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_MODEL: ${bad}`) : undefined;
+}
+/**
+ * Which CLI and launch fields a create request means. A request naming no CLI is what every conversation was before
+ * the choice existed: it is not probed for installation, but the default CLI must still be enabled in the registry.
+ * One that names a CLI must name an enabled, installed agent that delivery can confirm, and a model id that CLI's
+ * launch accepts. Refusals are stated, never replaced by another CLI.
+ */
+async function resolveLaunch(
+  cliId: string | undefined,
+  model: string | undefined
+): Promise<{ ok: true; entryId: string; model: string; launch: Record<string, unknown> } | Outcome> {
+  const wanted = model ?? '';
+  if (cliId !== undefined) {
+    const refused = checkChoice(await currentProviders(), cliId, wanted);
+    if (refused) return refused;
+  }
+  const entry = cliId === undefined ? enabledClis().find((e) => e.id === DEFAULT_CONVERSATION_CLI) : getCli(cliId);
+  if (!entry)
+    return cliId === undefined
+      ? conflict('CLI_UNAVAILABLE: the default CLI is not enabled on this server')
+      : refuse(400, ApiErrorCode.INVALID_INPUT, 'UNKNOWN_CLI: the default CLI is not available');
+  const fields = launchFields(entry, wanted);
+  if (!fields.ok) return refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_MODEL: ${fields.reason}`);
+  return { ok: true, entryId: entry.id as string, model: wanted, launch: fields.fields };
+}
+async function start(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspace: Workspace,
+  body: { requestId: string; cliId?: string; model?: string }
+): Promise<Outcome> {
+  const { requestId } = body;
   const file = readConversations(workspace.id);
   if (!file.ok) return conflict('FILE_UNREADABLE: conversations cannot be saved right now; nothing was started');
   const prior = file.conversations.find((c) => c.requestId === requestId);
   if (prior) return ok({ conversation: summary(ctx, req, prior), duplicate: true });
   if (file.conversations.length >= MAX_CONVERSATIONS_PER_WORKSPACE)
     return conflict(`TOO_MANY: a canvas keeps at most ${MAX_CONVERSATIONS_PER_WORKSPACE} conversations`);
+  const launch = await resolveLaunch(body.cliId, body.model);
+  if (!('ok' in launch)) return launch;
   if (await caseRunsElsewhere(req, workspace.caseName))
     return conflict('CASE_UNSUPPORTED: conversations are not available for Docker or remote cases yet');
   if (!ctx.startConversationSession) return conflict('Conversations are not available on this server');
@@ -136,6 +198,8 @@ async function start(ctx: CanvasPort, req: FastifyRequest, workspace: Workspace,
   const started = await ctx.startConversationSession(req.headers, {
     workingDir,
     name: `Canvas · ${workspace.caseName}`.slice(0, 100),
+    mode: launch.entryId,
+    launch: launch.launch,
   });
   if (!started.ok) return refuse(409, ApiErrorCode.OPERATION_FAILED, `START_FAILED: ${started.message}`);
   let created: ReturnType<typeof addConversation> | undefined;
@@ -145,7 +209,8 @@ async function start(ctx: CanvasPort, req: FastifyRequest, workspace: Workspace,
       () => ({
         id: randomUUID(),
         sessionId: started.sessionId,
-        cliId: 'claude',
+        cliId: launch.entryId,
+        ...(launch.model ? { model: launch.model } : {}),
         createdAt: Date.now(),
         createdBy: ownerFor(req) ?? '@single',
       }),
@@ -349,21 +414,24 @@ function accepted(messageId: string, message: ConversationMessage, missing: stri
   });
 }
 
-/** The `canvas_conversation` tool: the same operations as the routes, for an agent caller. */
+/** The `canvas_conversation` tool: the same operations as the routes, for an agent caller. `model` steers a view and is answered by the view route, so it never reaches here. */
 export async function conversationTool(
   ctx: CanvasPort,
   req: FastifyRequest,
   workspaceId: string,
-  args: unknown
+  input: Exclude<z.infer<typeof ConversationToolSchema>, { action: 'model' }>
 ): Promise<Outcome> {
-  const input = ConversationToolSchema.parse(args);
   switch (input.action) {
     case 'list':
       return listConversations(ctx, req, workspaceId);
     case 'read':
       return readConversation(ctx, req, workspaceId, input.conversationId);
     case 'create':
-      return createConversation(ctx, req, workspaceId, { requestId: input.requestId });
+      return createConversation(ctx, req, workspaceId, {
+        requestId: input.requestId,
+        ...(input.cliId !== undefined ? { cliId: input.cliId } : {}),
+        ...(input.model !== undefined ? { model: input.model } : {}),
+      });
     case 'send': {
       const { conversationId, action: _action, ...message } = input;
       void _action;

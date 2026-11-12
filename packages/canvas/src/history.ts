@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import { z } from 'zod';
 import { authorLabel, exactTime, relativeTime, type ViewAuthor } from './comments.js';
 import { label, type ViewObject } from './model.js';
@@ -250,7 +251,7 @@ export class HistoryView {
     const id = key(author);
     if (this.confirm?.key === id) return this.cancel(id);
     this.results.delete(id);
-    this.confirm = { key: id, requestId: crypto.randomUUID(), summary: null };
+    this.confirm = { key: id, requestId: uuid(), summary: null };
     await this.refresh();
     try {
       const preview = z
