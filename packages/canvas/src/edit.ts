@@ -62,6 +62,8 @@ export class DesktopEditor {
   private commandFocus: string | null | undefined;
   private nextSelection: string[] | null = null;
   private submittedFocus = new Map<string, string | null>();
+  /** Drafts read from storage at load that have not been sent yet: each is sent once by itself. */
+  private restored = new Set<string>();
   private drafts = new Map<string, Draft>();
   private currentId: string | null = null;
   private authoritative: ViewObject[] = [];
@@ -159,6 +161,7 @@ export class DesktopEditor {
     try {
       const stored = z.record(z.string(), DraftSchema).parse(JSON.parse(localStorage.getItem(this.draftKey) ?? '{}'));
       this.drafts = new Map(Object.entries(stored));
+      for (const [id, draft] of this.drafts) if (draft.value !== draft.base && !draft.conflict) this.restored.add(id);
     } catch {
       /* Unreadable drafts do not replace the server's content. */
     }
@@ -834,10 +837,17 @@ export class DesktopEditor {
    */
   private resendDrafts(): void {
     if (!this.connected || !this.loaded || this.options.mobile.matches || this.composing) return;
-    for (const [id, draft] of this.drafts) {
+    for (const id of [...this.restored]) {
+      const draft = this.drafts.get(id);
+      if (!draft || draft.conflict || draft.value === draft.base) {
+        this.restored.delete(id);
+        continue;
+      }
       if (id === this.currentId && document.activeElement === this.editor) continue;
-      if (draft.conflict || draft.sent !== undefined || draft.value === draft.base) continue;
+      if (draft.sent !== undefined) continue;
       this.saveDraft(id);
+      // Sent once; a refusal or failure after this waits for the user like any other edit.
+      if (draft.sent !== undefined) this.restored.delete(id);
     }
   }
   private saveDraft(id: string): void {

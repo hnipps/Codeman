@@ -121,9 +121,9 @@ describe('read-only canvas document', () => {
     await server?.stop();
     vi.unstubAllEnvs();
   }, 60000);
-  async function open(selector = '[data-object-id="brief"]') {
+  async function open(selector = '[data-object-id="brief"]', state: 'visible' | 'attached' = 'visible') {
     await page.goto(`${origin}/x/canvas/${workspace}`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector(selector);
+    await page.waitForSelector(selector, { state });
     await page.waitForFunction(() => !!window.canvasView);
   }
   async function createLive(id: string) {
@@ -271,9 +271,11 @@ describe('read-only canvas document', () => {
         },
       });
     });
-    await open('[data-object-id="sub-child"]');
+    // A closed sub-canvas keeps its children in the tree but draws them only once it is opened.
+    await open('[data-object-id="sub-child"]', 'attached');
     expect(since).toBe('1');
     expect(await page.locator('[data-object-id="subcanvas"] > [data-object-id="sub-child"]').count()).toBe(1);
+    expect(await page.locator('[data-object-id="sub-child"]').getAttribute('data-view')).toBe('out');
     expect(await page.locator('#tree button').allTextContents()).toEqual(['Subcanvas', 'Nested child']);
     malformed = true;
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
