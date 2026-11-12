@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { STOCK_CLIS } from '../src/config/cli-registry/stock.js';
 import type { CliEntry } from '../src/config/cli-registry/types.js';
-import { deliveryEvidence, launchFields, modelIdRefusal, providerRow, providerRows } from '../src/canvas/providers.js';
+import {
+  canSeeWaitingDialog,
+  deliveryEvidence,
+  launchFields,
+  modelIdRefusal,
+  providerRow,
+  providerRows,
+} from '../src/canvas/providers.js';
 import {
   modelField,
   modelSuggestions,
@@ -31,6 +38,7 @@ const custom = (over: {
       ...base.capabilities,
       model: over.model ?? base.capabilities.model,
       hooks: over.hooks ?? base.capabilities.hooks,
+      workDetect: { ...base.capabilities.workDetect, blockedLine: 'Allow\\?' },
     },
     launch: { ...base.launch, legacyConfigField: over.field ?? base.launch.legacyConfigField },
   } as CliEntry;
@@ -62,6 +70,24 @@ describe('which CLIs a conversation can start on', () => {
       expect(row.reason, id).toMatch(/confirm a message was submitted/);
     }
     expect(providerRow(stock('claude'))).not.toHaveProperty('reason');
+  });
+
+  it('a composer-only CLI that cannot show Codeman its waiting dialog is unavailable, with its own reason', () => {
+    expect(canSeeWaitingDialog(stock('claude').capabilities)).toBe(true);
+    expect(canSeeWaitingDialog(stock('copilot').capabilities)).toBe(false);
+    const row = providerRow(stock('copilot'));
+    expect(row.available).toBe(false);
+    expect(row.reason).toBe(
+      'GitHub Copilot cannot tell Codeman when it is waiting for your answer, so a conversation cannot start on it yet.'
+    );
+    const base = stock('copilot');
+    const withLine = {
+      ...base,
+      capabilities: { ...base.capabilities, workDetect: { ...base.capabilities.workDetect, blockedLine: 'Allow\\?' } },
+    } as CliEntry;
+    expect(providerRow(withLine)).toMatchObject({ available: true });
+    const withHooks = { ...base, capabilities: { ...base.capabilities, hooks: 'supervised' } } as CliEntry;
+    expect(providerRow(withHooks)).toMatchObject({ available: true });
   });
 
   it('a CLI with no model source disables the model with an inline reason', () => {

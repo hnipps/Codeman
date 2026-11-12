@@ -19,6 +19,11 @@ export function deliveryEvidence(
   return 'none';
 }
 
+/** Whether Codeman can tell this CLI is waiting on an approval or question: a hook of its own, or a dialog line it reads off the screen. Without it a second message can be pasted into a dialog nobody was shown. */
+export function canSeeWaitingDialog(capabilities: Pick<Capabilities, 'hooks' | 'workDetect'>): boolean {
+  return capabilities.hooks !== 'none' || Boolean(capabilities.workDetect?.blockedLine);
+}
+
 export type ProviderModel = { editable: boolean; source: ModelSource; reason?: string };
 export type ProviderRow = {
   id: string;
@@ -41,6 +46,13 @@ function flagTarget(entry: CliEntry): { field: string; key: string } | undefined
 export function providerRow(entry: CliEntry): ProviderRow {
   const { model } = entry.capabilities;
   const evidence = deliveryEvidence(entry.capabilities);
+  const blind = evidence !== 'none' && !canSeeWaitingDialog(entry.capabilities);
+  const reason =
+    evidence === 'none'
+      ? `${entry.label} gives Codeman no way to confirm a message was submitted, so a conversation cannot start on it yet.`
+      : blind
+        ? `${entry.label} cannot tell Codeman when it is waiting for your answer, so a conversation cannot start on it yet.`
+        : undefined;
   const modelReason =
     model.source === 'none'
       ? `${entry.label} takes its model from its own configuration, so it cannot be chosen here.`
@@ -51,12 +63,8 @@ export function providerRow(entry: CliEntry): ProviderRow {
     id: entry.id as string,
     label: entry.label,
     shortBadge: entry.shortBadge,
-    available: evidence !== 'none',
-    ...(evidence === 'none'
-      ? {
-          reason: `${entry.label} gives Codeman no way to confirm a message was submitted, so a conversation cannot start on it yet.`,
-        }
-      : {}),
+    available: reason === undefined,
+    ...(reason ? { reason } : {}),
     model: {
       editable: modelReason === undefined,
       source: model.source,

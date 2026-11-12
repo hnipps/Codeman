@@ -17,11 +17,30 @@ vi.mock('../src/utils/cli-installed-probes.js', async (original) => ({
   probeStockCliAvailability: async () => installed.map,
 }));
 
+vi.mock('../src/config/cli-registry/registry.js', async (original) => {
+  const real = await original<typeof import('../src/config/cli-registry/registry.js')>();
+  const { STOCK_CLIS } = await import('../src/config/cli-registry/stock.js');
+  const base = STOCK_CLIS.find((e) => (e.id as string) === 'copilot')!;
+  const acme = {
+    ...base,
+    id: 'acme',
+    label: 'Acme',
+    stock: false,
+    order: 9999,
+    capabilities: { ...base.capabilities, workDetect: { ...base.capabilities.workDetect, blockedLine: 'Allow\\?' } },
+  } as unknown as import('../src/config/cli-registry/types.js').CliEntry;
+  return {
+    ...real,
+    enabledClis: () => [...real.enabledClis(), acme],
+    getCli: (id: string) => (id === 'acme' ? acme : real.getCli(id)),
+  };
+});
+
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'canvas-prov-'));
   vi.stubEnv('CODEMAN_DATA_DIR', dir);
-  installed.map = { claude: true, copilot: true, codex: false };
+  installed.map = { claude: true, copilot: true, codex: false, acme: true };
 });
 afterEach(() => {
   deployRole.enter('live');
@@ -90,17 +109,21 @@ async function harness() {
 
 describe('GET /api/canvas/assistant/providers', () => {
   it('lists the enabled, installed agent CLIs from the registry, each with whether it can start and why not', async () => {
-    installed.map = { claude: true, copilot: true, codex: true };
+    installed.map = { claude: true, copilot: true, codex: true, acme: true };
     const h = await harness();
     try {
       const response = await h.app.inject({ method: 'GET', url: '/api/canvas/assistant/providers' });
       expect(response.statusCode).toBe(200);
       const rows = response.json().data.providers as { id: string; available: boolean; reason?: string }[];
-      expect(rows.map((r) => r.id)).toEqual(['claude', 'codex', 'copilot']);
+      expect(rows.map((r) => r.id)).toEqual(['claude', 'codex', 'copilot', 'acme']);
       expect(rows.find((r) => r.id === 'claude')).toMatchObject({ available: true });
       const codex = rows.find((r) => r.id === 'codex')!;
       expect(codex.available).toBe(false);
       expect(codex.reason).toMatch(/confirm a message was submitted/);
+      const copilot = rows.find((r) => r.id === 'copilot')!;
+      expect(copilot.available).toBe(false);
+      expect(copilot.reason).toMatch(/cannot tell Codeman when it is waiting for your answer/);
+      expect(rows.find((r) => r.id === 'acme')).toMatchObject({ available: true });
     } finally {
       await h.app.close();
     }
@@ -110,7 +133,7 @@ describe('GET /api/canvas/assistant/providers', () => {
     try {
       const rows = (await h.app.inject({ method: 'GET', url: '/api/canvas/assistant/providers' })).json().data
         .providers as { id: string }[];
-      expect(rows.map((r) => r.id)).toEqual(['claude', 'copilot']);
+      expect(rows.map((r) => r.id)).toEqual(['claude', 'copilot', 'acme']);
     } finally {
       await h.app.close();
     }
@@ -138,10 +161,10 @@ describe('starting a conversation on a chosen CLI and model', () => {
   it('passes a flag CLI its model inside its own config object', async () => {
     const h = await harness();
     try {
-      const response = await h.create({ cliId: 'copilot', model: 'gpt-5/mini' });
+      const response = await h.create({ cliId: 'acme', model: 'gpt-5/mini' });
       expect(response.statusCode).toBe(200);
-      expect(h.started[0]).toMatchObject({ mode: 'copilot', launch: { copilotConfig: { model: 'gpt-5/mini' } } });
-      expect(response.json().data.conversation).toMatchObject({ cliId: 'copilot', model: 'gpt-5/mini' });
+      expect(h.started[0]).toMatchObject({ mode: 'acme', launch: { copilotConfig: { model: 'gpt-5/mini' } } });
+      expect(response.json().data.conversation).toMatchObject({ cliId: 'acme', model: 'gpt-5/mini' });
     } finally {
       await h.app.close();
     }
@@ -163,7 +186,7 @@ describe('starting a conversation on a chosen CLI and model', () => {
   it('keeps a model-less conversation on the CLI default: no launch fields at all', async () => {
     const h = await harness();
     try {
-      await h.create({ cliId: 'copilot' });
+      await h.create({ cliId: 'acme' });
       expect(h.started[0].launch).toEqual({});
     } finally {
       await h.app.close();
@@ -171,12 +194,15 @@ describe('starting a conversation on a chosen CLI and model', () => {
   });
 
   it('refuses an unknown or uninstalled CLI, an unavailable one, and a malformed model, starting nothing', async () => {
-    installed.map = { claude: true, copilot: true, codex: true };
+    installed.map = { claude: true, copilot: true, codex: true, acme: true };
     const h = await harness();
     try {
       const unknown = await h.create({ cliId: 'nonesuch' });
       expect(unknown.statusCode).toBe(400);
       expect(unknown.json().error).toMatch(/^UNKNOWN_CLI/);
+      const blind = await h.create({ cliId: 'copilot' });
+      expect(blind.statusCode).toBe(409);
+      expect(blind.json().error).toMatch(/^CLI_UNAVAILABLE: .*waiting for your answer/);
       const unavailable = await h.create({ cliId: 'codex' });
       expect(unavailable.statusCode).toBe(409);
       expect(unavailable.json().error).toMatch(/^CLI_UNAVAILABLE: .*confirm a message was submitted/);
@@ -198,7 +224,7 @@ describe('starting a conversation on a chosen CLI and model', () => {
     try {
       const requestId = uuid();
       const first = await h.create({ requestId, cliId: 'claude', model: 'opus' });
-      const retry = await h.create({ requestId, cliId: 'copilot', model: 'x' });
+      const retry = await h.create({ requestId, cliId: 'acme', model: 'x' });
       expect(retry.json().data.duplicate).toBe(true);
       expect(retry.json().data.conversation.id).toBe(first.json().data.conversation.id);
       expect(h.started).toHaveLength(1);
@@ -212,7 +238,7 @@ describe('starting a conversation on a chosen CLI and model', () => {
     try {
       const { conversation } = (await h.create()).json().data;
       const refused = await h.tool(
-        { action: 'create', requestId: uuid(), cliId: 'copilot' },
+        { action: 'create', requestId: uuid(), cliId: 'acme' },
         { 'x-codeman-parent-session': conversation.sessionId }
       );
       expect(refused.statusCode).toBe(403);
@@ -229,13 +255,13 @@ describe('canvas_conversation model', () => {
     try {
       const viewId = uuid();
       expect((await h.publish(viewId)).statusCode).toBe(200);
-      const set = await h.tool({ action: 'model', operation: 'set', viewId, cliId: 'copilot', model: 'gpt-5' });
+      const set = await h.tool({ action: 'model', operation: 'set', viewId, cliId: 'acme', model: 'gpt-5' });
       expect(set.statusCode).toBe(200);
       expect(h.broadcast).toHaveBeenCalledWith(
         SseEvent.CanvasViewCommand,
         expect.objectContaining({
           viewId,
-          command: { action: 'assistant-choice', cliId: 'copilot', model: 'gpt-5' },
+          command: { action: 'assistant-choice', cliId: 'acme', model: 'gpt-5' },
         })
       );
       expect(h.started).toHaveLength(0);
@@ -248,11 +274,11 @@ describe('canvas_conversation model', () => {
     const h = await harness();
     try {
       const viewId = uuid();
-      await h.publish(viewId, { choice: { cliId: 'copilot', model: 'gpt-5' } });
+      await h.publish(viewId, { choice: { cliId: 'acme', model: 'gpt-5' } });
       const read = await h.tool({ action: 'model', operation: 'read', viewId });
       expect(read.statusCode).toBe(200);
-      expect(read.json().data.choice).toEqual({ cliId: 'copilot', model: 'gpt-5' });
-      expect((read.json().data.providers as { id: string }[]).map((p) => p.id)).toEqual(['claude', 'copilot']);
+      expect(read.json().data.choice).toEqual({ cliId: 'acme', model: 'gpt-5' });
+      expect((read.json().data.providers as { id: string }[]).map((p) => p.id)).toEqual(['claude', 'copilot', 'acme']);
       const plain = uuid();
       await h.publish(plain);
       expect((await h.tool({ action: 'model', operation: 'read', viewId: plain })).json().data.choice).toEqual({
@@ -265,7 +291,7 @@ describe('canvas_conversation model', () => {
   });
 
   it('validates the provider and the model strictly, and answers VIEW_GONE for a closed view', async () => {
-    installed.map = { claude: true, copilot: true, codex: true };
+    installed.map = { claude: true, copilot: true, codex: true, acme: true };
     const h = await harness();
     try {
       const viewId = uuid();

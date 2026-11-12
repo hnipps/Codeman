@@ -20,4 +20,4 @@ No new spawn path: create still goes through `POST /api/sessions` then `/interac
 
 ## Open questions
 
-Whether delivery confirmation really works against a Copilot pane (the only stock CLI other than Claude that this rule lists as available) is not verified against a real agent in this change; the coordinator runs the live lanes. The model suggestions are only models this canvas already used, because the registry carries no model catalogue.
+Copilot has composer evidence but Codeman cannot see when it waits on an approval (no hook, no `blockedLine`), so it is listed unavailable; claude is the only available stock CLI. A custom registry entry with composer evidence plus a `blockedLine` or hooks is available but unverified against a real pane; the coordinator runs the live lanes. The model suggestions are only models this canvas already used, because the registry carries no model catalogue.
