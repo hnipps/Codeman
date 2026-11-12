@@ -6,9 +6,9 @@ import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
 import { shortcutAllowed, shortcuts, editShortcuts } from './shortcuts.js';
-import { siblings, worldBounds } from './tree.js';
+import { outline, siblings, worldBounds } from './tree.js';
 import { hit, union, type Point, type Rect } from './viewport.js';
-import { phoneMode, trackKeyboard, visibleRect, revealDelta } from './mobile.js';
+import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } from './mobile.js';
 import { CommentsView, commentCounts } from './comments.js';
 import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
@@ -161,6 +161,17 @@ function area(): Rect {
 function fit(ids?: string[]): void {
   const targets = objects.filter((o) => o.deletedAt === null && (!ids || ids.includes(o.id)));
   dispatch({ kind: 'fit', bounds: union(targets.map((o) => worldBounds(objects, o))), area: area() });
+}
+function firstPhoneView(): void {
+  const live = objects.filter((o) => o.deletedAt === null);
+  const top = outline(live).filter((e) => e.depth === 0);
+  const first = (top.find((e) => container(e.object)) ?? top[0])?.object;
+  const viewport = phoneFirstView(
+    union(live.map((o) => worldBounds(objects, o))),
+    first ? worldBounds(objects, first) : null,
+    area()
+  );
+  dispatch({ kind: 'viewport', viewport });
 }
 function reveal(id: string): void {
   const o = objects.find((o) => o.id === id);
@@ -670,7 +681,8 @@ const editor = new DesktopEditor({
     renderer.filter(input('search').value);
     if (initial) {
       initial = false;
-      fit();
+      if (mobile.matches) firstPhoneView();
+      else fit();
     }
     node('state').hidden = !!objects.length;
     if (!objects.length) {

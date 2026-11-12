@@ -1,4 +1,4 @@
-import type { Rect } from './viewport.js';
+import { fit, type Rect, type Viewport } from './viewport.js';
 
 declare global {
   interface Window {
@@ -117,4 +117,25 @@ export function trackKeyboard(win: Window = window): void {
   win.visualViewport?.addEventListener('scroll', apply);
   win.addEventListener('resize', apply);
   apply();
+}
+
+/** Zoom at which 14 px body text still reads at 12 CSS px. */
+export const READABLE_ZOOM = 12 / 14;
+/** A container's title sits this far above its bounds, in canvas units. */
+const TITLE_SPACE = 36;
+
+/**
+ * The phone's first view: everything, if that keeps body text readable; otherwise the
+ * width of the first top-level item at no less than the readable zoom, its title and
+ * top-left corner in view. The rest is reached by pan, pinch, Fit and Sections.
+ */
+export function phoneFirstView(all: Rect, first: Rect | null, area: Rect, padding = 16): Viewport {
+  const whole = fit(all, area);
+  if (whole.zoom >= READABLE_ZOOM || !first) return whole;
+  const zoom = Math.max(READABLE_ZOOM, Math.min(1, (area.width - padding * 2) / Math.max(1, first.width)));
+  return {
+    x: area.x + padding - first.x * zoom,
+    y: area.y + padding + (TITLE_SPACE - first.y) * zoom,
+    zoom,
+  };
 }

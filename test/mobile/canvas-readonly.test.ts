@@ -141,7 +141,38 @@ describe('phone canvas', () => {
     vi.unstubAllEnvs();
   }, 60000);
 
-  it('fits every object above the dock on first load, with no board focus ring', async () => {
+  async function readableFirstView(width: number) {
+    const v = await view();
+    expect(v.viewport.zoom).toBeGreaterThanOrEqual(12 / 14 - 1e-9);
+    const body = await page.locator('[data-object-id="brief"] .object-body').evaluate((el) => {
+      const zoom = el.getBoundingClientRect().width / (el as HTMLElement).offsetWidth;
+      return parseFloat(getComputedStyle(el).fontSize) * zoom;
+    });
+    expect(body).toBeGreaterThanOrEqual(12 - 0.01);
+    const title = await page.locator('[data-object-id="research"] > .object-title').evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range.getBoundingClientRect().toJSON();
+    });
+    const frame = (await page.locator('[data-object-id="research"]').boundingBox())!;
+    expect(title.x).toBeGreaterThanOrEqual(8);
+    expect(title.y).toBeGreaterThanOrEqual(8);
+    expect(frame.x).toBeGreaterThanOrEqual(8);
+    expect(frame.y).toBeGreaterThan(title.y);
+    expect(frame.x + Math.min(frame.width, width - 32)).toBeLessThanOrEqual(width);
+  }
+
+  it('opens at a readable size anchored on the first section, with no board focus ring', async () => {
+    await readableFirstView(390);
+    expect(await page.locator('#board').evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('none');
+    expect(await page.evaluate(() => document.documentElement.hasAttribute('data-phone'))).toBe(true);
+    await shot(page, 'phone-board');
+  });
+
+  it('fits every object above the dock when Fit is pressed with nothing selected', async () => {
+    expect((await view()).selected).toEqual([]);
+    await tapEl('#fit');
+    await page.evaluate(() => new Promise(requestAnimationFrame));
     const dockTop = await page.locator('.dock-area').evaluate((el) => el.getBoundingClientRect().top);
     const boxes = await page.evaluate(() =>
       [...document.querySelectorAll('#layer > [data-object-id]')].map((el) => el.getBoundingClientRect().toJSON())
@@ -152,11 +183,6 @@ describe('phone canvas', () => {
       expect(box.top).toBeGreaterThanOrEqual(0);
       expect(box.bottom).toBeLessThanOrEqual(dockTop);
     }
-    const title = await page.locator('[data-object-id="research"] > .object-title').boundingBox();
-    expect(title!.x).toBeGreaterThanOrEqual(0);
-    expect(await page.locator('#board').evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('none');
-    expect(await page.evaluate(() => document.documentElement.hasAttribute('data-phone'))).toBe(true);
-    await shot(page, 'phone-board');
   });
 
   it('shows only phone controls: labelled Sections, Find, Comments and Fit, and no edit dock', async () => {
@@ -291,7 +317,9 @@ describe('phone canvas', () => {
   });
 
   it('shows a bottom sheet for a tapped object with Read, Comments and Focus parent', async () => {
-    await tapEl('#closeSheet');
+    await page.waitForSelector('#rail', { state: 'hidden' });
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    if (await page.locator('#sheet').isVisible()) await tapEl('#closeSheet');
     await page.waitForSelector('#sheet', { state: 'hidden' });
     expect((await view()).selected).toEqual([]);
     await page.locator('#fit').click();
@@ -352,6 +380,8 @@ describe('phone canvas', () => {
   });
 
   it('keeps history read-only on a phone', async () => {
+    await page.waitForSelector('#rail', { state: 'hidden' });
+    await page.waitForSelector('#sectionsTool', { state: 'visible' });
     await tapEl('#sectionsTool');
     await page.locator('#outlineHistory').click();
     await page.waitForSelector('#historyList .history-row');
@@ -359,14 +389,10 @@ describe('phone canvas', () => {
     await page.locator('#closeRail').click();
   });
 
-  it('fits a 414 x 714 Safari-sized viewport too', async () => {
+  it('opens readable on a 414 x 714 Safari-sized viewport too', async () => {
     await context.close();
     await open(414, 714);
-    const dockTop = await page.locator('.dock-area').evaluate((el) => el.getBoundingClientRect().top);
-    const boxes = await page.evaluate(() =>
-      [...document.querySelectorAll('#layer > [data-object-id]')].map((el) => el.getBoundingClientRect().toJSON())
-    );
-    for (const box of boxes) expect(box.bottom).toBeLessThanOrEqual(dockTop);
+    await readableFirstView(414);
     await shot(page, 'phone-board-414');
   });
 
