@@ -1251,6 +1251,32 @@ textarea[readonly] {
 #readerComments {
   margin-right: 4px;
 }
+.orphan-draft {
+  margin: 0 0 16px;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--raised);
+}
+.orphan-draft > p {
+  margin: 0;
+  color: var(--critical);
+  font-size: 13px;
+}
+.orphan-text {
+  margin: 8px 0 0;
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--divider);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.orphan-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
 #historyList {
   list-style: none;
   margin: 16px 0 0;

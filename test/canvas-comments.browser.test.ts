@@ -57,6 +57,38 @@ describe('canvas comments and author history', () => {
     expect(result.ok).toBe(true);
     internals().broadcast('canvas:changed', { workspaceId: workspace, seq: store.seq });
   }
+  async function humanWrite(commands: Command[]) {
+    const store = (await internals().getCanvasStores()).get(workspace);
+    expect(store.append(commands, human).ok).toBe(true);
+    internals().broadcast('canvas:changed', { workspaceId: workspace, seq: store.seq });
+  }
+  async function closeRail() {
+    for (let i = 0; i < 3 && (await page.locator('#rail').isVisible()); i++) await page.keyboard.press('Escape');
+    await page.waitForSelector('#rail', { state: 'hidden' });
+  }
+  async function openThread(id: string) {
+    await closeRail();
+    await page.evaluate((target) => {
+      window.canvasView.dispatch({ kind: 'focus', id: target });
+      window.canvasView.dispatch({ kind: 'selection', ids: [target] });
+    }, id);
+    await page.locator('#chatTool').click();
+    await page.waitForSelector('#threadView:not([hidden])');
+    await page.waitForFunction(
+      (target) => document.getElementById('threadTarget')?.textContent?.includes(target),
+      id === 'pc6-x' ? 'Draft target X' : 'Draft target Y'
+    );
+  }
+  const composer = () =>
+    page.evaluate(() => {
+      const draft = document.getElementById('commentDraft') as HTMLTextAreaElement;
+      return {
+        readOnly: draft.readOnly,
+        draft: draft.value,
+        status: document.getElementById('commentStatus')?.textContent ?? '',
+        retry: !document.getElementById('retryComment')?.hidden,
+      };
+    });
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc6-comments');
     writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
@@ -224,6 +256,84 @@ describe('canvas comments and author history', () => {
     expect(after.scroll).toBe(0);
     expect(await page.locator('[data-object-id="caption"] > .comment-mark').textContent()).toBe('15');
     await page.keyboard.press('Escape');
+  });
+
+  it('keeps each object its own composer: a failed or sending post elsewhere never locks another', async () => {
+    await humanWrite([
+      item('pc6-x', null, 'text', 0, 600, 360, 80, 'Draft target X'),
+      item('pc6-y', null, 'text', 480, 600, 360, 80, 'Draft target Y'),
+    ]);
+    await page.waitForSelector('[data-object-id="pc6-y"]');
+    await openThread('pc6-x');
+    await page.route('**/api/canvas/*/command', (route) => route.abort());
+    await page.locator('#commentDraft').fill('Kept for X.');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForSelector('#retryComment:not([hidden])');
+    await page.unroute('**/api/canvas/*/command');
+    await openThread('pc6-y');
+    expect(await composer()).toEqual({
+      readOnly: false,
+      draft: '',
+      status: expect.not.stringContaining('Not posted'),
+      retry: false,
+    });
+    let release: () => void = () => {};
+    const held = new Promise<void>((done) => (release = done));
+    let aborted: () => void = () => {};
+    const handled = new Promise<void>((done) => (aborted = done));
+    await page.route('**/api/canvas/*/command', async (route) => {
+      await held;
+      await route.abort();
+      aborted();
+    });
+    await page.locator('#commentDraft').fill('Sending for Y.');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).readOnly);
+    await openThread('pc6-x');
+    expect(await composer()).toEqual({
+      readOnly: false,
+      draft: 'Kept for X.',
+      status: 'Not posted. Your comment is kept here.',
+      retry: true,
+    });
+    await page.locator('#commentDraft').press('End');
+    await page.keyboard.type(' More.');
+    expect((await composer()).draft).toBe('Kept for X. More.');
+    release();
+    await handled;
+    await page.unroute('**/api/canvas/*/command');
+    await openThread('pc6-y');
+    await page.waitForSelector('#retryComment:not([hidden])');
+    expect(await composer()).toMatchObject({ readOnly: false, draft: 'Sending for Y.', retry: true });
+    await closeRail();
+  });
+
+  it('keeps a draft recoverable when its object is removed, and returns it when the object is restored', async () => {
+    await openThread('pc6-x');
+    expect((await composer()).draft).toBe('Kept for X. More.');
+    await humanWrite([CommandSchema.parse({ kind: 'delete', opId: 'pc6-delete-x', objectId: 'pc6-x' })]);
+    await page.locator('#layer [data-object-id="pc6-x"]').waitFor({ state: 'hidden' });
+    await page.waitForSelector('#threadPicker:not([hidden])');
+    expect(await page.locator('#railTitle').textContent()).toBe('Comments on this canvas');
+    const orphan = page.locator('[data-orphan-for="pc6-x"]');
+    await orphan.waitFor();
+    expect(await orphan.locator('p').textContent()).toBe(
+      'Your comment on “Draft target X” was not posted because the object was removed.'
+    );
+    expect(await orphan.locator('.orphan-text').textContent()).toBe('Kept for X. More.');
+    expect(await orphan.locator('.orphan-text').evaluate((el) => getComputedStyle(el).userSelect)).toBe('text');
+    expect(await orphan.getByRole('button', { name: 'Copy' }).isVisible()).toBe(true);
+    await shot(page, 'removed-draft');
+    await humanWrite([CommandSchema.parse({ kind: 'restore', opId: 'pc6-restore-x', objectId: 'pc6-x' })]);
+    await page.locator('#layer [data-object-id="pc6-x"]').waitFor({ state: 'visible' });
+    await openThread('pc6-x');
+    expect(await composer()).toMatchObject({ readOnly: false, draft: 'Kept for X. More.' });
+    await humanWrite([CommandSchema.parse({ kind: 'delete', opId: 'pc6-delete-x-2', objectId: 'pc6-x' })]);
+    await orphan.waitFor();
+    await orphan.getByRole('button', { name: 'Discard' }).click();
+    expect(await orphan.count()).toBe(0);
+    await humanWrite([CommandSchema.parse({ kind: 'delete', opId: 'pc6-delete-y', objectId: 'pc6-y' })]);
+    await closeRail();
   });
 
   it('lists authors, confirms a session revert inline, and reports what was skipped', async () => {

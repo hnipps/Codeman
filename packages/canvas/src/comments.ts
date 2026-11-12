@@ -104,6 +104,16 @@ const node = (id: string): HTMLElement => {
 };
 
 type Pending = { requestId: string; commentId: string; text: string; objectId: string };
+/** One object's composer: its draft, the post it is sending or retrying, and why the last one failed. */
+type Composer = {
+  draft: string;
+  name: string;
+  pending: Pending | null;
+  sending: boolean;
+  failure: PostFailure | null;
+};
+/** Composers kept at once; the oldest idle one goes first. */
+export const MAX_COMPOSERS = 64;
 
 export type PostFailure = { retry: boolean; message: string };
 
@@ -125,9 +135,7 @@ export class CommentsView {
   private comments: ViewComment[] = [];
   private shown: string | null = null;
   private rendered = new Map<string, HTMLElement>();
-  private drafts = new Map<string, string>();
-  private pending: Pending | null = null;
-  private failure: PostFailure | null = null;
+  private composers = new Map<string, Composer>();
   private clock: ReturnType<typeof setInterval> | undefined;
   private list = node('threadList');
   private draft: HTMLTextAreaElement;
@@ -144,7 +152,11 @@ export class CommentsView {
     if (!(draft instanceof HTMLTextAreaElement)) throw new Error('Expected comment draft');
     this.draft = draft;
     draft.addEventListener('input', () => {
-      if (this.shown) this.drafts.set(this.shown, draft.value);
+      if (this.shown) {
+        const composer = this.composer(this.shown);
+        composer.draft = draft.value;
+        if (composer.failure && !composer.failure.retry) composer.failure = null;
+      }
       this.paintComposer();
     });
     draft.addEventListener('keydown', (e) => {
@@ -164,6 +176,27 @@ export class CommentsView {
       void this.post();
     });
     node('retryComment').addEventListener('click', () => void this.post());
+  }
+
+  /** The composer for one object, kept most recent last; idle empty ones are dropped past the bound. */
+  private composer(objectId: string): Composer {
+    let composer = this.composers.get(objectId);
+    if (composer) this.composers.delete(objectId);
+    else {
+      const object = this.options.objects().find((o) => o.id === objectId);
+      composer = { draft: '', name: object ? label(object) : '', pending: null, sending: false, failure: null };
+    }
+    this.composers.set(objectId, composer);
+    for (const [id, c] of this.composers) {
+      if (this.composers.size <= MAX_COMPOSERS) break;
+      if (id !== objectId && !c.sending) this.composers.delete(id);
+    }
+    return composer;
+  }
+
+  private forget(objectId: string): void {
+    const composer = this.composers.get(objectId);
+    if (composer && !composer.sending && !composer.draft && !composer.failure) this.composers.delete(objectId);
   }
 
   get all(): ViewComment[] {
@@ -211,8 +244,7 @@ export class CommentsView {
     if (changed) {
       this.rendered.clear();
       this.list.replaceChildren();
-      if (this.pending?.objectId !== objectId) this.failure = null;
-      this.draft.value = objectId ? (this.drafts.get(objectId) ?? '') : '';
+      this.draft.value = objectId ? (this.composers.get(objectId)?.draft ?? '') : '';
     }
     this.paintThread(changed);
     clearInterval(this.clock);
@@ -269,6 +301,9 @@ export class CommentsView {
     const counts = commentCounts(this.comments);
     const picker = node('threadPicker');
     picker.replaceChildren();
+    const live = new Set(this.options.objects().map((o) => o.id));
+    for (const [id, composer] of this.composers)
+      if (!live.has(id) && composer.draft.trim() && !composer.sending) picker.append(this.orphan(id, composer));
     const objects = this.options.objects().filter((o) => counts.has(o.id));
     const intro = document.createElement('p');
     intro.className = 'secondary';
@@ -289,6 +324,45 @@ export class CommentsView {
       row.onclick = () => this.options.choose(o.id);
       picker.append(row);
     }
+  }
+
+  /** A draft whose object was removed stays readable, copyable and discardable; a restore brings it back. */
+  private orphan(objectId: string, composer: Composer): HTMLElement {
+    const box = document.createElement('section');
+    box.className = 'orphan-draft';
+    box.dataset.orphanFor = objectId;
+    const line = document.createElement('p');
+    line.textContent = `Your comment on “${composer.name || 'a removed object'}” was not posted because the object was removed.`;
+    const text = document.createElement('blockquote');
+    text.className = 'orphan-text';
+    text.textContent = composer.draft;
+    const actions = document.createElement('div');
+    actions.className = 'orphan-actions';
+    const copy = document.createElement('button');
+    copy.textContent = 'Copy';
+    copy.onclick = () => {
+      void navigator.clipboard?.writeText(composer.draft).then(
+        () => (copy.textContent = 'Copied'),
+        () => {
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          getSelection()?.removeAllRanges();
+          getSelection()?.addRange(range);
+          copy.textContent = 'Selected: press Ctrl+C';
+        }
+      );
+    };
+    const discard = document.createElement('button');
+    discard.className = 'quiet';
+    discard.textContent = 'Discard';
+    discard.onclick = () => {
+      this.composers.delete(objectId);
+      this.paintPicker();
+      node('threadView').focus({ preventScroll: true });
+    };
+    actions.append(copy, discard);
+    box.append(line, text, actions);
+    return box;
   }
 
   private item(comment: ViewComment): HTMLElement {
@@ -326,34 +400,40 @@ export class CommentsView {
   }
 
   private paintComposer(): void {
-    const posting = !!this.pending && !this.failure;
+    const composer = this.shown ? this.composers.get(this.shown) : undefined;
+    const sending = !!composer?.sending;
+    const failure = composer?.failure ?? null;
     const post = node('postComment');
     const empty = !this.draft.value.trim();
-    post.setAttribute('aria-disabled', String(posting || empty));
-    post.textContent = posting ? 'Posting…' : 'Post';
-    this.draft.readOnly = posting;
+    post.setAttribute('aria-disabled', String(sending || empty));
+    post.textContent = sending ? 'Posting…' : 'Post';
+    this.draft.readOnly = sending;
     const status = node('commentStatus');
-    status.textContent = this.failure
-      ? this.failure.message
-      : posting || document.documentElement.hasAttribute('data-touch')
+    status.textContent = failure
+      ? failure.message
+      : sending || document.documentElement.hasAttribute('data-touch')
         ? ''
         : `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to post`;
-    status.dataset.state = this.failure ? 'failed' : '';
-    node('retryComment').hidden = !this.failure?.retry;
-    post.hidden = !!this.failure?.retry;
+    status.dataset.state = failure ? 'failed' : '';
+    node('retryComment').hidden = !failure?.retry;
+    post.hidden = !!failure?.retry;
   }
 
-  /** Posts the draft once; a retry resends the same request id so it cannot duplicate. */
+  /** Posts the shown object's draft once; a retry resends the same request id so it cannot duplicate. */
   async post(): Promise<boolean> {
     const objectId = this.shown;
     if (!objectId) return false;
+    const composer = this.composer(objectId);
     const text = this.draft.value;
-    if (this.pending && !this.failure) return false;
-    if (!text.trim()) return false;
-    if (!this.pending || this.pending.text !== text || this.pending.objectId !== objectId)
-      this.pending = { requestId: crypto.randomUUID(), commentId: crypto.randomUUID(), text, objectId };
-    const pending = this.pending;
-    this.failure = null;
+    if (composer.sending || !text.trim()) return false;
+    const object = this.options.objects().find((o) => o.id === objectId);
+    if (object) composer.name = label(object);
+    composer.draft = text;
+    if (!composer.pending || composer.pending.text !== text)
+      composer.pending = { requestId: crypto.randomUUID(), commentId: crypto.randomUUID(), text, objectId };
+    const pending = composer.pending;
+    composer.sending = true;
+    composer.failure = null;
     this.paintComposer();
     let ok = false;
     let failure: PostFailure | null = null;
@@ -372,20 +452,22 @@ export class CommentsView {
     } catch {
       failure = postFailure(null, null);
     }
-    if (this.pending !== pending) return ok;
+    composer.sending = false;
     if (ok) {
-      this.pending = null;
-      this.drafts.delete(pending.objectId);
-      if (this.shown === pending.objectId) {
+      composer.pending = null;
+      if (composer.draft === pending.text) composer.draft = '';
+      if (this.shown === objectId && this.draft.value === pending.text) {
         this.draft.value = '';
         this.list.scrollTop = this.list.scrollHeight;
       }
+      this.forget(objectId);
     } else {
-      this.failure = failure ?? postFailure(null, null);
+      composer.failure = failure ?? postFailure(null, null);
       // A refusal that cannot succeed as sent gets fresh ids once the text is edited.
-      if (!this.failure.retry) this.pending = null;
+      if (!composer.failure.retry) composer.pending = null;
     }
-    this.paintComposer();
+    if (this.shown === objectId) this.paintComposer();
+    else if (this.shown === null) this.paintPicker();
     return ok;
   }
 }
