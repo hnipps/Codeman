@@ -246,7 +246,10 @@
           aria-label="The agent is waiting for you"
           hidden
         ></div>
-        <h2 id="contextHeading" class="rail-heading">Context</h2>
+        <div class="context-head">
+          <h2 id="contextHeading" class="rail-heading">Context</h2>
+          <button id="addSelection" type="button" class="quiet phone-only">Add selection</button>
+        </div>
         <ul id="contextChips" aria-labelledby="contextHeading"></ul>
         <p id="contextEmpty" class="secondary">
           Nothing attached. Select objects and press <kbd>Cmd/Ctrl</kbd> <kbd>Enter</kbd>, or hold <kbd>Q</kbd> and drag
@@ -255,12 +258,35 @@
         <form id="assistantForm" class="composer">
           <label class="sr" for="assistantDraft">Message</label>
           <textarea id="assistantDraft" rows="3" placeholder="Message the assistant" spellcheck="true"></textarea>
+          <p id="newConversationNotice" class="secondary notice" role="status" hidden></p>
           <p id="assistantStatus" class="secondary" role="status"></p>
           <div class="composer-row composer-actions">
             <button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
             ><button id="assistantSend" type="submit" class="primary">Send</button>
           </div>
         </form>
+        <div
+          id="assistantChoice"
+          class="choice"
+          role="group"
+          aria-label="Provider and model for the next new conversation"
+        >
+          <label class="sr" for="providerSelect">Provider</label>
+          <select id="providerSelect" title="Provider for the next new conversation · P"></select>
+          <label class="sr" for="modelInput">Model</label>
+          <input
+            id="modelInput"
+            type="text"
+            list="modelSuggestions"
+            placeholder="Session default"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            title="Model for the next new conversation · Shift+P"
+          />
+          <datalist id="modelSuggestions"></datalist>
+          <p id="choiceNote" class="secondary" role="status" hidden></p>
+        </div>
       </div>
       <div id="historyView" class="rail-body" hidden>
         <p class="secondary">Who changed this canvas. Reverting a session removes only what it made and changed.</p>

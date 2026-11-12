@@ -10,6 +10,12 @@ import { resolveCasesDir } from '../src/web/route-helpers.js';
 import { CanvasStores } from '../src/canvas/canvas-store.js';
 import { CommandSchema } from '../src/canvas/operations.js';
 
+const installed = vi.hoisted(() => ({ map: { claude: true, copilot: true, codex: true } as Record<string, boolean> }));
+vi.mock('../src/utils/cli-installed-probes.js', async (original) => ({
+  ...(await original<typeof import('../src/utils/cli-installed-probes.js')>()),
+  probeStockCliAvailability: async () => installed.map,
+}));
+
 const MEDIA = resolve('pr/media');
 const stamp = Date.now();
 const note = (id: string, x: number, text: string) =>
@@ -308,5 +314,234 @@ describe('canvas assistant conversations', () => {
     await page.waitForTimeout(200);
     await shot('ended-1024');
     await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  const providersStub = {
+    success: true,
+    data: {
+      providers: [
+        {
+          id: 'claude',
+          label: 'Claude Code',
+          shortBadge: 'CC',
+          available: true,
+          model: { editable: true, source: 'claude-settings-file' },
+        },
+        {
+          id: 'copilot',
+          label: 'GitHub Copilot',
+          shortBadge: 'GH',
+          available: true,
+          model: { editable: true, source: 'flag' },
+        },
+        {
+          id: 'codex',
+          label: 'Codex',
+          shortBadge: 'CX',
+          available: false,
+          reason:
+            'Codex gives Codeman no way to confirm a message was submitted, so a conversation cannot start on it yet.',
+          model: { editable: true, source: 'flag' },
+        },
+        {
+          id: 'fixed',
+          label: 'Fixed',
+          shortBadge: 'FX',
+          available: true,
+          model: {
+            editable: false,
+            source: 'none',
+            reason: 'Fixed takes its model from its own configuration, so it cannot be chosen here.',
+          },
+        },
+      ],
+    },
+  };
+  const choiceKey = () => `codeman:canvas:user:%40single:${workspace}:assistant:choice`;
+  const shot9c = (name: string) =>
+    page.screenshot({ animations: 'disabled', path: resolve(MEDIA, `pc9c-${stamp}-${name}.png`) });
+
+  it('offers the listed providers, focuses the selectors with P and Shift+P, and says why a choice cannot be used', async () => {
+    await page.route('**/api/canvas/assistant/providers', (route) => route.fulfill({ json: providersStub }));
+    await open(false);
+    await page.waitForFunction(() => document.querySelectorAll('#providerSelect option').length === 4);
+    const options = await page.locator('#providerSelect option').allTextContents();
+    expect(options).toEqual(['Claude Code', 'GitHub Copilot', 'Codex (unavailable)', 'Fixed']);
+    expect(await page.locator('#providerSelect').inputValue()).toBe('claude');
+    expect(await page.locator('#modelInput').getAttribute('placeholder')).toBe('Session default');
+    await shot9c('selectors');
+    await page.locator('#board').focus();
+    await page.keyboard.press('p');
+    await page.waitForFunction(() => document.activeElement?.id === 'providerSelect');
+    await page.locator('#board').focus();
+    await page.keyboard.press('Shift+P');
+    await page.waitForFunction(() => document.activeElement?.id === 'modelInput');
+    await page.locator('#providerSelect').selectOption('codex');
+    await page.waitForSelector('#choiceNote:not([hidden])');
+    expect(await page.locator('#choiceNote').textContent()).toContain('cannot start on it yet');
+    await shot9c('unavailable');
+    await page.locator('#providerSelect').selectOption('fixed');
+    await page.waitForFunction(() => (document.getElementById('modelInput') as HTMLInputElement).disabled);
+    await page.waitForFunction(() => document.getElementById('choiceNote')?.textContent?.includes('own configuration'));
+    expect(await page.locator('dialog, [role="dialog"], .modal').count()).toBe(0);
+  });
+
+  it('a changed choice with a conversation bound says the next message starts a new one, leaving the old one untouched', async () => {
+    await open(false);
+    const before = await conversations();
+    expect(before.length).toBeGreaterThan(0);
+    await page.waitForFunction(() => !!window.canvasView.read().conversationId);
+    const bound = await page.evaluate(() => window.canvasView.read().conversationId);
+    await page.locator('#providerSelect').selectOption('copilot');
+    await page.locator('#modelInput').fill('gpt-5');
+    await page.waitForFunction(() => document.getElementById('newConversationNotice')?.textContent?.includes('gpt-5'));
+    expect(await page.locator('#newConversationNotice').textContent()).toBe(
+      'Next message starts a new conversation on GitHub Copilot · gpt-5'
+    );
+    expect(await page.evaluate(() => window.canvasView.read().conversationId)).toBe(bound);
+    await shot9c('new-conversation-notice');
+    posts.length = 0;
+    await page.route('**/api/canvas/*/conversations', (route) =>
+      route.request().method() === 'POST'
+        ? route.fulfill({
+            status: 409,
+            json: {
+              success: false,
+              error: 'CLI_UNAVAILABLE: GitHub Copilot cannot start here.',
+              errorCode: 'CONFLICT',
+            },
+          })
+        : route.continue()
+    );
+    await page.locator('#assistantDraft').fill('hello on another provider');
+    await page.locator('#assistantSend').click();
+    await page.waitForSelector('#assistantRetry:not([hidden])');
+    const create = posts.find((p) => p.url.endsWith('/conversations'))!;
+    expect(create.body).toMatchObject({ cliId: 'copilot', model: 'gpt-5' });
+    expect(posts.some((p) => p.url.endsWith('/messages'))).toBe(false);
+    expect(await page.locator('#assistantStatus').textContent()).toContain('Pick another provider');
+    expect(await page.locator('#assistantDraft').inputValue()).toBe('hello on another provider');
+    expect(await conversations()).toEqual(before);
+    await page.unroute('**/api/canvas/*/conversations');
+    await page.locator('#assistantDraft').fill('');
+    await page.locator('#assistantDraft').dispatchEvent('input');
+  });
+
+  it('refuses a send that would start on an unavailable provider before anything is requested', async () => {
+    await open(false);
+    await page.locator('#providerSelect').selectOption('codex');
+    posts.length = 0;
+    await page.locator('#assistantDraft').fill('nope');
+    await page.locator('#assistantSend').click();
+    await page.waitForFunction(() =>
+      document.getElementById('assistantStatus')?.textContent?.includes('Pick another provider')
+    );
+    expect(posts).toEqual([]);
+    expect(await page.locator('#assistantDraft').inputValue()).toBe('nope');
+    await page.locator('#assistantDraft').fill('');
+    await page.locator('#assistantDraft').dispatchEvent('input');
+  });
+
+  it('shows a stored choice that is no longer listed with its alternative, and keeps a valid one across a reload', async () => {
+    await open(false);
+    await page.evaluate(
+      (key) => localStorage.setItem(key, JSON.stringify({ cliId: 'gemini', model: '' })),
+      choiceKey()
+    );
+    await open(false);
+    await page.waitForSelector('#choiceNote:not([hidden])');
+    expect(await page.locator('#choiceNote').textContent()).toContain(
+      'no longer available; Claude Code is selected instead'
+    );
+    expect(await page.locator('#providerSelect').inputValue()).toBe('claude');
+    await shot9c('disabled');
+    await page.evaluate(
+      (key) => localStorage.setItem(key, JSON.stringify({ cliId: 'copilot', model: 'gpt-5' })),
+      choiceKey()
+    );
+    await open(false);
+    expect(await page.locator('#providerSelect').inputValue()).toBe('copilot');
+    expect(await page.locator('#modelInput').inputValue()).toBe('gpt-5');
+    await page.evaluate((key) => localStorage.removeItem(key), choiceKey());
+    await page.unroute('**/api/canvas/assistant/providers');
+  });
+
+  it('follows an agent`s canvas_conversation model set, and reads it back', async () => {
+    await open(false);
+    await page.waitForFunction(() => document.querySelectorAll('#providerSelect option').length > 0);
+    const viewId = await page.evaluate(() => sessionStorage.getItem('codeman:canvas:viewId'));
+    const providers = (await (await page.request.get(api('/canvas/assistant/providers'))).json()).data.providers as {
+      id: string;
+      available: boolean;
+    }[];
+    const pick = providers.find((p) => p.available)!;
+    const agentSet = await page.request.post(api(`/canvas/${workspace}/command`), {
+      data: {
+        tool: 'canvas_conversation',
+        arguments: { action: 'model', operation: 'set', viewId, cliId: pick.id, model: 'sonnet' },
+      },
+    });
+    expect(agentSet.status()).toBe(200);
+    await page.waitForFunction(() => (document.getElementById('modelInput') as HTMLInputElement).value === 'sonnet');
+    expect(await page.locator('#providerSelect').inputValue()).toBe(pick.id);
+    await page.waitForTimeout(700);
+    await page.waitForFunction(
+      async ([ws, id, cli]) => {
+        const response = await fetch(`/x/api/canvas/${ws}/command`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            tool: 'canvas_conversation',
+            arguments: { action: 'model', operation: 'read', viewId: id },
+          }),
+        });
+        const body = await response.json();
+        return body.data?.choice?.cliId === cli && body.data?.choice?.model === 'sonnet';
+      },
+      [workspace, viewId, pick.id] as const
+    );
+    await shot9c('agent-model');
+  });
+
+  it('a Not delivered row keeps Retry after a reload, even when only the interrupted attempt held its text', async () => {
+    const [c] = await conversations();
+    const record = (await (await page.request.get(api(`/canvas/${workspace}/conversations/${c.id}`))).json()).data
+      .conversation.messages as { messageId: string }[];
+    const last = record.at(-1)!.messageId;
+    await open(false);
+    await page.evaluate(
+      ([ws, id, convo]) => {
+        const scope = `codeman:canvas:user:%40single:${ws}:assistant`;
+        localStorage.removeItem(`${scope}:sent`);
+        localStorage.setItem(
+          `${scope}:outbox`,
+          JSON.stringify({
+            conversationId: convo,
+            createRequestId: crypto.randomUUID(),
+            messageId: id,
+            text: 'kept text',
+            refIds: [],
+          })
+        );
+      },
+      [workspace, last, c.id] as const
+    );
+    await page.route(`**/conversations/${c.id}`, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const row = body.data.conversation.messages.at(-1);
+      row.state = 'failed';
+      row.deliveredAt = null;
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`${origin}/x/canvas/${workspace}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.canvasView);
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'assistant' }));
+    await page.waitForFunction(() => document.querySelectorAll('#conversationPicker option').length > 1);
+    await page.locator('#conversationPicker').selectOption(c.id);
+    await page.waitForSelector('#thread .turn-retry');
+    expect((await turns()).at(-1)).toContain('Not delivered');
+    expect((await turns()).at(-1)).toContain('kept text');
+    await page.unroute(`**/conversations/${c.id}`);
   });
 });

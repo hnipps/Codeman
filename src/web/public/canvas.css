@@ -1642,17 +1642,22 @@ textarea[readonly] {
 }
 :root[data-phone] #dock {
   gap: 0;
+  padding: 4px 2px;
 }
 :root[data-phone] #dock button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-height: 44px;
-  padding: 8px 10px;
+  padding: 8px 6px;
 }
 :root[data-phone] .dock-label {
   display: inline;
   font-size: 14px;
+}
+:root[data-phone] #assistantTool {
+  min-width: 44px;
+  justify-content: center;
 }
 :root[data-phone] #fit {
   min-height: 54px;
@@ -1713,7 +1718,7 @@ textarea[readonly] {
   height: auto;
 }
 :root[data-phone] #rail .rail-body {
-  height: calc(100% - 68px);
+  height: calc(100% - 69px);
 }
 
 /* Assistant rail: pending context and a draft. Same rail, same tokens; no card or overlay. */
@@ -1809,7 +1814,6 @@ textarea[readonly] {
   display: block;
   border: 1px solid var(--selection);
 }
-:root[data-phone] #assistantTool,
 :root[data-phone] #addToChat {
   display: none !important;
 }
@@ -1957,4 +1961,79 @@ textarea[readonly] {
 }
 #thread:empty {
   display: none;
+}
+
+/* Provider and model for the next new conversation (PC9c): compact selectors at the foot of the rail, never a dialog. */
+.choice {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 0 0 16px;
+}
+.choice select,
+.choice input {
+  min-width: 0;
+  font-size: 13px;
+}
+.choice input:disabled {
+  opacity: 0.6;
+}
+.choice input[aria-invalid='true'] {
+  border-color: var(--critical);
+}
+#choiceNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.notice {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.context-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.key-later {
+  opacity: 0.7;
+}
+.key-note {
+  display: block;
+  color: var(--secondary);
+  font-size: 12px;
+}
+:root[data-phone] .composer textarea {
+  min-height: 48px;
+  font-size: 16px;
+}
+:root[data-phone] .composer {
+  padding: 8px 0;
+}
+:root[data-phone] #thread {
+  min-height: 48px;
+}
+:root[data-phone] .choice {
+  padding-bottom: 8px;
+}
+:root[data-phone] .choice select,
+:root[data-phone] .choice input {
+  min-height: 44px;
+  font-size: 16px;
+}
+:root[data-phone] #addSelection {
+  min-height: 44px;
+}
+:root[data-phone] #contextEmpty {
+  display: none;
+}
+@media (max-width: 380px) {
+  :root[data-phone] #dock button {
+    padding: 8px 4px;
+  }
 }

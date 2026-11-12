@@ -397,7 +397,7 @@ describe('canvas direct context and the view registry', () => {
     expect(publishes / 5).toBeLessThanOrEqual(4);
     await context.close();
   });
-  it('a phone keeps its read-only view: no assistant control, no lasso, no rail from C', async () => {
+  it('a phone has the assistant in its dock, but no lasso, no rail from C and still no edits', async () => {
     const context = await browser.newContext({
       viewport: { width: 414, height: 714 },
       deviceScaleFactor: 1,
@@ -409,7 +409,7 @@ describe('canvas direct context and the view registry', () => {
     });
     const p = await context.newPage();
     await open(p);
-    expect(await p.locator('#assistantTool').isVisible()).toBe(false);
+    expect(await p.locator('#assistantTool').isVisible()).toBe(true);
     expect(await p.locator('#addToChat').isVisible()).toBe(false);
     await p.locator('#board').focus();
     await p.keyboard.press('c');
@@ -418,7 +418,7 @@ describe('canvas direct context and the view registry', () => {
     await p.keyboard.up('q');
     expect(await p.evaluate(() => window.canvasView.read().rail)).toEqual([]);
     await p.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'assistant' }));
-    expect(await p.evaluate(() => window.canvasView.read().rail)).toEqual([]);
+    expect(await p.evaluate(() => window.canvasView.read().rail)).toEqual(['assistant']);
     expect(
       await p.evaluate(() => window.canvasEdit.apply([{ kind: 'delete', opId: 'phone-delete', objectId: 'n1' }]))
     ).toBe(false);

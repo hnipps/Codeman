@@ -32,12 +32,13 @@ const labelFor = (kind: 'you' | 'agent', suffix = ''): string => `${kind === 'ag
 export function buildThread(
   rows: readonly TranscriptRow[],
   messages: readonly ConversationMessage[],
-  sent: readonly SentMessage[]
+  sent: readonly SentMessage[],
+  agent = 'Claude'
 ): Turn[] {
   const byId = new Map(messages.map((m) => [m.messageId.toLowerCase(), m]));
   const seen = new Set<string>();
   const turns: Turn[] = rows.map((row, index): Turn => {
-    if (row.role === 'assistant') return { key: `r${index}`, who: 'claude', label: 'Claude', text: row.text, refs: [] };
+    if (row.role === 'assistant') return { key: `r${index}`, who: 'claude', label: agent, text: row.text, refs: [] };
     const { messageId, text } = splitPrompt(row.text);
     if (messageId) seen.add(messageId.toLowerCase());
     const record = messageId ? byId.get(messageId.toLowerCase()) : undefined;
@@ -110,6 +111,14 @@ export function sendFailure(message: string, status: number): { text: string; en
       return plain('Conversations are not available for Docker or remote cases yet.');
     case 'RATE_LIMITED':
       return plain('Too many messages in a short time. Your message is kept; try again in a moment.');
+    case 'UNKNOWN_CLI':
+      return plain('That provider is no longer available. Pick another one; your message is kept.');
+    case 'CLI_UNAVAILABLE':
+      return plain(
+        `${message.replace(/^CLI_UNAVAILABLE:\s*/, '')} Pick another provider; your message is kept.`.trim()
+      );
+    case 'INVALID_MODEL':
+      return plain(`${message.replace(/^INVALID_MODEL:\s*/, '')} Your message is kept.`.trim());
     case 'TOO_MANY':
       return plain('This canvas has too many conversations. Close some sessions first.');
     case 'MESSAGE_CHANGED':
