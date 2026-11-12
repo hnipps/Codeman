@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — The root CLAUDE.md keeps only what every change needs
+
+**Type:** status-transition
+**Touches:** `CLAUDE.md`, `docs/subsystem-rules.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `.prettierignore`, `test/docker-entrypoint.test.ts`
+**Why:** The file was about 157 KB and is loaded whole into every agent session and subagent, most of it about subsystems that session never touches.
+**Links:** [Intent](../intent/2026-11-12-slim-claude-md.md)
+
+The per-subsystem paragraphs moved verbatim to `docs/subsystem-rules.md`; nothing was reworded or dropped. `CLAUDE.md` keeps the self-deploy rule, assurance, commands, session safety, test-before-deploy, the release pointer, a short list of universal rules, testing essentials and an index of the moved titles. A new subsystem rule is written in `docs/subsystem-rules.md` and its title added to that index. The rules there bind as before. `src/web/CLAUDE.md` is unchanged.
+
 ## 2026-11-11 — A canvas refusal drops one submission, and acknowledgement reads only what it wrote
 
 **Type:** intent-refinement

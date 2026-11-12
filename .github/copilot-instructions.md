@@ -9,7 +9,7 @@ Apply these on every change in this repository. The same rules are in AGENTS.md 
 
 ## Invariants
 
-- Rules that already hold live in CLAUDE.md and docs/architecture-invariants.md. Update them in the same change as the code they describe.
+- Rules that already hold live in CLAUDE.md, docs/subsystem-rules.md and docs/architecture-invariants.md. Update them in the same change as the code they describe.
 - A promise that is still moving can be a Status: Draft note under docs/invariants/. A draft does not override an architecture invariant and does not block a commit.
 - Do not add a commit hook, a failing CI job, or a protected-surface block unless an intent file asks for that gate.
 
