@@ -1626,9 +1626,10 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
-The eleven command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
+The twelve command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
 `canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
-`canvas_transform`, `canvas_lock`, `canvas_history`, and `canvas_capabilities`.
+`canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_comment`, and
+`canvas_capabilities`.
 Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
 support, geometry semantics and reserved future view operations. `canvas_screenshot`
 is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
@@ -1654,6 +1655,22 @@ backmost object, a drag that snaps back to its start) appends nothing and change
 no revision: it answers `200` with `{ seq, sequences: [], noop: true }`, and a
 retry with the same identity evaluates to the same no-op. A plain `update` or
 `revert` whose patch is empty is refused (`409 INVALID`) rather than written.
+
+`canvas_comment` takes `{ objectId, text, commentId? }` (text 1 to 100,000
+characters, not blank) and appends one ordinary `comment` operation. It accepts the
+optional `requestId`, works on locked objects and starts no agent work. `canvas_read`
+returns comments with their objects. `canvas_history` also takes
+`{ "action": "authors" }` (each author with its operation count and last activity,
+newest first) and `{ "action": "preview", "author": … }`, which answers what an
+author revert would do without writing: `removed` and `kept` object IDs,
+`restored` and `skipped` fields per object, the `comments` count, and `refused`
+reasons (for example `LOCKED`) when the revert could not apply now.
+
+`POST /api/canvas/:workspaceId/revert` takes `{ author, requestId? }`. It answers
+`{ seq, sequences, summary }` with the same summary shape; a retry with the same
+`requestId` answers `{ seq, sequences, replayed: true }`, and reusing it for another
+author is a 409. A locked target refuses the whole revert (409 with `reasons`);
+nothing is written. Later edits by other authors are skipped, never overwritten.
 
 `POST /api/canvas/:workspaceId/ops` answers `{ seq, sequences }`: the sequences
 it wrote, or the original ones for a resent batch. `GET

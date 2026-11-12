@@ -24,6 +24,7 @@ import {
 import { editable, container, type Snapshot, type ViewObject } from './model.js';
 import type { ViewState, ViewCommand } from './commands.js';
 import { screenToCanvas } from './viewport.js';
+import type { PhoneQuery } from './mobile.js';
 const node = (id: string): HTMLElement => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing edit element: ${id}`);
@@ -116,7 +117,7 @@ export class DesktopEditor {
       workspace: string;
       /** Who is editing: the signed-in user, or `@single` without multi-user mode. */
       viewer: string;
-      mobile: MediaQueryList;
+      mobile: PhoneQuery;
       view: () => ViewState;
       objects: () => ViewObject[];
       dispatch: (action: ViewCommand) => void;

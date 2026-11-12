@@ -392,8 +392,8 @@ Object.assign(CodemanApp.prototype, {
       : CASE_PICKER_ACTIONS;
   },
 
-  async openCaseCanvas() {
-    const caseName = document.getElementById('quickStartCase')?.value;
+  async openCaseCanvas(name) {
+    const caseName = name || document.getElementById('quickStartCase')?.value;
     if (!caseName) return;
     try {
       const response = await fetch(CodemanBase.url('/api/canvas/workspaces'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseName }) });

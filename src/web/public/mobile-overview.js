@@ -6,6 +6,7 @@
  * urgent question is "which of my sessions is blocked on me". This surface
  * answers that first: NEEDS YOU (pending permission/question/idle hooks and
  * errored sessions), then SPACES (cases, expandable to their sessions), then
+ * CANVASES (one canvas entry per case while the canvas is enabled), then
  * WORKING and IDLE / DONE.
  *
  * Rows inside a section are ordered by `CodemanSessionOrder` (constants.js),
@@ -459,6 +460,9 @@ Object.assign(CodemanApp.prototype, {
       } else if (action === 'run-webview') {
         this._closeMobileOverviewRunMenu();
         void this.openWebviewFromMenu(target.dataset.moWebview);
+      } else if (action === 'canvas') {
+        this._closeMobileOverviewRunMenu();
+        void this.openCaseCanvas(target.dataset.moCase);
       } else if (action === 'run-add-url') {
         this._closeMobileOverviewRunMenu();
         this.showWebviewModal();
@@ -549,6 +553,9 @@ Object.assign(CodemanApp.prototype, {
       )
     );
 
+    const canvases = this._buildMobileOverviewCanvasRows();
+    if (canvases.length) el.appendChild(this._buildMobileOverviewSection('Canvases', canvases.length, canvases));
+
     el.appendChild(
       this._buildMobileOverviewSection(
         'Past sessions',
@@ -559,6 +566,51 @@ Object.assign(CodemanApp.prototype, {
     );
 
     this._startMobileOverviewClock();
+  },
+
+  /**
+   * One canvas entry per case while the canvas is enabled: the transitional shell's
+   * way onto a case's canvas from a phone. Rows, never a header button
+   * (test/mobile-header-buttons-policy.test.ts).
+   */
+  _buildMobileOverviewCanvasRows() {
+    const enabled = this.loadAppSettingsFromStorage?.().canvasEnabled === true;
+    if (!enabled) return [];
+    return (this.cases || [])
+      .filter((c) => c && c.name)
+      .map((c) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'mobile-overview-row mobile-overview-row--canvas';
+        item.dataset.moAction = 'canvas';
+        item.dataset.moCase = c.name;
+        item.setAttribute('aria-label', `Open canvas for ${c.name}`);
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('viewBox', '0 0 20 20');
+        icon.setAttribute('aria-hidden', 'true');
+        icon.setAttribute('class', 'mobile-overview-canvas-icon');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', 'M3 3h14v14H3zM3 8h14M8 8v9');
+        icon.appendChild(path);
+        item.appendChild(icon);
+        const body = document.createElement('span');
+        body.className = 'mobile-overview-row-body';
+        const title = document.createElement('span');
+        title.className = 'mobile-overview-row-title case-name';
+        title.textContent = c.name;
+        const sub = document.createElement('span');
+        sub.className = 'mobile-overview-row-sub';
+        sub.textContent = 'Canvas';
+        body.appendChild(title);
+        body.appendChild(sub);
+        item.appendChild(body);
+        const chevron = document.createElement('span');
+        chevron.className = 'mobile-overview-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+        chevron.textContent = '›';
+        item.appendChild(chevron);
+        return item;
+      });
   },
 
   /**

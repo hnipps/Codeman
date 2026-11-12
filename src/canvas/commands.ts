@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { randomUUID, createHash } from 'node:crypto';
 import {
+  AuthorSchema,
   IdSchema,
   PositionSchema,
   SizeSchema,
@@ -99,7 +100,24 @@ export const HistorySchema = z.discriminatedUnion('action', [
     })
     .strict(),
   z.object({ action: z.literal('revert') }).strict(),
+  z.object({ action: z.literal('authors') }).strict(),
+  z.object({ action: z.literal('preview'), author: AuthorSchema }).strict(),
 ]);
+export const CommentToolSchema = z
+  .object({
+    objectId: IdSchema,
+    text: z
+      .string()
+      .max(100_000)
+      .refine((text) => text.trim().length > 0, 'Comment text is empty'),
+    commentId: IdSchema.optional(),
+  })
+  .strict();
+/** An ordinary comment: one `comment` operation, never an agent invocation. */
+export function commentCommand(input: z.infer<typeof CommentToolSchema>): Command {
+  const id = input.commentId ?? randomUUID();
+  return { kind: 'comment', opId: randomUUID(), objectId: input.objectId, patch: { id, text: input.text } };
+}
 export const ReadSchema = z.object({ root: IdSchema.optional(), includeDeleted: z.boolean().default(false) }).strict();
 export const SearchSchema = z.object({ text: z.string().min(1).max(8192), root: IdSchema.optional() }).strict();
 export const QuerySchema = z.discriminatedUnion('shape', [
@@ -137,6 +155,7 @@ export const toolSchemas = {
   canvas_transform: TransformSchema,
   canvas_lock: LockCommandSchema,
   canvas_history: HistorySchema,
+  canvas_comment: CommentToolSchema,
   canvas_capabilities: z.object({}).strict(),
 };
 export type CanvasToolName = keyof typeof toolSchemas;

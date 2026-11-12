@@ -3321,6 +3321,15 @@ html.mobile-init .file-browser-panel {
     font-weight: 600;
   }
 
+  .mobile-overview-canvas-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: var(--text-dim);
+    stroke-width: 1.5;
+  }
+
   .mobile-overview-more-count {
     padding: 0.05rem 0.35rem;
     border-radius: 999px;

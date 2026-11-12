@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Canvas comments, author revert and a read-only phone view
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/operations.ts`, `src/canvas/commands.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/{comments,history,mobile,entry}.ts`, `src/web/public/mobile-overview.js`
+**Why:** Comments and author revert were stored but invisible, and a real iPhone showed the phone canvas as a desktop editor with its controls hidden.
+**Links:** [Intent](../intent/2026-11-11-canvas-pc6-comments.md)
+
+Comments post as ordinary `comment` operations (MCP gains `canvas_comment`, 24 tools) and never start agent work. Author revert has one planner, `revertPlan()`, whose summary (removed, kept, restored, skipped, comments) backs both the History view's inline confirm and the `canvas_history` `preview` action. The lock policy stays the existing atomic one: a locked target refuses the whole revert, and the preview runs the same validation so the confirm says so first. `POST /revert` gained the command route's request identity. Phone mode is one helper (`isPhone()`); the phone reads, navigates and comments, and the editor refuses writes there. Two phone findings changed shared code: the sheet no longer carries `data-object-id` (it matched object selectors), and the rail's opener falls back to the last pressed button because iOS gives a tapped button no focus.
+
 ## 2026-11-12 — The root CLAUDE.md keeps only what every change needs
 
 **Type:** status-transition
