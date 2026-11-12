@@ -97,6 +97,7 @@ export function decodeEntities(text: string): string {
 
 const clean = (text: string): string => {
   const flat = decodeEntities(text)
+    // eslint-disable-next-line no-control-regex -- control characters are exactly what is removed
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

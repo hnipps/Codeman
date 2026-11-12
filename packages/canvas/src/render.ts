@@ -3,7 +3,29 @@ import { handles } from './resize.js';
 import { editable, container, label, readable, searchText, type ViewObject } from './model.js';
 import { union } from './viewport.js';
 import { localBounds, worldBounds, outline } from './tree.js';
-import type { ViewState } from './commands.js';
+import { subcanvasIndex, type ViewState } from './commands.js';
+import { paintImage, type MediaContext } from './objects/image.js';
+import { paintLinkCard } from './objects/link.js';
+import { paintEmbed } from './objects/embed.js';
+import { paintSubcanvas } from './objects/subcanvas.js';
+
+const noMedia: MediaContext = { assetUrl: () => null };
+/** The media painters for objects whose content they understand; anything else is plain text. */
+function paintBody(body: HTMLElement, o: ViewObject, objects: ViewObject[], media: MediaContext): void {
+  const kind = o.content.type === o.type && editable(o) ? o.type : '';
+  if (kind !== 'image' && kind !== 'link' && kind !== 'embed' && kind !== 'subcanvas') {
+    if (body.dataset.mediaKind) {
+      body.replaceChildren();
+      for (const key of ['mediaKind', 'mediaSrc', 'mediaState', 'cardKey', 'subKey']) delete body.dataset[key];
+    }
+    if (body.textContent !== readable(o)) body.textContent = readable(o);
+    return;
+  }
+  if (kind === 'image') paintImage(body, o, media);
+  else if (kind === 'link') paintLinkCard(body, o, media);
+  else if (kind === 'embed') paintEmbed(body, o, media);
+  else paintSubcanvas(body, o, objects.filter((child) => child.parentId === o.id).length);
+}
 export class Renderer {
   readonly elements = new Map<string, HTMLElement>();
   private objectsState: ViewObject[] = [];
@@ -14,7 +36,8 @@ export class Renderer {
   constructor(
     private layer: HTMLElement,
     private tree: HTMLElement,
-    private choose: (id: string, toggle: boolean, reveal: boolean) => void
+    private choose: (id: string, toggle: boolean, reveal: boolean) => void,
+    private media: MediaContext = noMedia
   ) {
     this.combined.id = 'selectionBounds';
     this.combined.hidden = true;
@@ -106,8 +129,8 @@ export class Renderer {
       const body = el.querySelector<HTMLElement>('.object-body'),
         title = el.querySelector<HTMLElement>('.object-title');
       if (body) {
-        body.hidden = container(o) && o.content.type === o.type;
-        if (body.textContent !== readable(o)) body.textContent = readable(o);
+        body.hidden = container(o) && o.content.type === o.type && o.type !== 'subcanvas';
+        if (!body.hidden) paintBody(body, o, objects, this.media);
       }
       if (title) {
         title.hidden = !container(o);
@@ -178,6 +201,20 @@ export class Renderer {
       this.rows.get(id)?.classList.toggle('keyboard-focus', keyboard && state.focusId === id);
       this.rows.get(id)?.setAttribute('aria-pressed', String(state.selected.includes(id)));
     }
+  }
+  /**
+   * Show the view rooted at `root`: only objects whose nearest sub-canvas is the root are
+   * drawn. A closed sub-canvas hides its contents the same way. Visibility, unlike display,
+   * lets a drawn child sit inside a hidden ancestor, so the data and the DOM tree never move.
+   */
+  root(root: string | null): void {
+    const enclosing = subcanvasIndex(this.objectsState);
+    for (const [id, el] of this.elements) {
+      el.dataset.view = id === root ? 'root' : enclosing.get(id) === root ? 'in' : 'out';
+      const row = this.rows.get(id);
+      if (row) row.dataset.view = el.dataset.view;
+    }
+    this.layer.classList.toggle('in-subcanvas', root !== null);
   }
   filter(query: string): void {
     for (const row of this.rows.values()) row.hidden = !row.dataset.searchText?.includes(query.toLowerCase());

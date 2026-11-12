@@ -1052,3 +1052,228 @@ textarea[readonly] {
   right: 8px;
   top: calc(50% - 6px);
 }
+
+/* ───────────── Media objects (PC5) ───────────── */
+/* Sub-canvas views: objects outside the open view are hidden, never moved. Visibility lets a
+   drawn child sit inside its hidden ancestors. */
+.object[data-view='out'],
+.object[data-view='root'] {
+  visibility: hidden;
+  pointer-events: none;
+}
+.object[data-view='in'] {
+  visibility: visible;
+  pointer-events: auto;
+}
+.tree-row[data-view='out'],
+.tree-row[data-view='root'] {
+  display: none;
+}
+#viewPath {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  padding: 0 16px 8px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+#viewPath[hidden] {
+  display: none;
+}
+#viewPath .crumb {
+  min-height: 24px;
+  padding: 2px 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#viewPath span.crumb {
+  color: var(--text);
+}
+#viewPath .crumb-sep {
+  color: var(--muted);
+}
+.object[data-type='image'] > .object-body {
+  padding: 0;
+  background: transparent;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  white-space: normal;
+}
+.object[data-type='image'] > .object-body[data-media-state]:not([data-media-state='ready']) {
+  background: var(--panel);
+  box-shadow: inset 0 0 0 calc(1px / var(--zoom, 1)) var(--divider);
+}
+.media-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.object-body[data-media-state='loading'] > .media-image {
+  opacity: 0;
+}
+.media-note {
+  position: absolute;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 12px;
+  text-align: center;
+}
+.object[data-type='link'] > .object-body {
+  padding: 0;
+  white-space: normal;
+}
+.link-card {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  min-width: 0;
+}
+.link-thumb {
+  flex: 0 0 auto;
+  height: 100%;
+  aspect-ratio: 1;
+  max-width: 40%;
+  object-fit: cover;
+  border-radius: 6px 0 0 6px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.link-words {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 16px;
+}
+.link-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text);
+}
+.link-url {
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--secondary);
+}
+.link-host {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.object[data-type='embed'] > .object-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  white-space: normal;
+}
+.embed-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--divider);
+  min-width: 0;
+}
+.embed-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.embed-head > .link-host {
+  flex: 1 1 auto;
+}
+.embed-actions {
+  display: flex;
+  flex: 0 0 auto;
+}
+.embed-action {
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.embed-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--canvas);
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+}
+.embed-stage > iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.embed-shield {
+  position: absolute;
+  inset: 0;
+  cursor: default;
+}
+.object.selected .embed-shield {
+  cursor: pointer;
+}
+.embed-stage.interacting > .embed-shield {
+  display: none;
+}
+.embed-stage.interacting {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.embed-card {
+  height: 100%;
+}
+.embed-card .link-card {
+  background: var(--panel);
+}
+.object[data-type='subcanvas'] > .object-body {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  background: transparent;
+  white-space: normal;
+}
+.subcanvas-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+.subcanvas-open {
+  border-color: var(--divider);
+  background: var(--panel);
+}
+.object[data-type='subcanvas'] {
+  box-shadow:
+    inset 0 0 0 calc(1px / var(--zoom, 1)) var(--divider),
+    calc(4px / var(--zoom, 1)) calc(4px / var(--zoom, 1)) 0 calc(-1px / var(--zoom, 1)) var(--raised);
+}
+@media (max-width: 600px) {
+  .embed-actions,
+  .subcanvas-open,
+  #viewPath button.crumb {
+    display: none;
+  }
+}

@@ -9,6 +9,8 @@ export const shortcuts: [string, string[][]][] = [
   ['Read focused object', [['Enter']]],
   ['Drill into container', [['→']]],
   ['Focus parent', [['←']]],
+  ['Open sub-canvas', [['Alt', '↓']]],
+  ['Leave sub-canvas', [['Alt', '↑'], ['Esc']]],
   ['Search canvas', [['/']]],
   ['Show Keys', [['?'], ['F1']]],
   ['Select / pan tool', [['V'], ['H']]],
