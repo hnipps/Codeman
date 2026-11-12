@@ -1071,7 +1071,8 @@ textarea[readonly] {
 }
 #viewPath {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
   align-items: center;
   gap: 2px 4px;
   padding: 0 16px 8px;
@@ -1084,15 +1085,20 @@ textarea[readonly] {
 #viewPath .crumb {
   min-height: 24px;
   padding: 2px 4px;
-  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The open sub-canvas keeps its name; the path above it shortens first. */
 #viewPath span.crumb {
   color: var(--text);
+  flex-shrink: 0;
+  max-width: 70%;
 }
 #viewPath .crumb-sep {
+  flex: 0 0 auto;
   color: var(--muted);
 }
 .object[data-type='image'] > .object-body {
@@ -1199,8 +1205,13 @@ textarea[readonly] {
   min-width: 0;
   flex: 0 1 auto;
 }
+/* The host takes only the room the title leaves, so a narrow embed keeps its name. */
 .embed-head > .link-host {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .embed-actions {
   display: flex;

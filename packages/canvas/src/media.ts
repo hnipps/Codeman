@@ -93,7 +93,12 @@ export class MediaEditor {
       'pointerdown',
       (e) => {
         const target = e.target instanceof Element ? e.target : null;
-        this.down = { x: e.clientX, y: e.clientY, selected: [...this.host.view().selected] };
+        this.down = {
+          x: e.clientX,
+          y: e.clientY,
+          selected: [...this.host.view().selected],
+          shield: target?.closest<HTMLElement>('.embed-shield') ?? null,
+        };
         if (target?.closest('#board [data-media-action]')) e.stopPropagation();
         else if (this.interacting && !target?.closest('.embed-stage.interacting')) this.endInteraction(false);
       },
@@ -586,11 +591,12 @@ export class MediaEditor {
     return request;
   }
   /** A click (not a drag) on an embed that was already selected hands the pointer and keys to its page. */
-  private down: { x: number; y: number; selected: string[] } | null = null;
+  private down: { x: number; y: number; selected: string[]; shield: HTMLElement | null } | null = null;
   private maybeInteract(e: PointerEvent): void {
-    const shield = e.target instanceof Element ? e.target.closest<HTMLElement>('.embed-shield') : null;
-    const id = shield?.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
+    // The board captures the pointer, so pointerup targets the board: the shield is the one pressed.
     const down = this.down;
+    const shield = down?.shield ?? null;
+    const id = shield?.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
     if (!shield || !id || !down || this.host.mobile.matches || e.button !== 0) return;
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
     if (down.selected.length !== 1 || down.selected[0] !== id) return;

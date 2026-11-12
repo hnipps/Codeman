@@ -224,6 +224,7 @@ function paint(): void {
     paintViewPath();
   }
   renderer.view(state, keyboard);
+  editor.media.frames();
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
@@ -417,6 +418,11 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'F1') {
     e.preventDefault();
     if (!e.repeat) dispatch({ kind: 'rail', view: 'keys' });
+    return;
+  }
+  // Escape from a page in use hands the keyboard back to the canvas before anything else.
+  if (e.key === 'Escape' && editor.media.escape()) {
+    e.preventDefault();
     return;
   }
   if (e.key === 'Escape' && state.rail.length) {
@@ -618,6 +624,7 @@ const editor = new DesktopEditor({
     renderer.objects(objects);
     renderer.root(state.root);
     paintedRoot = state.root;
+    editor.media.forget(new Set(objects.map((o) => o.id)));
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
     if (initial) {
