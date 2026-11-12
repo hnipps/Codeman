@@ -1,5 +1,6 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
-import type { Command } from '../../canvas/operations.js';
+import { validateBatch, type Command } from '../../canvas/operations.js';
+import type { CanvasStore } from '../../canvas/canvas-store.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -21,11 +22,37 @@ import {
   commandFailure,
   normalizeTargets,
   deferCreatedLocks,
+  commentCommand,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
 import { IdSchema, type Author } from '../../canvas/model.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
+
+/** A request id becomes deterministic op ids; a retry answers the sequences it already wrote. */
+function requestIdentity(store: CanvasStore, author: Author, tool: string, args: unknown, requestId?: string) {
+  if (!requestId) return { prefix: null, previous: [] as { opId: string; seq: number }[], reused: false };
+  const prefix = `request_${requestId}_`;
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify([author, tool, args]))
+    .digest('hex')
+    .slice(0, 24);
+  const previous = store.sequencesWithPrefix(prefix);
+  return {
+    prefix: `${prefix}${fingerprint}_`,
+    previous,
+    reused: previous.some((o) => !o.opId.startsWith(`${prefix}${fingerprint}_`)),
+  };
+}
+
+/** What reverting one author would do, validated against the current state without writing. */
+function revertPreview(store: CanvasStore, target: Author, actor: Author) {
+  const plan = store.revertPlan(target);
+  const check = plan.commands.length
+    ? validateBatch(store.read(), plan.commands, actor, Date.now())
+    : { ok: true as const };
+  return { ...plan.summary, refused: check.ok ? [] : check.reasons };
+}
 
 export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): void {
   void app.register(async (scope) => {
@@ -152,14 +179,10 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           const store = (await ctx.canvasStores()).get(req.params.workspaceId);
           const state = store.read();
           const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
-          const prefix = envelope.requestId ? `request_${envelope.requestId}_` : null;
-          const fingerprint = createHash('sha256')
-            .update(JSON.stringify([author, envelope.tool, envelope.arguments]))
-            .digest('hex')
-            .slice(0, 24);
-          const previous = prefix ? store.sequencesWithPrefix(prefix) : [];
-          if (previous.length) {
-            if (!previous.every((o) => o.opId.startsWith(`${prefix}${fingerprint}_`)))
+          const identity = requestIdentity(store, author, envelope.tool, envelope.arguments, envelope.requestId);
+          const prefix = identity.prefix;
+          if (identity.previous.length) {
+            if (identity.reused)
               return reply
                 .code(409)
                 .send(
@@ -170,7 +193,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                 );
             return {
               success: true,
-              data: { seq: state.seq, sequences: previous.map((o) => o.seq), hierarchy: boundedCanvasData([]) },
+              data: {
+                seq: state.seq,
+                sequences: identity.previous.map((o) => o.seq),
+                hierarchy: boundedCanvasData([]),
+              },
             };
           }
           const args = envelope.arguments;
@@ -209,6 +236,9 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             case 'canvas_arrange':
               operations = arrange(state, toolSchemas.canvas_arrange.parse(args));
               break;
+            case 'canvas_comment':
+              operations = [commentCommand(toolSchemas.canvas_comment.parse(args))];
+              break;
             case 'canvas_transform':
               operations = transform(state, toolSchemas.canvas_transform.parse(args));
               break;
@@ -225,6 +255,9 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               const input = toolSchemas.canvas_history.parse(args);
               if (input.action === 'read')
                 return { success: true, data: boundedCanvasData(store.operations(input.since)) };
+              if (input.action === 'authors') return { success: true, data: boundedCanvasData(store.authors()) };
+              if (input.action === 'preview')
+                return { success: true, data: boundedCanvasData(revertPreview(store, input.author, author)) };
               operations =
                 input.action === 'revert'
                   ? store.revertCommands(author)
@@ -242,7 +275,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           if (prefix) {
             operations = operations.map((operation, index) => ({
               ...operation,
-              opId: `${prefix}${fingerprint}_${index}`,
+              opId: `${prefix}${index}`,
             }));
           }
           const result = store.appendExpanded(operations, author);
@@ -345,10 +378,33 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             const { CanvasBatchSchema, CanvasRevertSchema } = await loadCanvasSchemas();
             const store = (await ctx.canvasStores()).get(req.params.workspaceId);
             const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
-            const result =
-              action === 'ops'
-                ? store.append(parseBody(CanvasBatchSchema, req.body).operations, author)
-                : store.revert(parseBody(CanvasRevertSchema, req.body).author, author);
+            let summary: ReturnType<CanvasStore['revertPlan']>['summary'] | undefined;
+            let result;
+            if (action === 'ops') result = store.append(parseBody(CanvasBatchSchema, req.body).operations, author);
+            else {
+              const body = parseBody(CanvasRevertSchema, req.body);
+              const identity = requestIdentity(store, author, 'revert', body.author, body.requestId);
+              if (identity.reused)
+                return reply
+                  .code(409)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.CONFLICT,
+                      'Request identity was already used for a different revert'
+                    )
+                  );
+              if (identity.previous.length)
+                return {
+                  success: true,
+                  data: { seq: store.seq, sequences: identity.previous.map((o) => o.seq), replayed: true },
+                };
+              const plan = store.revertPlan(body.author);
+              summary = plan.summary;
+              const commands = identity.prefix
+                ? plan.commands.map((command, index) => ({ ...command, opId: `${identity.prefix}${index}` }))
+                : plan.commands;
+              result = store.revert(body.author, author, commands);
+            }
             if (!result.ok)
               return reply.code(409).send({
                 ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
@@ -364,7 +420,10 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                 owner: workspace?.owner,
               });
             }
-            return { success: true, data: { seq, sequences: result.sequences } };
+            return {
+              success: true,
+              data: { seq, sequences: result.sequences, ...(summary ? { summary: boundedCanvasData(summary) } : {}) },
+            };
           }
         );
       }
