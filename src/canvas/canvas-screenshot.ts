@@ -277,9 +277,19 @@ function kept(state: CanvasState, object: CanvasObject, rootId: string): boolean
   return false;
 }
 
+/** Stored asset bytes one screenshot may embed in total; images past it draw their unavailable note. */
+export const MAX_SHOT_ASSET_BYTES = 48 * 1024 * 1024;
+/** Asset ids an object draws from its stored bytes: an image's own, a link or embed card's thumbnail. */
+export function objectAssetIds(content: { type: string } & Record<string, unknown>): string[] {
+  return [content.assetId, content.thumbnailAssetId].filter(
+    (id): id is string => typeof id === 'string' && /^[a-f0-9]{64}$/.test(id)
+  );
+}
+
 export function shotModel(
   state: CanvasState,
-  objectId: string
+  objectId: string,
+  readAsset?: (assetId: string) => StoredImage | null
 ): { objects: ShotObject[]; fit: ShotFit; assets: Map<string, StoredImage> } {
   const root = state.objects[objectId];
   if (!root || root.deletedAt !== null) throw new ScreenshotNotFound();
@@ -328,11 +338,23 @@ export function shotModel(
     const image = decodeStoredImage(url);
     if (image) assets.set(object.id, image);
   }
+  // Stored assets are keyed by their hash, which never collides with an object id (at most 128
+  // characters of a wider alphabet, but a 64-hex object id would only ever name the same bytes).
+  let budget = MAX_SHOT_ASSET_BYTES;
+  for (const object of objects) {
+    for (const assetId of objectAssetIds(object.content)) {
+      if (assets.has(assetId) || !readAsset) continue;
+      const image = readAsset(assetId);
+      if (!image || image.bytes.length > budget) continue;
+      budget -= image.bytes.length;
+      assets.set(assetId, image);
+    }
+  }
   return { objects, fit: fitClip(clipFor(box)), assets };
 }
 
 export function buildShotDocument(
-  model: { objects: ShotObject[]; fit: ShotFit },
+  model: { objects: ShotObject[]; fit: ShotFit; assets?: ReadonlyMap<string, StoredImage> },
   css: string,
   script: string,
   theme: 'dark' | 'light'
@@ -344,7 +366,8 @@ export function buildShotDocument(
       images.push({ objectId: object.id, src: assetUrl(object.id) });
     }
   }
-  const payload = { objects: model.objects, transform: model.fit.transform, images };
+  const stored = [...(model.assets?.keys() ?? [])].filter((id) => /^[a-f0-9]{64}$/.test(id));
+  const payload = { objects: model.objects, transform: model.fit.transform, images, assets: stored };
   const themeAttr = theme === 'light' ? ` data-theme="light"` : '';
   const safeCss = css.replace(/<\/style/gi, '<\\/style');
   const safeScript = script.replace(/<\/script/gi, '<\\/script');
@@ -545,6 +568,8 @@ export interface RenderContainerOptions {
   signal?: AbortSignal;
   launch?: (options: { noSandbox?: boolean; timeoutMs?: number }) => Promise<HeadlessBrowser>;
   readAssets?: () => Promise<{ css: string; script: string }>;
+  /** Stored image bytes by asset id; the page is handed them and never fetches anything else. */
+  readAsset?: (assetId: string) => StoredImage | null;
 }
 
 export async function renderContainer(
@@ -561,7 +586,7 @@ export async function renderContainer(
     if (signal.aborted) throw new ScreenshotAborted();
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScreenshotTimeout();
-    const model = shotModel(state, objectId);
+    const model = shotModel(state, objectId, options.readAsset);
     const bundles = await (options.readAssets ?? readBundles)();
     const html = buildShotDocument(model, bundles.css, bundles.script, theme);
     const meta: ShotMeta = {

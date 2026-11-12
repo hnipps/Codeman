@@ -38,12 +38,66 @@ const PageSchema = z
 /** A long catch-up is a refetch of the snapshot, not an unbounded walk of history. */
 const MAX_HISTORY_PAGES = 200;
 /** Follows the `/ops` cursor from `since` to the end and returns one combined answer. */
+type HistoryAnswer = { seq: number; operations: unknown[] };
+/**
+ * One catch-up shared by everyone who needs the same history: the command acknowledgement and
+ * the change event a write produces both ask for it, and they get one `/ops` walk, not two with
+ * the same cursor. A request joins a walk in flight, or reuses a just-finished one, only when
+ * that walk started at or before its cursor and its answer reaches the sequence it needs.
+ */
+const shared = new Map<string, { since: number; at: number; answer: Promise<HistoryAnswer>; seq: number | null }>();
+const SHARED_HISTORY_MS = 2000;
+export function forgetSharedHistory(): void {
+  shared.clear();
+}
 export async function fetchHistory(
   url: (path: string) => string,
   workspaceId: string,
   since: number,
+  signal?: AbortSignal,
+  need = Number.POSITIVE_INFINITY
+): Promise<HistoryAnswer> {
+  const entry = shared.get(workspaceId);
+  if (
+    entry &&
+    entry.since <= since &&
+    Number.isFinite(need) &&
+    Date.now() - entry.at < SHARED_HISTORY_MS &&
+    (entry.seq === null || entry.seq >= need)
+  ) {
+    try {
+      const answer = await entry.answer;
+      if (answer.seq >= need) {
+        const operations = answer.operations.filter((record) => {
+          const header = HeaderSchema.safeParse(record);
+          return !header.success || header.data.seq > since;
+        });
+        return { seq: answer.seq, operations };
+      }
+    } catch {
+      /* The shared walk failed; walk again for this caller. */
+    }
+  }
+  const answer = walkHistory(url, workspaceId, since, signal);
+  const record = { since, at: Date.now(), answer, seq: null as number | null };
+  shared.set(workspaceId, record);
+  answer.then(
+    (result) => {
+      record.seq = result.seq;
+      record.at = Date.now();
+    },
+    () => {
+      if (shared.get(workspaceId) === record) shared.delete(workspaceId);
+    }
+  );
+  return answer;
+}
+async function walkHistory(
+  url: (path: string) => string,
+  workspaceId: string,
+  since: number,
   signal?: AbortSignal
-): Promise<{ seq: number; operations: unknown[] }> {
+): Promise<HistoryAnswer> {
   const operations: unknown[] = [];
   let cursor = since;
   for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
@@ -139,13 +193,13 @@ export class CanvasSync {
     this.source.addEventListener('canvas:changed', (event) => {
       try {
         const data = z.object({ workspaceId: z.string(), seq: z.number() }).parse(JSON.parse(event.data));
-        if (data.workspaceId === this.workspaceId && data.seq > this.state.seq) this.catchUp();
+        if (data.workspaceId === this.workspaceId && data.seq > this.state.seq) this.catchUp(data.seq);
       } catch {
         this.status('offline');
       }
     });
   }
-  private catchUp(): void {
+  private catchUp(need?: number): void {
     this.pending = this.pending
       .then(async () => {
         if (this.stopped) return;
@@ -153,7 +207,7 @@ export class CanvasSync {
         try {
           replay = replayCatchUp(
             this.state,
-            await fetchHistory(this.url, this.workspaceId, this.state.seq, this.abort.signal)
+            await fetchHistory(this.url, this.workspaceId, this.state.seq, this.abort.signal, need)
           );
         } catch {
           if (this.abort.signal.aborted) return;

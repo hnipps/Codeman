@@ -419,6 +419,7 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
           .filter((o) => o.parentId === parent && o.deletedAt === null)
           .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
         const selected = new Set(roots.map((o) => o.id));
+        const before = siblings.map((o) => o.id).join('\n');
         if (input.placement === 'front' || input.placement === 'back')
           siblings.sort(
             (a, b) => (Number(selected.has(a.id)) - Number(selected.has(b.id))) * (input.placement === 'front' ? 1 : -1)
@@ -435,6 +436,9 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
               [siblings[i], siblings[j]] = [siblings[j], siblings[i]];
           }
         }
+        // Stacking is relative: when nothing changes place, sparse orders such as 200/420/720 are
+        // left alone instead of being renumbered into a write that changes nothing visible.
+        if (siblings.map((o) => o.id).join('\n') === before) continue;
         siblings.forEach((o, order) => {
           if (o.order !== order) commands.push({ ...op(o.id), kind: 'reorder', patch: { order } });
         });

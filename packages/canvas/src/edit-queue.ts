@@ -234,22 +234,24 @@ export class EditQueue {
     const [head = [], ...rest] = batches;
     const dropped = [...head];
     const created = new Set(head.filter((op) => op.kind === 'create').map((op) => op.objectId));
+    for (const id of requestCreates(this.requests[head[0]?.opId ?? ''])) created.add(id);
     delete this.requests[head[0]?.opId ?? ''];
     const kept: Edit[][] = [];
     for (const batch of rest) {
       const request = this.requests[batch[0].opId];
-      const mentions = request ? JSON.stringify(request.arguments) : '';
+      const mentions = request ? requestIds(request.arguments) : new Set<string>();
       const depends = batch.some(
         (op) =>
           (op.kind !== 'create' && created.has(op.objectId)) ||
           ((op.kind === 'create' || op.kind === 'reparent') && created.has(op.patch.parentId ?? '')) ||
-          [...created].some((id) => mentions.includes(JSON.stringify(id)))
+          [...mentions].some((id) => created.has(id))
       );
       if (!depends) {
         kept.push(batch);
         continue;
       }
       dropped.push(...batch);
+      for (const id of requestCreates(request)) created.add(id);
       delete this.requests[batch[0].opId];
       for (const op of batch) if (op.kind === 'create') created.add(op.objectId);
     }
@@ -362,6 +364,34 @@ export class EditQueue {
     clearTimeout(this.timer);
   }
 }
+/** Every string id a compound's arguments name, found by walking the value, never by searching its text. */
+export function requestIds(value: unknown, found = new Set<string>(), depth = 0): Set<string> {
+  if (depth > 32 || found.size > 20_000) return found;
+  if (typeof value === 'string') {
+    if (IdSchema.safeParse(value).success) found.add(value);
+  } else if (Array.isArray(value)) for (const item of value) requestIds(item, found, depth + 1);
+  else if (value && typeof value === 'object')
+    for (const [key, item] of Object.entries(value)) {
+      // Free text (labels, text, URLs) can contain anything; only identifier fields name objects.
+      if (/^(id|objectId|parentId|groupId|targetIds|ids|operations|patch)$/.test(key))
+        requestIds(item, found, depth + 1);
+    }
+  return found;
+}
+/** Ids a compound would have created: its create operations and a client-chosen group id. */
+export function requestCreates(request: QueuedRequest | undefined): string[] {
+  if (!request) return [];
+  const args = request.arguments as { operations?: unknown; groupId?: unknown; action?: unknown } | null;
+  const ids: string[] = [];
+  if (args && typeof args.groupId === 'string') ids.push(args.groupId);
+  if (args && Array.isArray(args.operations))
+    for (const op of args.operations)
+      if (op && typeof op === 'object' && (op as { kind?: unknown }).kind === 'create') {
+        const objectId = (op as { objectId?: unknown }).objectId;
+        if (typeof objectId === 'string') ids.push(objectId);
+      }
+  return ids;
+}
 export function optimistic(source: ViewObject[], operations: Edit[]): ViewObject[] {
   const objects = new Map(source.map((o) => [o.id, o]));
   for (const op of operations) {
@@ -402,7 +432,13 @@ export function optimistic(source: ViewObject[], operations: Edit[]): ViewObject
             (parent ? worldOrigin([...objects.values()], parent).rotation : 0)
           : current.rotation;
         objects.set(current.id, { ...current, parentId: op.patch.parentId, order: op.patch.order, position, rotation });
-      } else objects.set(current.id, { ...current, ...op.patch });
+      } else {
+        const next = { ...current, ...op.patch };
+        // A link and an embed change into each other; the object type follows its content.
+        if (op.kind === 'update' && op.patch.content && op.patch.content.type !== current.type)
+          next.type = op.patch.content.type;
+        objects.set(current.id, next);
+      }
     }
   }
   return [...objects.values()].filter((o) => o.deletedAt === null);
@@ -436,7 +472,14 @@ export async function sendEdits(
     throw new Error('Save failed');
   }
   const written = WriteSchema.parse(payload).data;
-  const history = await fetchHistory(url, workspace, catchUpFrom(since, written.sequences ?? []));
+  const sequences = written.sequences ?? [];
+  const history = await fetchHistory(
+    url,
+    workspace,
+    catchUpFrom(since, sequences),
+    undefined,
+    sequences.length ? Math.max(...sequences) : written.seq
+  );
   return parseAcks(history.operations);
 }
 function refusedFrom(payload: z.infer<typeof RefusalSchema> | null): Refused {
@@ -465,7 +508,7 @@ export async function sendCommand(
   }
   const sequences = WriteSchema.parse(payload).data.sequences ?? [];
   if (!sequences.length) return { records: [], sequences: [] };
-  const history = await fetchHistory(url, workspace, catchUpFrom(since, sequences));
+  const history = await fetchHistory(url, workspace, catchUpFrom(since, sequences), undefined, Math.max(...sequences));
   const records = parseAcks(history.operations);
   const found = new Set(records.map((op) => op.seq));
   if (!sequences.every((seq) => found.has(seq))) throw new Error('Command acknowledgement missing');

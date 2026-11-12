@@ -2,6 +2,7 @@
 import type { Command } from '../../canvas/operations.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
+import { readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
@@ -492,7 +493,12 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           const hangup = abortOnClientHangUp(reply);
           try {
             const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
-            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal });
+            const { findAsset } = await import('../../canvas/canvas-assets.js');
+            const readAsset = (assetId: string) => {
+              const asset = findAsset(req.params.workspaceId, assetId);
+              return asset ? { mime: asset.mime, bytes: readFileSync(asset.path) } : null;
+            };
+            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal, readAsset });
             return reply
               .header('Cache-Control', 'no-store')
               .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))
