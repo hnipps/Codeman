@@ -31,7 +31,8 @@ const HEARTBEAT_MS = 20_000;
 export class ViewSync {
   readonly viewId = tabViewId();
   private last = '';
-  private lastSentAt = 0;
+  /** Starts at load time: a reloaded tab waits out the gap its previous page may still be inside. */
+  private lastSentAt = Date.now();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private applied: string[] = [];
   private beat: ReturnType<typeof setInterval> | undefined;

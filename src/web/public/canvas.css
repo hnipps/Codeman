@@ -1813,3 +1813,33 @@ textarea[readonly] {
 :root[data-phone] #addToChat {
   display: none !important;
 }
+
+/* With a rail open the tools sit in the middle of the board that is left, and the selection row
+   wraps rather than running under the rail. */
+:root:not([data-phone]) body:has(#rail:not([hidden])) {
+  --dock-left: 0px;
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])) .dock-area {
+  left: calc(var(--dock-left) + (100vw - var(--dock-left) - 320px) / 2);
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])):has(#outline:not([hidden])) {
+  --dock-left: 192px;
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])) #contextRow {
+  /* The row centres on the tools, which sit left of centre beside Fit: leave room for that offset. */
+  max-width: calc(100vw - var(--dock-left) - 320px - 72px);
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])) :is(#moveToMenu, .action-menu) {
+  left: calc(var(--dock-left, 0px) + (100vw - var(--dock-left, 0px) - 320px) / 2);
+}
+/* Where the row wraps to a second line, its menus open above both lines. */
+@media (max-width: 1180px) {
+  :root:not([data-phone]) body:has(#rail:not([hidden])) #moveToMenu {
+    bottom: 176px;
+  }
+  :root:not([data-phone]) body:has(#rail:not([hidden])) .action-menu {
+    bottom: 168px;
+  }
+}
