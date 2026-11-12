@@ -168,12 +168,19 @@ export class Renderer {
         else delete row.dataset.containerId;
         row.dataset.searchText = searchText(o).toLowerCase();
         row.title = label(o);
-        row.classList.toggle('root', depth === 0);
-        row.style.paddingLeft = `${8 + depth * 12}px`;
+        row.dataset.depth = String(depth);
+        this.indent(row, depth);
         this.tree.append(row);
       }
     }
   }
+  /** Depth is counted from the open view, so rows inside a sub-canvas start at the top-level indent. */
+  private indent(row: HTMLElement, depth: number): void {
+    const level = Math.max(0, depth - this.rootDepth);
+    row.classList.toggle('root', level === 0);
+    row.style.paddingLeft = `${8 + level * 12}px`;
+  }
+  private rootDepth = 0;
   view(state: ViewState, keyboard: boolean): void {
     const v = state.viewport;
     this.layer.style.setProperty('--zoom', String(v.zoom));
@@ -209,6 +216,9 @@ export class Renderer {
    */
   root(root: string | null): void {
     const enclosing = subcanvasIndex(this.objectsState);
+    const rootRow = root ? this.rows.get(root) : undefined;
+    this.rootDepth = rootRow ? Number(rootRow.dataset.depth ?? 0) + 1 : 0;
+    for (const row of this.rows.values()) this.indent(row, Number(row.dataset.depth ?? 0));
     for (const [id, el] of this.elements) {
       el.dataset.view = id === root ? 'root' : enclosing.get(id) === root ? 'in' : 'out';
       const row = this.rows.get(id);

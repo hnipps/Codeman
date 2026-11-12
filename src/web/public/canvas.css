@@ -1074,28 +1074,50 @@ textarea[readonly] {
   flex-wrap: nowrap;
   min-width: 0;
   align-items: center;
-  gap: 2px 4px;
-  padding: 0 16px 8px;
-  font-size: 12px;
+  gap: 4px;
+  padding: 0 12px 8px 8px;
+  font-size: 13px;
   color: var(--secondary);
 }
 #viewPath[hidden] {
   display: none;
 }
+#viewPath .crumb-back {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  background-clip: content-box;
+  color: var(--secondary);
+}
+#viewPath .crumb-back:hover,
+#viewPath .crumb-back:focus-visible {
+  background-color: var(--raised);
+  color: var(--text);
+}
 #viewPath .crumb {
-  min-height: 24px;
-  padding: 2px 4px;
   min-width: 0;
-  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The open sub-canvas keeps its name; the path above it shortens first. */
-#viewPath span.crumb {
+/* The open sub-canvas keeps its name; the parent between them truncates first. */
+#viewPath .crumb-parent {
+  flex: 0 1 auto;
+  min-width: 3.5em;
+}
+#viewPath .crumb-current {
+  flex: 0 1 auto;
   color: var(--text);
+}
+#viewPath .crumb-parent + .crumb-sep + .crumb-current {
   flex-shrink: 0;
-  max-width: 70%;
+  max-width: 55%;
 }
 #viewPath .crumb-sep {
   flex: 0 0 auto;
@@ -1125,10 +1147,18 @@ textarea[readonly] {
 .object-body[data-media-state='loading'] > .media-image {
   opacity: 0;
 }
+/*
+ * Media chrome (notes, hosts, embed headers) keeps at least 12 screen pixels down to 75% zoom:
+ * one --media-px is a canvas pixel divided by the zoom, clamped to 75%..100%. Below 75% the
+ * board is an overview and the chrome scales with everything else.
+ */
+#layer {
+  --media-px: calc(1px / max(min(var(--zoom, 1), 1), 0.75));
+}
 .media-note {
   position: absolute;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12 * var(--media-px));
   padding: 0 12px;
   text-align: center;
 }
@@ -1176,7 +1206,7 @@ textarea[readonly] {
   color: var(--secondary);
 }
 .link-host {
-  font-size: 12px;
+  font-size: calc(12 * var(--media-px));
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1187,17 +1217,21 @@ textarea[readonly] {
   display: flex;
   flex-direction: column;
   white-space: normal;
+  container-type: inline-size;
 }
 .embed-head {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 0 4px 0 12px;
+  gap: calc(8 * var(--media-px));
+  min-height: calc(36 * var(--media-px));
+  padding: 0 calc(12 * var(--media-px));
   border-bottom: 1px solid var(--divider);
   min-width: 0;
+  font-size: calc(13 * var(--media-px));
 }
+/* At rest the header is the title and the host; the title truncates first. */
 .embed-title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1205,23 +1239,55 @@ textarea[readonly] {
   min-width: 0;
   flex: 0 1 auto;
 }
-/* The host takes only the room the title leaves, so a narrow embed keeps its name. */
 .embed-head > .link-host {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.embed-actions {
-  display: flex;
   flex: 0 0 auto;
+  max-width: 50%;
+}
+@container (max-width: 200px) {
+  .embed-head > .link-host {
+    display: none;
+  }
+}
+/* Reload, Open and Back to link: icons over the end of the header, shown on hover, selection or focus. */
+.embed-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 calc(4 * var(--media-px)) 0 calc(16 * var(--media-px));
+  background: linear-gradient(to right, transparent, var(--panel) calc(16 * var(--media-px)));
+  opacity: 0;
+  pointer-events: none;
+}
+.object[data-type='embed']:hover .embed-actions,
+.object[data-type='embed'].selected .embed-actions,
+.object[data-type='embed'].keyboard-focus .embed-actions,
+.embed-head:focus-within .embed-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 .embed-action {
-  min-height: 28px;
-  padding: 2px 8px;
-  font-size: 12px;
+  display: grid;
+  place-items: center;
+  width: calc(32 * var(--media-px));
+  height: calc(32 * var(--media-px));
+  padding: calc(4 * var(--media-px));
+  border: 0;
+  border-radius: calc(8 * var(--media-px));
+  background: transparent;
+  background-clip: content-box;
   color: var(--secondary);
+}
+.embed-action svg {
+  width: calc(20 * var(--media-px));
+  height: calc(20 * var(--media-px));
+}
+.embed-action:hover,
+.embed-action:focus-visible {
+  background-color: var(--raised);
+  color: var(--text);
 }
 .embed-stage {
   position: relative;
@@ -1269,7 +1335,7 @@ textarea[readonly] {
   white-space: normal;
 }
 .subcanvas-count {
-  font-size: 12px;
+  font-size: calc(12 * var(--media-px));
   color: var(--muted);
 }
 .subcanvas-open {
@@ -1283,8 +1349,7 @@ textarea[readonly] {
 }
 @media (max-width: 600px) {
   .embed-actions,
-  .subcanvas-open,
-  #viewPath button.crumb {
+  .subcanvas-open {
     display: none;
   }
 }

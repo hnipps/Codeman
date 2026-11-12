@@ -184,37 +184,53 @@ function dispatch(action: ViewCommand): void {
   if (!frame) frame = requestAnimationFrame(paint);
 }
 window.canvasView = { dispatch, read: () => structuredClone(state) };
-/** The breadcrumb in the outline header: the workspace, then each open sub-canvas. */
+/**
+ * The line under the outline header while a sub-canvas is open: a back control named for
+ * where it goes, then the open sub-canvas. When nested deeper the immediate parent sits
+ * between them and truncates first. The workspace name stays in the header above.
+ */
 function paintViewPath(): void {
   const crumbs = node('viewPath');
   crumbs.replaceChildren();
   crumbs.hidden = state.root === null;
   if (state.root === null) return;
   const path = viewPath(objects, state.root);
-  const items: { id: string | null; name: string }[] = [
-    { id: null, name: node('workspaceName').textContent || 'Canvas' },
-    ...path.map((o) => ({ id: o.id, name: label(o) })),
-  ];
-  for (const [index, item] of items.entries()) {
-    if (index) {
-      const sep = document.createElement('span');
-      sep.className = 'crumb-sep';
-      sep.setAttribute('aria-hidden', 'true');
-      sep.textContent = '/';
-      crumbs.append(sep);
-    }
-    const last = index === items.length - 1;
-    const crumb = document.createElement(last ? 'span' : 'button');
-    crumb.className = 'crumb';
-    crumb.textContent = item.name;
-    if (last) crumb.setAttribute('aria-current', 'location');
-    else
-      crumb.addEventListener('click', () => {
-        while (state.root !== item.id && state.root !== null) dispatch({ kind: 'leave' });
-        board.focus({ preventScroll: true });
-      });
-    crumbs.append(crumb);
+  const current = path.at(-1);
+  const parent = path.at(-2);
+  const parentName = parent ? label(parent) : node('workspaceName').textContent || 'Canvas';
+  const back = document.createElement('button');
+  back.className = 'crumb-back';
+  back.setAttribute('aria-label', `Back to ${parentName}`);
+  back.title = `Back to ${parentName} · Esc`;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+  const arrow = document.createElementNS(svg.namespaceURI, 'path');
+  arrow.setAttribute('d', 'M16 10H4M9 5l-5 5 5 5');
+  svg.append(arrow);
+  back.append(svg);
+  back.addEventListener('click', () => {
+    dispatch({ kind: 'leave' });
+    board.focus({ preventScroll: true });
+  });
+  crumbs.append(back);
+  if (parent) {
+    const middle = document.createElement('span');
+    middle.className = 'crumb crumb-parent';
+    middle.textContent = parentName;
+    middle.title = parentName;
+    const sep = document.createElement('span');
+    sep.className = 'crumb-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    sep.textContent = '/';
+    crumbs.append(middle, sep);
   }
+  const here = document.createElement('span');
+  here.className = 'crumb crumb-current';
+  here.setAttribute('aria-current', 'location');
+  here.textContent = current ? label(current) : '';
+  here.title = here.textContent;
+  crumbs.append(here);
 }
 function paint(): void {
   frame = 0;

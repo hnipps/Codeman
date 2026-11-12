@@ -21,6 +21,13 @@ import { embedStage, paintEmbed } from './objects/embed.js';
 import { screenToCanvas, type Point } from './viewport.js';
 
 export const MAX_LIVE_FRAMES = 6;
+/**
+ * Exactly an untrusted web tab's list (webview-tabs.js). No allow-same-origin: the page runs in
+ * an opaque origin and cannot read Codeman's. No allow-popups-to-escape-sandbox: a popup keeps
+ * this sandbox, so a page cannot open its own /webview/ URL as a top-level document on
+ * Codeman's origin with the login cookie.
+ */
+export const EMBED_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads allow-modals';
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_PASTED_IMAGES = 10;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -450,7 +457,13 @@ export class MediaEditor {
     const url = text(object.content.url);
     if (!pastedUrl(url)) return;
     if (isLoopbackUrl(url)) {
-      this.host.say('This address is on the Codeman machine. Embed it to open it here.');
+      const message =
+        object.type === 'embed'
+          ? 'This address is on the Codeman machine, so it opens only inside the canvas.'
+          : 'This address is on the Codeman machine. Embed it to open it here.';
+      // A double-click selects first; the paint that clears a stale refusal runs in the next
+      // frame, so the refusal is said after it rather than wiped by it.
+      requestAnimationFrame(() => this.host.say(message));
       return;
     }
     window.open(url, '_blank', 'noopener,noreferrer');
@@ -551,8 +564,7 @@ export class MediaEditor {
       stage.querySelector(':scope > iframe')?.remove();
       stage.querySelector(':scope > .embed-card')?.remove();
       const frame = document.createElement('iframe');
-      // No allow-same-origin: the page runs in an opaque origin and cannot read this one.
-      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox');
+      frame.setAttribute('sandbox', EMBED_SANDBOX);
       frame.referrerPolicy = 'no-referrer';
       frame.tabIndex = -1;
       frame.title = label(object) || linkHost(url);
@@ -630,6 +642,8 @@ export class MediaEditor {
     );
     if (!frame) return;
     this.endInteraction(true);
+    // Escape from any of our frames hands the keys back, even one that took focus by itself.
+    if (document.activeElement === frame) node('board').focus({ preventScroll: true });
   }
   get interactingId(): string | null {
     return this.interacting;

@@ -49,6 +49,8 @@ function png(width: number, height: number): Buffer {
   ]);
 }
 const picture = png(640, 400);
+/** Requests the test site answered, by path: a reload shows up as a second request. */
+const hits = new Map<string, number>();
 
 type Seed = {
   id: string;
@@ -90,6 +92,7 @@ describe('canvas media', () => {
     await server.start();
     origin = `http://localhost:${server.boundPort}`;
     pages = createServer((req, res) => {
+      hits.set(req.url ?? '', (hits.get(req.url ?? '') ?? 0) + 1);
       if (req.url === '/notes') {
         res.setHeader('Content-Type', 'text/html');
         res.end(
@@ -320,9 +323,57 @@ describe('canvas media', () => {
     for (const sandbox of await page
       .locator('.embed-stage > iframe')
       .evaluateAll((f) => f.map((x) => x.getAttribute('sandbox'))))
-      expect(sandbox).not.toContain('allow-same-origin');
+      // Exactly the untrusted web-tab list: no allow-same-origin, and no
+      // allow-popups-to-escape-sandbox (a popup must stay sandboxed off Codeman's origin).
+      expect(sandbox).toBe('allow-scripts allow-forms allow-popups allow-downloads allow-modals');
     expect(await page.evaluate(() => document.activeElement?.id)).toBe('board');
+    await page.mouse.move(1300, 760);
+    // At rest a header is the title and the host; the actions are hidden icons.
+    const actions = (id: string) => page.locator(`[data-object-id="${id}"] .embed-actions`);
+    const opacity = (id: string) => actions(id).evaluate((el) => getComputedStyle(el).opacity);
+    expect(await opacity('embed-5')).toBe('0');
+    expect(
+      await actions('embed-5')
+        .locator('button')
+        .evaluateAll((b) => b.map((x) => [x.getAttribute('aria-label'), x.getAttribute('title'), x.textContent]))
+    ).toEqual([
+      ['Reload page', 'Reload page', ''],
+      ['Open in new tab', 'Open in new tab', ''],
+      ['Back to link', 'Back to link', ''],
+    ]);
+    // No chrome text in the media additions renders under 12 screen pixels at this zoom.
+    const sizes = await page
+      .locator('.embed-title, .embed-head .link-host, .embed-card .link-host')
+      .evaluateAll((els) =>
+        els
+          .filter((el) => getComputedStyle(el).display !== 'none')
+          .map((el) => parseFloat(getComputedStyle(el).fontSize))
+      );
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const size of sizes) expect(size * 0.85).toBeGreaterThanOrEqual(11.9);
     await shot('desktop-embed-live');
+    // Hover or selection shows them; the contextual row still carries Back to link.
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: ['embed-1'] }));
+    await page.locator('[data-object-id="embed-1"] .embed-head').hover();
+    expect(await opacity('embed-1')).toBe('1');
+    await shot('desktop-embed-hover-selected');
+    const reloads = hits.get('/page?n=1') ?? 0;
+    await actions('embed-1').locator('[data-media-action="reload"]').click();
+    await expect.poll(() => hits.get('/page?n=1') ?? 0).toBeGreaterThan(reloads);
+    // The page is on this machine, so Open in new tab refuses and says why.
+    await actions('embed-1').locator('[data-media-action="open"]').click();
+    await page.waitForSelector('#actionMessage:not([hidden])');
+    expect(await page.locator('#actionMessage').textContent()).toContain('Codeman machine');
+    // Keyboard focus into a header reveals its actions, and Enter runs one.
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: [] }));
+    await page.mouse.move(1300, 760);
+    expect(await opacity('embed-2')).toBe('0');
+    const keyed = hits.get('/page?n=2') ?? 0;
+    await actions('embed-2').locator('[data-media-action="reload"]').focus();
+    expect(await opacity('embed-2')).toBe('1');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => hits.get('/page?n=2') ?? 0).toBeGreaterThan(keyed);
+    await page.locator('#board').focus();
 
     const frameBox = await page.locator('[data-object-id="embed-1"]').boundingBox();
     const noteBox = await page.locator('[data-object-id="note"]').boundingBox();
@@ -351,7 +402,7 @@ describe('canvas media', () => {
     await page.keyboard.type('hello');
     expect(await field.inputValue()).toBe('hello');
     await page.keyboard.press('Escape');
-    await page.waitForFunction(() => document.activeElement?.id === 'board');
+    await page.waitForFunction(() => document.activeElement?.id === 'board', undefined, { timeout: 5000 });
     expect(await page.locator('.embed-stage.interacting').count()).toBe(0);
 
     // Over the cap, the embeds furthest from the middle show their card with "Paused".
@@ -414,7 +465,12 @@ describe('canvas media', () => {
     await page.waitForFunction(() => window.canvasView.read().root === 'sub');
     await page.evaluate(() => new Promise(requestAnimationFrame));
     expect(await page.locator('#viewPath').isVisible()).toBe(true);
-    expect(await page.locator('#viewPath').textContent()).toContain('Research');
+    expect(await page.locator('#viewPath .crumb-back').getAttribute('aria-label')).toBe(
+      `Back to ${await page.locator('#workspaceName').textContent()}`
+    );
+    expect(await page.locator('#viewPath .crumb').allTextContents()).toEqual(['Research']);
+    // Rows inside the open sub-canvas start at the top-level indent.
+    expect(await page.locator('[data-row-id="inner"]').evaluate((el) => getComputedStyle(el).paddingLeft)).toBe('8px');
     expect(await page.locator('[data-object-id="inner"]').isVisible()).toBe(true);
     expect(await page.locator('[data-object-id="outside"]').isVisible()).toBe(false);
     await page.waitForTimeout(400);
@@ -429,8 +485,78 @@ describe('canvas media', () => {
     await paste({ text: 'Pasted inside' });
     await saved();
     expect((await stored()).find((o) => o.content.text === 'Pasted inside')?.parentId).toBe('sub');
+    // Nested deeper: the immediate parent sits between the back control and the open name.
+    await seed([
+      {
+        id: 'deeper',
+        type: 'subcanvas',
+        x: 40,
+        y: 300,
+        w: 300,
+        h: 200,
+        content: { workspaceId: 'deeper', label: 'Interview notes from the field' },
+        parentId: 'sub',
+      },
+      { id: 'deep-note', type: 'text', x: 20, y: 20, w: 200, h: 80, content: { text: 'Deep' }, parentId: 'deeper' },
+    ]);
+    await page.waitForSelector('[data-object-id="deeper"]', { state: 'attached' });
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'enter', id: 'deeper' }));
+    await page.waitForFunction(() => window.canvasView.read().root === 'deeper');
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    expect(await page.locator('#viewPath .crumb').allTextContents()).toEqual([
+      'Research',
+      'Interview notes from the field',
+    ]);
+    expect(await page.locator('#viewPath .crumb-back').getAttribute('aria-label')).toBe('Back to Research');
+    expect(await page.locator('[data-row-id="deep-note"]').evaluate((el) => getComputedStyle(el).paddingLeft)).toBe(
+      '8px'
+    );
+    await shot('desktop-subcanvas-nested');
+    await page.locator('#viewPath .crumb-back').click();
+    await page.waitForFunction(() => window.canvasView.read().root === 'sub');
     await page.keyboard.press('Alt+ArrowUp');
     await page.waitForFunction(() => window.canvasView.read().root === null);
+  });
+
+  it('opens a link in a new tab, except an address on the Codeman machine', async () => {
+    await seed([
+      {
+        id: 'away',
+        type: 'link',
+        x: 100,
+        y: 100,
+        w: 320,
+        h: 96,
+        content: { url: 'http://canvas-link.invalid/notes', label: 'Elsewhere', preview: 'ready' },
+      },
+      {
+        id: 'local',
+        type: 'link',
+        x: 100,
+        y: 260,
+        w: 320,
+        h: 96,
+        content: { url: `${site}/notes`, label: 'On this machine', preview: 'ready' },
+      },
+    ]);
+    await open();
+    // The new tab never leaves this machine: its address is answered here.
+    await page
+      .context()
+      .route('http://canvas-link.invalid/**', (route) =>
+        route.fulfill({ contentType: 'text/html', body: '<title>Elsewhere</title>' })
+      );
+    const popup = page.waitForEvent('popup');
+    await page.locator('[data-object-id="away"]').dblclick();
+    await (await popup).waitForLoadState('domcontentloaded');
+    expect((await popup).url()).toBe('http://canvas-link.invalid/notes');
+    await (await popup).close();
+    await page.locator('[data-object-id="local"]').dblclick();
+    await page.waitForSelector('#actionMessage:not([hidden])');
+    expect(await page.locator('#actionMessage').textContent()).toBe(
+      'This address is on the Codeman machine. Embed it to open it here.'
+    );
+    expect(page.context().pages()).toHaveLength(1);
   });
 
   it('shows media read-only at phone width with no live frames', async () => {

@@ -9,13 +9,28 @@ import { linkHost, paintLinkCard } from './link.js';
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 
-function action(name: string, label: string, title: string): HTMLButtonElement {
+/** 20-unit icon paths, drawn with the dock's stroke (`svg` in canvas.css). */
+const ICONS = {
+  reload: 'M15.5 7.5A6 6 0 1 0 16 11M16 3.5v4h-4',
+  open: 'M11 4h5v5M16 4l-7 7M14 12.5V16H4V6h3.5',
+  'to-link': 'M8.5 11.5l3-3M7.5 9l-2 2a2.5 2.5 0 0 0 3.5 3.5l2-2M12.5 11l2-2A2.5 2.5 0 0 0 11 5.5l-2 2',
+} as const;
+
+/** An icon button: named by aria-label and title, shown on hover, selection or keyboard focus. */
+function action(name: keyof typeof ICONS, label: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.className = 'embed-action';
+  button.type = 'button';
   button.dataset.mediaAction = name;
-  button.tabIndex = -1;
-  button.textContent = label;
-  button.title = title;
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', ICONS[name]);
+  svg.append(path);
+  button.append(svg);
   return button;
 }
 
@@ -38,9 +53,9 @@ export function paintEmbed(body: HTMLElement, o: ViewObject, ctx: MediaContext):
     const actions = document.createElement('span');
     actions.className = 'embed-actions';
     actions.append(
-      action('reload', 'Reload', 'Reload the page'),
-      action('open', 'Open', 'Open in a new tab'),
-      action('to-link', 'Back to link', 'Show as a link card')
+      action('reload', 'Reload page'),
+      action('open', 'Open in new tab'),
+      action('to-link', 'Back to link')
     );
     head.append(name, host, actions);
     const stage = document.createElement('div');
