@@ -17,6 +17,27 @@ export const SizeSchema = z
 /** A stored image asset is named by the SHA-256 of its bytes. */
 export const AssetIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const LockSchema = z.enum(['subtree', 'background']).nullable();
+/**
+ * Why a link or embed address cannot be written, or null when it can. Checked when an object is
+ * created or its address changes (never on read, so a stored address from an earlier release
+ * still loads): it must parse as an absolute http(s) URL with a host, carry no user name or
+ * password, and contain no whitespace or control characters a lenient parser would drop.
+ */
+export function webAddressRefusal(url: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(url)) return 'A web address cannot contain spaces or control characters';
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'Links and embeds need a full http:// or https:// address';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+    return 'Links and embeds need a full http:// or https:// address';
+  if (!parsed.hostname) return 'Links and embeds need a full http:// or https:// address';
+  if (parsed.username || parsed.password) return 'A web address cannot carry a user name or password';
+  return null;
+}
 export const ContentSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string().max(1_000_000) }).strict(),
   z

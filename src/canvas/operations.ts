@@ -14,6 +14,7 @@ import {
   indexKnownObjects,
   classifyObject,
   validateKnownObject,
+  webAddressRefusal,
   knownContentFields,
   descendants,
   walkHierarchy,
@@ -321,6 +322,16 @@ function validateBatchUnchecked(
     }
     if (current && ['comment', 'remove-comment'].includes(command.kind)) proposed = current;
     if (!validateKnownObject(proposed)) return reject('INVALID', 'Invalid object fields');
+    if (proposed.content.type === 'link' || proposed.content.type === 'embed') {
+      const before = current?.content;
+      const changed =
+        !before ||
+        before.type !== proposed.content.type ||
+        ('url' in before ? before.url : null) !== proposed.content.url;
+      const url = proposed.content.url;
+      const refusal = changed ? webAddressRefusal(typeof url === 'string' ? url : '') : null;
+      if (refusal) return reject('INVALID', refusal);
+    }
     const parentLock = proposed.parentId === null ? null : effectiveLock(state, proposed.parentId);
     if (
       parentLock?.mode === 'subtree' &&

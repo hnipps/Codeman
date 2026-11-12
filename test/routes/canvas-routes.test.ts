@@ -893,9 +893,25 @@ describe('canvas media', () => {
       await app.close();
     }
   });
-  it('mints a frame only for a live embed, never trusted and out of the tab list, and retires it on delete', async () => {
+  it('mints a frame only for a live embed, in memory, and retires it on delete, back-to-link and a new URL', async () => {
     const { app, command, base, store } = await media();
     try {
+      // A user web tab already on disk: frames must leave this file byte for byte as it is.
+      const userRow = [
+        {
+          id: 'mine',
+          name: 'Mine',
+          url: 'https://example.com/',
+          embedMode: 'proxy',
+          trusted: false,
+          origin: { kind: 'user' },
+          owner: 'user-a',
+          createdAt: 1,
+        },
+      ];
+      const file = join(dir, 'webviews.json');
+      writeFileSync(file, JSON.stringify(userRow, null, 2));
+      const before = readFileSync(file);
       const embed = (id: string, url: string) => ({
         kind: 'create',
         opId: id,
@@ -919,15 +935,71 @@ describe('canvas media', () => {
       expect(embedUrl).toMatch(/^\/webview\/[^/]+\/$/);
       const again = await app.inject({ method: 'POST', url: `${base}/objects/e/frame` });
       expect(again.json().data.webviewId).toBe(webviewId);
-      const records = await readWebviews(dir);
-      expect(records).toHaveLength(1);
-      expect(records[0]).toMatchObject({ trusted: false, origin: { kind: 'canvas', objectId: 'e' } });
       const cap = embedUrl.split('/')[2];
       expect(webviewCapabilities.resolve(cap)).toBeTruthy();
-      await command('canvas_delete', { operations: [{ kind: 'delete', opId: 'del-e', objectId: 'e' }] });
-      expect(await readWebviews(dir)).toHaveLength(0);
+      // Back to link and to embed twenty times, then delete and restore: still nothing on disk.
+      for (let i = 0; i < 20; i++) {
+        const type = i % 2 ? 'embed' : 'link';
+        const content =
+          type === 'link' ? { type, url: 'https://example.com/', label: '' } : { type, url: 'https://example.com/' };
+        const res = await command('canvas_update', {
+          operations: [{ kind: 'update', opId: `switch-${i}`, objectId: 'e', patch: { content } }],
+        });
+        expect(res.statusCode).toBe(200);
+        if (type === 'embed')
+          expect((await app.inject({ method: 'POST', url: `${base}/objects/e/frame` })).statusCode).toBe(200);
+      }
       expect(webviewCapabilities.resolve(cap)).toBeFalsy();
+      const last = (await app.inject({ method: 'POST', url: `${base}/objects/e/frame` })).json().data.embedUrl;
+      await command('canvas_delete', { operations: [{ kind: 'delete', opId: 'del-e', objectId: 'e' }] });
+      expect(webviewCapabilities.resolve(last.split('/')[2])).toBeFalsy();
       expect(store.read().objects.e.deletedAt).not.toBeNull();
+      expect((await app.inject({ method: 'POST', url: `${base}/objects/e/frame` })).statusCode).toBe(409);
+      await command('canvas_history', { action: 'undo', sequences: [store.read().seq] });
+      expect((await app.inject({ method: 'POST', url: `${base}/objects/e/frame` })).statusCode).toBe(200);
+      expect(readFileSync(file).equals(before)).toBe(true);
+      // The previous release reads the file as a plain array of rows: it sees only the user's tab.
+      expect((JSON.parse(readFileSync(file, 'utf8')) as { id: string }[]).map((w) => w.id)).toEqual(['mine']);
+      expect((await readWebviews(dir)).map((w) => w.id)).toEqual(['mine']);
+    } finally {
+      await app.close();
+    }
+  });
+  it('retires a frame whose URL changes and when its owner logs out', async () => {
+    const { app, command, base } = await media();
+    try {
+      await command('canvas_create', {
+        operations: [
+          {
+            kind: 'create',
+            opId: 'e',
+            objectId: 'e',
+            patch: {
+              parentId: null,
+              order: 0,
+              position: { x: 0, y: 0 },
+              size: { width: 480, height: 320 },
+              content: { type: 'embed', url: 'https://example.com/' },
+            },
+          },
+        ],
+      });
+      const first = (await app.inject({ method: 'POST', url: `${base}/objects/e/frame` })).json().data.embedUrl;
+      await command('canvas_update', {
+        operations: [
+          {
+            kind: 'update',
+            opId: 'move',
+            objectId: 'e',
+            patch: { content: { type: 'embed', url: 'https://example.org/' } },
+          },
+        ],
+      });
+      expect(webviewCapabilities.resolve(first.split('/')[2])).toBeFalsy();
+      const second = (await app.inject({ method: 'POST', url: `${base}/objects/e/frame` })).json().data.embedUrl;
+      expect(webviewCapabilities.resolve(second.split('/')[2])).toBeTruthy();
+      webviewCapabilities.revokeOwner('user-a');
+      expect(webviewCapabilities.resolve(second.split('/')[2])).toBeFalsy();
     } finally {
       await app.close();
     }
@@ -937,10 +1009,86 @@ describe('canvas media', () => {
     try {
       const refused = await command('canvas_link_preview', { url: 'http://169.254.169.254/' });
       expect(refused.statusCode).toBe(200);
-      expect(refused.json().data).toMatchObject({ status: 'unavailable' });
-      expect(refused.json().data.reason).toMatch(/link-local or cloud-metadata/);
+      expect(refused.json().data).toMatchObject({ status: 'unavailable', reason: 'This page could not be previewed' });
+      const unreachable = await command('canvas_link_preview', { url: 'http://127.0.0.1:1/' });
+      expect(unreachable.json().data.reason).toBe(refused.json().data.reason);
     } finally {
       await app.close();
+    }
+  });
+  it('refuses a link or embed address that is not plain http(s) when it is written', async () => {
+    const { app, command, store } = await media('media-urls');
+    try {
+      const create = (objectId: string, type: 'link' | 'embed', url: string) =>
+        command('canvas_create', {
+          operations: [
+            {
+              kind: 'create',
+              opId: objectId,
+              objectId,
+              patch: {
+                parentId: null,
+                order: 0,
+                position: { x: 0, y: 0 },
+                size: { width: 200, height: 80 },
+                content: type === 'link' ? { type, url, label: '' } : { type, url },
+              },
+            },
+          ],
+        });
+      for (const [n, url] of [
+        'javascript:alert(1)',
+        'data:text/html,<b>x</b>',
+        'file:///etc/passwd',
+        'https://user:secret@example.com/',
+        'https://example.com/a b',
+        'example.com',
+      ].entries()) {
+        const refused = await create(`bad${n}`, n % 2 ? 'embed' : 'link', url);
+        expect(refused.statusCode, url).toBe(409);
+        expect(refused.json().reasons[0].code).toBe('INVALID');
+      }
+      expect(store.read().objects).toEqual({});
+      expect((await create('good', 'link', 'https://example.com/docs')).statusCode).toBe(200);
+      const repoint = await command('canvas_update', {
+        operations: [
+          {
+            kind: 'update',
+            opId: 'repoint',
+            objectId: 'good',
+            patch: { content: { type: 'embed', url: 'javascript:alert(1)' } },
+          },
+        ],
+      });
+      expect(repoint.statusCode).toBe(409);
+      expect(store.read().objects.good.content).toMatchObject({ type: 'link', url: 'https://example.com/docs' });
+    } finally {
+      await app.close();
+    }
+  });
+  it('limits uploads per caller and workspace, and refuses past the workspace quota with product copy', async () => {
+    const { app, base } = await media('media-limits');
+    try {
+      const bytes = png(2, 2);
+      for (let n = 0; n < 30; n++) expect((await upload(app, base, bytes)).statusCode).toBe(200);
+      const limited = await upload(app, base, bytes);
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json().errorCode).toBe('RATE_LIMITED');
+    } finally {
+      await app.close();
+    }
+    const quota = await media('media-quota');
+    try {
+      const first = png(3, 3);
+      vi.stubEnv('CODEMAN_CANVAS_ASSET_QUOTA_BYTES', String(first.length));
+      expect((await upload(quota.app, quota.base, first)).statusCode).toBe(200);
+      const full = await upload(quota.app, quota.base, png(4, 4));
+      expect(full.statusCode).toBe(413);
+      expect(full.json()).toMatchObject({ refusal: 'quota' });
+      expect(full.json().error).toMatch(/image limit\. Images already on it still show\./);
+    } finally {
+      vi.stubEnv('CODEMAN_CANVAS_ASSET_QUOTA_BYTES', '');
+      await quota.app.close();
     }
   });
 });

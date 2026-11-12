@@ -9,7 +9,9 @@
  * the file in place, since undo, restore and copies may reference it again.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { statSync } from 'node:fs';
+import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { canvasAssetQuotaBytes } from '../config/canvas-limits.js';
 import { dataPath } from '../config/instance.js';
 import { imageMagicMatchesExt } from '../web/routes/session-routes.js';
 import { requireCanvasWriter } from './canvas-store.js';
@@ -36,7 +38,7 @@ export function assetExtension(declared: string | undefined): string | null {
   return ASSET_TYPES[normalized] ? normalized : null;
 }
 
-export type AssetRefusal = 'type' | 'size' | 'bytes' | 'empty';
+export type AssetRefusal = 'type' | 'size' | 'bytes' | 'empty' | 'quota';
 export class AssetRefusedError extends Error {
   constructor(
     readonly reason: AssetRefusal,
@@ -56,8 +58,49 @@ export type StoredAsset = {
 
 const assetsDir = (workspaceId: string): string => dataPath('canvas', IdSchema.parse(workspaceId), 'assets');
 
-/** Validate and store image bytes. Storing the same bytes again returns the existing asset. */
-export function storeAsset(workspaceId: string, data: Buffer, declared: string | undefined): StoredAsset {
+/** Bytes the workspace's stored assets take, in-flight temporary files included. */
+async function storedBytes(dir: string): Promise<number> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const name of names) {
+    try {
+      const info = await stat(`${dir}/${name}`);
+      if (info.isFile()) total += info.size;
+    } catch {
+      /* Gone between the listing and the stat. */
+    }
+  }
+  return total;
+}
+
+/** One write at a time per workspace, so two uploads cannot both pass the quota check. */
+const writing = new Map<string, Promise<unknown>>();
+function serialized<T>(workspaceId: string, task: () => Promise<T>): Promise<T> {
+  const run = (writing.get(workspaceId) ?? Promise.resolve()).then(task, task);
+  const settled = run.catch(() => undefined);
+  writing.set(workspaceId, settled);
+  void settled.then(() => {
+    if (writing.get(workspaceId) === settled) writing.delete(workspaceId);
+  });
+  return run;
+}
+
+/**
+ * Validate and store image bytes. Storing the same bytes again returns the existing asset and
+ * costs nothing; new bytes are refused (`quota`) when they would take the workspace past
+ * `canvasAssetQuotaBytes()`. The write is asynchronous: a fresh temporary file (`wx`, never an
+ * existing one) renamed into place.
+ */
+export async function storeAsset(
+  workspaceId: string,
+  data: Buffer,
+  declared: string | undefined
+): Promise<StoredAsset> {
   const ext = assetExtension(declared);
   if (!ext) throw new AssetRefusedError('type', 'Only PNG, JPEG, GIF and WebP images can be added to the canvas');
   if (!data.length) throw new AssetRefusedError('empty', 'The image is empty');
@@ -69,16 +112,27 @@ export function storeAsset(workspaceId: string, data: Buffer, declared: string |
   const assetId = createHash('sha256').update(data).digest('hex');
   const dir = assetsDir(workspaceId);
   const path = `${dir}/${assetId}${ext}`;
-  if (!existsSync(path)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  await serialized(workspaceId, async () => {
+    try {
+      if ((await stat(path)).isFile()) return;
+    } catch {
+      /* Not stored yet. */
+    }
+    const quota = canvasAssetQuotaBytes();
+    if ((await storedBytes(dir)) + data.length > quota)
+      throw new AssetRefusedError(
+        'quota',
+        `This canvas has reached its ${Math.round(quota / 1024 / 1024)} MB image limit. Images already on it still show.`
+      );
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const tmp = `${path}.${randomUUID()}.tmp`;
     try {
-      writeFileSync(tmp, data, { mode: 0o600 });
-      renameSync(tmp, path);
+      await writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
+      await rename(tmp, path);
     } finally {
-      rmSync(tmp, { force: true });
+      await rm(tmp, { force: true });
     }
-  }
+  });
   const size = imageSize(data, ext);
   return {
     assetId,

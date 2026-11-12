@@ -2,8 +2,8 @@
 import type { Command } from '../../canvas/operations.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
-import { readFileSync } from 'node:fs';
-import type { FastifyInstance } from 'fastify';
+import { readFile } from 'node:fs/promises';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
@@ -30,7 +30,6 @@ import { SseEvent } from '../sse-events.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
-import type { CanvasStores } from '../../canvas/canvas-store.js';
 
 /** A no-op answer writes nothing, so its request identity is held here instead of in the log. */
 const noopRequests = new LRUMap<string, string>({ maxSize: 2000 });
@@ -64,45 +63,35 @@ async function retireFrames(workspaceId: string, operations: Pick<Operation, 'pr
   const ids = new Set(retiredEmbeds(operations));
   if (!ids.size) return;
   const { removeCanvasWebviews } = await import('./webview-routes.js');
-  await removeCanvasWebviews((origin) => origin.workspaceId === workspaceId && ids.has(origin.objectId));
+  removeCanvasWebviews((origin) => origin.workspaceId === workspaceId && ids.has(origin.objectId));
 }
 
-/** Boot sweep, like the session-origin one: drop frame records whose object is no longer a live embed. */
-export async function sweepCanvasWebviews(stores: () => Promise<CanvasStores>): Promise<void> {
-  const { canvasWebviewOrigins, removeCanvasWebviews } = await import('./webview-routes.js');
-  const origins = await canvasWebviewOrigins();
-  if (!origins.length) return;
-  const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
-  const known = new Set(readWorkspaces().map((w) => w.id));
-  const live = new Map<string, Set<string>>();
-  for (const workspaceId of new Set(origins.map((o) => o.workspaceId))) {
-    if (!known.has(workspaceId)) continue;
-    const state = (await stores()).get(workspaceId).read();
-    live.set(
-      workspaceId,
-      new Set(
-        Object.values(state.objects)
-          .filter((o) => o.type === 'embed' && o.deletedAt === null)
-          .map((o) => o.id)
-      )
-    );
-  }
-  await removeCanvasWebviews((origin) => !live.get(origin.workspaceId)?.has(origin.objectId));
-}
+/** Who a rate limit counts against: the user in multi-user mode, else the client address. */
+const callerKey = (req: FastifyRequest): string => {
+  const owner = ownerFor(req);
+  return owner === undefined ? `ip:${req.ip}` : `user:${owner}`;
+};
 
-async function linkPreview(workspaceId: string, url: string) {
-  const { fetchLinkPreview } = await import('../../canvas/link-preview.js');
+let previews: ReturnType<typeof import('../../canvas/link-preview.js').createLinkPreviewService> | undefined;
+async function linkPreviews() {
+  if (previews) return previews;
+  const { createLinkPreviewService } = await import('../../canvas/link-preview.js');
   const { storeAsset } = await import('../../canvas/canvas-assets.js');
-  const { thumbnail, ...preview } = await fetchLinkPreview(url);
-  let thumbnailAssetId: string | undefined;
-  if (thumbnail && deployRole.allows('persist'))
-    try {
-      thumbnailAssetId = storeAsset(workspaceId, thumbnail.bytes, thumbnail.type).assetId;
-    } catch {
-      /* A thumbnail that fails the byte check is dropped; the title still stands. */
-    }
-  return { ...preview, ...(thumbnailAssetId ? { thumbnailAssetId } : {}) };
+  previews = createLinkPreviewService({
+    storeThumbnail: async (workspaceId, bytes, type) => {
+      if (!deployRole.allows('persist')) return null;
+      try {
+        return (await storeAsset(workspaceId, bytes, type)).assetId;
+      } catch {
+        // A thumbnail that fails the byte check or the workspace quota is dropped; the title stands.
+        return null;
+      }
+    },
+  });
+  return previews;
 }
+
+const uploadBuckets = new Map<string, { tokens: number; lastRefill: number }>();
 
 export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): void {
   void app.register(async (scope) => {
@@ -277,7 +266,17 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           switch (envelope.tool) {
             case 'canvas_link_preview': {
               const { url: link } = toolSchemas.canvas_link_preview.parse(args);
-              return { success: true, data: await linkPreview(req.params.workspaceId, link) };
+              const answer = await (await linkPreviews()).preview(req.params.workspaceId, link, callerKey(req));
+              if (answer === 'rate-limited')
+                return reply
+                  .code(429)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.RATE_LIMITED,
+                      'Too many link previews in this canvas. Try again in a minute.'
+                    )
+                  );
+              return { success: true, data: answer };
             }
             case 'canvas_capabilities':
               toolSchemas.canvas_capabilities.parse(args);
@@ -412,6 +411,21 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               .code(409)
               .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
           const { storeAsset, AssetRefusedError } = await import('../../canvas/canvas-assets.js');
+          const { CANVAS_UPLOADS_PER_MINUTE } = await import('../../config/canvas-limits.js');
+          const { takeToken } = await import('./session-routes.js');
+          if (
+            !takeToken(
+              uploadBuckets,
+              `${callerKey(req)}\n${req.params.workspaceId}`,
+              CANVAS_UPLOADS_PER_MINUTE,
+              Date.now()
+            )
+          )
+            return reply
+              .code(429)
+              .send(
+                createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many images added at once. Try again in a minute.')
+              );
           if (!Buffer.isBuffer(req.body))
             return reply
               .code(415)
@@ -426,11 +440,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               ? z.object({ type: z.string().max(40).optional() }).parse(req.query).type
               : req.headers['content-type'];
           try {
-            return { success: true, data: storeAsset(req.params.workspaceId, req.body, declared) };
+            return { success: true, data: await storeAsset(req.params.workspaceId, req.body, declared) };
           } catch (error) {
             if (!(error instanceof AssetRefusedError)) throw error;
             return reply
-              .code(error.reason === 'size' ? 413 : error.reason === 'type' ? 415 : 400)
+              .code(error.reason === 'size' || error.reason === 'quota' ? 413 : error.reason === 'type' ? 415 : 400)
               .send({ ...createErrorResponse(ApiErrorCode.INVALID_INPUT, error.message), refusal: error.reason });
           }
         }
@@ -454,13 +468,19 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
         '/api/canvas/:workspaceId/objects/:id/frame',
         async (req, reply) => {
           const { id } = z.object({ id: IdSchema }).parse(req.params);
-          const object = (await ctx.canvasStores()).get(req.params.workspaceId).read().objects[id];
+          // Everything async happens first. The live-embed check and the mint below then run in
+          // one synchronous stretch, so no /ops append can delete or re-point the object between
+          // them (appends retire frames synchronously after they commit).
+          const store = (await ctx.canvasStores()).get(req.params.workspaceId);
+          const { parseWebviewUrl } = await import('../webview-proxy.js');
+          const { blockedWebviewHostReason } = await import('../webview-egress-policy.js');
+          const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+          const { openCanvasWebview } = await import('./webview-routes.js');
+          const object = store.read().objects[id];
           if (!object || object.deletedAt !== null || object.type !== 'embed')
             return reply
               .code(409)
               .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only a live embed object has a page to show'));
-          const { parseWebviewUrl } = await import('../webview-proxy.js');
-          const { blockedWebviewHostReason } = await import('../webview-egress-policy.js');
           const target = typeof object.content.url === 'string' ? parseWebviewUrl(object.content.url) : null;
           const blocked = target ? blockedWebviewHostReason(target.hostname) : null;
           if (!target || blocked)
@@ -472,9 +492,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                   blocked ? 'This address cannot be embedded' : 'The embed has no web address'
                 )
               );
-          const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
-          const { openCanvasWebview } = await import('./webview-routes.js');
-          const opened = await openCanvasWebview({
+          const opened = openCanvasWebview({
             workspaceId: req.params.workspaceId,
             objectId: id,
             url: target.href,
@@ -494,9 +512,13 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           try {
             const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
             const { findAsset } = await import('../../canvas/canvas-assets.js');
-            const readAsset = (assetId: string) => {
+            // Asynchronous and bounded: an asset larger than what the screenshot may still embed is
+            // never read at all.
+            const readAsset = async (assetId: string, maxBytes: number) => {
               const asset = findAsset(req.params.workspaceId, assetId);
-              return asset ? { mime: asset.mime, bytes: readFileSync(asset.path) } : null;
+              if (!asset || asset.size > maxBytes) return null;
+              const bytes = await readFile(asset.path);
+              return bytes.length > maxBytes ? null : { mime: asset.mime, bytes };
             };
             const rendered = await renderContainer(state, id, { theme, signal: hangup.signal, readAsset });
             return reply

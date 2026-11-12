@@ -200,15 +200,35 @@ export function classifyShotRequest(
   }
   if (parsed.origin !== DOCUMENT_ORIGIN) return 'refuse';
   if (parsed.pathname === '/screenshot' && resourceType === 'document') return 'document';
-  if (resourceType === 'image' && parsed.pathname.startsWith('/asset/')) {
-    const id = decodeURIComponent(parsed.pathname.slice('/asset/'.length));
-    if (assets.has(id)) return 'asset';
+  if (resourceType === 'image') {
+    const key = shotKeyFromPath(parsed.pathname);
+    if (key && assets.has(key)) return 'asset';
   }
   return 'refuse';
 }
 
-export function assetUrl(id: string): string {
-  return `${DOCUMENT_ORIGIN}/asset/${encodeURIComponent(id)}`;
+/**
+ * Keys of the bytes one screenshot is handed. They are NAMESPACED, so a data-URL image object
+ * (`object:<object id>`) can never stand in for a stored asset (`asset:<hash>`), even when an
+ * object id happens to be the 64-hex hash of another asset.
+ */
+export const objectImageKey = (objectId: string): string => `object:${objectId}`;
+export const storedAssetKey = (assetId: string): string => `asset:${assetId}`;
+
+/** The document URL for one key: `/object/<id>` or `/asset/<hash>` (what the page itself asks for). */
+export function assetUrl(key: string): string {
+  const colon = key.indexOf(':');
+  return `${DOCUMENT_ORIGIN}/${key.slice(0, colon)}/${encodeURIComponent(key.slice(colon + 1))}`;
+}
+
+function shotKeyFromPath(pathname: string): string | null {
+  const match = /^\/(object|asset)\/([^/]+)$/.exec(pathname);
+  if (!match) return null;
+  try {
+    return `${match[1]}:${decodeURIComponent(match[2])}`;
+  } catch {
+    return null;
+  }
 }
 
 export function decodeStoredImage(url: string): StoredImage | null {
@@ -232,8 +252,8 @@ export function handleShotRequest(request: ShotRequest, html: string, assets: Re
     return;
   }
   if (decision === 'asset') {
-    const id = decodeURIComponent(new URL(request.url()).pathname.slice('/asset/'.length));
-    const asset = assets.get(id);
+    const key = shotKeyFromPath(new URL(request.url()).pathname);
+    const asset = key ? assets.get(key) : undefined;
     if (asset) {
       void request.respond({ status: 200, contentType: asset.mime, body: asset.bytes });
       return;
@@ -288,8 +308,7 @@ export function objectAssetIds(content: { type: string } & Record<string, unknow
 
 export function shotModel(
   state: CanvasState,
-  objectId: string,
-  readAsset?: (assetId: string) => StoredImage | null
+  objectId: string
 ): { objects: ShotObject[]; fit: ShotFit; assets: Map<string, StoredImage> } {
   const root = state.objects[objectId];
   if (!root || root.deletedAt !== null) throw new ScreenshotNotFound();
@@ -336,21 +355,33 @@ export function shotModel(
     const url = 'url' in object.content ? object.content.url : undefined;
     if (object.content.type !== 'image' || typeof url !== 'string') continue;
     const image = decodeStoredImage(url);
-    if (image) assets.set(object.id, image);
-  }
-  // Stored assets are keyed by their hash, which never collides with an object id (at most 128
-  // characters of a wider alphabet, but a 64-hex object id would only ever name the same bytes).
-  let budget = MAX_SHOT_ASSET_BYTES;
-  for (const object of objects) {
-    for (const assetId of objectAssetIds(object.content)) {
-      if (assets.has(assetId) || !readAsset) continue;
-      const image = readAsset(assetId);
-      if (!image || image.bytes.length > budget) continue;
-      budget -= image.bytes.length;
-      assets.set(assetId, image);
-    }
+    if (image) assets.set(objectImageKey(object.id), image);
   }
   return { objects, fit: fitClip(clipFor(box)), assets };
+}
+
+/**
+ * Read the stored assets the model's objects draw, asynchronously and bounded: each read is
+ * handed the bytes still left of `MAX_SHOT_ASSET_BYTES` and must refuse (null) anything larger,
+ * so no read ever loads more than the screenshot may embed.
+ */
+export async function loadShotAssets(
+  model: { objects: ShotObject[]; assets: Map<string, StoredImage> },
+  readAsset: (assetId: string, maxBytes: number) => Promise<StoredImage | null>,
+  signal?: AbortSignal
+): Promise<void> {
+  let budget = MAX_SHOT_ASSET_BYTES;
+  for (const object of model.objects) {
+    for (const assetId of objectAssetIds(object.content)) {
+      const key = storedAssetKey(assetId);
+      if (model.assets.has(key) || budget <= 0) continue;
+      if (signal?.aborted) throw new ScreenshotAborted();
+      const image = await readAsset(assetId, budget);
+      if (!image || image.bytes.length > budget) continue;
+      budget -= image.bytes.length;
+      model.assets.set(key, image);
+    }
+  }
 }
 
 export function buildShotDocument(
@@ -363,10 +394,12 @@ export function buildShotDocument(
   for (const object of model.objects) {
     const url = 'url' in object.content ? object.content.url : undefined;
     if (object.content.type === 'image' && typeof url === 'string' && decodeStoredImage(url)) {
-      images.push({ objectId: object.id, src: assetUrl(object.id) });
+      images.push({ objectId: object.id, src: assetUrl(objectImageKey(object.id)) });
     }
   }
-  const stored = [...(model.assets?.keys() ?? [])].filter((id) => /^[a-f0-9]{64}$/.test(id));
+  const stored = [...(model.assets?.keys() ?? [])]
+    .filter((key) => key.startsWith('asset:'))
+    .map((key) => key.slice('asset:'.length));
   const payload = { objects: model.objects, transform: model.fit.transform, images, assets: stored };
   const themeAttr = theme === 'light' ? ` data-theme="light"` : '';
   const safeCss = css.replace(/<\/style/gi, '<\\/style');
@@ -568,8 +601,11 @@ export interface RenderContainerOptions {
   signal?: AbortSignal;
   launch?: (options: { noSandbox?: boolean; timeoutMs?: number }) => Promise<HeadlessBrowser>;
   readAssets?: () => Promise<{ css: string; script: string }>;
-  /** Stored image bytes by asset id; the page is handed them and never fetches anything else. */
-  readAsset?: (assetId: string) => StoredImage | null;
+  /**
+   * Stored image bytes by asset id, read asynchronously; null for anything over `maxBytes`. The
+   * page is handed them and never fetches anything else.
+   */
+  readAsset?: (assetId: string, maxBytes: number) => Promise<StoredImage | null>;
 }
 
 export async function renderContainer(
@@ -586,7 +622,8 @@ export async function renderContainer(
     if (signal.aborted) throw new ScreenshotAborted();
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScreenshotTimeout();
-    const model = shotModel(state, objectId, options.readAsset);
+    const model = shotModel(state, objectId);
+    if (options.readAsset) await loadShotAssets(model, options.readAsset, signal);
     const bundles = await (options.readAssets ?? readBundles)();
     const html = buildShotDocument(model, bundles.css, bundles.script, theme);
     const meta: ShotMeta = {

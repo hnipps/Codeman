@@ -5,7 +5,14 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { fetchLinkPreview, parsePreviewHtml, MAX_PREVIEW_TITLE_CHARS } from '../src/canvas/link-preview.js';
+import {
+  createLinkPreviewService,
+  fetchLinkPreview,
+  parsePreviewHtml,
+  MAX_PREVIEW_TITLE_CHARS,
+  PREVIEW_UNAVAILABLE_REASON,
+  type PreviewFetch,
+} from '../src/canvas/link-preview.js';
 import { png } from './canvas-media-fixtures.js';
 
 let server: http.Server;
@@ -73,22 +80,28 @@ describe('link preview', () => {
     for (const target of ['http://169.254.169.254/latest/', 'http://metadata.google.internal/']) {
       const preview = await fetchLinkPreview(target, { fetch: fetcher });
       expect(preview.status).toBe('unavailable');
-      expect(preview.reason).toMatch(/link-local or cloud-metadata/);
+      expect(preview.reason).toBe(PREVIEW_UNAVAILABLE_REASON);
     }
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('refuses a redirect to a metadata address', async () => {
     const preview = await fetchLinkPreview(`${base}/to-metadata`);
     expect(preview.status).toBe('unavailable');
-    expect(preview.reason).toMatch(/link-local or cloud-metadata/);
+    expect(preview.reason).toBe(PREVIEW_UNAVAILABLE_REASON);
   });
-  it('answers unavailable for a non-HTML answer, a 404, a non-web address and a slow page', async () => {
-    expect((await fetchLinkPreview(`${base}/json`)).reason).toBe('Not a web page');
-    expect((await fetchLinkPreview(`${base}/missing`)).reason).toBe('The page answered 404');
-    expect((await fetchLinkPreview('javascript:alert(1)')).reason).toBe('Not a web address');
-    expect((await fetchLinkPreview(`${base}/slow`, { timeoutMs: 200 })).reason).toBe(
-      'The page took too long to answer'
-    );
+  it('gives one coarse reason for every failure, so a preview cannot map what the server reaches', async () => {
+    const failures = [
+      await fetchLinkPreview(`${base}/json`),
+      await fetchLinkPreview(`${base}/missing`),
+      await fetchLinkPreview('javascript:alert(1)'),
+      await fetchLinkPreview(`${base}/slow`, { timeoutMs: 200 }),
+      await fetchLinkPreview(`${base}/to-metadata`),
+      await fetchLinkPreview('http://127.0.0.1:1/'),
+    ];
+    for (const failure of failures) {
+      expect(failure.status).toBe('unavailable');
+      expect(failure.reason).toBe(PREVIEW_UNAVAILABLE_REASON);
+    }
   });
   it('caps the title', async () => {
     expect((await fetchLinkPreview(`${base}/huge`)).title).toHaveLength(MAX_PREVIEW_TITLE_CHARS);
@@ -96,5 +109,80 @@ describe('link preview', () => {
   it('parses page text without running it', () => {
     expect(parsePreviewHtml(`<title>A &#x263A; b</title>`)).toEqual({ title: 'A ☺ b', image: null });
     expect(parsePreviewHtml(`<meta name="twitter:title" content='Two'>`).title).toBe('Two');
+  });
+});
+
+describe('link preview service', () => {
+  const page = () =>
+    new Response('<title>Held</title>', { headers: { 'content-type': 'text/html' } }) as unknown as Awaited<
+      ReturnType<PreviewFetch>
+    >;
+  /** A fetcher whose answers the test releases by hand. */
+  function heldFetcher() {
+    const waiting: Array<() => void> = [];
+    const calls: string[] = [];
+    const fetch: PreviewFetch = (target) => {
+      calls.push(target.href);
+      return new Promise((resolve) => waiting.push(() => resolve(page())));
+    };
+    return { fetch, calls, releaseAll: () => waiting.splice(0).forEach((go) => go()) };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+  const storeThumbnail = async () => null;
+
+  it('runs at most two fetches at once across the server', async () => {
+    const held = heldFetcher();
+    const service = createLinkPreviewService({ storeThumbnail, fetch: held.fetch, perMinute: 100 });
+    const asks = [1, 2, 3, 4].map((n) => service.preview(`ws${n}`, `http://example.com/${n}`, 'me'));
+    await settle();
+    expect(held.calls).toHaveLength(2);
+    expect(service.busy).toBe(4);
+    held.releaseAll();
+    await settle();
+    expect(held.calls).toHaveLength(4);
+    held.releaseAll();
+    expect((await Promise.all(asks)).every((a) => a !== 'rate-limited' && a.status === 'ready')).toBe(true);
+    expect(service.busy).toBe(0);
+  });
+  it('fetches one (workspace, URL) once while it is in flight, and answers again from a short cache', async () => {
+    let clock = 1_000;
+    const held = heldFetcher();
+    const service = createLinkPreviewService({
+      storeThumbnail,
+      fetch: held.fetch,
+      now: () => clock,
+      cacheTtlMs: 60_000,
+    });
+    const first = service.preview('ws', 'http://example.com/a', 'me');
+    const joined = service.preview('ws', 'http://example.com/a', 'someone-else');
+    await settle();
+    expect(held.calls).toHaveLength(1);
+    held.releaseAll();
+    expect(await joined).toEqual(await first);
+    await service.preview('ws', 'http://example.com/a', 'me');
+    expect(held.calls).toHaveLength(1);
+    clock += 60_001;
+    const stale = service.preview('ws', 'http://example.com/a', 'me');
+    await settle();
+    expect(held.calls).toHaveLength(2);
+    held.releaseAll();
+    await stale;
+  });
+  it('refuses a caller past its per-workspace budget, but not another caller or workspace', async () => {
+    const fetch: PreviewFetch = async () => page();
+    const service = createLinkPreviewService({ storeThumbnail, fetch, perMinute: 3, now: () => 5_000 });
+    for (let n = 0; n < 3; n++)
+      expect(await service.preview('ws', `http://example.com/${n}`, 'me')).not.toBe('rate-limited');
+    expect(await service.preview('ws', 'http://example.com/4', 'me')).toBe('rate-limited');
+    expect(await service.preview('ws', 'http://example.com/0', 'me')).not.toBe('rate-limited');
+    expect(await service.preview('ws', 'http://example.com/4', 'you')).not.toBe('rate-limited');
+    expect(await service.preview('ws2', 'http://example.com/4', 'me')).not.toBe('rate-limited');
+  });
+  it('keeps the title when the thumbnail is refused', async () => {
+    const service = createLinkPreviewService({ storeThumbnail: async () => null });
+    const answer = await service.preview('ws', `${base}/page`, 'me');
+    expect(answer).toMatchObject({ status: 'ready', title: 'Release notes & plans' });
+    expect(answer).not.toHaveProperty('thumbnailAssetId');
+    expect(answer).not.toHaveProperty('thumbnail');
   });
 });

@@ -114,7 +114,7 @@ import { PushSubscriptionStore } from '../push-store.js';
 import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
-import { registerCanvasRoutes, sweepCanvasWebviews } from './routes/canvas-routes.js';
+import { registerCanvasRoutes } from './routes/canvas-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
 import { stopScreenshotRenders } from '../canvas/canvas-screenshot.js';
 import { deriveWebviewSseHint } from './webview-sse.js';
@@ -1919,7 +1919,6 @@ export class WebServer extends EventEmitter {
       if (!deployRole.allows('automate')) return;
       const ctx = { broadcast: this.broadcast.bind(this), tabLayouts: this.tabLayouts };
       await removeOrphanSessionWebviews(ctx, (id) => this.sessions.has(id) || !!this.store.getSession(id));
-      await sweepCanvasWebviews(() => this.getCanvasStores());
       for (const id of webviewsWithOpenSockets()) this.previews.markViewed(id);
       await this.previews.reconcile(sessionWebviewIds, { sweepOrphans });
     })()

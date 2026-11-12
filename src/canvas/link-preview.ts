@@ -11,7 +11,15 @@
  * caller, which stores them only after the asset byte check.
  */
 import type { RequestInit, Response } from 'undici';
-import { WebviewEgressBlockedError, egressBlockedReason, webviewFetch } from '../web/webview-egress.js';
+import {
+  LINK_PREVIEW_CACHE_ENTRIES,
+  LINK_PREVIEW_CACHE_TTL_MS,
+  LINK_PREVIEW_CONCURRENCY,
+  LINK_PREVIEWS_PER_MINUTE,
+} from '../config/canvas-limits.js';
+import { LRUMap } from '../utils/lru-map.js';
+import { takeToken } from '../web/routes/session-routes.js';
+import { WebviewEgressBlockedError, webviewFetch } from '../web/webview-egress.js';
 import { blockedWebviewHostReason } from '../web/webview-egress-policy.js';
 import { parseWebviewUrl } from '../web/webview-proxy.js';
 import { assetExtension } from './canvas-assets.js';
@@ -20,6 +28,12 @@ export const LINK_PREVIEW_TIMEOUT_MS = 5000;
 export const MAX_PREVIEW_HTML_BYTES = 512 * 1024;
 export const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 export const MAX_PREVIEW_TITLE_CHARS = 200;
+/**
+ * The one reason every failed preview gives. A refused address, a 404, a timeout and an
+ * unreachable host all read the same, so a preview cannot be used to map what this server
+ * can reach.
+ */
+export const PREVIEW_UNAVAILABLE_REASON = 'This page could not be previewed';
 const MAX_REDIRECTS = 3;
 
 export type LinkPreview = {
@@ -50,17 +64,17 @@ async function follow(target: URL, fetcher: PreviewFetch, accept: string, signal
     if (response.status >= 300 && response.status < 400 && location) {
       await response.body?.cancel().catch(() => undefined);
       const next = parseWebviewUrl(new URL(location, current).href);
-      if (!next) throw new PreviewUnavailable('The page redirects somewhere a preview cannot follow');
+      if (!next) throw new PreviewUnavailable();
       current = next;
       continue;
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      throw new PreviewUnavailable(`The page answered ${response.status}`);
+      throw new PreviewUnavailable();
     }
     return response;
   }
-  throw new PreviewUnavailable('Too many redirects');
+  throw new PreviewUnavailable();
 }
 
 async function readBounded(response: Response, limit: number): Promise<Buffer | null> {
@@ -128,7 +142,7 @@ export async function fetchLinkPreview(
   options: { fetch?: PreviewFetch; timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<LinkPreview> {
   const target = parseWebviewUrl(raw);
-  if (!target) return { url: raw, host: '', title: '', status: 'unavailable', reason: 'Not a web address' };
+  if (!target) return { url: raw, host: '', title: '', status: 'unavailable', reason: PREVIEW_UNAVAILABLE_REASON };
   const base = { url: target.href, host: target.hostname, title: '' };
   const fetcher = options.fetch ?? webviewFetch;
   const signal = AbortSignal.any([
@@ -140,7 +154,7 @@ export async function fetchLinkPreview(
     const type = page.headers.get('content-type') ?? '';
     if (!/^\s*(text\/html|application\/xhtml\+xml)/i.test(type)) {
       await page.body?.cancel().catch(() => undefined);
-      return { ...base, status: 'unavailable', reason: 'Not a web page' };
+      return { ...base, status: 'unavailable', reason: PREVIEW_UNAVAILABLE_REASON };
     }
     const body = await readBounded(page, MAX_PREVIEW_HTML_BYTES);
     const parsed = parsePreviewHtml(new TextDecoder().decode(body ?? Buffer.alloc(0)));
@@ -158,18 +172,87 @@ export async function fetchLinkPreview(
       }
     }
     return preview;
-  } catch (error) {
-    const blocked = egressBlockedReason(error);
-    return {
-      ...base,
-      status: 'unavailable',
-      reason: blocked
-        ? 'Refused: previews never reach link-local or cloud-metadata addresses'
-        : error instanceof PreviewUnavailable
-          ? error.message
-          : signal.aborted
-            ? 'The page took too long to answer'
-            : 'The page could not be reached',
-    };
+  } catch {
+    return { ...base, status: 'unavailable', reason: PREVIEW_UNAVAILABLE_REASON };
   }
+}
+
+type PreviewAnswer = Omit<LinkPreview, 'thumbnail'> & { thumbnailAssetId?: string };
+
+/**
+ * The one path a request takes to a preview. Each preview is an outbound fetch made by this
+ * server on a caller's behalf, so it is bounded four ways:
+ *
+ * - at most `LINK_PREVIEW_CONCURRENCY` fetches run at once across the server (the rest queue);
+ * - one fetch per (workspace, URL) at a time: a second ask joins the first (single-flight);
+ * - a finished answer is reused for `LINK_PREVIEW_CACHE_TTL_MS` (bounded LRU);
+ * - `LINK_PREVIEWS_PER_MINUTE` fresh fetches per (caller, workspace), refused past that.
+ *
+ * Joined and cached answers spend no token. The thumbnail is stored through `storeThumbnail`
+ * (the workspace's asset quota applies); one that is refused is dropped and the title stands.
+ */
+export function createLinkPreviewService(options: {
+  storeThumbnail: (workspaceId: string, bytes: Buffer, type: string) => Promise<string | null>;
+  fetch?: PreviewFetch;
+  timeoutMs?: number;
+  now?: () => number;
+  concurrency?: number;
+  perMinute?: number;
+  cacheTtlMs?: number;
+  cacheEntries?: number;
+}) {
+  const now = options.now ?? Date.now;
+  const concurrency = options.concurrency ?? LINK_PREVIEW_CONCURRENCY;
+  const perMinute = options.perMinute ?? LINK_PREVIEWS_PER_MINUTE;
+  const ttl = options.cacheTtlMs ?? LINK_PREVIEW_CACHE_TTL_MS;
+  const cache = new LRUMap<string, { at: number; answer: PreviewAnswer }>({
+    maxSize: options.cacheEntries ?? LINK_PREVIEW_CACHE_ENTRIES,
+  });
+  const inFlight = new Map<string, Promise<PreviewAnswer>>();
+  const buckets = new Map<string, { tokens: number; lastRefill: number }>();
+  let running = 0;
+  const queue: Array<() => void> = [];
+  const slot = async () => {
+    if (running >= concurrency) await new Promise<void>((go) => queue.push(go));
+    else running++;
+  };
+  const release = () => {
+    const next = queue.shift();
+    if (next) next();
+    else running--;
+  };
+  const run = async (workspaceId: string, url: string): Promise<PreviewAnswer> => {
+    await slot();
+    try {
+      const { thumbnail, ...preview } = await fetchLinkPreview(url, {
+        fetch: options.fetch,
+        timeoutMs: options.timeoutMs,
+      });
+      if (!thumbnail) return preview;
+      const thumbnailAssetId = await options.storeThumbnail(workspaceId, thumbnail.bytes, thumbnail.type);
+      return thumbnailAssetId ? { ...preview, thumbnailAssetId } : preview;
+    } finally {
+      release();
+    }
+  };
+  return {
+    /** The preview for `url`, or `'rate-limited'` when `caller` has spent this minute's fetches. */
+    async preview(workspaceId: string, url: string, caller: string): Promise<PreviewAnswer | 'rate-limited'> {
+      const key = `${workspaceId}\n${url}`;
+      const cached = cache.get(key);
+      if (cached && now() - cached.at < ttl) return cached.answer;
+      const joined = inFlight.get(key);
+      if (joined) return joined;
+      if (!takeToken(buckets, `${caller}\n${workspaceId}`, perMinute, now())) return 'rate-limited';
+      const fetching = run(workspaceId, url).finally(() => inFlight.delete(key));
+      inFlight.set(key, fetching);
+      const answer = await fetching;
+      cache.set(key, { at: now(), answer });
+      return answer;
+    },
+    /** Fetches running or queued right now (tests and diagnostics). */
+    get busy(): number {
+      return running + queue.length;
+    },
+  };
 }

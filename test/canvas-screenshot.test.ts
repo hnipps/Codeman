@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
@@ -9,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CanvasStores } from '../src/canvas/canvas-store.js';
 import {
   DOCUMENT_URL,
+  MAX_SHOT_ASSET_BYTES,
   SCREENSHOT_FAILED_MESSAGE,
   SCREENSHOT_MISCONFIGURED_MESSAGE,
   ScreenshotAborted,
@@ -23,6 +25,7 @@ import {
   fitClip,
   handleShotRequest,
   liveScreenshotBrowserPids,
+  loadShotAssets,
   renderContainer,
   shotModel,
   stopScreenshotRenders,
@@ -38,6 +41,7 @@ import { deployRole } from '../src/deploy-role.js';
 import { registerCanvasRoutes } from '../src/web/routes/canvas-routes.js';
 import { readable, type ViewObject } from '../packages/canvas/src/model.js';
 import { create, human } from './canvas-fixtures.js';
+import { png } from './canvas-media-fixtures.js';
 
 const { launchHeadlessBrowser } = vi.hoisted(() => ({ launchHeadlessBrowser: vi.fn() }));
 vi.mock('../src/headless-browser.js', () => ({ launchHeadlessBrowser }));
@@ -262,22 +266,22 @@ describe('canvas screenshot geometry and hostile page', () => {
     expect(decodeStoredImage('data:image/svg+xml;base64,AAAA')).toBeNull();
     expect(decodeStoredImage(DATA_PNG)?.bytes.equals(PNG)).toBe(true);
     const model = shotModel(hostile, 'section');
-    expect([...model.assets.keys()]).toEqual(['pic']);
+    expect([...model.assets.keys()]).toEqual(['object:pic']);
     const html = buildShotDocument(model, 'css', 'script', 'dark');
     expect(html).not.toContain('<img');
     expect(html).toContain('\\u003cimg');
     expect(html).not.toContain('data-theme');
     expect(buildShotDocument(model, 'css', 'script', 'light')).toContain('data-theme="light"');
-    expect(classifyShotRequest('https://evil.example/leak.png', 'image', new Set(['pic']))).toBe('refuse');
-    expect(classifyShotRequest(assetUrl('pic'), 'image', new Set(['pic']))).toBe('asset');
-    expect(classifyShotRequest(assetUrl('pic'), 'document', new Set(['pic']))).toBe('refuse');
+    expect(classifyShotRequest('https://evil.example/leak.png', 'image', new Set(['object:pic']))).toBe('refuse');
+    expect(classifyShotRequest(assetUrl('object:pic'), 'image', new Set(['object:pic']))).toBe('asset');
+    expect(classifyShotRequest(assetUrl('object:pic'), 'document', new Set(['object:pic']))).toBe('refuse');
     const embed = model.objects.find((object) => object.id === 'embed') as ViewObject;
     expect(readable(embed)).toBe('Embed · https://videos.example/clip');
     const calls = [
       request(DOCUMENT_URL, 'document', true),
       request('https://evil.example/leak.png', 'image', false),
-      request(assetUrl('pic'), 'image', true),
-      request(assetUrl('pic'), 'image', false),
+      request(assetUrl('object:pic'), 'image', true),
+      request(assetUrl('object:pic'), 'image', false),
     ];
     for (const call of calls) handleShotRequest(call.request, html, model.assets);
     expect(calls[0]?.respond).toHaveBeenCalledOnce();
@@ -286,6 +290,49 @@ describe('canvas screenshot geometry and hostile page', () => {
     expect(calls[3]?.respond).toHaveBeenCalledOnce();
     const body = calls[3]?.respond.mock.calls[0]?.[0].body as Buffer;
     expect(body.equals(PNG)).toBe(true);
+  });
+
+  it('never lets a data-URL image object stand in for a stored asset, even under the same id', async () => {
+    const stored = png(9, 9);
+    const hash = createHash('sha256').update(stored).digest('hex');
+    const shot = stateOf([
+      record('section', null, 'section', { type: 'section', label: 'Clash' }),
+      // An object whose id IS the asset hash, drawing its own (different) data-URL bytes.
+      record(hash, 'section', 'image', { type: 'image', url: DATA_PNG, alt: 'impostor' }),
+      record('real', 'section', 'image', { type: 'image', url: '', alt: 'stored', assetId: hash }),
+    ]);
+    const model = shotModel(shot, 'section');
+    const reads: Array<[string, number]> = [];
+    await loadShotAssets(model, async (assetId, maxBytes) => {
+      reads.push([assetId, maxBytes]);
+      return { mime: 'image/png', bytes: stored };
+    });
+    expect(reads).toEqual([[hash, MAX_SHOT_ASSET_BYTES]]);
+    expect(model.assets.get(`asset:${hash}`)?.bytes.equals(stored)).toBe(true);
+    expect(model.assets.get(`object:${hash}`)?.bytes.equals(PNG)).toBe(true);
+    const html = buildShotDocument(model, 'css', 'script', 'dark');
+    expect(html).toContain(`"assets":["${hash}"]`);
+    const keys = new Set(model.assets.keys());
+    // The page asks for a stored asset at /asset/<hash>; that answers the stored bytes, never the object's.
+    const asked = request(`https://codeman-canvas.invalid/asset/${hash}`, 'image', false);
+    handleShotRequest(asked.request, html, model.assets);
+    expect((asked.respond.mock.calls[0]?.[0].body as Buffer).equals(stored)).toBe(true);
+    expect(classifyShotRequest(`https://codeman-canvas.invalid/object/${hash}`, 'image', keys)).toBe('asset');
+  });
+  it('reads stored assets within the screenshot budget only', async () => {
+    const big = png(10, 10);
+    const ids = ['a', 'b'].map((c) => c.repeat(64));
+    const shot = stateOf([
+      record('section', null, 'section', { type: 'section', label: 'Budget' }),
+      ...ids.map((assetId, n) => record(`i${n}`, 'section', 'image', { type: 'image', url: '', alt: 'x', assetId })),
+    ]);
+    const model = shotModel(shot, 'section');
+    const budgets: number[] = [];
+    await loadShotAssets(model, async (_id, maxBytes) => {
+      budgets.push(maxBytes);
+      return { mime: 'image/png', bytes: big };
+    });
+    expect(budgets).toEqual([MAX_SHOT_ASSET_BYTES, MAX_SHOT_ASSET_BYTES - big.length]);
   });
 });
 

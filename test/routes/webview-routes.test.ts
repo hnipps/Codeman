@@ -345,9 +345,12 @@ describe('egress policy: link-local and cloud-metadata targets', () => {
 });
 
 describe('canvas-origin frames', () => {
-  it('are never trusted, never listed, refused by PATCH, and not counted against the tab cap', async () => {
+  it('live in memory: never written, never listed, resolved by the proxy and retired with a revoked capability', async () => {
     const { openCanvasWebview, removeCanvasWebviews } = await import('../../src/web/routes/webview-routes.js');
-    const opened = await openCanvasWebview({
+    const user = await create({ name: 'Mine', url: 'https://example.com/' });
+    expect(user.statusCode).toBe(200);
+    const before = await fs.readFile(path.join(tmpDir, 'webviews.json'));
+    const opened = openCanvasWebview({
       workspaceId: 'ws',
       objectId: 'embed-1',
       url: 'https://example.com/',
@@ -355,41 +358,42 @@ describe('canvas-origin frames', () => {
       basePath: '',
     });
     expect(opened.embedUrl).toMatch(/^\/webview\/[^/]+\/$/);
-    // A record edited on disk to claim trust reads back untrusted.
-    const raw = JSON.parse(await fs.readFile(path.join(tmpDir, 'webviews.json'), 'utf8'));
-    (Array.isArray(raw) ? raw : raw.webviews)[0].trusted = true;
-    await fs.writeFile(path.join(tmpDir, 'webviews.json'), JSON.stringify(raw));
-    const { readWebviews } = await import('../../src/webview-store.js');
-    expect((await readWebviews(tmpDir))[0]).toMatchObject({
-      trusted: false,
-      origin: { kind: 'canvas', objectId: 'embed-1' },
-    });
+    expect((await fs.readFile(path.join(tmpDir, 'webviews.json'))).equals(before)).toBe(true);
     const list = await app.inject({ method: 'GET', url: '/api/webviews' });
-    expect(list.json().data.webviews).toEqual([]);
-    const patch = await app.inject({
-      method: 'PATCH',
-      url: `/api/webviews/${opened.webviewId}`,
-      payload: { name: 'x' },
-    });
-    expect(patch.statusCode).toBe(400);
-    expect(patch.json().error).toMatch(/through its canvas object/);
-    const user = await create({ name: 'Mine', url: 'https://example.com/' });
-    expect(user.statusCode).toBe(200);
-    // A URL change keeps the record id and revokes the old capability.
+    expect(list.json().data.webviews.map((w: { name: string }) => w.name)).toEqual(['Mine']);
+    expect(
+      (await app.inject({ method: 'PATCH', url: `/api/webviews/${opened.webviewId}`, payload: { name: 'x' } }))
+        .statusCode
+    ).toBe(404);
+    // A URL change is a new frame: the old capability no longer reaches anything.
     const cap = opened.embedUrl.split('/')[2];
-    const moved = await openCanvasWebview({
+    const moved = openCanvasWebview({
       workspaceId: 'ws',
       objectId: 'embed-1',
       url: 'https://example.org/',
       name: 'Docs',
       basePath: '',
     });
-    expect(moved.webviewId).toBe(opened.webviewId);
+    expect(moved.webviewId).not.toBe(opened.webviewId);
     expect(webviewCapabilities.resolve(cap)).toBeUndefined();
-    const removed = await removeCanvasWebviews((origin) => origin.objectId === 'embed-1');
-    expect(removed).toHaveLength(1);
+    expect(removeCanvasWebviews((origin) => origin.objectId === 'embed-1')).toHaveLength(1);
     expect(webviewCapabilities.resolve(moved.embedUrl.split('/')[2])).toBeUndefined();
-    expect((await readWebviews(tmpDir)).map((w) => w.name)).toEqual(['Mine']);
+    expect((await fs.readFile(path.join(tmpDir, 'webviews.json'))).equals(before)).toBe(true);
+  });
+  it('never writes a canvas-origin row even when one is handed to the store', async () => {
+    const { writeWebviews, readWebviews } = await import('../../src/webview-store.js');
+    await writeWebviews(tmpDir, [
+      {
+        id: 'frame',
+        name: 'x',
+        url: 'https://example.com/',
+        embedMode: 'proxy',
+        trusted: false,
+        origin: { kind: 'canvas', workspaceId: 'ws', objectId: 'o' },
+        createdAt: 1,
+      },
+    ]);
+    expect(await readWebviews(tmpDir)).toEqual([]);
   });
   it('cannot be created through POST /api/webviews', async () => {
     const res = await create({

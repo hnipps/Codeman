@@ -2411,7 +2411,6 @@ export function webviewUpdateRefusal(
   origin: { kind: string },
   input: z.infer<typeof WebviewUpdateSchema>
 ): string | null {
-  if (origin.kind === 'canvas') return 'A canvas embed is changed through its canvas object';
   if (origin.kind !== 'session') return null;
   if (input.trusted === true) return SESSION_ORIGIN_TRUSTED_MESSAGE;
   if (input.managed !== undefined) return 'The origin of a web tab owned by a session cannot change';
