@@ -63,7 +63,8 @@ export type CreateResult = { ok: true; conversation: Conversation; duplicate: bo
 /** A retry with the same request id returns the conversation it made; it never starts a second session record. */
 export function addConversation(
   workspaceId: string,
-  make: () => Pick<Conversation, 'id' | 'sessionId' | 'cliId' | 'createdAt' | 'createdBy'>,
+  make: () => Pick<Conversation, 'id' | 'sessionId' | 'cliId' | 'createdAt' | 'createdBy'> &
+    Pick<Partial<Conversation>, 'model'>,
   requestId: string
 ): CreateResult {
   const existing = readConversations(workspaceId);

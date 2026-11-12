@@ -22,12 +22,13 @@ export interface CanvasPort {
   canvasStores(): Promise<CanvasStores>;
   broadcast(event: string, data: unknown): void;
   /**
-   * Starts one Claude session in `workingDir` through the ordinary create and start routes, with the caller's own
+   * Starts one agent session in `workingDir` through the ordinary create and start routes, with the caller's own
    * credentials, so ownership, caps and launch rules are exactly those of a session the person starts themselves.
+   * `mode` is the CLI id; `launch` holds only the fields that carry a chosen model (never `modelOverride`).
    */
   startConversationSession?(
     headers: Readonly<Record<string, string | string[] | undefined>>,
-    request: { workingDir: string; name: string }
+    request: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
   ): Promise<StartedConversationSession>;
   /** Deletes a session this subsystem started and could not record, the way a failed start is cleaned up. */
   discardConversationSession?(

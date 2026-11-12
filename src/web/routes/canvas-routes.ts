@@ -32,7 +32,9 @@ import { renderContainer, screenshotFailure } from '../../canvas/canvas-screensh
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
 import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
-import { conversationTool, registerConversationRoutes } from './canvas-conversation-routes.js';
+import { conversationTool, currentProviders, registerConversationRoutes } from './canvas-conversation-routes.js';
+import { modelIdRefusal } from '../../canvas/providers.js';
+import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
@@ -178,6 +180,10 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
         data: { workspaces: readWorkspaces().filter((w) => canAccessOwned(getAuthUser(req), w.owner)) },
       };
     });
+    scope.get('/api/canvas/assistant/providers', async () => ({
+      success: true,
+      data: { providers: await currentProviders() },
+    }));
     scope.post('/api/canvas/workspaces', async (req, reply) => {
       if (!deployRole.allows('persist'))
         return reply
@@ -362,6 +368,69 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               toolSchemas.canvas_capabilities.parse(args);
               return { success: true, data: { ...capabilities(), truncated: false } };
             case 'canvas_conversation': {
+              const conversation = ConversationToolSchema.parse(args);
+              if (conversation.action === 'model') {
+                const canSee = (owner: string | undefined) => canAccessOwned(getAuthUser(req), owner);
+                const { viewId, requestId, operation } = conversation;
+                if (operation === 'read') {
+                  const record = views.read(req.params.workspaceId, viewId, canSee);
+                  if (!record) return viewGone(reply);
+                  return {
+                    success: true,
+                    data: {
+                      viewId,
+                      choice: record.state.choice ?? { cliId: null, model: '' },
+                      providers: await currentProviders(),
+                    },
+                  };
+                }
+                const model = conversation.model ?? '';
+                const rows = await currentProviders();
+                const row =
+                  conversation.cliId === undefined ? undefined : rows.find((r) => r.id === conversation.cliId);
+                const refusal = (message: string, code = 400) =>
+                  reply
+                    .code(code)
+                    .send(
+                      createErrorResponse(code === 409 ? ApiErrorCode.CONFLICT : ApiErrorCode.INVALID_INPUT, message)
+                    );
+                if (conversation.cliId === undefined) return refusal('INVALID_INPUT: set needs a cliId');
+                if (!row) return refusal(`UNKNOWN_CLI: ${conversation.cliId} is not an enabled, installed agent CLI`);
+                if (!row.available) return refusal(`CLI_UNAVAILABLE: ${row.reason ?? 'not available'}`, 409);
+                if (model !== '' && !row.model.editable)
+                  return refusal(`INVALID_MODEL: ${row.model.reason ?? 'this CLI takes no model choice'}`);
+                const bad = modelIdRefusal(row.model.source, model);
+                if (bad) return refusal(`INVALID_MODEL: ${bad}`);
+                const action = ViewActionSchema.parse({ action: 'assistant-choice', cliId: row.id, model });
+                const result = views.command(req.params.workspaceId, viewId, canSee, action, requestId);
+                if (!result.ok) {
+                  if (result.code === 'VIEW_GONE') return viewGone(reply);
+                  if (result.code === 'RATE_LIMITED')
+                    return reply
+                      .code(429)
+                      .header('Retry-After', '1')
+                      .send(
+                        createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many view commands. Try again in a second.')
+                      );
+                  return reply
+                    .code(409)
+                    .send(
+                      createErrorResponse(
+                        ApiErrorCode.CONFLICT,
+                        'Request identity was already used for a different command'
+                      )
+                    );
+                }
+                if (!result.duplicate)
+                  ctx.broadcast(SseEvent.CanvasViewCommand, {
+                    workspaceId: req.params.workspaceId,
+                    viewId,
+                    commandId: result.commandId,
+                    owner: result.owner,
+                    command: action,
+                  });
+                return { success: true, data: { commandId: result.commandId, duplicate: result.duplicate } };
+              }
               const outcome = await conversationTool(ctx, req, req.params.workspaceId, args);
               return reply.code(outcome.code).send(outcome.body);
             }

@@ -95,7 +95,8 @@ describe('canvas conversations', () => {
       const first = await h.start();
       expect(first.data.conversation.session).toBe('live');
       expect(h.started).toHaveLength(1);
-      expect(Object.keys(h.started[0]).sort()).toEqual(['name', 'workingDir']);
+      expect(Object.keys(h.started[0]).sort()).toEqual(['launch', 'mode', 'name', 'workingDir']);
+      expect(h.started[0]).toMatchObject({ mode: 'claude', launch: {} });
       const requestId = uuid();
       const a = await h.start(requestId);
       const b = await h.start(requestId);

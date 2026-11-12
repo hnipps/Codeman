@@ -298,6 +298,7 @@ describe('canvas MCP HTTP parity', () => {
         'canvas.conversation.read',
         'canvas.conversation.create',
         'canvas.conversation.send',
+        'canvas.conversation.model',
       ]);
       expect(parse(capabilityResult).tools.some((tool: { name: string }) => tool.name === 'canvas_screenshot')).toBe(
         true

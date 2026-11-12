@@ -10,6 +10,11 @@ const ViewportSchema = z
   .strict();
 export const MAX_VIEW_IDS = 200;
 const Ids = z.array(IdSchema).min(1).max(MAX_VIEW_IDS);
+/** The assistant's provider and model for the NEXT new conversation. `cliId: null` is the first available provider; an empty model is the CLI's own default. */
+export const AssistantChoiceSchema = z
+  .object({ cliId: z.string().min(1).max(64).nullable(), model: z.string().max(100) })
+  .strict();
+export type AssistantChoice = z.infer<typeof AssistantChoiceSchema>;
 /** The state one canvas tab reports. It is ephemeral and never written to disk. */
 export const PublishedViewSchema = z
   .object({
@@ -23,6 +28,8 @@ export const PublishedViewSchema = z
     letters: z.boolean(),
     draftBytes: z.number().int().min(0).max(100_000_000),
     phone: z.boolean(),
+    /** The provider and model the next new conversation starts on; absent from a page of an earlier release. */
+    choice: AssistantChoiceSchema.optional(),
     appliedCommands: z.array(z.uuid()).max(20),
   })
   .strict();
@@ -37,6 +44,7 @@ export const ViewActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('letters'), enabled: z.boolean() }).strict(),
   z.object({ action: z.literal('context-add'), targetIds: Ids }).strict(),
   z.object({ action: z.literal('context-remove'), targetIds: Ids }).strict(),
+  z.object({ action: z.literal('assistant-choice'), ...AssistantChoiceSchema.shape }).strict(),
 ]);
 export type ViewAction = z.infer<typeof ViewActionSchema>;
 /** What the server broadcasts to the tab that owns `viewId`. */

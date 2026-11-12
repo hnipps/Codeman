@@ -297,11 +297,12 @@ export function capabilities() {
       ['canvas.conversation.read', 'canvas_conversation read'],
       ['canvas.conversation.create', 'canvas_conversation create'],
       ['canvas.conversation.send', 'canvas_conversation send'],
+      ['canvas.conversation.model', 'canvas_conversation model'],
     ].map(([command, tool]) => ({
       command,
       available: true,
       tool,
-      note: 'A conversation is one real Claude session in this case. Send is accepted at once and delivered in the background (read the message state: queued, sending, delivered, failed); it carries the named objects as reference text, never answers a pending question, and is refused for an agent that is itself in a conversation. Create is for people only: an agent gets 403.',
+      note: "A conversation is one real agent session in this case, on the CLI and model the person chose for the next new conversation (model read or set, with a viewId, reads or sets that open view's choice; it starts nothing). Send is accepted at once and delivered in the background (read the message state: queued, sending, delivered, failed); it carries the named objects as reference text, never answers a pending question, and is refused for an agent that is itself in a conversation. Create is for people only: an agent gets 403.",
     })),
     reserved: [],
     clipboard: {
