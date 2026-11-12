@@ -603,6 +603,9 @@ button('assistantTool').onclick = () => (state.rail.at(-1) === 'assistant' ? tog
 button('addToChat').onclick = addSelectionToChat;
 /** An agent's request to this view. It never moves the human's keyboard focus. */
 function applyViewAction(action: ViewAction): void {
+  // An agent acts only on what this person can see: ids outside the open view are dropped.
+  const visible = new Set(inView().map((o) => o.id));
+  const seen = (ids: string[]): string[] => ids.filter((id) => visible.has(id));
   const was = keyboard;
   keyboard = false;
   try {
@@ -611,25 +614,28 @@ function applyViewAction(action: ViewAction): void {
         dispatch({ kind: 'viewport', viewport: action.viewport });
         break;
       case 'fit':
-        fit(action.targetIds);
+        if (!action.targetIds) fit();
+        else if (seen(action.targetIds).length) fit(seen(action.targetIds));
         break;
       case 'select':
-        dispatch({ kind: 'selection', ids: action.targetIds });
+        dispatch({ kind: 'selection', ids: seen(action.targetIds) });
         break;
       case 'clear-selection':
         dispatch({ kind: 'selection', ids: [] });
         break;
       case 'focus':
-        dispatch({ kind: 'focus', id: action.targetId });
+        if (action.targetId === null || visible.has(action.targetId)) dispatch({ kind: 'focus', id: action.targetId });
         break;
       case 'rail':
-        dispatch({ kind: action.open ? 'rail' : 'rail-close', view: action.view });
+        // Never while the person is typing in the rail: hiding the field would drop their keystrokes.
+        if (!node('rail').contains(document.activeElement))
+          dispatch({ kind: action.open ? 'rail' : 'rail-close', view: action.view });
         break;
       case 'letters':
-        dispatch({ kind: 'letters', enabled: action.enabled });
+        // The person's own switch: an agent cannot turn their shortcuts off.
         break;
       case 'context-add':
-        dispatch({ kind: 'context-add', ids: action.targetIds });
+        if (!mobile.matches) dispatch({ kind: 'context-add', ids: action.targetIds });
         break;
       case 'context-remove':
         dispatch({ kind: 'context-remove', ids: action.targetIds });
@@ -645,7 +651,7 @@ const views = new ViewSync({
   apply: applyViewAction,
   read: () => ({
     viewport: state.viewport,
-    selected: state.selected,
+    selected: state.selected.slice(0, 1000),
     focusId: state.focusId,
     rail: state.rail,
     context: state.context,
@@ -942,6 +948,7 @@ const editor = new DesktopEditor({
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
     dispatch({ kind: 'context-add', ids: restore });
+    assistant.restoreDone();
   },
 });
 window.canvasEdit = editor.adapter();

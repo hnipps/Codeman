@@ -143,7 +143,7 @@ export const QuerySchema = z.discriminatedUnion('shape', [
 ]);
 const ViewId = z.uuid();
 const RequestId = z.uuid().optional();
-const [setViewport, fitView, selectView, clearSelection, focusView, railView, lettersView, contextAdd, contextRemove] =
+const [setViewport, fitView, selectView, clearSelection, focusView, railView, , contextAdd, contextRemove] =
   ViewActionSchema.options;
 const target = { viewId: ViewId, requestId: RequestId };
 export const ViewToolSchema = z.discriminatedUnion('action', [
@@ -155,7 +155,6 @@ export const ViewToolSchema = z.discriminatedUnion('action', [
   z.object({ ...clearSelection.shape, ...target }).strict(),
   z.object({ ...focusView.shape, ...target }).strict(),
   z.object({ ...railView.shape, ...target }).strict(),
-  z.object({ ...lettersView.shape, ...target }).strict(),
 ]);
 export const ContextToolSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read'), viewId: ViewId }).strict(),

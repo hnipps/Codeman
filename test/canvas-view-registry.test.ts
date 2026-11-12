@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ViewRegistry, MAX_VIEWS_PER_WORKSPACE, VIEW_TTL_MS } from '../src/canvas/view-registry.js';
+import {
+  COMMAND_BURST,
+  COMMANDS_PER_SECOND,
+  MAX_REMEMBERED_REQUESTS,
+  MAX_VIEWS_PER_WORKSPACE,
+  ViewRegistry,
+  VIEW_TTL_MS,
+} from '../src/canvas/view-registry.js';
 import {
   MIN_PUBLISH_GAP_MS,
   PublishedViewSchema,
@@ -47,6 +54,36 @@ describe('view registry', () => {
     c.advance(2);
     expect(r.read('ws', view, anyone)).toBeNull();
     expect(r.command('ws', view, anyone, { action: 'clear-selection' })).toEqual({ ok: false, code: 'VIEW_GONE' });
+  });
+  it('limits commands per view to a burst that refills, and never spends a token on a retry', () => {
+    const c = clock();
+    const r = new ViewRegistry(c.now);
+    r.publish('ws', view, undefined, state());
+    const act = { action: 'clear-selection' } as const;
+    for (let i = 0; i < COMMAND_BURST; i++) expect(r.command('ws', view, anyone, act).ok).toBe(true);
+    expect(r.command('ws', view, anyone, act)).toEqual({ ok: false, code: 'RATE_LIMITED' });
+    c.advance(1000 / COMMANDS_PER_SECOND);
+    const id = '22222222-2222-4222-8222-222222222222';
+    const first = r.command('ws', view, anyone, act, id);
+    expect(first.ok).toBe(true);
+    // The bucket is empty again, but the same request id still answers its first result.
+    expect(r.command('ws', view, anyone, act)).toEqual({ ok: false, code: 'RATE_LIMITED' });
+    expect(r.command('ws', view, anyone, act, id)).toMatchObject({ ok: true, duplicate: true });
+  });
+  it('remembers a bounded number of request ids', () => {
+    const c = clock();
+    const r = new ViewRegistry(c.now);
+    r.publish('ws', view, undefined, state());
+    const act = { action: 'clear-selection' } as const;
+    const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    for (let n = 0; n <= MAX_REMEMBERED_REQUESTS; n++) {
+      c.advance(1000);
+      expect(r.command('ws', view, anyone, act, uuid(n)).ok).toBe(true);
+      if (n % 30 === 0) r.publish('ws', view, undefined, state());
+    }
+    expect((r as unknown as { requests: Map<string, unknown> }).requests.size).toBeLessThanOrEqual(
+      MAX_REMEMBERED_REQUESTS
+    );
   });
   it('scopes views to their owner', () => {
     const r = new ViewRegistry();

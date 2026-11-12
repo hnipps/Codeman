@@ -51,6 +51,7 @@ export class AssistantView {
   private keys: CanvasStorageKeys;
   private signature = '';
   private storedContext = '';
+  private restoring = true;
   private refocus: number | null = null;
   private restored: string[];
   readonly draft = node('assistantDraft') as HTMLTextAreaElement;
@@ -77,10 +78,14 @@ export class AssistantView {
   focusComposer(): void {
     this.draft.focus({ preventScroll: true });
   }
+  /** The stored list has been handed back to the view; from here the view is what gets stored. */
+  restoreDone(): void {
+    this.restoring = false;
+  }
   paint(): void {
     const ids = this.options.view().context;
     const stored = JSON.stringify(ids);
-    if (stored !== this.storedContext) {
+    if (!this.restoring && stored !== this.storedContext) {
       this.storedContext = stored;
       write(this.keys.assistantContext, ids.length ? stored : null);
     }

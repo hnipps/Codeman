@@ -31,7 +31,7 @@ import { IdSchema, descendants, type Author } from '../../canvas/model.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
-import { PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
+import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
@@ -268,7 +268,14 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             return reply
               .code(code)
               .send(
-                createErrorResponse(code === 409 ? ApiErrorCode.CONFLICT : ApiErrorCode.OPERATION_FAILED, result.code)
+                createErrorResponse(
+                  code === 409
+                    ? ApiErrorCode.CONFLICT
+                    : code === 429
+                      ? ApiErrorCode.RATE_LIMITED
+                      : ApiErrorCode.NOT_FOUND,
+                  result.code
+                )
               );
           }
           return { success: true };
@@ -375,7 +382,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                       label: objectLabel(o),
                       type: o.type,
                       revision: o.revision,
-                      descendants: inside.map((d) => ({ id: d.id, revision: d.revision })),
+                      descendantCount: inside.length,
+                      descendants: inside.slice(0, MAX_VIEW_IDS).map((d) => ({ id: d.id, revision: d.revision })),
                     },
                   ];
                 });
@@ -387,9 +395,17 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               );
               if ('targetIds' in action && action.targetIds && action.action !== 'context-remove')
                 normalizeTargets(state, action.targetIds);
+              if (action.action === 'focus' && action.targetId) normalizeTargets(state, [action.targetId]);
               const result = views.command(req.params.workspaceId, viewId, canSee, action, requestId);
               if (!result.ok) {
                 if (result.code === 'VIEW_GONE') return viewGone(reply);
+                if (result.code === 'RATE_LIMITED')
+                  return reply
+                    .code(429)
+                    .header('Retry-After', '1')
+                    .send(
+                      createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many view commands. Try again in a second.')
+                    );
                 return reply
                   .code(409)
                   .send(
