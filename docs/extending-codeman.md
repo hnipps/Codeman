@@ -169,7 +169,7 @@ skills). The skill carries the guard, the safety rules, and verified
 wait/orchestration recipes.
 
 If the caller speaks the Model Context Protocol (Claude Desktop, Cursor, Codex, any MCP
-client), point it at `codeman mcp` instead: twenty-three tools, twelve for the canvas (eleven command tools plus `canvas_screenshot`), seven over these same session
+client), point it at `codeman mcp` instead: twenty-four tools, thirteen for the canvas (twelve command tools plus `canvas_screenshot`), seven over these same session
 endpoints, one redacted log query (`logs_query`) and three for plugins and skills
 (`list_extensions`, `import_extension`, `remove_extension`), configured with
 `CODEMAN_API_URL`. See the README section "MCP server".

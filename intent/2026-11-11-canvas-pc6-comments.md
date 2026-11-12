@@ -27,3 +27,9 @@ Canvas page (`packages/canvas`, `canvas.html`, `canvas.css`), canvas commands an
 ## Open questions
 
 None.
+
+## Decisions during the work
+
+- Lock policy: the existing atomic rejection with `LOCKED` reasons. The History confirm previews it, and the Revert button is unavailable while a target is locked.
+- Fit on a phone fits the selection when one exists, like the desktop; closing the sheet clears the selection.
+- The phone dock hides while the outline or rail fills the screen, and the outline's Keys entry is hidden on phones.

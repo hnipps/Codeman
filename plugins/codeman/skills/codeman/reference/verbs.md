@@ -908,7 +908,9 @@ history sequence lists allow 10,000. Undo/redo reject later container dependents
 atomically with `DEPENDENTS` IDs/authors. Loaded cyclic records remain readable
 flat with `hierarchy: "cycle"` and diagnostics; geometry that depends on a cycle
 is omitted. Align/distribute reject `snap`: snapping is a pointer aid in the
-browser, not a stored command. `canvas_history` reads the log or undoes the caller's own sequences;
+browser, not a stored command. `canvas_comment` posts an ordinary comment on one object (`objectId`, `text`);
+it starts no agent work, and `canvas_read` returns comments. `canvas_history` reads the log, lists authors
+(`action: "authors"`), previews an author revert (`action: "preview"`) or undoes the caller's own sequences;
 redo takes the sequences returned by undo. Retain all returned sequences to undo a
 compound command atomically. Revert author is a distinct field-aware history action.
 
