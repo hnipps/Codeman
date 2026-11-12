@@ -166,7 +166,7 @@ describe('protocol: both eras', () => {
     expect(out[0]).toMatchObject({ id: 4, error: { code: RPC_ERROR.invalidParams } });
   });
 
-  it('lists the same twenty-eight tools in a fixed order, decorated for the era', async () => {
+  it('lists the same twenty-nine tools in a fixed order, decorated for the era', async () => {
     const { out, send } = server();
     await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: MODERN_META } });

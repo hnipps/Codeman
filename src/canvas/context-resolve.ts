@@ -20,13 +20,15 @@ export type ResolvedContext = {
 /** One line of plain text: control characters and the block's own tags cannot survive into the pane. */
 export function plainLine(value: unknown, limit: number): string {
   const text = typeof value === 'string' ? value : '';
-  // eslint-disable-next-line no-control-regex
-  return text
-    .replace(/<(\/?)canvas-context/gi, '‹$1canvas-context')
-    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-    .slice(0, limit);
+  return (
+    text
+      .replace(/<(\/?)canvas-context/gi, '‹$1canvas-context')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .slice(0, limit)
+  );
 }
 function textOf(o: CanvasObject): string {
   const c = o.content as Record<string, unknown>;
