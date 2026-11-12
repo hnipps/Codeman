@@ -166,7 +166,7 @@ describe('protocol: both eras', () => {
     expect(out[0]).toMatchObject({ id: 4, error: { code: RPC_ERROR.invalidParams } });
   });
 
-  it('lists the same twenty-three tools in a fixed order, decorated for the era', async () => {
+  it('lists the same twenty-five tools in a fixed order, decorated for the era', async () => {
     const { out, send } = server();
     await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: MODERN_META } });
@@ -174,6 +174,7 @@ describe('protocol: both eras', () => {
     const modern = (out[1] as { result: { tools: Array<{ name: string }>; resultType?: string } }).result;
     const names = [
       ...canvasToolNames,
+      'canvas_upload_image',
       'canvas_screenshot',
       'list_sessions',
       'start_session',
@@ -274,7 +275,9 @@ describe('tool definitions', () => {
       expect(tool.inputSchema.type, tool.name).toBe('object');
       expect(tool.inputSchema.additionalProperties, tool.name).toBe(false);
       expect(tool.description.length, tool.name).toBeGreaterThan(80);
-      expect(tool.annotations.openWorldHint, tool.name).toBe(tool.name === 'import_extension');
+      expect(tool.annotations.openWorldHint, tool.name).toBe(
+        ['import_extension', 'canvas_link_preview'].includes(tool.name)
+      );
     }
     const byName = Object.fromEntries(buildToolDefinitions(['claude']).map((t) => [t.name, t]));
     for (const readOnly of ['list_sessions', 'wait_for_session', 'read_output', 'list_extensions', 'logs_query']) {
