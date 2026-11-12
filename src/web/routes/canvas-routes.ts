@@ -1,4 +1,5 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
+import { removeCanvasWebviews } from './webview-routes.js';
 import { validateBatch, type Command } from '../../canvas/operations.js';
 import type { CanvasStore } from '../../canvas/canvas-store.js';
 import { randomUUID, createHash } from 'node:crypto';
@@ -61,10 +62,10 @@ export function retiredEmbeds(operations: Pick<Operation, 'prev'>[]): string[] {
   return [...ids];
 }
 
-async function retireFrames(workspaceId: string, operations: Pick<Operation, 'prev'>[]): Promise<void> {
+/** Synchronous on purpose: a frame minted after the commit must never be retired by this write. */
+function retireFrames(workspaceId: string, operations: Pick<Operation, 'prev'>[]): void {
   const ids = new Set(retiredEmbeds(operations));
   if (!ids.size) return;
-  const { removeCanvasWebviews } = await import('./webview-routes.js');
   removeCanvasWebviews((origin) => origin.workspaceId === workspaceId && ids.has(origin.objectId));
 }
 
@@ -410,7 +411,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             });
           if (!result.operations.length && noopKey) noopRequests.set(noopKey, fingerprint);
           if (result.operations.length) {
-            await retireFrames(req.params.workspaceId, result.operations);
+            retireFrames(req.params.workspaceId, result.operations);
             const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
             ctx.broadcast(SseEvent.CanvasChanged, {
               workspaceId: req.params.workspaceId,
@@ -653,7 +654,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                 : plan.commands;
               result = store.revert(body.author, author, commands);
             }
-            if (result.ok && result.operations.length) await retireFrames(req.params.workspaceId, result.operations);
+            if (result.ok && result.operations.length) retireFrames(req.params.workspaceId, result.operations);
             if (!result.ok)
               return reply.code(409).send({
                 ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),

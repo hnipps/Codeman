@@ -86,6 +86,9 @@ function configDir(): string {
 }
 
 /** Live proxied WebSockets per webview id, so one dashboard cannot exhaust the socket budget. */
+/** The canvas embed sandbox, same list as `EMBED_SANDBOX` in packages/canvas/src/media.ts (pinned by test). */
+export const CANVAS_FRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads allow-modals';
+
 const socketCounts = new Map<string, number>();
 
 const socketClosersByCapability = new Map<string, Set<() => void>>();
@@ -789,7 +792,12 @@ async function proxyRequest(
   // policy on this reply during onRequest. Left in place it breaks essentially
   // every dashboard (inline scripts, CDN assets), so it is replaced by the
   // upstream's own policy, or removed when the upstream had none.
-  if (csp) reply.header('content-security-policy', csp);
+  // A canvas embed's URL can be chosen by an agent, and a browser action (open the frame's link in
+  // a new tab) drops the iframe's sandbox attribute. The header makes the sandbox travel with the
+  // response, so the page never runs on Codeman's origin with the login cookie.
+  const policy =
+    webview.origin.kind === 'canvas' ? [csp, `sandbox ${CANVAS_FRAME_SANDBOX}`].filter(Boolean).join('; ') : csp;
+  if (policy) reply.header('content-security-policy', policy);
   else reply.removeHeader('content-security-policy');
 
   if (!response.body || req.method === 'HEAD') {

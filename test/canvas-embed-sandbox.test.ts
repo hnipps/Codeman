@@ -24,4 +24,10 @@ describe('canvas embed sandbox', () => {
     ).toBe(UNTRUSTED);
     expect(media).toMatch(/setAttribute\('sandbox', EMBED_SANDBOX\)|sandbox = EMBED_SANDBOX/);
   });
+  it('sends the same sandbox as a response header for canvas frames, so it survives a new tab', async () => {
+    const { CANVAS_FRAME_SANDBOX } = await import('../src/web/routes/webview-routes.js');
+    expect(CANVAS_FRAME_SANDBOX).toBe(UNTRUSTED);
+    const proxy = readFileSync('src/web/routes/webview-routes.ts', 'utf8');
+    expect(proxy).toMatch(/origin\.kind === 'canvas' \? \[csp, `sandbox \$\{CANVAS_FRAME_SANDBOX\}`\]/);
+  });
 });
