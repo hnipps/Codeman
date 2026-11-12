@@ -1,0 +1,52 @@
+/** @fileoverview Pure shapes of a canvas view: what a browser tab publishes and what an agent may ask it to do. Shared by the server registry and the browser. */
+import { z } from 'zod';
+import { IdSchema } from './model.js';
+
+/** One view publishes at most this often, so a pan cannot flood the server. */
+export const MIN_PUBLISH_GAP_MS = 250;
+export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant'] as const;
+const ViewportSchema = z
+  .object({ x: z.number().finite(), y: z.number().finite(), zoom: z.number().min(0.1).max(4) })
+  .strict();
+export const MAX_VIEW_IDS = 200;
+const Ids = z.array(IdSchema).min(1).max(MAX_VIEW_IDS);
+/** The state one canvas tab reports. It is ephemeral and never written to disk. */
+export const PublishedViewSchema = z
+  .object({
+    viewport: ViewportSchema,
+    selected: z.array(IdSchema).max(1000),
+    focusId: IdSchema.nullable(),
+    rail: z.array(z.enum(RAIL_VIEWS)).max(8),
+    context: z.array(IdSchema).max(MAX_VIEW_IDS),
+    conversationId: z.string().max(128).nullable(),
+    root: IdSchema.nullable(),
+    letters: z.boolean(),
+    draftBytes: z.number().int().min(0).max(100_000_000),
+    phone: z.boolean(),
+    appliedCommands: z.array(z.uuid()).max(20),
+  })
+  .strict();
+export type PublishedView = z.infer<typeof PublishedViewSchema>;
+export const ViewActionSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('set-viewport'), viewport: ViewportSchema }).strict(),
+  z.object({ action: z.literal('fit'), targetIds: Ids.optional() }).strict(),
+  z.object({ action: z.literal('select'), targetIds: Ids }).strict(),
+  z.object({ action: z.literal('clear-selection') }).strict(),
+  z.object({ action: z.literal('focus'), targetId: IdSchema.nullable() }).strict(),
+  z.object({ action: z.literal('rail'), view: z.enum(RAIL_VIEWS), open: z.boolean().default(true) }).strict(),
+  z.object({ action: z.literal('letters'), enabled: z.boolean() }).strict(),
+  z.object({ action: z.literal('context-add'), targetIds: Ids }).strict(),
+  z.object({ action: z.literal('context-remove'), targetIds: Ids }).strict(),
+]);
+export type ViewAction = z.infer<typeof ViewActionSchema>;
+/** What the server broadcasts to the tab that owns `viewId`. */
+export const ViewCommandEventSchema = z
+  .object({
+    workspaceId: z.string(),
+    viewId: z.uuid(),
+    commandId: z.uuid(),
+    owner: z.string().optional(),
+    command: ViewActionSchema,
+  })
+  .strict();
+export type ViewCommandEvent = z.infer<typeof ViewCommandEventSchema>;

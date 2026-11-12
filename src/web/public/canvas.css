@@ -1715,3 +1715,131 @@ textarea[readonly] {
 :root[data-phone] #rail .rail-body {
   height: calc(100% - 68px);
 }
+
+/* Assistant rail: pending context and a draft. Same rail, same tokens; no card or overlay. */
+#assistantView:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+.rail-heading {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--secondary);
+}
+#contextChips {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overscroll-behavior: contain;
+}
+#contextEmpty {
+  flex: 1;
+  margin: 0;
+}
+.chip {
+  display: flex;
+  align-items: stretch;
+  min-height: 36px;
+  border-top: 1px solid var(--divider);
+}
+.chip-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-align: left;
+  border: 0;
+  background: none;
+  border-radius: 0;
+}
+.chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-count {
+  flex-shrink: 0;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.chip-remove {
+  flex-shrink: 0;
+  min-width: 32px;
+  border: 0;
+  background: none;
+  color: var(--secondary);
+  border-radius: 0;
+}
+.chip-remove:hover,
+.chip-label:hover {
+  color: var(--text);
+  background: var(--raised);
+}
+#assistantTool[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--raised);
+}
+#contextGesture {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 3;
+}
+#contextGesture path {
+  stroke: var(--selection);
+  stroke-width: 1px;
+  stroke-dasharray: 4 3;
+  fill: var(--selection);
+  fill-opacity: 0.06;
+}
+#board.lasso-armed,
+#board.lasso-armed .object {
+  cursor: crosshair;
+}
+.object.context-preview > .selection-bounds {
+  display: block;
+  border: 1px solid var(--selection);
+}
+:root[data-phone] #assistantTool,
+:root[data-phone] #addToChat {
+  display: none !important;
+}
+
+/* With a rail open the tools sit in the middle of the board that is left, and the selection row
+   wraps rather than running under the rail. */
+:root:not([data-phone]) body:has(#rail:not([hidden])) {
+  --dock-left: 0px;
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])) .dock-area {
+  left: calc(var(--dock-left) + (100vw - var(--dock-left) - 320px) / 2);
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])):has(#outline:not([hidden])) {
+  --dock-left: 192px;
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])) #contextRow {
+  /* The row centres on the tools, which sit left of centre beside Fit: leave room for that offset. */
+  max-width: calc(100vw - var(--dock-left) - 320px - 72px);
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+:root:not([data-phone]) body:has(#rail:not([hidden])) :is(#moveToMenu, .action-menu) {
+  left: calc(var(--dock-left, 0px) + (100vw - var(--dock-left, 0px) - 320px) / 2);
+}
+/* Where the row wraps to a second line, its menus open above both lines. */
+@media (max-width: 1180px) {
+  :root:not([data-phone]) body:has(#rail:not([hidden])) #moveToMenu {
+    bottom: 176px;
+  }
+  :root:not([data-phone]) body:has(#rail:not([hidden])) .action-menu {
+    bottom: 168px;
+  }
+}

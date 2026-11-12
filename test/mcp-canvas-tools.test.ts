@@ -101,6 +101,7 @@ async function harness() {
     stores,
     request,
     runner,
+    broadcast: port.broadcast,
     disable: () => {
       enabled = false;
     },
@@ -108,8 +109,8 @@ async function harness() {
 }
 const parse = (result: { text: string }) => JSON.parse(result.text);
 describe('canvas MCP HTTP parity', () => {
-  it('lists thirteen strict command tools on both protocol eras, including when unconfigured', async () => {
-    expect(canvasToolNames).toHaveLength(13);
+  it('lists fifteen strict command tools on both protocol eras, including when unconfigured', async () => {
+    expect(canvasToolNames).toHaveLength(15);
     for (const name of canvasToolNames) {
       const def = buildToolDefinitions(['claude']).find((t) => t.name === name)!;
       expect(def.description).toContain('untrusted data');
@@ -293,7 +294,7 @@ describe('canvas MCP HTTP parity', () => {
       expect(h.stores.get(h.workspace.id).read()).toEqual(beforeReload);
       expect(parse(capabilityResult).reserved[0]).toMatchObject({
         available: false,
-        owner: 'PC3/PC9',
+        owner: 'PC9b',
       });
       expect(parse(capabilityResult).tools.some((tool: { name: string }) => tool.name === 'canvas_screenshot')).toBe(
         true
@@ -662,6 +663,89 @@ describe('canvas media over MCP', () => {
       expect((await h.runner().run('canvas_upload_image', {})).text).toContain('exactly one of path or base64');
       const preview = parse(await h.runner().run('canvas_link_preview', { url: 'http://169.254.169.254/' }));
       expect(preview).toMatchObject({ status: 'unavailable' });
+    } finally {
+      await h.app.close();
+    }
+  });
+  it('steers an open view through canvas_view and canvas_context with the same tools as the browser', async () => {
+    const h = await harness();
+    const view = '11111111-1111-4111-8111-111111111111';
+    const publish = (context: string[] = []) =>
+      h.app.inject({
+        method: 'PUT',
+        url: `/api/canvas/${h.workspace.id}/views/${view}`,
+        payload: {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          selected: [],
+          focusId: null,
+          rail: [],
+          context,
+          conversationId: null,
+          root: null,
+          letters: true,
+          draftBytes: 0,
+          phone: false,
+          appliedCommands: [],
+        },
+      });
+    try {
+      const gone = await h.runner().run('canvas_view', { action: 'read', viewId: view });
+      expect(gone.isError).toBe(true);
+      expect(gone.text).toContain('VIEW_GONE');
+      expect((await publish(['section'])).statusCode).toBe(200);
+      expect((await publish()).statusCode).toBe(429);
+      const listed = parse(await h.runner().run('canvas_view', { action: 'list' }));
+      expect(listed.views.map((v: { viewId: string }) => v.viewId)).toEqual([view]);
+      const requestId = '44444444-4444-4444-8444-444444444444';
+      const select = { action: 'select', viewId: view, targetIds: ['a'], requestId };
+      const first = parse(await h.runner().run('canvas_view', select));
+      const again = parse(await h.runner().run('canvas_view', select));
+      expect(again).toEqual({ commandId: first.commandId, duplicate: true });
+      expect(h.broadcast.mock.calls.filter(([name]) => name === 'canvas:viewCommand')).toHaveLength(1);
+      expect(h.broadcast).toHaveBeenCalledWith(
+        'canvas:viewCommand',
+        expect.objectContaining({ viewId: view, command: { action: 'select', targetIds: ['a'] } })
+      );
+      const unknown = await h.runner().run('canvas_context', { action: 'add', viewId: view, targetIds: ['nope'] });
+      expect(unknown.isError).toBe(true);
+      const added = await h.runner().run('canvas_context', { action: 'add', viewId: view, targetIds: ['section'] });
+      expect(added.isError).toBeFalsy();
+      const read = parse(await h.runner().run('canvas_context', { action: 'read', viewId: view }));
+      expect(read.references).toEqual([
+        expect.objectContaining({
+          id: 'section',
+          type: 'section',
+          descendants: [expect.objectContaining({ id: 'a' }), expect.objectContaining({ id: 'b' })],
+        }),
+      ]);
+      // The other workspace's agent cannot see this view.
+      expect((await h.runner('agent-b').run('canvas_view', { action: 'read', viewId: view })).isError).toBe(true);
+      const hit = (points: { x: number; y: number }[]) =>
+        h
+          .runner()
+          .run('canvas_query', { shape: 'polygon', points, semantics: 'center' })
+          .then((r) =>
+            parse(r)
+              .data.map((o: { id: string }) => o.id)
+              .sort()
+          );
+      expect(
+        await hit([
+          { x: 0, y: 0 },
+          { x: 200, y: 0 },
+          { x: 200, y: 200 },
+          { x: 0, y: 200 },
+        ])
+      ).toEqual(['a', 'b', 'section']);
+      expect(
+        await hit([
+          { x: 65, y: 75 },
+          { x: 75, y: 75 },
+          { x: 75, y: 85 },
+          { x: 65, y: 85 },
+        ])
+      ).toEqual(['a', 'b']);
+      expect(h.stores.get(h.workspace.id).read().seq).toBe(3);
     } finally {
       await h.app.close();
     }

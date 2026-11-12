@@ -1729,9 +1729,10 @@ preserves unrelated relative order. Duplication allocates new IDs for the subtre
 Undo takes explicit own-author sequence IDs and rejects changed revisions; redo
 inverts the undo result's sequence IDs. All inverses are an atomic native batch.
 Author revert remains the separate field-aware operation. Viewport, selection,
-focus and context operations are reserved for PC3/PC9 with explicit view IDs;
-there is no server-side view store. Render/session/voice/background capabilities
-are labeled with their later owning PRs rather than exposed as working commands.
+focus, rail and context operations act on one open browser view by `viewId`
+through the in-memory view registry (see Canvas views and direct context).
+Conversation, voice and background capabilities are labeled with their later
+owning PRs rather than exposed as working commands.
 
 Tests: `test/canvas-commands.test.ts`, `test/mcp-canvas-tools.test.ts`, existing
 canvas operation/store/route tests and `test/mcp-server.test.ts`.
@@ -1765,6 +1766,22 @@ The browser shows comments as a count mark outside the object's right edge (noth
 Phone mode is decided by ONE helper, `isPhone()` (`packages/canvas/src/mobile.ts`): width ≤ 600, or touch with a short side ≤ 600; touch is `(pointer: coarse)` or `window.__canvasTouch === true` (the test hook, since headless Chromium reports no touch). It marks `data-phone`/`data-touch` on the root. ⚠️ A phone never writes geometry or content: `DesktopEditor.available()` refuses when the phone query matches, which covers `window.canvasEdit` too; only comments are posted. The dock shows Sections, Find, Comments and Fit with labels and hides while a full-screen panel is open; a tapped object gets a bottom sheet (Read, Comments, Focus parent). First load (`phoneFirstView()`) fits everything inside `visibleRect()` (safe areas, dock and sheet excluded) only when body text stays at 12 CSS px or more (zoom ≥ 12/14); otherwise it fits the width of the first top-level container in outline order at no less than that zoom, its title and top-left corner in view. Fit with nothing selected still fits everything, and Fit with a selection fits the selection. Reveal brings a target clear of the dock and sheet. One-finger drags pan, never select or move. Touch title hit areas are 44 px without moving the drawn label. The composer stays above the software keyboard through `--keyboard-inset`/`--viewport-top` from `visualViewport`. A tapped button takes no focus on iOS, so the rail's opener is the last pressed button when focus is on `body`, and the sheet is painted before focus is restored. Tests: `test/mobile/canvas-readonly.test.ts` (run with `npm run test:mobile`, not in the gate) and `test/canvas-comments.browser.test.ts`.
 
 The phone home screen lists a Canvases section, one row per case, only while `canvasEnabled` is on; there is no header button.
+
+## Canvas views and direct context
+
+PC9a adds `canvas_view` and `canvas_context` (the fourteenth and fifteenth command tools, the twenty-seventh and twenty-eighth MCP tools) and the assistant rail's context half.
+
+**View registry.** Each canvas tab has a `viewId` (a UUID in `sessionStorage`, so a reload keeps it and a new tab does not) and publishes `{viewport, selected, focusId, rail, context, conversationId, root, letters, draftBytes, phone, appliedCommands}` with `PUT /api/canvas/:workspaceId/views/:viewId` (`PublishedViewSchema`, strict, `src/canvas/view-schema.ts`). `ViewRegistry` (`src/canvas/view-registry.ts`) keeps it in memory only: nothing is written to disk, an entry expires 60 s after its last publish, one view may publish once per 250 ms (429 otherwise; the browser waits 300 ms and sends a heartbeat every 20 s), at most 32 views per workspace, and an entry belongs to the owner who created it (a view of another owner reads as not found). View state is never persisted because restoring it would steal a person's place after a reload.
+
+**Agent commands.** `canvas_view` is `list | read | set-viewport | fit | select | clear-selection | focus | rail` (ids outside the open view are dropped by the tab; the Letters switch is the person's alone; a view accepts a burst of 8 commands refilled at 4 per second, then answers 429 `RATE_LIMITED`; at most 2,000 request ids are remembered); `canvas_context` is `read | add | remove`. A mutation validates ids against the store, records one command (a `requestId` retry returns the same `commandId` with `duplicate: true`; the same id with another action is 409), and broadcasts `canvas:viewCommand` `{workspaceId, viewId, commandId, owner, command}` to the owner and admins. The target tab applies it through the ordinary `command()` reducer and acknowledges in its next publish (`appliedCommands`). ⚠️ An agent command never moves the human's DOM focus or opens the composer. A closed or expired view answers 404 `VIEW_GONE`. `canvas_query` accepts `semantics: 'center'` for polygons and rectangles: the object's world-bounds centre is inside (boundary inclusive), the rule the lasso uses.
+
+**Direct context.** `ViewState.context` is the pending list of ids. `contextAdd()` normalizes through `targets()` (a child never rides beside an attached ancestor, a deleted or unknown id is dropped, at most 200); removing a chip edits only that list. Nothing in it writes an operation or changes selection, parentage or the camera. The draft and the context persist per viewer and workspace under `codeman:canvas:user:<viewer>:<workspace>:assistant:draft|context`.
+
+**Lasso.** Hold `Q` (no modifier, canvas scope, letters on, not composing) and primary-drag on the board. `lassoStep()` (`context.ts`) is the pure machine: Q key release, Escape, `pointercancel`, `lostpointercapture`, window blur, hidden page, a composition start, or fewer than three points each end the gesture with no capture and leave every other state as it was. `ContextCapture` registers before the editor and the pan handler and stops propagation, so a lasso never also selects or pans. `lassoHits()` converts points with the camera as it is at release and takes every live object in the current view, at any depth, whose centre is inside, then reduces with `targets()`. The rail opens and the composer takes focus only on a human action.
+
+**Phone.** No assistant until PC9c: the dock button and Add to chat are hidden, Q does not arm, `rail` with `assistant` is refused, and the one write gate stays `DesktopEditor.available()`.
+
+Tests: `test/canvas-context.test.ts`, `test/canvas-view-registry.test.ts`, `test/mcp-canvas-tools.test.ts`, `test/canvas-context.browser.test.ts` (browser suite, not the gate).
 
 ## Canvas desktop editing
 

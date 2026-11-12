@@ -148,6 +148,7 @@ export function queryObjects(state: CanvasState, input: z.infer<typeof QuerySche
         { x: b.x + b.width, y: b.y + b.height },
         { x: b.x, y: b.y + b.height },
       ];
+      if (input.semantics === 'center') return inside({ x: b.x + b.width / 2, y: b.y + b.height / 2 }, poly);
       if (input.semantics === 'containment') return box.every((p, i) => containsSegment(p, box[(i + 1) % 4], poly));
       return (
         box.some((p) => inside(p, poly)) ||

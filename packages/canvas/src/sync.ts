@@ -168,6 +168,7 @@ export class CanvasSync {
   private state: Snapshot = { seq: 0, objects: [] };
   private source: EventSource | null = null;
   private stopped = false;
+  private extra = new Map<string, (data: string) => void>();
   private pending: Promise<void> = Promise.resolve();
   private abort = new AbortController();
   private online = (): void => {
@@ -183,6 +184,10 @@ export class CanvasSync {
     private receive: (state: Snapshot) => void,
     private status: (state: 'loading' | 'ready' | 'offline' | 'error') => void
   ) {}
+  /** Listens to one more event on the same stream; call before `start`. */
+  on(name: string, handler: (data: string) => void): void {
+    this.extra.set(name, handler);
+  }
   async start(): Promise<void> {
     window.addEventListener('online', this.online);
     window.addEventListener('offline', this.offline);
@@ -207,6 +212,8 @@ export class CanvasSync {
     this.source = new EventSource(this.url('/api/events'));
     this.source.onopen = () => this.catchUp();
     this.source.onerror = () => this.status('offline');
+    for (const [name, handler] of this.extra)
+      this.source.addEventListener(name, (e) => handler((e as MessageEvent).data));
     this.source.addEventListener('canvas:changed', (event) => {
       try {
         const data = z.object({ workspaceId: z.string(), seq: z.number() }).parse(JSON.parse(event.data));

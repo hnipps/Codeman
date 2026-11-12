@@ -123,7 +123,9 @@
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
         <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
-          <span id="selectionCount"></span><button id="moveTo" aria-controls="moveToMenu">Move to…</button>
+          <span id="selectionCount"></span
+          ><button id="addToChat" title="Add to chat · Cmd/Ctrl+Enter">Add to chat</button
+          ><button id="moveTo" aria-controls="moveToMenu">Move to…</button>
           <button id="arrangeSelection" aria-controls="arrangeMenu" aria-expanded="false">Arrange</button>
           <button id="groupSelection" title="Group · Cmd/Ctrl+G">Group</button
           ><button id="duplicateSelection" title="Duplicate · Cmd/Ctrl+D">Duplicate</button>
@@ -169,6 +171,13 @@
             title="Add objects"
           ></button>
         </div>
+        <button
+          id="assistantTool"
+          aria-label="Assistant"
+          aria-pressed="false"
+          aria-controls="rail"
+          title="Assistant · C"
+        ></button>
         <button id="chatTool" aria-label="Comments" title="Comments on the focused object">
           <span class="dock-label">Comments</span>
         </button>
@@ -187,7 +196,7 @@
         ><button id="sheetParent" class="quiet">Focus parent</button>
       </div>
     </section>
-    <aside id="rail" aria-label="Canvas reader, comments, history and Keys" hidden>
+    <aside id="rail" aria-label="Canvas assistant, reader, comments, history and Keys" hidden>
       <div class="panel-head">
         <span id="railTitle">Keys</span
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
@@ -213,6 +222,25 @@
             <p id="commentStatus" class="secondary" role="status"></p>
             <button id="retryComment" type="button" class="primary" hidden>Retry</button
             ><button id="postComment" type="submit" class="primary">Post</button>
+          </div>
+        </form>
+      </div>
+      <div id="assistantView" class="rail-body" hidden>
+        <p class="secondary">
+          Objects you add are sent with your next message. Selecting elsewhere never changes them.
+        </p>
+        <h2 id="contextHeading" class="rail-heading">Context</h2>
+        <ul id="contextChips" aria-labelledby="contextHeading"></ul>
+        <p id="contextEmpty" class="secondary">
+          Nothing attached. Select objects and press <kbd>Cmd/Ctrl</kbd> <kbd>Enter</kbd>, or hold <kbd>Q</kbd> and drag
+          around them.
+        </p>
+        <form id="assistantForm" class="composer">
+          <label class="sr" for="assistantDraft">Message</label>
+          <textarea id="assistantDraft" rows="4" placeholder="Message the assistant" spellcheck="true"></textarea>
+          <div class="composer-row">
+            <p id="assistantStatus" class="secondary" role="status"></p>
+            <button id="assistantSend" type="submit" class="primary">Send</button>
           </div>
         </form>
       </div>

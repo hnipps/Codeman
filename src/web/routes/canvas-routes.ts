@@ -5,7 +5,7 @@ import type { CanvasStore } from '../../canvas/canvas-store.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
@@ -27,9 +27,11 @@ import {
   commentCommand,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
-import { IdSchema, type Author } from '../../canvas/model.js';
+import { IdSchema, descendants, type Author } from '../../canvas/model.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
+import { ViewRegistry } from '../../canvas/view-registry.js';
+import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
@@ -123,7 +125,18 @@ function revertPreview(store: CanvasStore, target: Author, actor: Author) {
   return { ...plan.summary, refused: check.ok ? [] : check.reasons };
 }
 
-export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): void {
+const viewGone = (reply: FastifyReply) =>
+  reply
+    .code(404)
+    .send(
+      createErrorResponse(ApiErrorCode.NOT_FOUND, 'VIEW_GONE: that canvas view is closed or has stopped reporting')
+    );
+const objectLabel = (o: { type: string; content: Record<string, unknown> }): string => {
+  const text = (v: unknown): string => (typeof v === 'string' ? v : '');
+  return (text(o.content.label) || text(o.content.alt) || text(o.content.text).split('\n')[0] || o.type).slice(0, 80);
+};
+
+export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, views = new ViewRegistry()): void {
   void app.register(async (scope) => {
     scope.addHook('onRequest', async (_req, reply) => {
       if (!(await ctx.canvasEnabled()))
@@ -242,6 +255,40 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
         if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner))
           return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
       });
+      workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
+        '/api/canvas/:workspaceId/views/:viewId',
+        { bodyLimit: 64 * 1024 },
+        async (req, reply) => {
+          const viewId = z.uuid().parse(req.params.viewId);
+          const state = PublishedViewSchema.parse(req.body);
+          const result = views.publish(req.params.workspaceId, viewId, ownerFor(req), state);
+          if (!result.ok) {
+            const code = result.code === 'RATE_LIMITED' ? 429 : result.code === 'FORBIDDEN' ? 404 : 409;
+            if (code === 429) reply.header('Retry-After', '1');
+            return reply
+              .code(code)
+              .send(
+                createErrorResponse(
+                  code === 409
+                    ? ApiErrorCode.CONFLICT
+                    : code === 429
+                      ? ApiErrorCode.RATE_LIMITED
+                      : ApiErrorCode.NOT_FOUND,
+                  result.code
+                )
+              );
+          }
+          return { success: true };
+        }
+      );
+      workspaceScope.get<{ Params: { workspaceId: string; viewId: string } }>(
+        '/api/canvas/:workspaceId/views/:viewId',
+        async (req, reply) => {
+          const viewId = z.uuid().parse(req.params.viewId);
+          const record = views.read(req.params.workspaceId, viewId, (owner) => canAccessOwned(getAuthUser(req), owner));
+          return record ? { success: true, data: record } : viewGone(reply);
+        }
+      );
       workspaceScope.post<{ Params: { workspaceId: string } }>(
         '/api/canvas/:workspaceId/command',
         { bodyLimit: 2 * 1024 * 1024 },
@@ -312,6 +359,72 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             case 'canvas_capabilities':
               toolSchemas.canvas_capabilities.parse(args);
               return { success: true, data: { ...capabilities(), truncated: false } };
+            case 'canvas_view':
+            case 'canvas_context': {
+              const input: z.infer<typeof toolSchemas.canvas_view> | z.infer<typeof toolSchemas.canvas_context> =
+                envelope.tool === 'canvas_view'
+                  ? toolSchemas.canvas_view.parse(args)
+                  : toolSchemas.canvas_context.parse(args);
+              const canSee = (owner: string | undefined) => canAccessOwned(getAuthUser(req), owner);
+              if (input.action === 'list')
+                return { success: true, data: { views: views.list(req.params.workspaceId, canSee) } };
+              if (input.action === 'read') {
+                const record = views.read(req.params.workspaceId, input.viewId, canSee);
+                if (!record) return viewGone(reply);
+                if (envelope.tool === 'canvas_view') return { success: true, data: record };
+                const refs = record.state.context.flatMap((id) => {
+                  const o = state.objects[id];
+                  if (!o || o.deletedAt !== null) return [];
+                  const inside = descendants(state, id).filter((d) => d.id !== id && d.deletedAt === null);
+                  return [
+                    {
+                      id,
+                      label: objectLabel(o),
+                      type: o.type,
+                      revision: o.revision,
+                      descendantCount: inside.length,
+                      descendants: inside.slice(0, MAX_VIEW_IDS).map((d) => ({ id: d.id, revision: d.revision })),
+                    },
+                  ];
+                });
+                return { success: true, data: { viewId: input.viewId, ageMs: record.ageMs, references: refs } };
+              }
+              const { viewId, requestId, ...rest } = input;
+              const action = ViewActionSchema.parse(
+                envelope.tool === 'canvas_context' ? { ...rest, action: `context-${rest.action}` } : rest
+              );
+              if ('targetIds' in action && action.targetIds && action.action !== 'context-remove')
+                normalizeTargets(state, action.targetIds);
+              if (action.action === 'focus' && action.targetId) normalizeTargets(state, [action.targetId]);
+              const result = views.command(req.params.workspaceId, viewId, canSee, action, requestId);
+              if (!result.ok) {
+                if (result.code === 'VIEW_GONE') return viewGone(reply);
+                if (result.code === 'RATE_LIMITED')
+                  return reply
+                    .code(429)
+                    .header('Retry-After', '1')
+                    .send(
+                      createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many view commands. Try again in a second.')
+                    );
+                return reply
+                  .code(409)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.CONFLICT,
+                      'Request identity was already used for a different command'
+                    )
+                  );
+              }
+              if (!result.duplicate)
+                ctx.broadcast(SseEvent.CanvasViewCommand, {
+                  workspaceId: req.params.workspaceId,
+                  viewId,
+                  commandId: result.commandId,
+                  owner: result.owner,
+                  command: action,
+                });
+              return { success: true, data: { commandId: result.commandId, duplicate: result.duplicate } };
+            }
             case 'canvas_read':
               return { success: true, data: readTree(state, toolSchemas.canvas_read.parse(args)) };
             case 'canvas_search':

@@ -20,6 +20,9 @@ export const shortcuts: [string, string[][]][] = [
 ];
 
 export const editShortcuts: [string, string[][]][] = [
+  ['Toggle assistant', [['C'], ['Mod', '.']]],
+  ['Add selection to chat', [['Mod', 'Enter']]],
+  ['Add objects to chat (hold and drag a loop)', [['Q']]],
   ['Selection lasso (hold and drag)', [['Alt']]],
   ['Group selection', [['Mod', 'G']]],
   ['Ungroup selection', [['Mod', 'Shift', 'G']]],

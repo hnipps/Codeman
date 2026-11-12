@@ -3,13 +3,21 @@ export const SINGLE_USER_VIEWER = '@single';
 /** A stored clipboard larger than this is refused rather than written. */
 export const MAX_CLIPBOARD_BYTES = 1024 * 1024;
 type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-export type CanvasStorageKeys = { edits: string; drafts: string; clipboard: string };
+export type CanvasStorageKeys = {
+  edits: string;
+  drafts: string;
+  clipboard: string;
+  assistantDraft: string;
+  assistantContext: string;
+};
 export function canvasStorageKeys(viewer: string, workspace: string): CanvasStorageKeys {
   const scope = `codeman:canvas:user:${encodeURIComponent(viewer)}`;
   return {
     edits: `${scope}:${workspace}:edits`,
     drafts: `${scope}:${workspace}:drafts`,
     clipboard: `${scope}:clipboard`,
+    assistantDraft: `${scope}:${workspace}:assistant:draft`,
+    assistantContext: `${scope}:${workspace}:assistant:context`,
   };
 }
 /**

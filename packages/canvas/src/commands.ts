@@ -1,8 +1,9 @@
 import { targets, selectRegion } from './select.js';
 import type { ViewObject } from './model.js';
 import { nextFocus, siblings } from './tree.js';
+import { contextAdd, contextRemove, contextPrune } from './context.js';
 import { pan, zoomAt, pinch, fit, type Point, type Rect, type Viewport } from './viewport.js';
-export type RailView = 'keys' | 'reader' | 'thread' | 'history';
+export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant';
 export type ViewState = {
   viewport: Viewport;
   focusId: string | null;
@@ -13,6 +14,10 @@ export type ViewState = {
   letters: boolean;
   /** The open sub-canvas, or null for the whole workspace. A view setting: nothing is written. */
   root: string | null;
+  /** Objects pending as direct context for the assistant; normalized, never written to the canvas. */
+  context: string[];
+  /** The conversation the assistant rail shows; none until conversations arrive. */
+  conversationId: string | null;
 };
 export type ViewCommand =
   | { kind: 'pan'; delta: Point }
@@ -29,6 +34,10 @@ export type ViewCommand =
   | { kind: 'tool'; tool: ViewState['tool'] }
   | { kind: 'outline'; open: boolean }
   | { kind: 'rail'; view: RailView }
+  | { kind: 'rail-close'; view: RailView }
+  | { kind: 'context-add'; ids: string[] }
+  | { kind: 'context-remove'; ids: string[] }
+  | { kind: 'context-clear-sent'; ids?: string[] }
   | { kind: 'escape' }
   | { kind: 'letters'; enabled: boolean }
   | { kind: 'enter'; id: string }
@@ -42,6 +51,8 @@ export const initialView = (): ViewState => ({
   rail: [],
   letters: true,
   root: null,
+  context: [],
+  conversationId: null,
 });
 export function command(state: ViewState, action: ViewCommand, objects: ViewObject[]): ViewState {
   switch (action.kind) {
@@ -90,6 +101,14 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
       return { ...state, outlineOpen: action.open };
     case 'rail':
       return { ...state, rail: [...state.rail.filter((v) => v !== action.view), action.view] };
+    case 'rail-close':
+      return { ...state, rail: state.rail.filter((v) => v !== action.view) };
+    case 'context-add':
+      return { ...state, context: contextAdd(objects, contextPrune(objects, state.context), action.ids) };
+    case 'context-remove':
+      return { ...state, context: contextRemove(state.context, action.ids) };
+    case 'context-clear-sent':
+      return { ...state, context: action.ids ? contextRemove(state.context, action.ids) : [] };
     case 'escape':
       return { ...state, rail: state.rail.slice(0, -1) };
     case 'letters':
