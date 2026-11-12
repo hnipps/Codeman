@@ -118,6 +118,13 @@ way; it also enables the `Ctrl+Shift+G` grid toggle on this device. See
 This section also holds background-agent tracking, including whether to track agents for
 every session or only the active tab.
 
+**Canvas** (under **Cross-session features**, synced, off by default, beta) gives every
+case an infinite canvas for notes, sections, images and links that you and your agents both
+edit. On, the case picker shows **Open canvas**, the phone home screen lists canvases, and
+the canvas tools of `codeman mcp` work. Off, those entries are hidden and the canvas routes
+answer as disabled; saved canvases stay on disk. In multi-user mode only an admin can
+change it.
+
 **Keep agent inbox across restarts** (under **Cross-session features**, synced, off by
 default) saves the pending `codeman agent post` messages to `agent-inbox.json` in the data
 dir, readable by you only, so they survive a server restart. Off, the agent inbox lives in
