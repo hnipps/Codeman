@@ -21,3 +21,7 @@ No new spawn path: create still goes through `POST /api/sessions` then `/interac
 ## Open questions
 
 Copilot has composer evidence but Codeman cannot see when it waits on an approval (no hook, no `blockedLine`), so it is listed unavailable; claude is the only available stock CLI. A custom registry entry with composer evidence plus a `blockedLine` or hooks is available but unverified against a real pane; the coordinator runs the live lanes. The model suggestions are only models this canvas already used, because the registry carries no model catalogue.
+
+## Fix round 1
+
+From the independent audit. Availability now also requires that Codeman can tell the CLI is waiting on an approval or question (`hooks !== 'none'` or a declared `blockedLine`), which makes GitHub Copilot unavailable with its own reason. A create naming no CLI refuses when the default CLI is disabled in the registry (still unprobed for installation). The model field is capped at 100 characters. A choice set by an agent says so in the rail until the person changes it. Dead code removed, and the create and `model set` refusals now share one function. Known and left alone: a retried create whose response was lost reuses the earlier conversation even if the selector changed; a page left open across a rollback sends `choice` to a release that refuses it until reloaded.

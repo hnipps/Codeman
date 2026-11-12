@@ -654,9 +654,12 @@ function applyViewAction(action: ViewAction): void {
       case 'context-remove':
         dispatch({ kind: 'context-remove', ids: action.targetIds });
         break;
-      case 'assistant-choice':
+      case 'assistant-choice': {
+        const was = state.choice;
+        if (was?.cliId !== action.cliId || was?.model !== action.model) assistant.noteAgentChoice();
         dispatch({ kind: 'assistant-choice', choice: { cliId: action.cliId, model: action.model } });
         break;
+      }
     }
   } finally {
     keyboard = was;

@@ -1,4 +1,5 @@
 import { uuid } from './ids.js';
+import { MAX_MODEL_ID_LENGTH } from '../../../src/canvas/providers.js';
 import { chips, type Chip } from './context.js';
 import type { ViewCommand, ViewState } from './commands.js';
 import type { ViewObject } from './model.js';
@@ -116,6 +117,8 @@ export class AssistantView {
   private restoredChoiceValue: Choice | null;
   private storedChoice = '';
   private choiceSignature = '';
+  /** The current choice came from an agent's view command; the person's next change or another conversation clears it. */
+  private agentChose = false;
   private providers: ProviderRow[] = [];
   private providersLoaded = false;
   private onFocus = (): void => void this.loadProviders();
@@ -161,14 +164,19 @@ export class AssistantView {
     const providerSelect = node('providerSelect') as HTMLSelectElement;
     const modelInput = node('modelInput') as HTMLInputElement;
     providerSelect.addEventListener('change', () => {
+      this.agentChose = false;
       // Model ids belong to a provider, so a new provider starts on its own default.
       this.options.dispatch({ kind: 'assistant-choice', choice: { cliId: providerSelect.value || null, model: '' } });
     });
     modelInput.addEventListener('input', () => {
+      this.agentChose = false;
       const sel = selection(this.providers, this.options.view().choice);
       this.options.dispatch({
         kind: 'assistant-choice',
-        choice: { cliId: sel.row?.id ?? this.options.view().choice?.cliId ?? null, model: modelInput.value.trim() },
+        choice: {
+          cliId: sel.row?.id ?? this.options.view().choice?.cliId ?? null,
+          model: modelInput.value.trim().slice(0, MAX_MODEL_ID_LENGTH),
+        },
       });
     });
     node('addSelection').addEventListener('click', () => {
@@ -177,6 +185,7 @@ export class AssistantView {
     window.addEventListener('focus', this.onFocus);
     void this.loadProviders();
     const fresh = (): void => {
+      this.agentChose = false;
       this.options.dispatch({ kind: 'conversation', id: null });
       this.say('The next message starts a new conversation.');
       this.threadSignature = '';
@@ -188,6 +197,7 @@ export class AssistantView {
     node('endedNew').addEventListener('click', fresh);
     (node('conversationPicker') as HTMLSelectElement).addEventListener('change', (e) => {
       const id = (e.target as HTMLSelectElement).value;
+      this.agentChose = false;
       this.options.dispatch({ kind: 'conversation', id: id || null });
       // The selectors steer only the NEXT new conversation: opening an old one never carries a pending choice over to it.
       this.options.dispatch({ kind: 'assistant-choice', choice: null });
@@ -209,6 +219,10 @@ export class AssistantView {
   }
   restoredChoice(): Choice | null {
     return this.restoredChoiceValue;
+  }
+  /** An agent's `assistant-choice` command changed the selectors: say so until the person changes them. */
+  noteAgentChoice(): void {
+    this.agentChose = true;
   }
   focusChoice(which: 'provider' | 'model'): void {
     const model = node('modelInput') as HTMLInputElement;
@@ -697,6 +711,7 @@ export class AssistantView {
       field,
       bound?.id ?? null,
       notice,
+      this.agentChose,
       this.conversations.map((c) => [c.cliId, c.model]),
     ]);
     if (signature === this.choiceSignature) return;
@@ -735,13 +750,15 @@ export class AssistantView {
         : '',
       sel.row && !sel.row.available ? (sel.row.reason ?? '') : '',
       field.reason,
+      this.agentChose ? 'Set by an agent.' : '',
     ].filter(Boolean);
     const note = node('choiceNote');
     note.textContent = reasons.join(' ');
     note.hidden = !reasons.length;
     const banner = node('newConversationNotice');
     // A provider that cannot start says why in the note; promising a new conversation on it would contradict that.
-    const promised = sel.row?.available === false ? '' : notice;
+    const promised =
+      sel.row?.available === false ? '' : notice && this.agentChose ? `${notice} (set by an agent)` : notice;
     banner.textContent = promised;
     banner.hidden = !promised;
   }

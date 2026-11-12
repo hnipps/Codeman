@@ -506,6 +506,64 @@ describe('canvas assistant conversations', () => {
     await shot9c('agent-model');
   });
 
+  it('says when an agent set the choice, and stops saying so once the person changes it', async () => {
+    await open(false);
+    await page.waitForFunction(() => document.querySelectorAll('#providerSelect option').length > 0);
+    await page.waitForFunction(() => !!window.canvasView.read().conversationId);
+    const viewId = await page.evaluate(() => sessionStorage.getItem('codeman:canvas:viewId'));
+    const providers = (await (await page.request.get(api('/canvas/assistant/providers'))).json()).data.providers as {
+      id: string;
+      available: boolean;
+    }[];
+    const pick = providers.find((p) => p.available)!;
+    const setByAgent = (model: string) =>
+      page.request.post(api(`/canvas/${workspace}/command`), {
+        data: {
+          tool: 'canvas_conversation',
+          arguments: { action: 'model', operation: 'set', viewId, cliId: pick.id, model },
+        },
+      });
+    expect((await setByAgent('agent-picked')).status()).toBe(200);
+    await page.waitForFunction(
+      () => (document.getElementById('modelInput') as HTMLInputElement).value === 'agent-picked'
+    );
+    expect(await page.locator('#choiceNote').textContent()).toContain('Set by an agent.');
+    expect(await page.locator('#newConversationNotice').textContent()).toMatch(/\(set by an agent\)$/);
+    await page.locator('#modelInput').fill('person-picked');
+    await page.waitForFunction(() =>
+      (document.getElementById('newConversationNotice')?.textContent ?? '').includes('person-picked')
+    );
+    expect(await page.locator('#newConversationNotice').textContent()).not.toContain('set by an agent');
+    expect(
+      (await page.locator('#choiceNote').isHidden()) ||
+        !(await page.locator('#choiceNote').textContent())?.includes('Set by an agent.')
+    ).toBe(true);
+    expect((await setByAgent('agent-again')).status()).toBe(200);
+    await page.waitForFunction(() => document.getElementById('choiceNote')?.textContent?.includes('Set by an agent.'));
+    await page.locator('#providerSelect').selectOption(pick.id);
+    await page.waitForFunction(() => !document.getElementById('choiceNote')?.textContent?.includes('Set by an agent.'));
+    await page.evaluate(() => window.canvasView.read());
+  });
+
+  it('never dispatches a model longer than the id limit, and the view keeps publishing', async () => {
+    await open(false);
+    await page.waitForFunction(() => document.querySelectorAll('#providerSelect option').length > 0);
+    expect(await page.locator('#modelInput').getAttribute('maxlength')).toBe('100');
+    await page.evaluate(() => {
+      const input = document.getElementById('modelInput') as HTMLInputElement;
+      input.value = 'm'.repeat(150);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const choice = await page.evaluate(() => window.canvasView.read().choice);
+    expect(choice?.model.length).toBeLessThanOrEqual(100);
+    expect(choice?.model.length).toBeGreaterThan(0);
+    const viewId = await page.evaluate(() => sessionStorage.getItem('codeman:canvas:viewId'));
+    await page.waitForTimeout(900);
+    const published = await page.request.get(api(`/canvas/${workspace}/views/${viewId}`));
+    expect(published.status()).toBe(200);
+    expect((await published.json()).data.state.choice.model.length).toBeLessThanOrEqual(100);
+  });
+
   it('a Not delivered row keeps Retry after a reload, even when only the interrupted attempt held its text', async () => {
     const [c] = await conversations();
     const record = (await (await page.request.get(api(`/canvas/${workspace}/conversations/${c.id}`))).json()).data
