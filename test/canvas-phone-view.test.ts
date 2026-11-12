@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { phoneFirstView, READABLE_ZOOM } from '../packages/canvas/src/mobile.js';
+import { phoneFirstView, READABLE_ZOOM, visibleRect } from '../packages/canvas/src/mobile.js';
 import { fit } from '../packages/canvas/src/viewport.js';
 
 const area = { x: 0, y: 47, width: 390, height: 700 };
@@ -34,5 +34,18 @@ describe('phone first view', () => {
   it('falls back to fit-all when there is nothing to anchor on', () => {
     const all = { x: 0, y: 0, width: 4000, height: 4000 };
     expect(phoneFirstView(all, null, area)).toEqual(fit(all, area));
+  });
+
+  it('fits above the dock when the area is measured with the dock in it, and under it when the dock measures as nothing', () => {
+    const all = { x: 0, y: 0, width: 300, height: 560 };
+    const view = { width: 414, height: 714 };
+    const dock = { x: 8, y: 648, width: 398, height: 54 };
+    const bottom = (a: ReturnType<typeof visibleRect>) => {
+      const v = phoneFirstView(all, { x: 0, y: 0, width: 300, height: 200 }, a);
+      return v.y + all.height * v.zoom;
+    };
+    const insets = { top: 47, left: 0, right: 0, bottom: 0 };
+    expect(bottom(visibleRect(view, insets, [dock]))).toBeLessThanOrEqual(648);
+    expect(bottom(visibleRect(view, insets, [{ x: 0, y: 0, width: 0, height: 0 }]))).toBeGreaterThan(648);
   });
 });

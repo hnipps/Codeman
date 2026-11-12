@@ -57,7 +57,7 @@ const providers = {
 
 describe('phone assistant', () => {
   let server: WebServer, browser: Browser, context: BrowserContext, page: Page;
-  let origin: string, workspace: string;
+  let origin: string, workspace: string, fitWorkspace: string;
   const posts: { url: string; body: Record<string, unknown> }[] = [];
   const view = () => page.evaluate(() => window.canvasView.read());
   beforeAll(async () => {
@@ -76,6 +76,14 @@ describe('phone assistant', () => {
             userId: 'admin',
           }
         ).ok
+    ).toBe(true);
+    mkdirSync(resolve(resolveCasesDir(), 'phone-fit'), { recursive: true });
+    fitWorkspace = workspaceForCase('phone-fit').id;
+    expect(
+      stores.get(fitWorkspace).append([text('top', 0, 0, 'First note'), text('bottom', 0, 480, 'Last note')], {
+        kind: 'human',
+        userId: 'admin',
+      }).ok
     ).toBe(true);
     stores.flush();
     server = new WebServer(0, false, true, undefined, undefined, undefined, '/x');
@@ -253,5 +261,50 @@ describe('phone assistant', () => {
     expect(await page.locator('#choiceNote').textContent()).toContain('cannot confirm a submitted message');
     expect(await page.locator('dialog[open], [role="dialog"]').count()).toBe(0);
     await shot(page, 'unavailable');
+  });
+
+  it('computes every text control on the canvas page at 16 px or more, so iOS never zooms on focus', async () => {
+    const sizes = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('input, textarea, select')]
+        .filter((el) => !['checkbox', 'radio', 'hidden', 'file', 'range'].includes((el as HTMLInputElement).type))
+        .map((el) => [el.id || el.tagName, parseFloat(getComputedStyle(el).fontSize)] as const)
+    );
+    const ids = sizes.map(([id]) => id);
+    for (const id of ['search', 'commentDraft', 'assistantDraft', 'providerSelect', 'modelInput', 'conversationPicker'])
+      expect(ids, id).toContain(id);
+    for (const [id, size] of sizes) expect(size, id).toBeGreaterThanOrEqual(16);
+    await page.locator('#assistantView').waitFor({ state: 'visible' });
+    for (const id of ['assistantDraft', 'modelInput']) {
+      await page.locator(`#${id}`).focus();
+      expect(await page.evaluate(() => window.visualViewport?.scale ?? 1)).toBe(1);
+    }
+  });
+
+  it('fits the first view above the dock and inside the safe area on first load', async () => {
+    const small = await browser.newContext({
+      viewport: { width: 414, height: 714 },
+      deviceScaleFactor: 1,
+      hasTouch: true,
+      isMobile: true,
+    });
+    await small.addInitScript(() => {
+      window.__canvasTouch = true;
+      localStorage.setItem('codeman:skin', 'og');
+    });
+    const p = await small.newPage();
+    await p.goto(`${origin}/x/canvas/${fitWorkspace}`, { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('[data-object-id="top"]');
+    await p.waitForTimeout(400);
+    const dock = await p.locator('#dock').evaluate((el) => el.getBoundingClientRect().top);
+    const boxes = await p.evaluate(() =>
+      [...document.querySelectorAll('#layer > [data-object-id]')].map((el) => el.getBoundingClientRect().toJSON())
+    );
+    expect(boxes).toHaveLength(2);
+    for (const box of boxes) {
+      expect(box.top).toBeGreaterThanOrEqual(0);
+      expect(box.bottom).toBeLessThanOrEqual(dock + 0.5);
+    }
+    await p.screenshot({ animations: 'disabled', path: resolve(MEDIA, `pc9c-${stamp}-phone-first-view.png`) });
+    await small.close();
   });
 });
