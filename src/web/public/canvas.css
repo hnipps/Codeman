@@ -2019,6 +2019,13 @@ textarea[readonly] {
 :root[data-phone] .composer {
   padding: 8px 0;
 }
+/* With the keyboard up the rail is shorter than its content: the message box and Send stay in reach and the rest scrolls behind them. */
+:root[data-phone] #assistantForm {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--panel);
+}
 :root[data-phone] #thread {
   min-height: 48px;
 }

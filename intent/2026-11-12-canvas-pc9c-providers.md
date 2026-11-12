@@ -25,3 +25,8 @@ Copilot has composer evidence but Codeman cannot see when it waits on an approva
 ## Fix round 1
 
 From the independent audit. Availability now also requires that Codeman can tell the CLI is waiting on an approval or question (`hooks !== 'none'` or a declared `blockedLine`), which makes GitHub Copilot unavailable with its own reason. A create naming no CLI refuses when the default CLI is disabled in the registry (still unprobed for installation). The model field is capped at 100 characters. A choice set by an agent says so in the rail until the person changes it. Dead code removed, and the create and `model set` refusals now share one function. Known and left alone: a retried create whose response was lost reuses the earlier conversation even if the selector changed; a page left open across a rollback sends `choice` to a release that refuses it until reloaded.
+
+## Fix round 2 (real-device check)
+
+- On a real phone the keyboard leaves the rail shorter than its content, and Send sat 51px below the visible part of the rail. The message box and Send now stay pinned to the bottom of the phone rail (`position: sticky`) and the rest scrolls behind them. `test/mobile/canvas-assistant.test.ts` covers a keyboard that leaves less room than the rail needs.
+- Known, not changed: after New, the previous thread stays on screen until the first send; picking an older conversation leaves the model field empty instead of showing that conversation's model.

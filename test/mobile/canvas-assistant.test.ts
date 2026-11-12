@@ -197,6 +197,26 @@ describe('phone assistant', () => {
     await page.evaluate(() => (window as unknown as { __keyboard: (h: number) => void }).__keyboard(0));
   });
 
+  it('keeps the message box and Send in reach when the keyboard leaves less room than the rail needs', async () => {
+    const keyboard = (h: number) =>
+      page.evaluate((px) => (window as unknown as { __keyboard: (h: number) => void }).__keyboard(px), h);
+    await page.locator('#assistantDraft').tap();
+    await keyboard(520);
+    await page.waitForTimeout(150);
+    const bottom = (await page.evaluate(() => innerHeight)) - 520;
+    const body = await page
+      .locator('#assistantView')
+      .evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
+    expect(body.scroll).toBeGreaterThan(body.client);
+    for (const selector of ['#assistantDraft', '#assistantSend']) {
+      const box = (await page.locator(selector).boundingBox())!;
+      expect(box.y + box.height, selector).toBeLessThanOrEqual(bottom + 0.5);
+      expect(box.y, selector).toBeGreaterThanOrEqual(69);
+    }
+    await shot(page, 'keyboard-short');
+    await keyboard(0);
+  });
+
   it('takes Return as a line break and sends only from the Send button, through the same routes', async () => {
     posts.length = 0;
     await page.route('**/api/canvas/*/conversations', (route) =>
