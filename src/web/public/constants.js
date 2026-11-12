@@ -1974,6 +1974,7 @@ const SSE_EVENTS = {
   TAB_LAYOUT_CHANGED: 'tab:layoutChanged',
   CANVAS_CHANGED: 'canvas:changed',
   CANVAS_VIEW_COMMAND: 'canvas:viewCommand',
+  CANVAS_CONVERSATION: 'canvas:conversation',
 };
 
 // ═══════════════════════════════════════════════════════════════

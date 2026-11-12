@@ -1,6 +1,7 @@
 /** @fileoverview Shared compound canvas commands and machine-readable capabilities. */
 import { z } from 'zod';
 import { ViewActionSchema } from './view-schema.js';
+import { ConversationToolSchema } from './conversation-schema.js';
 import { randomUUID, createHash } from 'node:crypto';
 import {
   AuthorSchema,
@@ -179,6 +180,7 @@ export const toolSchemas = {
   canvas_comment: CommentToolSchema,
   canvas_view: ViewToolSchema,
   canvas_context: ContextToolSchema,
+  canvas_conversation: ConversationToolSchema,
   canvas_capabilities: z.object({}).strict(),
   canvas_link_preview: z.object({ url: z.string().min(1).max(8192) }).strict(),
 };
@@ -290,17 +292,18 @@ export function capabilities() {
         note: 'Acts on one open browser view named by viewId (canvas_view list). The view reports its state every few seconds; a closed view answers VIEW_GONE.',
       })),
     ],
-    reserved: [
-      'canvas.conversation.list',
-      'canvas.conversation.read',
-      'canvas.conversation.create',
-      'canvas.conversation.send',
-    ].map((command) => ({
+    conversations: [
+      ['canvas.conversation.list', 'canvas_conversation list'],
+      ['canvas.conversation.read', 'canvas_conversation read'],
+      ['canvas.conversation.create', 'canvas_conversation create'],
+      ['canvas.conversation.send', 'canvas_conversation send'],
+    ].map(([command, tool]) => ({
       command,
-      available: false,
-      owner: 'PC9b',
-      reason: 'Conversations are not part of this release',
+      available: true,
+      tool,
+      note: 'A conversation is one real Claude session in this case. Send pastes the prompt with the session write primitive and carries the named objects as reference text; it never answers a pending question and an agent cannot message its own conversation.',
     })),
+    reserved: [],
     clipboard: {
       copy: 'canvas_read retains typed content and hierarchy',
       cut: 'Read then canvas_delete; retain the returned state in the caller clipboard',
