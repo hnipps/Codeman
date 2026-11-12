@@ -27,6 +27,11 @@ export type RevertSummary = z.infer<typeof RevertSummarySchema>;
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 const fieldCount = (entries: { fields: string[] }[]): number => entries.reduce((n, e) => n + e.fields.length, 0);
+/** Later edits by others that stay: a kept object counts once, however many of its fields were also skipped. */
+export function laterChanges(s: RevertSummary): number {
+  const kept = new Set(s.kept);
+  return kept.size + fieldCount(s.skipped.filter((e) => !kept.has(e.objectId)));
+}
 
 /** The confirm sentence: what goes, what is restored, and that later edits by others stay. */
 export function previewSentence(s: RevertSummary, name: (id: string) => string): string {
@@ -37,7 +42,7 @@ export function previewSentence(s: RevertSummary, name: (id: string) => string):
     parts.push(`restores ${plural(fieldCount(s.restored), 'field')} on ${plural(s.restored.length, 'object')}`);
   if (!parts.length) return 'This session has nothing left to revert.';
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
-  const kept = s.kept.length + fieldCount(s.skipped);
+  const kept = laterChanges(s);
   const short = (id: string): string => {
     const text = name(id);
     return text.length > 40 ? `${text.slice(0, 39)}…` : text;
@@ -57,10 +62,13 @@ export function resultSentence(s: RevertSummary): string {
   if (s.removed.length) done.push(`removed ${plural(s.removed.length, 'object')}`);
   if (s.restored.length) done.push(`restored ${plural(fieldCount(s.restored), 'field')}`);
   if (s.comments) done.push(`removed ${plural(s.comments, 'comment')}`);
-  const skipped = s.kept.length + fieldCount(s.skipped);
+  const skipped = laterChanges(s);
   const head = done.length ? `Reverted: ${done.join(', ')}.` : 'Nothing was reverted.';
   return skipped ? `${head} Skipped ${plural(skipped, 'change')} others made later.` : `${head} Nothing was skipped.`;
 }
+
+/** The shortest gap between two author re-reads while History is open. */
+export const HISTORY_REFRESH_MS = 1000;
 
 const key = (a: ViewAuthor): string => (a.kind === 'human' ? `h:${a.userId}` : `a:${a.sessionId}`);
 const node = (id: string): HTMLElement => {
@@ -75,6 +83,8 @@ export class HistoryView {
   private confirm: { key: string; requestId: string; summary: RevertSummary | null } | null = null;
   private results = new Map<string, string>();
   private loading = 0;
+  private lastRefresh = 0;
+  private trailing: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private options: {
@@ -108,10 +118,27 @@ export class HistoryView {
   hide(): void {
     this.open = false;
     this.confirm = null;
+    if (this.trailing) clearTimeout(this.trailing);
+    this.trailing = null;
+  }
+
+  /** The canvas changed: re-read authors at most once a second, and once more after a burst. */
+  changed(now = Date.now()): void {
+    if (!this.open || this.trailing) return;
+    const wait = HISTORY_REFRESH_MS - (now - this.lastRefresh);
+    if (wait <= 0) {
+      void this.refresh();
+      return;
+    }
+    this.trailing = setTimeout(() => {
+      this.trailing = null;
+      void this.refresh();
+    }, wait);
   }
 
   async refresh(): Promise<void> {
     if (!this.open) return;
+    this.lastRefresh = Date.now();
     const ticket = ++this.loading;
     const status = node('historyStatus');
     try {
@@ -197,6 +224,7 @@ export class HistoryView {
     };
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
+    cancel.dataset.historyFocus = `cancel:${id}`;
     cancel.onclick = () => this.cancel(id);
     actions.append(go, cancel);
     box.append(actions);

@@ -11,6 +11,14 @@ import { deployRole } from '../src/deploy-role.js';
 import { OperationSchema, revertPlan } from '../src/canvas/operations.js';
 import { canvasToolNames } from '../src/canvas/commands.js';
 import { create, human, agent } from './canvas-fixtures.js';
+import {
+  HISTORY_REFRESH_MS,
+  HistoryView,
+  laterChanges,
+  previewSentence,
+  resultSentence,
+} from '../packages/canvas/src/history.js';
+import { postFailure } from '../packages/canvas/src/comments.js';
 
 /** Operation kinds the release before PC6 replays; anything else it would carry as a future record. */
 const PREVIOUS_RELEASE_KINDS = new Set([
@@ -117,6 +125,52 @@ describe('canvas comments', () => {
     }
   });
 
+  it('leaves the object revision unchanged, so a comment never stales another writer', async () => {
+    const { app, store, workspace } = await harness();
+    try {
+      store.append([create('note')], human);
+      const before = store.read().objects.note.revision;
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/canvas/${workspace}/command`,
+        payload: { tool: 'canvas_comment', arguments: { objectId: 'note', text: 'hi' } },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(store.read().objects.note.revision).toBe(before);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses a comment on a deleted object, and the page names that instead of offering Retry', async () => {
+    const { app, store, workspace } = await harness();
+    try {
+      store.append([create('note'), { kind: 'delete', opId: 'del', objectId: 'note' }], human);
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/canvas/${workspace}/command`,
+        payload: { tool: 'canvas_comment', arguments: { objectId: 'note', text: 'late' } },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(postFailure(response.statusCode, response.json())).toEqual({
+        retry: false,
+        message: expect.stringContaining('this object was removed'),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('offers Retry only for failures that can succeed as sent', () => {
+    expect(postFailure(null, null).retry).toBe(true);
+    expect(postFailure(502, null).retry).toBe(true);
+    expect(postFailure(429, null).retry).toBe(true);
+    expect(postFailure(400, { success: false }).retry).toBe(false);
+    expect(postFailure(400, { success: false }).message).toContain('100,000 characters');
+    expect(postFailure(409, { reasons: [{ code: 'NOT_FOUND' }] }).message).toContain('removed');
+    expect(postFailure(403, null)).toEqual({ retry: false, message: expect.stringContaining('refused') });
+  });
+
   it('exposes canvas_comment among the command tools', () => {
     expect(canvasToolNames).toContain('canvas_comment');
   });
@@ -216,14 +270,20 @@ describe('author history and revert', () => {
     const { store } = await harness();
     store.append([create('frame', null, 'frame')], human);
     store.append(
-      Array.from({ length: 1000 }, (_, i) => create(`n${i}`)),
+      [
+        create('box', null, 'frame'),
+        create('inner', 'box', 'frame'),
+        ...Array.from({ length: 998 }, (_, i) => create(`n${i}`, i % 2 ? 'box' : 'inner')),
+      ],
       agent
     );
     const started = performance.now();
     const result = store.revert(agent, human);
     const elapsed = performance.now() - started;
     expect(result.ok).toBe(true);
-    expect(store.read().objects.n999.deletedAt).not.toBeNull();
+    expect(store.read().objects.n997.deletedAt).not.toBeNull();
+    expect(store.read().objects.box.deletedAt).not.toBeNull();
+    expect(store.read().objects.inner.deletedAt).not.toBeNull();
     expect(store.read().objects.frame.deletedAt).toBeNull();
     expect(elapsed).toBeLessThan(1000);
   });
@@ -263,9 +323,94 @@ describe('author history and revert', () => {
     }
   });
 
-  it('revertPlan matches the field-protection rules of the earlier revertAuthor', () => {
-    const plan = revertPlan({ seq: 0, objects: {}, comments: [] }, [], agent);
-    expect(plan.commands).toEqual([]);
-    expect(plan.summary).toEqual({ removed: [], restored: [], skipped: [], kept: [], comments: 0 });
+  it('revertPlan removes, restores, keeps and skips by the field-protection rules', async () => {
+    const { store } = await harness();
+    expect(revertPlan({ seq: 0, objects: {}, comments: [] }, [], agent).summary).toEqual({
+      removed: [],
+      restored: [],
+      skipped: [],
+      kept: [],
+      comments: 0,
+    });
+    store.append([create('mine'), create('shared')], human);
+    store.append(
+      [
+        create('gone'),
+        create('touched'),
+        move('mine', 50, 'agent-mine'),
+        move('shared', 60, 'agent-shared'),
+        { kind: 'comment', opId: 'agent-note', objectId: 'mine', patch: { id: 'agent-note', text: 'mine' } },
+      ],
+      agent
+    );
+    store.append([move('shared', 70, 'human-shared'), move('touched', 80, 'human-touched')], human);
+    const plan = store.revertPlan(agent);
+    expect(plan.summary).toEqual({
+      removed: ['gone'],
+      restored: [{ objectId: 'mine', fields: ['position'] }],
+      skipped: [
+        { objectId: 'shared', fields: ['position'] },
+        { objectId: 'touched', fields: ['position'] },
+      ],
+      kept: ['touched'],
+      comments: 1,
+    });
+    expect(laterChanges(plan.summary)).toBe(2);
+    expect(store.revert(agent, human).ok).toBe(true);
+    const state = store.read();
+    expect(state.objects.gone.deletedAt).not.toBeNull();
+    expect(state.objects.touched.deletedAt).toBeNull();
+    expect(state.objects.mine.position).toEqual({ x: 10, y: 20 });
+    expect(state.objects.shared.position.x).toBe(70);
+    expect(state.comments).toEqual([]);
+  });
+
+  it('counts each later edit by others once, even when an object is both kept and skipped', () => {
+    const summary = {
+      removed: ['a1'],
+      restored: [],
+      skipped: [
+        { objectId: 'a2', fields: ['position'] },
+        { objectId: 'b', fields: ['position', 'size'] },
+      ],
+      kept: ['a2'],
+      comments: 0,
+    };
+    expect(laterChanges(summary)).toBe(3);
+    expect(previewSentence(summary, (id) => id)).toContain('Later edits by others stay: 3 changes');
+    expect(resultSentence(summary)).toContain('Skipped 3 changes');
+    const single = { ...summary, skipped: [{ objectId: 'a2', fields: ['position'] }] };
+    expect(previewSentence(single, (id) => id)).toContain('1 change on “a2”.');
+    expect(resultSentence(single)).toContain('Skipped 1 change others');
+  });
+});
+
+describe('history refresh', () => {
+  it('re-reads authors at most once a second while open, and once after a burst', () => {
+    vi.useFakeTimers();
+    try {
+      const view = new HistoryView({
+        url: (path) => path,
+        workspace: 'w',
+        phone: { matches: false, touch: false, addEventListener: () => {} },
+        objects: () => [],
+      });
+      const refresh = vi.spyOn(view, 'refresh').mockResolvedValue();
+      view.changed();
+      expect(refresh).not.toHaveBeenCalled();
+      view.show();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      (view as unknown as { lastRefresh: number }).lastRefresh = Date.now();
+      for (let i = 0; i < 50; i++) view.changed();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(HISTORY_REFRESH_MS);
+      expect(refresh).toHaveBeenCalledTimes(2);
+      view.hide();
+      view.changed();
+      vi.advanceTimersByTime(HISTORY_REFRESH_MS * 2);
+      expect(refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

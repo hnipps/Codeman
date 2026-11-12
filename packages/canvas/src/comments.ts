@@ -105,6 +105,21 @@ const node = (id: string): HTMLElement => {
 
 type Pending = { requestId: string; commentId: string; text: string; objectId: string };
 
+export type PostFailure = { retry: boolean; message: string };
+
+/** Product copy for a post that did not land; only network and server faults are worth retrying as is. */
+export function postFailure(status: number | null, body: unknown): PostFailure {
+  if (status === null || status >= 500 || status === 408 || status === 429)
+    return { retry: true, message: 'Not posted. Your comment is kept here.' };
+  const code = z.object({ reasons: z.array(z.object({ code: z.string() }).passthrough()) }).safeParse(body);
+  const reason = code.success ? code.data.reasons[0]?.code : undefined;
+  if (status === 404 || reason === 'NOT_FOUND' || reason === 'INVALID')
+    return { retry: false, message: 'Not posted: this object was removed. Your comment is kept here to copy.' };
+  if (status === 400)
+    return { retry: false, message: 'Not posted: comments hold up to 100,000 characters. Shorten it and post again.' };
+  return { retry: false, message: 'Not posted: the canvas refused this comment. Your comment is kept here.' };
+}
+
 /** The thread view in the rail: ordinary comments only. Posting never starts agent work. */
 export class CommentsView {
   private comments: ViewComment[] = [];
@@ -112,7 +127,7 @@ export class CommentsView {
   private rendered = new Map<string, HTMLElement>();
   private drafts = new Map<string, string>();
   private pending: Pending | null = null;
-  private failed = false;
+  private failure: PostFailure | null = null;
   private clock: ReturnType<typeof setInterval> | undefined;
   private list = node('threadList');
   private draft: HTMLTextAreaElement;
@@ -196,7 +211,7 @@ export class CommentsView {
     if (changed) {
       this.rendered.clear();
       this.list.replaceChildren();
-      this.failed = this.pending?.objectId === objectId && this.failed;
+      if (this.pending?.objectId !== objectId) this.failure = null;
       this.draft.value = objectId ? (this.drafts.get(objectId) ?? '') : '';
     }
     this.paintThread(changed);
@@ -311,21 +326,21 @@ export class CommentsView {
   }
 
   private paintComposer(): void {
-    const posting = !!this.pending && !this.failed;
+    const posting = !!this.pending && !this.failure;
     const post = node('postComment');
     const empty = !this.draft.value.trim();
     post.setAttribute('aria-disabled', String(posting || empty));
     post.textContent = posting ? 'Posting…' : 'Post';
     this.draft.readOnly = posting;
     const status = node('commentStatus');
-    status.textContent = this.failed
-      ? 'Not posted. Your comment is kept here.'
+    status.textContent = this.failure
+      ? this.failure.message
       : posting || document.documentElement.hasAttribute('data-touch')
         ? ''
         : `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to post`;
-    status.dataset.state = this.failed ? 'failed' : '';
-    node('retryComment').hidden = !this.failed;
-    post.hidden = this.failed;
+    status.dataset.state = this.failure ? 'failed' : '';
+    node('retryComment').hidden = !this.failure?.retry;
+    post.hidden = !!this.failure?.retry;
   }
 
   /** Posts the draft once; a retry resends the same request id so it cannot duplicate. */
@@ -333,14 +348,15 @@ export class CommentsView {
     const objectId = this.shown;
     if (!objectId) return false;
     const text = this.draft.value;
-    if (this.pending && !this.failed) return false;
+    if (this.pending && !this.failure) return false;
     if (!text.trim()) return false;
     if (!this.pending || this.pending.text !== text || this.pending.objectId !== objectId)
       this.pending = { requestId: crypto.randomUUID(), commentId: crypto.randomUUID(), text, objectId };
     const pending = this.pending;
-    this.failed = false;
+    this.failure = null;
     this.paintComposer();
     let ok = false;
+    let failure: PostFailure | null = null;
     try {
       const response = await fetch(this.options.url(`/api/canvas/${this.options.workspace}/command`), {
         method: 'POST',
@@ -352,8 +368,9 @@ export class CommentsView {
         }),
       });
       ok = response.ok;
+      if (!ok) failure = postFailure(response.status, await response.json().catch(() => null));
     } catch {
-      ok = false;
+      failure = postFailure(null, null);
     }
     if (this.pending !== pending) return ok;
     if (ok) {
@@ -363,7 +380,11 @@ export class CommentsView {
         this.draft.value = '';
         this.list.scrollTop = this.list.scrollHeight;
       }
-    } else this.failed = true;
+    } else {
+      this.failure = failure ?? postFailure(null, null);
+      // A refusal that cannot succeed as sent gets fresh ids once the text is edited.
+      if (!this.failure.retry) this.pending = null;
+    }
     this.paintComposer();
     return ok;
   }

@@ -240,6 +240,14 @@ describe('phone canvas', () => {
     expect(
       await page.evaluate(() => window.canvasEdit.apply([{ kind: 'delete', opId: 'phone-delete', objectId: 'short' }]))
     ).toBe(false);
+    expect(
+      await page.evaluate(() =>
+        window.canvasEdit.command({ tool: 'canvas_delete', arguments: { ids: ['short'] } } as Parameters<
+          typeof window.canvasEdit.command
+        >[0])
+      )
+    ).toBe(false);
+    await page.waitForTimeout(100);
     expect(writes.length).toBe(start);
     await page.locator('#fit').click();
   });

@@ -55,18 +55,6 @@ export function phoneMode(win: Window = window): PhoneQuery {
   };
 }
 
-/** Tools a phone client may send: reads and comments. Geometry and content writes stay on desktop. */
-const PHONE_TOOLS = new Set(['canvas_read', 'canvas_search', 'canvas_query', 'canvas_capabilities', 'canvas_comment']);
-export function phoneAllows(tool: string, args?: unknown): boolean {
-  if (tool === 'canvas_history')
-    return (
-      typeof args === 'object' &&
-      args !== null &&
-      ['read', 'authors', 'preview'].includes(String((args as { action?: unknown }).action))
-    );
-  return PHONE_TOOLS.has(tool);
-}
-
 /** Height the software keyboard covers at the bottom of the layout viewport. */
 export function keyboardInset(
   layoutHeight: number,

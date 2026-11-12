@@ -33,3 +33,14 @@ None.
 - Lock policy: the existing atomic rejection with `LOCKED` reasons. The History confirm previews it, and the Revert button is unavailable while a target is locked.
 - Fit on a phone fits the selection when one exists, like the desktop; closing the sheet clears the selection.
 - The phone dock hides while the outline or rail fills the screen, and the outline's Keys entry is hidden on phones.
+- The phone's first view fits everything only when body text stays at 12 px or more; otherwise it fits the width of the first top-level container at that zoom, title and top-left in view. Fit with nothing selected still fits everything.
+- A comment post that cannot succeed as sent (too long, object removed) names the reason and offers no Retry; network and server faults keep Retry. The draft stays in every case.
+- History re-reads authors at most once a second while open, and once after a burst.
+- `DesktopEditor.available()` is the one phone write gate; the unused `phoneAllows()` was removed.
+
+## Known and deferred
+
+These exist on master already and PC6 leaves them as they are:
+
+- `remove-comment` does not check that the remover wrote the comment.
+- A revert may target any author; the route does not restrict whose session a caller reverts.

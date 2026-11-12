@@ -171,8 +171,9 @@ describe('canvas comments and author history', () => {
     await shot(page, 'failed-post');
     await page.locator('#retryComment').click();
     await page.waitForFunction(() => document.querySelectorAll('#threadList .comment').length === 3);
+    await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
     await page.unroute('**/api/canvas/*/command');
-    expect(await page.locator('#commentDraft').inputValue()).toBe('');
+    expect(await page.locator('#retryComment').isHidden()).toBe(true);
     const posted = await page.evaluate(() =>
       window.canvasComments.read().filter((c) => c.text === 'Move the sketches next to the brief.')
     );

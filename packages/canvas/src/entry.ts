@@ -712,7 +712,7 @@ const sync = new CanvasSync(
     comments.update(snapshotComments(snapshot));
     editor.receive(snapshot);
     comments.mark(renderer.elements);
-    void history.refresh();
+    history.changed();
     if (!frame) frame = requestAnimationFrame(paint);
   },
   (status) => {
