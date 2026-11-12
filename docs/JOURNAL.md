@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Canvas images, link cards, embeds and sub-canvases
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/canvas-assets.ts`, `src/canvas/link-preview.ts`, `src/canvas/commands.ts`, `src/web/routes/canvas-routes.ts`, `src/web/routes/webview-routes.ts`, `src/types/webview.ts`, `src/mcp-server.ts`, `packages/canvas/src/objects/`, `packages/canvas/src/media.ts`
+**Why:** The canvas stored image, link, embed and sub-canvas types but could neither make nor show them, and agents had no way to add an image or a live page.
+**Links:** [Intent](../intent/2026-11-11-canvas-pc5-media.md)
+
+Image bytes are workspace assets named by their SHA-256 and served by id; no request carries a path, and an object can name only an asset its own workspace holds. Unreferenced assets are kept, because undo and revert can bring an object back and the log does not record which bytes went away. A link preview goes through the web-tab egress guard and writes nothing itself: the browser or agent writes the title with an ordinary update, so there is still one write path. An embed's frame is a web tab record with a new `canvas` origin rather than a `managed` row, because its lifetime follows a canvas object and it must never appear in the tab strip. Link and embed switch type in place so the object keeps its id, history and position. A sub-canvas opens as a view root in the browser and changes no stored data. MCP grows to 25 tools (`canvas_upload_image`, `canvas_link_preview`).
+
 ## 2026-11-12 — Canvas comments, author revert and a read-only phone view
 
 **Type:** intent-refinement

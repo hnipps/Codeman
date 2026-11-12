@@ -5,4 +5,6 @@ export interface CanvasPort {
   canvasEnabled(): Promise<boolean>;
   canvasStores(): Promise<CanvasStores>;
   broadcast(event: string, data: unknown): void;
+  /** Reverse-proxy base path for embed frame URLs; '' at the root. */
+  readonly basePath?: string;
 }

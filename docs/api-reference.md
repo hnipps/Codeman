@@ -1626,10 +1626,10 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
-The twelve command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
+The thirteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
 `canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
-`canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_comment`, and
-`canvas_capabilities`.
+`canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_comment`,
+`canvas_capabilities`, and `canvas_link_preview`.
 Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
 support, geometry semantics and reserved future view operations. `canvas_screenshot`
 is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
@@ -1637,6 +1637,51 @@ is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
 and `X-Canvas-Screenshot-Meta`. Unknown or deleted objects are 404. The canvas off is
 404. No Chromium, or a missing canvas bundle, is 503. The MCP tool of the same name
 returns that PNG as image content.
+
+### Canvas media
+
+`POST /api/canvas/:workspaceId/assets` takes the raw image bytes as the body with
+an image `Content-Type` (`image/png`, `image/jpeg`, `image/gif`, `image/webp`; or
+`application/octet-stream` with `?type=image/png`). It answers
+`{ assetId, mime, bytes, width, height }`; `assetId` is the SHA-256 of the bytes.
+Bytes that do not match the declared type are 400 (`refusal: "bytes"`), an
+unsupported type is 415, more than 8 MB is 413, and bytes that would take the
+workspace past its image quota (512 MB unless `CODEMAN_CANVAS_ASSET_QUOTA_BYTES`
+says otherwise; storing the same bytes again is free) are 413 with
+`refusal: "quota"`. More than 30 uploads a minute from one caller into one
+workspace is 429 `RATE_LIMITED`. `GET
+/api/canvas/:workspaceId/assets/:assetId` serves the bytes (range-aware,
+`nosniff`); an unknown id is 404. A create or update that names an `assetId` or
+`thumbnailAssetId` the workspace does not hold is refused. Stored assets are
+never deleted with their object. The MCP tool `canvas_upload_image` takes either
+`base64` bytes or a `path` the MCP process reads, and calls the `current` form of
+the upload route.
+
+Content shapes: image `{ type: "image", url: "", alt, assetId }`; link
+`{ type: "link", url, label, preview?: "pending" | "ready" | "unavailable",
+thumbnailAssetId? }`; embed `{ type: "embed", url, label?, thumbnailAssetId? }`.
+`canvas_update` may change a link to an embed or back (the id is kept); no other
+type change is accepted. A link or embed `url` written by a create, an address
+change or a link/embed switch must be an absolute `http://` or `https://` address
+with no user name, password or whitespace; anything else is 409 `INVALID`.
+
+`canvas_link_preview` with `{ url }` fetches the page title and thumbnail through
+the web-tab egress guard (at most three redirects, each judged again; no cookies
+or authorization; 5 s) and answers `{ url, host, status: "ready" | "unavailable",
+title, thumbnailAssetId?, reason? }`. Every failure gives the same `reason`,
+`This page could not be previewed`. At most two previews fetch at once on the
+server, a repeat of the same address in the same workspace joins the fetch in
+flight or reuses an answer from the last minute, and more than 20 fresh previews
+a minute from one caller in one workspace is 429 `RATE_LIMITED`. It writes no
+object: the caller writes the title and thumbnail with `canvas_update`.
+
+`POST /api/canvas/:workspaceId/objects/:id/frame` answers `{ webviewId, embedUrl }`, a
+`/webview/<cap>/` URL for a live embed object (409 for anything else, 400 for a
+refused address). The frame is held in memory only: it is never written to the
+web tab store, never listed by `GET /api/webviews`, never trusted, and is removed
+(its capability revoked) when the object is deleted, turned back into a link or
+pointed at another URL, and when its owner logs out. After a server restart the
+page asks for its frame again.
 
 Agents use `current` for the workspace segment. Their
 `X-Codeman-Parent-Session` header resolves through a visible session's working

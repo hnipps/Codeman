@@ -1,7 +1,7 @@
 import { wheelFactor } from './viewport.js';
 import { DesktopEditor } from './edit.js';
 import { joinBasePath } from '../../../src/config/base-path.js';
-import { command, initialView, type ViewCommand, type ViewState } from './commands.js';
+import { command, initialView, subcanvasIndex, viewPath, type ViewCommand, type ViewState } from './commands.js';
 import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
@@ -59,7 +59,31 @@ let initial = true,
 const mobile = phoneMode();
 trackKeyboard();
 state = command(state, { kind: 'outline', open: !mobile.matches }, objects);
-const renderer = new Renderer(layer, tree, choose);
+const assetUrl = (assetId: string): string | null =>
+  /^[a-f0-9]{64}$/.test(assetId) ? url(`/api/canvas/${workspaceId}/assets/${assetId}`) : null;
+const renderer = new Renderer(layer, tree, choose, { assetUrl });
+/** Objects drawn in the current view: the open sub-canvas's contents, or the workspace level. */
+function inView(all: ViewObject[] = objects): ViewObject[] {
+  const enclosing = subcanvasIndex(all);
+  return all.filter((o) => o.id !== state.root && enclosing.get(o.id) === state.root);
+}
+let paintedRoot: string | null | undefined;
+/** Inside a sub-canvas, keyboard walks and select-all start from its contents, not the workspace. */
+function scopedAction(action: ViewCommand): ViewCommand {
+  if (state.root === null || state.focusId) return action;
+  const first = siblings(objects, state.root)[0];
+  if (action.kind === 'navigate' && first) return { kind: 'focus', id: first.id };
+  if (action.kind === 'select-all') return { kind: 'selection', ids: siblings(objects, state.root).map((o) => o.id) };
+  return action;
+}
+/** Selection and focus never land on an object the current view does not draw. */
+function viewScoped(before: ViewState, next: ViewState): ViewState {
+  if (next.root !== before.root) return next;
+  const members = new Set(inView().map((o) => o.id));
+  const selected = next.selected.filter((id) => members.has(id));
+  const focusId = next.focusId && !members.has(next.focusId) ? before.focusId : next.focusId;
+  return selected.length === next.selected.length && focusId === next.focusId ? next : { ...next, selected, focusId };
+}
 const comments = new CommentsView({
   url,
   workspace: workspaceId,
@@ -159,7 +183,7 @@ function area(): Rect {
   };
 }
 function fit(ids?: string[]): void {
-  const targets = objects.filter((o) => o.deletedAt === null && (!ids || ids.includes(o.id)));
+  const targets = (ids ? objects : inView()).filter((o) => o.deletedAt === null && (!ids || ids.includes(o.id)));
   dispatch({ kind: 'fit', bounds: union(targets.map((o) => worldBounds(objects, o))), area: area() });
 }
 function firstPhoneView(): void {
@@ -208,7 +232,23 @@ function dispatch(action: ViewCommand): void {
   if (action.kind === 'rail' && state.rail.at(-1) !== action.view) railOrigins.set(action.view, opener());
   const closing = state.rail.at(-1);
   const previous = state.rail.length;
-  state = command(state, action, objects);
+  const root = state.root;
+  state = viewScoped(state, command(state, scopedAction(action), objects));
+  if (state.root !== root) {
+    renderer.root(state.root);
+    paintedRoot = state.root;
+    paintViewPath();
+    keyboard = true;
+    const members = inView().map((o) => o.id);
+    if (members.length) fit(members);
+    else if (state.root) fit([state.root]);
+    else fit();
+    if (action.kind === 'leave' && state.focusId)
+      requestAnimationFrame(() => renderer.elements.get(state.focusId ?? '')?.focus({ preventScroll: true }));
+    node('announcement').textContent = state.root
+      ? `Opened ${label(objects.find((o) => o.id === state.root) ?? objects[0])}`
+      : 'Back to the workspace';
+  }
   if (action.kind === 'navigate' || action.kind === 'focus') {
     if (keyboard) {
       renderer.elements.get(state.focusId ?? '')?.focus({ preventScroll: true });
@@ -227,9 +267,63 @@ function dispatch(action: ViewCommand): void {
   if (!frame) frame = requestAnimationFrame(paint);
 }
 window.canvasView = { dispatch, read: () => structuredClone(state) };
+/**
+ * The line under the outline header while a sub-canvas is open: a back control named for
+ * where it goes, then the open sub-canvas. When nested deeper the immediate parent sits
+ * between them and truncates first. The workspace name stays in the header above.
+ */
+function paintViewPath(): void {
+  const crumbs = node('viewPath');
+  crumbs.replaceChildren();
+  crumbs.hidden = state.root === null;
+  if (state.root === null) return;
+  const path = viewPath(objects, state.root);
+  const current = path.at(-1);
+  const parent = path.at(-2);
+  const parentName = parent ? label(parent) : node('workspaceName').textContent || 'Canvas';
+  const back = document.createElement('button');
+  back.className = 'crumb-back';
+  back.setAttribute('aria-label', `Back to ${parentName}`);
+  back.title = `Back to ${parentName} · Esc`;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+  const arrow = document.createElementNS(svg.namespaceURI, 'path');
+  arrow.setAttribute('d', 'M16 10H4M9 5l-5 5 5 5');
+  svg.append(arrow);
+  back.append(svg);
+  back.addEventListener('click', () => {
+    dispatch({ kind: 'leave' });
+    board.focus({ preventScroll: true });
+  });
+  crumbs.append(back);
+  if (parent) {
+    const middle = document.createElement('span');
+    middle.className = 'crumb crumb-parent';
+    middle.textContent = parentName;
+    middle.title = parentName;
+    const sep = document.createElement('span');
+    sep.className = 'crumb-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    sep.textContent = '/';
+    crumbs.append(middle, sep);
+  }
+  const here = document.createElement('span');
+  here.className = 'crumb crumb-current';
+  here.setAttribute('aria-current', 'location');
+  here.textContent = current ? label(current) : '';
+  here.title = here.textContent;
+  crumbs.append(here);
+}
 function paint(): void {
   frame = 0;
+  if (paintedRoot !== state.root) {
+    renderer.root(state.root);
+    paintedRoot = state.root;
+    paintViewPath();
+  }
   renderer.view(state, keyboard);
+  editor.media.frames();
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
@@ -495,6 +589,11 @@ document.addEventListener('keydown', (e) => {
     if (!e.repeat) dispatch({ kind: 'rail', view: 'keys' });
     return;
   }
+  // Escape from a page in use hands the keyboard back to the canvas before anything else.
+  if (e.key === 'Escape' && editor.media.escape()) {
+    e.preventDefault();
+    return;
+  }
   if (e.key === 'Escape' && state.rail.length) {
     e.preventDefault();
     dispatch({ kind: 'escape' });
@@ -502,7 +601,16 @@ document.addEventListener('keydown', (e) => {
   }
   if (!scope(e)) return;
   if (e.key === 'Escape') {
-    dispatch({ kind: 'selection', ids: [] });
+    // Escape clears the selection first; with nothing selected it leaves an open sub-canvas.
+    if (!state.selected.length && state.root !== null) dispatch({ kind: 'leave' });
+    else dispatch({ kind: 'selection', ids: [] });
+    return;
+  }
+  if (e.altKey && !e.metaKey && !e.ctrlKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    const target = objects.find((o) => o.id === (state.selected.length === 1 ? state.selected[0] : state.focusId));
+    if (e.key === 'ArrowUp') dispatch({ kind: 'leave' });
+    else if (target?.type === 'subcanvas') dispatch({ kind: 'enter', id: target.id });
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
@@ -623,8 +731,14 @@ board.addEventListener('pointerup', (e) => {
     else dispatch({ kind: 'selection', ids: [] });
   }
   if (doubleTap && tap) {
-    dispatch({ kind: 'focus', id: tap });
-    dispatch({ kind: 'rail', view: 'reader' });
+    const tapped = objects.find((o) => o.id === tap);
+    if (tapped?.type === 'subcanvas' && tapped.content.type === 'subcanvas') dispatch({ kind: 'enter', id: tap });
+    else if (tapped?.type === 'link' && tapped.content.type === 'link' && !mobile.matches)
+      editor.media.openLink(tapped);
+    else {
+      dispatch({ kind: 'focus', id: tap });
+      dispatch({ kind: 'rail', view: 'reader' });
+    }
   }
   pointers.delete(e.pointerId);
   drag = null;
@@ -669,13 +783,19 @@ const editor = new DesktopEditor({
     keyboard = value;
     if (!frame) frame = requestAnimationFrame(paint);
   },
+  assetUrl,
   display: (displayed) => {
     objects = displayed;
+    // A sub-canvas that was deleted while open returns the view to the workspace.
+    while (state.root !== null && !objects.some((o) => o.id === state.root)) state = { ...state, root: null };
     const lostFocus =
       document.activeElement instanceof HTMLElement &&
       document.activeElement.matches('[data-object-id]') &&
       !objects.some((o) => o.id === document.activeElement?.getAttribute('data-object-id'));
     renderer.objects(objects);
+    renderer.root(state.root);
+    paintedRoot = state.root;
+    editor.media.forget(new Set(objects.filter((o) => o.type === 'embed').map((o) => o.id)));
     comments.mark(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);

@@ -1390,6 +1390,7 @@ export class WebServer extends EventEmitter {
       canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
       canvasStores: () => this.getCanvasStores(),
       broadcast: (event, data) => this.broadcast(event, data),
+      basePath: this.basePath,
     });
     registerWorktreeRoutes(this.app, ctx);
     // The registry's lifetime is the server's: it drops per-session wake state on every

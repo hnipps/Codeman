@@ -157,6 +157,7 @@ export const toolSchemas = {
   canvas_history: HistorySchema,
   canvas_comment: CommentToolSchema,
   canvas_capabilities: z.object({}).strict(),
+  canvas_link_preview: z.object({ url: z.string().min(1).max(8192) }).strict(),
 };
 export type CanvasToolName = keyof typeof toolSchemas;
 export const canvasToolNames = Object.keys(toolSchemas) as CanvasToolName[];
@@ -179,6 +180,12 @@ export function capabilities() {
         schema: canvasJsonSchema(toolSchemas[name]),
         objectTypes: types,
       })),
+      {
+        name: 'canvas_upload_image',
+        available: true,
+        objectTypes: ['image'],
+        note: 'POST assets with the image bytes (PNG, JPEG, GIF or WebP, 8 MB). Returns assetId, width and height; create an image object with content.assetId.',
+      },
       {
         name: 'canvas_screenshot',
         available: true,
@@ -221,6 +228,27 @@ export function capabilities() {
       history:
         'Undo selected own operation sequences; redo selects sequences returned by undo. All inverse operations form one atomic batch; changed revisions reject.',
     },
+    media: {
+      image:
+        'content { type: image, url: "", alt, assetId }; assetId comes from canvas_upload_image and must be stored in this workspace',
+      link: 'content { type: link, url, label, preview?, thumbnailAssetId? }; canvas_link_preview fetches label and thumbnail through the egress guard',
+      embed:
+        'Convert with canvas_update: content type link becomes embed and back, keeping the object id. Embeds show a sandboxed live page; at most six frames load at once',
+      subcanvas: 'A container in this workspace; read its contents with canvas_read root',
+      assets: 'Assets are content addressed and kept when no object references them',
+    },
+    views: [
+      {
+        command: 'canvas.view.enter',
+        available: 'browser',
+        note: 'window.canvasView.dispatch({ kind: "enter", id }) opens a sub-canvas in that view; agents read it with canvas_read root',
+      },
+      {
+        command: 'canvas.view.leave',
+        available: 'browser',
+        note: 'window.canvasView.dispatch({ kind: "leave" }) returns to the parent view',
+      },
+    ],
     reserved: [
       'canvas.viewport.read',
       'canvas.viewport.set',
@@ -410,6 +438,7 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
           .filter((o) => o.parentId === parent && o.deletedAt === null)
           .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
         const selected = new Set(roots.map((o) => o.id));
+        const before = siblings.map((o) => o.id).join('\n');
         if (input.placement === 'front' || input.placement === 'back')
           siblings.sort(
             (a, b) => (Number(selected.has(a.id)) - Number(selected.has(b.id))) * (input.placement === 'front' ? 1 : -1)
@@ -426,6 +455,9 @@ export function arrange(state: CanvasState, input: z.infer<typeof ArrangeSchema>
               [siblings[i], siblings[j]] = [siblings[j], siblings[i]];
           }
         }
+        // Stacking is relative: when nothing changes place, sparse orders such as 200/420/720 are
+        // left alone instead of being renumbered into a write that changes nothing visible.
+        if (siblings.map((o) => o.id).join('\n') === before) continue;
         siblings.forEach((o, order) => {
           if (o.order !== order) commands.push({ ...op(o.id), kind: 'reorder', patch: { order } });
         });

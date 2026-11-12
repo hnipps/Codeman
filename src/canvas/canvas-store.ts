@@ -77,6 +77,9 @@ export const MAX_OPS_PAGE_RECORDS = 500;
 export const MAX_OPS_PAGE_BYTES = 1024 * 1024;
 export type OperationsPage = { records: string[]; more: boolean; next: number };
 
+/** Request-scoped operation ids are `request_<uuid>_<fingerprint>_<n>`; their key is `request_<uuid>_`. */
+const requestKey = (opId: string): string | null => /^request_[0-9a-f-]{36}_/i.exec(opId)?.[0] ?? null;
+
 function replayInto(state: CanvasState, op: Operation): void {
   for (const change of op.prev) {
     classifyObject(state, change.after);
@@ -94,6 +97,7 @@ export class CanvasStore {
   private futureLog: FutureOperation[] = [];
   private ordered: (Operation | FutureOperation)[] = [];
   private seen = new Map<string, { seq: number; author?: Author }>();
+  private requests = new Map<string, { opId: string; seq: number }[]>();
   private tornOffset: number | undefined;
   readonly logPath: string;
   readonly snapshotPath: string;
@@ -120,8 +124,10 @@ export class CanvasStore {
     }
     return low;
   }
-  operations(since = 0): (Operation | FutureOperation)[] {
-    return structuredClone(this.ordered.slice(this.firstAfter(since)));
+  /** Copies of at most `limit` records after `since`; only those records are cloned. */
+  operations(since = 0, limit = Infinity): (Operation | FutureOperation)[] {
+    const start = this.firstAfter(since);
+    return structuredClone(this.ordered.slice(start, start + limit));
   }
   /** Records after `since`, serialized once, capped by MAX_OPS_PAGE_RECORDS and MAX_OPS_PAGE_BYTES. */
   page(since: number): OperationsPage {
@@ -148,11 +154,18 @@ export class CanvasStore {
       })
     );
   }
-  /** Sequences already written under a request-id prefix, read from the opId index. */
+  /** Sequences already written under a request-id prefix, read from the per-request index (no log walk). */
   sequencesWithPrefix(prefix: string): { opId: string; seq: number }[] {
-    const found: { opId: string; seq: number }[] = [];
-    for (const [opId, entry] of this.seen) if (opId.startsWith(prefix)) found.push({ opId, seq: entry.seq });
-    return found.sort((a, b) => a.seq - b.seq);
+    const key = requestKey(prefix);
+    const found = key === prefix ? (this.requests.get(key) ?? []) : [];
+    return [...found].sort((a, b) => a.seq - b.seq);
+  }
+  private indexRequest(opId: string, seq: number): void {
+    const key = requestKey(opId);
+    if (!key) return;
+    const entries = this.requests.get(key) ?? [];
+    entries.push({ opId, seq });
+    this.requests.set(key, entries);
   }
   revertCommands(target: Author): Command[] {
     return this.revertPlan(target).commands;
@@ -239,6 +252,8 @@ export class CanvasStore {
     this.futureLog = futureLog;
     this.ordered = [...log, ...futureLog].sort((a, b) => a.seq - b.seq);
     this.seen = seen;
+    this.requests = new Map();
+    for (const [opId, entry] of seen) this.indexRequest(opId, entry.seq);
   }
   append(input: Command[], author: Author): AppendResult {
     return this.appendBatch(input, author, MAX_CALLER_OPERATIONS);
@@ -302,7 +317,10 @@ export class CanvasStore {
     for (const operation of result.operations) replayInto(this.state, operation);
     this.log.push(...result.operations);
     this.ordered.push(...result.operations);
-    for (const op of result.operations) this.seen.set(op.opId, { seq: op.seq, author: op.author });
+    for (const op of result.operations) {
+      this.seen.set(op.opId, { seq: op.seq, author: op.author });
+      this.indexRequest(op.opId, op.seq);
+    }
     return {
       ok: true,
       seq: this.state.seq,

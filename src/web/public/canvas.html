@@ -16,6 +16,7 @@
         <span id="workspaceName">Canvas</span
         ><button id="closeOutline" aria-label="Close outline" title="Close outline"></button>
       </div>
+      <nav id="viewPath" aria-label="Open sub-canvas" hidden></nav>
       <div class="search-wrap">
         <label class="sr" for="search">Search canvas</label
         ><input id="search" type="search" placeholder="Search canvas" autocomplete="off" /><button
@@ -37,7 +38,9 @@
       <p>Loading the workspace…</p>
       <button id="retry" hidden>Try again</button>
     </section>
-    <span id="addDescription" class="sr">Add text, frame, section or sub-canvas</span>
+    <span id="addDescription" class="sr"
+      >Add text, frame, section, sub-canvas or image. Paste or drop an image, a web address or text.</span
+    >
     <span id="moveToReason" class="sr"></span><span id="arrangeSelectionReason" class="sr"></span
     ><span id="groupSelectionReason" class="sr"></span><span id="editSelectionReason" class="sr"></span
     ><span id="deleteSelectionReason" class="sr"></span>
@@ -125,7 +128,9 @@
           <button id="groupSelection" title="Group · Cmd/Ctrl+G">Group</button
           ><button id="duplicateSelection" title="Duplicate · Cmd/Ctrl+D">Duplicate</button>
           <button id="lockSelection">Lock</button><button id="editSelection">Edit</button
-          ><button id="deleteSelection">Delete</button>
+          ><button id="embedSelection" hidden>Embed</button
+          ><button id="openSubcanvas" title="Open sub-canvas · Alt+↓" hidden>Open</button
+          ><button id="replaceImage" hidden>Replace image</button><button id="deleteSelection">Delete</button>
         </div>
         <button
           id="undoEdit"
@@ -152,7 +157,7 @@
           <div id="addMenu" class="edit-control" aria-label="Add objects" hidden>
             <button id="addText">Text</button><button id="addFrame">Frame</button
             ><button id="addSection">Section</button><button id="addSubcanvas">Sub-canvas</button
-            ><button id="addPaste" title="Paste · Cmd/Ctrl+V">Paste</button>
+            ><button id="addImage">Image…</button><button id="addPaste" title="Paste · Cmd/Ctrl+V">Paste</button>
           </div>
           <button
             id="addTool"

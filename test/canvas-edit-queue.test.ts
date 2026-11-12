@@ -2,14 +2,18 @@ import { resized } from '../packages/canvas/src/resize.js';
 import { targets, selectRegion } from '../packages/canvas/src/select.js';
 import { movedPosition, reparentPosition } from '../packages/canvas/src/drag.js';
 import { CanvasUndo } from '../packages/canvas/src/undo.js';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fetchHistory, forgetSharedHistory } from '../packages/canvas/src/sync.js';
 import {
   EditQueue,
   Refused,
   type Edit,
   type Acknowledged,
   type QueuedRequest,
+  optimistic,
+  requestIds,
 } from '../packages/canvas/src/edit-queue.js';
+beforeEach(() => forgetSharedHistory());
 import type { ViewObject } from '../packages/canvas/src/model.js';
 const object: ViewObject = {
   id: 'note',
@@ -354,6 +358,127 @@ describe('a refusal discards only the refused submission', () => {
     for (let i = 0; i < 4; i++) await settle();
     expect(send.mock.calls.map((call) => call[0][0].opId)).toEqual(['make-x', 'text-note-Independent']);
     f.queue.stop();
+  });
+});
+
+describe('dependants of a refused compound', () => {
+  const create = (objectId: string, parentId: string | null = null): Edit => ({
+    kind: 'create',
+    opId: `make-${objectId}`,
+    objectId,
+    patch: {
+      parentId,
+      order: 0,
+      position: { x: 0, y: 0 },
+      rotation: 0,
+      lock: null,
+      content: { type: 'text', text: '' },
+    },
+  });
+  it('counts the group id a refused compound would have created', async () => {
+    const command = controlled<{ records: Acknowledged[]; sequences: number[] }>();
+    const send = vi.fn(async (ops: Edit[]) => ops.map((op) => ack(op, 50)));
+    const sendCommand = vi.fn(() => command.promise);
+    const f = fixture(send, new Map(), sendCommand);
+    f.queue.enqueueCommand({
+      tool: 'canvas_arrange',
+      arguments: { action: 'group', targetIds: ['note'], groupId: 'g', label: 'G', parentId: null },
+    });
+    f.queue.enqueue([create('child', 'g')]);
+    f.queue.enqueueCommand({
+      tool: 'canvas_arrange',
+      arguments: { action: 'order', targetIds: ['g'], placement: 'front' },
+    });
+    f.queue.enqueue([text('note', 'Kept')]);
+    command.reject(new Refused('Locked', [{ code: 'LOCKED', objectId: 'note', message: 'Locked' }]));
+    for (let i = 0; i < 4; i++) await settle();
+    expect(send.mock.calls.map((call) => call[0][0].opId)).toEqual(['text-note-Kept']);
+    expect(sendCommand).toHaveBeenCalledTimes(1);
+    f.queue.stop();
+  });
+  it('compares ids structurally: free text that quotes an id is not a dependency', async () => {
+    expect([...requestIds({ action: 'group', targetIds: ['a', 'b'], groupId: 'g', label: '"x"' })].sort()).toEqual([
+      'a',
+      'b',
+      'g',
+    ]);
+    expect(
+      requestIds({ operations: [{ kind: 'update', objectId: 'y', patch: { content: { type: 'text', text: 'x' } } }] })
+    ).toEqual(new Set(['y']));
+    const send = vi.fn(async (ops: Edit[]) => {
+      if (ops[0].kind === 'create') throw new Refused('No', [{ code: 'INVALID', message: 'No' }]);
+      return ops.map((op) => ack(op, 60));
+    });
+    const sendCommand = vi.fn(async () => ({ records: [], sequences: [] }));
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = fixture(
+      async (ops, since) => {
+        await gate;
+        return send(ops, since);
+      },
+      new Map(),
+      sendCommand
+    );
+    f.queue.enqueue([create('x')]);
+    f.queue.enqueueCommand({
+      tool: 'canvas_arrange',
+      arguments: { action: 'group', targetIds: ['note'], groupId: 'h', label: 'x', parentId: null },
+    });
+    release();
+    for (let i = 0; i < 4; i++) await settle();
+    expect(sendCommand).toHaveBeenCalledTimes(1);
+    f.queue.stop();
+  });
+  it('switches the optimistic type when a link becomes an embed', () => {
+    const link: ViewObject = {
+      ...object,
+      id: 'l',
+      type: 'link',
+      content: { type: 'link', url: 'https://example.com/' },
+    };
+    const [shown] = optimistic(
+      [link],
+      [{ kind: 'update', opId: 'u', objectId: 'l', patch: { content: { type: 'embed', url: 'https://example.com/' } } }]
+    );
+    expect(shown.type).toBe('embed');
+  });
+});
+
+describe('one catch-up per write', () => {
+  it('shares one /ops walk between the command acknowledgement and the change event', async () => {
+    const { sendCommand } = await import('../packages/canvas/src/edit-queue.js');
+    const record = { ...ack(move(7), 7), opId: 'op-7' };
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        urls.push(`${init?.method ?? 'GET'} ${url}`);
+        if (init?.method === 'POST')
+          return new Response(JSON.stringify({ success: true, data: { seq: 7, sequences: [7] } }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return new Response(JSON.stringify({ success: true, data: { seq: 7, operations: [record] } }));
+      })
+    );
+    try {
+      const [command, event] = await Promise.all([
+        sendCommand((path) => path, 'shared', { ...arrangeRequest, requestId: crypto.randomUUID() }, 6),
+        // The change event the write produced arrives while the acknowledgement walks history.
+        new Promise((resolve) => setTimeout(resolve, 1)).then(() =>
+          fetchHistory((path) => path, 'shared', 6, undefined, 7)
+        ),
+      ]);
+      expect(command.sequences).toEqual([7]);
+      expect(event.operations).toHaveLength(1);
+      expect(urls.filter((url) => url.startsWith('GET'))).toEqual(['GET /api/canvas/shared/ops?since=6']);
+      // A reconnect catch-up has no target sequence and always walks again.
+      await fetchHistory((path) => path, 'shared', 6);
+      expect(urls.filter((url) => url.startsWith('GET'))).toHaveLength(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

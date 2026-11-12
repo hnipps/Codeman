@@ -21,6 +21,7 @@
 export const BROWSER_TEST_GLOBS = [
   'test/canvas-view.browser.test.ts',
   'test/canvas-edit.browser.test.ts',
+  'test/canvas-media.browser.test.ts',
   'test/canvas-comments.browser.test.ts',
   'test/mermaid-renderer.browser.test.ts',
   'test/command-palette-agent-arrows.browser.test.ts',

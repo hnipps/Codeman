@@ -71,6 +71,8 @@ function withOrigin(record: Webview & { managed?: unknown }): Webview {
 }
 
 export async function writeWebviews(configDir: string, webviews: Webview[]): Promise<void> {
+  // A canvas embed's frame is in-memory only (canvas-frames.ts); one must never reach this file.
+  webviews = webviews.filter((w) => w.origin?.kind !== 'canvas');
   if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
   await fs.writeFile(webviewsPath(configDir), JSON.stringify(webviews, null, 2));
 }

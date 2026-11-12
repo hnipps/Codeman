@@ -50,11 +50,15 @@ export type WebviewManagedKind = 'deepseek-web' | 'canvas';
  * - `session`: a record owned by one agent session. It is deleted with that
  *   session and can never be `trusted`, since the session's agent controls the
  *   page it points at.
+ * - `canvas`: the live frame of one canvas `embed` object. Never `trusted`, never a
+ *   tab, kept out of `GET /api/webviews`, and removed when that object is deleted
+ *   or turned back into a link card.
  */
 export type WebviewOrigin =
   | { kind: 'user' }
   | { kind: 'managed'; managed: WebviewManagedKind }
-  | { kind: 'session'; sessionId: string; name: string };
+  | { kind: 'session'; sessionId: string; name: string }
+  | { kind: 'canvas'; workspaceId: string; objectId: string };
 
 /** A saved dashboard, persisted to `~/.codeman/webviews.json`. */
 export interface Webview {

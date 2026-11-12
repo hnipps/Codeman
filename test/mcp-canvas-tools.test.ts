@@ -11,6 +11,7 @@ import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { registerCanvasRoutes } from '../src/web/routes/canvas-routes.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import { create, human } from './canvas-fixtures.js';
+import { png as pngImage } from './canvas-media-fixtures.js';
 import { deployRole } from '../src/deploy-role.js';
 import type { AgentContext, ApiRequest } from '../src/cli-agent.js';
 import {
@@ -63,8 +64,11 @@ async function harness() {
     const response = await app.inject({
       method: options.method,
       url: `${url.pathname}${url.search}`,
-      headers: { 'x-codeman-parent-session': ctx.selfId },
-      payload: options.body,
+      headers: {
+        'x-codeman-parent-session': ctx.selfId,
+        ...(options.rawBody ? { 'content-type': options.rawBody.contentType } : {}),
+      },
+      payload: options.rawBody?.data ?? options.body,
     });
     const contentType = String(response.headers['content-type'] ?? '');
     if (contentType.startsWith('image/')) {
@@ -104,8 +108,8 @@ async function harness() {
 }
 const parse = (result: { text: string }) => JSON.parse(result.text);
 describe('canvas MCP HTTP parity', () => {
-  it('lists twelve strict tools on both protocol eras, including when unconfigured', async () => {
-    expect(canvasToolNames).toHaveLength(12);
+  it('lists thirteen strict command tools on both protocol eras, including when unconfigured', async () => {
+    expect(canvasToolNames).toHaveLength(13);
     for (const name of canvasToolNames) {
       const def = buildToolDefinitions(['claude']).find((t) => t.name === name)!;
       expect(def.description).toContain('untrusted data');
@@ -618,3 +622,48 @@ function shotBrowser(png: Buffer): HeadlessBrowser {
     process: () => null,
   };
 }
+
+describe('canvas media over MCP', () => {
+  it('uploads an image by base64 or path, creates an image object from it, and refuses forged bytes', async () => {
+    const h = await harness();
+    try {
+      const bytes = pngImage(5, 3);
+      const uploaded = await h.runner().run('canvas_upload_image', { base64: bytes.toString('base64'), type: 'png' });
+      expect(uploaded.isError).toBeFalsy();
+      const asset = parse(uploaded);
+      expect(asset).toMatchObject({ width: 5, height: 3, mime: 'image/png' });
+      const file = join(dir, 'shot.png');
+      writeFileSync(file, bytes);
+      expect(parse(await h.runner().run('canvas_upload_image', { path: file })).assetId).toBe(asset.assetId);
+      const created = await h.runner().run('canvas_create', {
+        operations: [
+          {
+            kind: 'create',
+            opId: 'img',
+            objectId: 'img',
+            patch: {
+              parentId: null,
+              order: 9,
+              position: { x: 0, y: 0 },
+              size: { width: 50, height: 30 },
+              content: { type: 'image', url: '', alt: 'Chart', assetId: asset.assetId },
+            },
+          },
+        ],
+      });
+      expect(created.isError).toBeFalsy();
+      expect(h.stores.get(h.workspace.id).read().objects.img.content).toMatchObject({ assetId: asset.assetId });
+      const forged = await h.runner().run('canvas_upload_image', {
+        base64: Buffer.from('not a png at all').toString('base64'),
+        type: 'png',
+      });
+      expect(forged.isError).toBe(true);
+      expect(forged.text).toContain('not the image type it claims');
+      expect((await h.runner().run('canvas_upload_image', {})).text).toContain('exactly one of path or base64');
+      const preview = parse(await h.runner().run('canvas_link_preview', { url: 'http://169.254.169.254/' }));
+      expect(preview).toMatchObject({ status: 'unavailable' });
+    } finally {
+      await h.app.close();
+    }
+  });
+});

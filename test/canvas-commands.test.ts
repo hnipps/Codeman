@@ -188,6 +188,18 @@ describe('shared compound canvas commands', () => {
     state = apply(state, arrange(state, { action: 'order', targetIds: ['a'], placement: 'front' })).state;
     expect(state.objects.a.order).toBeGreaterThan(state.objects.b.order);
   });
+  it('leaves sparse orders alone when a reorder changes no relative place', () => {
+    const ordered = (id: string, order: number) => {
+      const command = create(id);
+      if (command.kind === 'create') command.patch.order = order;
+      return command;
+    };
+    const state = apply(emptyState(), [ordered('a', 200), ordered('b', 420), ordered('c', 720)]).state;
+    expect(arrange(state, { action: 'order', targetIds: ['a'], placement: 'backward' })).toEqual([]);
+    expect(arrange(state, { action: 'order', targetIds: ['a'], placement: 'back' })).toEqual([]);
+    expect(arrange(state, { action: 'order', targetIds: ['c'], placement: 'front' })).toEqual([]);
+    expect(arrange(state, { action: 'order', targetIds: ['a'], placement: 'forward' }).length).toBeGreaterThan(0);
+  });
   it('refuses undo when a comment ID was reused for a later author', () => {
     const first = apply(seed(), [
       { kind: 'comment', opId: 'comment-first', objectId: 'a', patch: { id: 'c', text: 'first' } },

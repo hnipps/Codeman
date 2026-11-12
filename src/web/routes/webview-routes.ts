@@ -48,6 +48,7 @@ import {
 } from '../../config/webview-limits.js';
 import { readWebviews, writeWebviews } from '../../webview-store.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
+import { findCanvasFrame, openCanvasFrame, retireCanvasFrames } from '../../canvas/canvas-frames.js';
 import { PreviewRefusedError, type PreviewSupervisor } from '../../preview-supervisor.js';
 import { egressBlockedReason, webviewEgressLookup, webviewFetch, type EgressLookup } from '../webview-egress.js';
 import { blockedWebviewHostReason } from '../webview-egress-policy.js';
@@ -85,6 +86,9 @@ function configDir(): string {
 }
 
 /** Live proxied WebSockets per webview id, so one dashboard cannot exhaust the socket budget. */
+/** The canvas embed sandbox, same list as `EMBED_SANDBOX` in packages/canvas/src/media.ts (pinned by test). */
+export const CANVAS_FRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads allow-modals';
+
 const socketCounts = new Map<string, number>();
 
 const socketClosersByCapability = new Map<string, Set<() => void>>();
@@ -238,6 +242,31 @@ export async function webviewsById(): Promise<Map<string, Webview>> {
  */
 export async function removeSessionWebviews(ctx: WebviewWriteContext, sessionId: string): Promise<void> {
   await removeWebviewsWhere(ctx, (w) => w.origin.kind === 'session' && w.origin.sessionId === sessionId);
+}
+
+/**
+ * The live frame of one canvas embed object. Held in memory by `canvas-frames.ts`, never in
+ * `webviews.json`: it is no tab, so the tab layout, the list, the tab cap and the previous
+ * release must never see it.
+ */
+export function openCanvasWebview(input: {
+  workspaceId: string;
+  objectId: string;
+  url: string;
+  name: string;
+  owner?: string;
+  basePath: string;
+}): { webviewId: string; embedUrl: string } {
+  const frame = openCanvasFrame(input);
+  const capability = webviewCapabilities.mint(frame.id, frame.owner);
+  return { webviewId: frame.id, embedUrl: proxyPrefixFor(capability, input.basePath) };
+}
+
+/** Retire canvas frames whose embed is gone, deleted or a link again: records dropped, capabilities revoked. */
+export function removeCanvasWebviews(match: (origin: { workspaceId: string; objectId: string }) => boolean): string[] {
+  const retired = retireCanvasFrames(match);
+  for (const id of retired) socketCounts.delete(id);
+  return retired;
 }
 
 /**
@@ -578,6 +607,9 @@ function registerProxyRoutes(app: FastifyInstance, ctx: WebviewPreviewHooks, bas
 async function lookupCapability(capability: string): Promise<Webview | null> {
   const record = webviewCapabilities.resolve(capability);
   if (!record) return null;
+  // A canvas embed's frame lives in memory, not in webviews.json.
+  const frame = findCanvasFrame(record.webviewId);
+  if (frame) return frame.owner === record.owner ? frame : null;
   const list = await readWebviews(configDir());
   const webview = list.find((w) => w.id === record.webviewId);
   if (!webview) return null;
@@ -760,7 +792,12 @@ async function proxyRequest(
   // policy on this reply during onRequest. Left in place it breaks essentially
   // every dashboard (inline scripts, CDN assets), so it is replaced by the
   // upstream's own policy, or removed when the upstream had none.
-  if (csp) reply.header('content-security-policy', csp);
+  // A canvas embed's URL can be chosen by an agent, and a browser action (open the frame's link in
+  // a new tab) drops the iframe's sandbox attribute. The header makes the sandbox travel with the
+  // response, so the page never runs on Codeman's origin with the login cookie.
+  const policy =
+    webview.origin.kind === 'canvas' ? [csp, `sandbox ${CANVAS_FRAME_SANDBOX}`].filter(Boolean).join('; ') : csp;
+  if (policy) reply.header('content-security-policy', policy);
   else reply.removeHeader('content-security-policy');
 
   if (!response.body || req.method === 'HEAD') {
@@ -777,7 +814,10 @@ async function proxyRequest(
     const html = await response.text();
     return reply.send(
       html.length <= MAX_WEBVIEW_HTML_REWRITE_BYTES
-        ? rewriteHtml(html, cap, basePath, { moduleMap: webview.origin.kind === 'session' })
+        ? rewriteHtml(html, cap, basePath, {
+            moduleMap: webview.origin.kind === 'session',
+            escapeRelay: webview.origin.kind === 'canvas',
+          })
         : html
     );
   }

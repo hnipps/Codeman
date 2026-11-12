@@ -1,9 +1,11 @@
 /** @fileoverview Opt-in owner-scoped canvas workspace, object and log routes. */
+import { removeCanvasWebviews } from './webview-routes.js';
 import { validateBatch, type Command } from '../../canvas/operations.js';
 import type { CanvasStore } from '../../canvas/canvas-store.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
-import type { FastifyInstance } from 'fastify';
+import { readFile } from 'node:fs/promises';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
@@ -28,10 +30,76 @@ import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasD
 import { IdSchema, type Author } from '../../canvas/model.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
+import { LRUMap } from '../../utils/lru-map.js';
+import type { Operation } from '../../canvas/operations.js';
+import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
+
+/** A no-op answer writes nothing, so its request identity is held here instead of in the log. */
+const noopRequests = new LRUMap<string, string>({ maxSize: 2000 });
+
+/** Asset ids a batch would reference that this workspace does not hold. */
+async function missingAssets(workspaceId: string, operations: Command[]): Promise<Command[]> {
+  const { findAsset } = await import('../../canvas/canvas-assets.js');
+  return operations.filter((operation) => {
+    if (operation.kind !== 'create' && operation.kind !== 'update' && operation.kind !== 'revert') return false;
+    const content = operation.patch.content as Record<string, unknown> | undefined;
+    return [content?.assetId, content?.thumbnailAssetId].some(
+      (id) => typeof id === 'string' && !findAsset(workspaceId, id)
+    );
+  });
+}
+
+/** Embed objects whose live frame must go: deleted, turned back into a link, or pointed at another URL. */
+export function retiredEmbeds(operations: Pick<Operation, 'prev'>[]): string[] {
+  const ids = new Set<string>();
+  for (const operation of operations)
+    for (const { objectId, before, after } of operation.prev)
+      if (
+        before?.type === 'embed' &&
+        (after.type !== 'embed' || after.deletedAt !== null || after.content.url !== before.content.url)
+      )
+        ids.add(objectId);
+  return [...ids];
+}
+
+/** Synchronous on purpose: a frame minted after the commit must never be retired by this write. */
+function retireFrames(workspaceId: string, operations: Pick<Operation, 'prev'>[]): void {
+  const ids = new Set(retiredEmbeds(operations));
+  if (!ids.size) return;
+  removeCanvasWebviews((origin) => origin.workspaceId === workspaceId && ids.has(origin.objectId));
+}
+
+/** Who a rate limit counts against: the user in multi-user mode, else the client address. */
+const callerKey = (req: FastifyRequest): string => {
+  const owner = ownerFor(req);
+  return owner === undefined ? `ip:${req.ip}` : `user:${owner}`;
+};
+
+let previews: ReturnType<typeof import('../../canvas/link-preview.js').createLinkPreviewService> | undefined;
+async function linkPreviews() {
+  if (previews) return previews;
+  const { createLinkPreviewService } = await import('../../canvas/link-preview.js');
+  const { storeAsset } = await import('../../canvas/canvas-assets.js');
+  previews = createLinkPreviewService({
+    storeThumbnail: async (workspaceId, bytes, type) => {
+      if (!deployRole.allows('persist')) return null;
+      try {
+        return (await storeAsset(workspaceId, bytes, type)).assetId;
+      } catch {
+        // A thumbnail that fails the byte check or the workspace quota is dropped; the title stands.
+        return null;
+      }
+    },
+  });
+  return previews;
+}
+
+const uploadBuckets = new Map<string, { tokens: number; lastRefill: number }>();
 
 /** A request id becomes deterministic op ids; a retry answers the sequences it already wrote. */
 function requestIdentity(store: CanvasStore, author: Author, tool: string, args: unknown, requestId?: string) {
-  if (!requestId) return { prefix: null, previous: [] as { opId: string; seq: number }[], reused: false };
+  if (!requestId)
+    return { prefix: null, fingerprint: '', previous: [] as { opId: string; seq: number }[], reused: false };
   const prefix = `request_${requestId}_`;
   const fingerprint = createHash('sha256')
     .update(JSON.stringify([author, tool, args]))
@@ -40,6 +108,7 @@ function requestIdentity(store: CanvasStore, author: Author, tool: string, args:
   const previous = store.sequencesWithPrefix(prefix);
   return {
     prefix: `${prefix}${fingerprint}_`,
+    fingerprint,
     previous,
     reused: previous.some((o) => !o.opId.startsWith(`${prefix}${fingerprint}_`)),
   };
@@ -83,6 +152,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               )
         );
     });
+    scope.addContentTypeParser(
+      ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/octet-stream'],
+      { parseAs: 'buffer', bodyLimit: 9 * 1024 * 1024 },
+      (_req, body, done) => done(null, body)
+    );
     scope.get('/api/canvas/workspaces', async (req) => {
       const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
       return {
@@ -181,6 +255,24 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
           const identity = requestIdentity(store, author, envelope.tool, envelope.arguments, envelope.requestId);
           const prefix = identity.prefix;
+          const fingerprint = identity.fingerprint;
+          const noopKey = envelope.requestId ? `${req.params.workspaceId}:${envelope.requestId}` : null;
+          const reserved = noopKey ? noopRequests.get(noopKey) : undefined;
+          if (reserved !== undefined && !identity.previous.length) {
+            if (reserved !== fingerprint)
+              return reply
+                .code(409)
+                .send(
+                  createErrorResponse(
+                    ApiErrorCode.CONFLICT,
+                    'Request identity was already used for a different command'
+                  )
+                );
+            return {
+              success: true,
+              data: { seq: state.seq, sequences: [], noop: true, hierarchy: boundedCanvasData([]) },
+            };
+          }
           if (identity.previous.length) {
             if (identity.reused)
               return reply
@@ -203,6 +295,20 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           const args = envelope.arguments;
           let operations: Command[] | undefined;
           switch (envelope.tool) {
+            case 'canvas_link_preview': {
+              const { url: link } = toolSchemas.canvas_link_preview.parse(args);
+              const answer = await (await linkPreviews()).preview(req.params.workspaceId, link, callerKey(req));
+              if (answer === 'rate-limited')
+                return reply
+                  .code(429)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.RATE_LIMITED,
+                      'Too many link previews in this canvas. Try again in a minute.'
+                    )
+                  );
+              return { success: true, data: answer };
+            }
             case 'canvas_capabilities':
               toolSchemas.canvas_capabilities.parse(args);
               return { success: true, data: { ...capabilities(), truncated: false } };
@@ -253,8 +359,14 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             }
             case 'canvas_history': {
               const input = toolSchemas.canvas_history.parse(args);
-              if (input.action === 'read')
-                return { success: true, data: boundedCanvasData(store.operations(input.since)) };
+              if (input.action === 'read') {
+                const records = store.operations(input.since, MAX_OPS_PAGE_RECORDS);
+                const more = records.length === MAX_OPS_PAGE_RECORDS && (records.at(-1)?.seq ?? 0) < store.seq;
+                return {
+                  success: true,
+                  data: { ...(boundedCanvasData(records) as object), more, next: records.at(-1)?.seq ?? input.since },
+                };
+              }
               if (input.action === 'authors') return { success: true, data: boundedCanvasData(store.authors()) };
               if (input.action === 'preview')
                 return { success: true, data: boundedCanvasData(revertPreview(store, input.author, author)) };
@@ -265,13 +377,26 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               break;
             }
           }
-          if (!operations?.length)
-            // Nothing to write: no log line, no revision. A retry evaluates to the same no-op.
+          if (!operations?.length) {
+            // Nothing to write: no log line, no revision. The identity is held in memory so a retry
+            // answers the same no-op and a different payload under it is refused.
+            if (noopKey) noopRequests.set(noopKey, fingerprint);
             return {
               success: true,
               data: { seq: state.seq, sequences: [], noop: true, hierarchy: boundedCanvasData([]) },
             };
+          }
           operations = deferCreatedLocks(operations);
+          const missing = await missingAssets(req.params.workspaceId, operations);
+          if (missing.length)
+            return reply.code(409).send({
+              ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
+              reasons: missing.map((operation) => ({
+                code: 'NOT_FOUND',
+                objectId: operation.objectId,
+                message: 'The image is not stored in this workspace; upload it first',
+              })),
+            });
           if (prefix) {
             operations = operations.map((operation, index) => ({
               ...operation,
@@ -284,7 +409,9 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
               ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
               reasons: result.reasons,
             });
+          if (!result.operations.length && noopKey) noopRequests.set(noopKey, fingerprint);
           if (result.operations.length) {
+            retireFrames(req.params.workspaceId, result.operations);
             const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
             ctx.broadcast(SseEvent.CanvasChanged, {
               workspaceId: req.params.workspaceId,
@@ -312,6 +439,107 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           };
         }
       );
+      workspaceScope.post<{ Params: { workspaceId: string } }>(
+        '/api/canvas/:workspaceId/assets',
+        { bodyLimit: 9 * 1024 * 1024 },
+        async (req, reply) => {
+          if (!deployRole.allows('persist'))
+            return reply
+              .code(409)
+              .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
+          const { storeAsset, AssetRefusedError } = await import('../../canvas/canvas-assets.js');
+          const { CANVAS_UPLOADS_PER_MINUTE } = await import('../../config/canvas-limits.js');
+          const { takeToken } = await import('./session-routes.js');
+          if (
+            !takeToken(
+              uploadBuckets,
+              `${callerKey(req)}\n${req.params.workspaceId}`,
+              CANVAS_UPLOADS_PER_MINUTE,
+              Date.now()
+            )
+          )
+            return reply
+              .code(429)
+              .send(
+                createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many images added at once. Try again in a minute.')
+              );
+          if (!Buffer.isBuffer(req.body))
+            return reply
+              .code(415)
+              .send(
+                createErrorResponse(
+                  ApiErrorCode.INVALID_INPUT,
+                  'Send the image bytes with an image Content-Type (PNG, JPEG, GIF or WebP)'
+                )
+              );
+          const declared =
+            req.headers['content-type'] === 'application/octet-stream'
+              ? z.object({ type: z.string().max(40).optional() }).parse(req.query).type
+              : req.headers['content-type'];
+          try {
+            return { success: true, data: await storeAsset(req.params.workspaceId, req.body, declared) };
+          } catch (error) {
+            if (!(error instanceof AssetRefusedError)) throw error;
+            return reply
+              .code(error.reason === 'size' || error.reason === 'quota' ? 413 : error.reason === 'type' ? 415 : 400)
+              .send({ ...createErrorResponse(ApiErrorCode.INVALID_INPUT, error.message), refusal: error.reason });
+          }
+        }
+      );
+      workspaceScope.get<{ Params: { workspaceId: string; assetId: string } }>(
+        '/api/canvas/:workspaceId/assets/:assetId',
+        async (req, reply) => {
+          const { findAsset } = await import('../../canvas/canvas-assets.js');
+          const asset = findAsset(req.params.workspaceId, req.params.assetId);
+          if (!asset) return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Image not found'));
+          const { sendFileBody, localFileSource } = await import('./file-routes.js');
+          reply
+            .header('Content-Type', asset.mime)
+            .header('Cache-Control', 'private, max-age=31536000, immutable')
+            .header('X-Content-Type-Options', 'nosniff');
+          sendFileBody(reply, asset.size, req.headers.range, localFileSource(asset.path));
+          return reply;
+        }
+      );
+      workspaceScope.post<{ Params: { workspaceId: string; id: string } }>(
+        '/api/canvas/:workspaceId/objects/:id/frame',
+        async (req, reply) => {
+          const { id } = z.object({ id: IdSchema }).parse(req.params);
+          // Everything async happens first. The live-embed check and the mint below then run in
+          // one synchronous stretch, so no /ops append can delete or re-point the object between
+          // them (appends retire frames synchronously after they commit).
+          const store = (await ctx.canvasStores()).get(req.params.workspaceId);
+          const { parseWebviewUrl } = await import('../webview-proxy.js');
+          const { blockedWebviewHostReason } = await import('../webview-egress-policy.js');
+          const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+          const { openCanvasWebview } = await import('./webview-routes.js');
+          const object = store.read().objects[id];
+          if (!object || object.deletedAt !== null || object.type !== 'embed')
+            return reply
+              .code(409)
+              .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only a live embed object has a page to show'));
+          const target = typeof object.content.url === 'string' ? parseWebviewUrl(object.content.url) : null;
+          const blocked = target ? blockedWebviewHostReason(target.hostname) : null;
+          if (!target || blocked)
+            return reply
+              .code(400)
+              .send(
+                createErrorResponse(
+                  ApiErrorCode.INVALID_INPUT,
+                  blocked ? 'This address cannot be embedded' : 'The embed has no web address'
+                )
+              );
+          const opened = openCanvasWebview({
+            workspaceId: req.params.workspaceId,
+            objectId: id,
+            url: target.href,
+            name: typeof object.content.label === 'string' && object.content.label ? object.content.label : target.host,
+            owner: readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner,
+            basePath: ctx.basePath ?? '',
+          });
+          return { success: true, data: opened };
+        }
+      );
       workspaceScope.get<{ Params: { workspaceId: string; id: string } }>(
         '/api/canvas/:workspaceId/objects/:id/screenshot',
         async (req, reply) => {
@@ -320,7 +548,16 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
           const hangup = abortOnClientHangUp(reply);
           try {
             const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
-            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal });
+            const { findAsset } = await import('../../canvas/canvas-assets.js');
+            // Asynchronous and bounded: an asset larger than what the screenshot may still embed is
+            // never read at all.
+            const readAsset = async (assetId: string, maxBytes: number) => {
+              const asset = findAsset(req.params.workspaceId, assetId);
+              if (!asset || asset.size > maxBytes) return null;
+              const bytes = await readFile(asset.path);
+              return bytes.length > maxBytes ? null : { mime: asset.mime, bytes };
+            };
+            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal, readAsset });
             return reply
               .header('Cache-Control', 'no-store')
               .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))
@@ -380,8 +617,20 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
             const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
             let summary: ReturnType<CanvasStore['revertPlan']>['summary'] | undefined;
             let result;
-            if (action === 'ops') result = store.append(parseBody(CanvasBatchSchema, req.body).operations, author);
-            else {
+            if (action === 'ops') {
+              const batch = parseBody(CanvasBatchSchema, req.body).operations;
+              const missing = await missingAssets(req.params.workspaceId, batch as Command[]);
+              if (missing.length)
+                return reply.code(409).send({
+                  ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
+                  reasons: missing.map((operation) => ({
+                    code: 'NOT_FOUND',
+                    objectId: operation.objectId,
+                    message: 'The image is not stored in this workspace; upload it first',
+                  })),
+                });
+              result = store.append(batch, author);
+            } else {
               const body = parseBody(CanvasRevertSchema, req.body);
               const identity = requestIdentity(store, author, 'revert', body.author, body.requestId);
               if (identity.reused)
@@ -405,6 +654,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort): voi
                 : plan.commands;
               result = store.revert(body.author, author, commands);
             }
+            if (result.ok && result.operations.length) retireFrames(req.params.workspaceId, result.operations);
             if (!result.ok)
               return reply.code(409).send({
                 ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),

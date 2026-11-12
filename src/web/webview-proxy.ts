@@ -686,11 +686,19 @@ function moduleImportMap(html: string, prefix: string): string {
  * relative URLs, attribute rewriting for root-absolute markup, and the shim for
  * URLs built at runtime.
  */
+/**
+ * A canvas embed hands keyboard focus back to the board on Escape. The frame is
+ * cross-origin to the canvas, so its keys never reach the parent; this tells it.
+ * The page can send the same message itself, which can only end its own focus.
+ */
+const CANVAS_ESCAPE_RELAY =
+  "<script>addEventListener('keydown',function(e){if(e.key==='Escape')parent.postMessage({type:'codeman:canvas-escape'},'*')},true)</script>";
+
 export function rewriteHtml(
   html: string,
   capability: string,
   basePath = '',
-  { moduleMap = false }: { moduleMap?: boolean } = {}
+  { moduleMap = false, escapeRelay = false }: { moduleMap?: boolean; escapeRelay?: boolean } = {}
 ): string {
   const prefix = proxyPrefixFor(capability, basePath);
 
@@ -705,7 +713,8 @@ export function rewriteHtml(
   const injected =
     (/<base\b/i.test(rebased) ? '' : `<base href="${prefix}">`) +
     runtimeUrlShim(prefix) +
-    (moduleMap ? moduleImportMap(rebased, prefix) : '');
+    (moduleMap ? moduleImportMap(rebased, prefix) : '') +
+    (escapeRelay ? CANVAS_ESCAPE_RELAY : '');
 
   const headMatch = /<head\b[^>]*>/i.exec(rebased);
   if (headMatch) {

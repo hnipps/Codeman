@@ -63,6 +63,8 @@ export class DesktopEditor {
   private commandFocus: string | null | undefined;
   private nextSelection: string[] | null = null;
   private submittedFocus = new Map<string, string | null>();
+  /** Drafts read from storage at load that have not been sent yet: each is sent once by itself. */
+  private restored = new Set<string>();
   private drafts = new Map<string, Draft>();
   private currentId: string | null = null;
   private authoritative: ViewObject[] = [];
@@ -111,6 +113,7 @@ export class DesktopEditor {
   private debounce: ReturnType<typeof setTimeout> | undefined;
   private editor: HTMLTextAreaElement;
   private keys: CanvasStorageKeys;
+  readonly media: MediaEditor;
   constructor(
     private options: {
       url: (path: string) => string;
@@ -123,6 +126,7 @@ export class DesktopEditor {
       dispatch: (action: ViewCommand) => void;
       focusMode: (keyboard: boolean) => void;
       display: (objects: ViewObject[]) => void;
+      assetUrl: (assetId: string) => string | null;
     }
   ) {
     const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -158,6 +162,7 @@ export class DesktopEditor {
     try {
       const stored = z.record(z.string(), DraftSchema).parse(JSON.parse(localStorage.getItem(this.draftKey) ?? '{}'));
       this.drafts = new Map(Object.entries(stored));
+      for (const [id, draft] of this.drafts) if (draft.value !== draft.base && !draft.conflict) this.restored.add(id);
     } catch {
       /* Unreadable drafts do not replace the server's content. */
     }
@@ -210,6 +215,27 @@ export class DesktopEditor {
         }
         this.persistDrafts();
       },
+    });
+    this.media = new MediaEditor({
+      url: options.url,
+      workspace: options.workspace,
+      mobile: options.mobile,
+      objects: options.objects,
+      view: options.view,
+      dispatch: options.dispatch,
+      available: () => this.available(),
+      submit: (operations) => this.submit(operations),
+      compound: (request) => this.compound(request),
+      say: (message) => this.say(message),
+      internalPaste: () => this.paste(),
+      hasInternalClipboard: () => {
+        try {
+          return (localStorage.getItem(this.keys.clipboard) ?? '[]') !== '[]';
+        } catch {
+          return false;
+        }
+      },
+      assetUrl: options.assetUrl,
     });
     btn('addTool').onclick = () => {
       if (!this.available()) return;
@@ -682,10 +708,12 @@ export class DesktopEditor {
     this.authoritative = snapshot.objects;
     this.persistDrafts();
     this.queue.receive(snapshot);
+    this.resendDrafts();
   }
   online(online: boolean): void {
     this.connected = online;
     this.queue.online(online);
+    this.resendDrafts();
   }
   private available(): boolean {
     if (this.options.mobile.matches) return false;
@@ -719,9 +747,9 @@ export class DesktopEditor {
   }
   private create(type: string): void {
     if (!this.available()) return;
-    const id = crypto.randomUUID(),
-      v = this.options.view().viewport;
-    const p = screenToCanvas(v, { x: innerWidth / 2, y: innerHeight / 2 });
+    const id = crypto.randomUUID();
+    // Inside an open sub-canvas, new objects are its children at the middle of the screen.
+    const { parentId, at: p } = this.media.placement(null);
     const name = type === 'subcanvas' ? 'Sub-canvas' : type.charAt(0).toUpperCase() + type.slice(1);
     const content =
       type === 'text'
@@ -736,7 +764,7 @@ export class DesktopEditor {
       opId: crypto.randomUUID(),
       objectId: id,
       patch: {
-        parentId: null,
+        parentId,
         order: Date.now(),
         position: { x: p.x - 140, y: p.y - 90 },
         size: type === 'text' ? { width: 280, height: 180 } : { width: 520, height: 360 },
@@ -801,8 +829,31 @@ export class DesktopEditor {
   private saveText(): void {
     clearTimeout(this.debounce);
     if (!this.currentId || this.composing || !this.available()) return;
-    const draft = this.drafts.get(this.currentId),
-      object = this.authoritative.find((o) => o.id === this.currentId);
+    this.saveDraft(this.currentId);
+  }
+  /**
+   * A draft restored from storage that never reached the server is sent once by itself, on
+   * load and on reconnect: no keystroke is needed to save typing a closed tab left behind.
+   * A draft whose object changed meanwhile is a conflict and waits for the user.
+   */
+  private resendDrafts(): void {
+    if (!this.connected || !this.loaded || this.options.mobile.matches || this.composing) return;
+    for (const id of [...this.restored]) {
+      const draft = this.drafts.get(id);
+      if (!draft || draft.conflict || draft.value === draft.base) {
+        this.restored.delete(id);
+        continue;
+      }
+      if (id === this.currentId && document.activeElement === this.editor) continue;
+      if (draft.sent !== undefined) continue;
+      this.saveDraft(id);
+      // Sent once; a refusal or failure after this waits for the user like any other edit.
+      if (draft.sent !== undefined) this.restored.delete(id);
+    }
+  }
+  private saveDraft(id: string): void {
+    const draft = this.drafts.get(id),
+      object = this.authoritative.find((o) => o.id === id);
     if (draft && draft.sent !== undefined && !(draft.sentOp && this.queue.holds(draft.sentOp))) {
       delete draft.sent;
       delete draft.sentOp;
@@ -948,6 +999,9 @@ export class DesktopEditor {
       'addFrame',
       'addSection',
       'addSubcanvas',
+      'addImage',
+      'embedSelection',
+      'replaceImage',
       'deleteSelection',
       'duplicateSelection',
       'moveTo',
@@ -1024,6 +1078,7 @@ export class DesktopEditor {
     this.previewResize();
     this.previewCombined();
     this.paintGeometry();
+    this.media.paint();
   }
   private selectionStart(e: PointerEvent): void {
     if (
@@ -1110,7 +1165,7 @@ export class DesktopEditor {
       points: [start],
       lasso: e.altKey,
       toggle: e.shiftKey,
-      parentId: focused?.parentId ?? null,
+      parentId: focused?.parentId ?? this.options.view().root,
     };
     node('board').setPointerCapture(e.pointerId);
     node('board').focus({ preventScroll: true });
@@ -1238,7 +1293,15 @@ export class DesktopEditor {
       else {
         this.options.dispatch({ kind: 'focus', id: gesture.target });
         if (this.lastTap?.id === gesture.target && e.timeStamp - this.lastTap.at < 500) {
-          this.options.dispatch({ kind: 'rail', view: 'reader' });
+          // Double-click opens: a sub-canvas as the view root, a link in a new tab, anything else in the reader.
+          const tapped = this.options.objects().find((o) => o.id === gesture.target);
+          if (tapped?.type === 'subcanvas') {
+            this.lastTap = null;
+            this.cancelSelection();
+            this.options.dispatch({ kind: 'enter', id: tapped.id });
+            return;
+          } else if (tapped?.type === 'link') this.media.openLink(tapped);
+          else this.options.dispatch({ kind: 'rail', view: 'reader' });
           this.lastTap = null;
         } else this.lastTap = { id: gesture.target, at: e.timeStamp };
         this.options.dispatch(
@@ -1653,13 +1716,15 @@ export class DesktopEditor {
       return;
     }
     if ((e.ctrlKey || e.metaKey) && ['g', 'c', 'x', 'v', 'd'].includes(e.key.toLowerCase())) {
-      e.preventDefault();
+      const key = e.key.toLowerCase();
+      // Copy, cut and paste keep the browser's default so its clipboard events fire: paste reads
+      // an image, a web address or text from the system clipboard (media.ts), and copy marks it.
+      if (!['c', 'x', 'v'].includes(key)) e.preventDefault();
       e.stopImmediatePropagation();
       if (!e.repeat) {
-        const key = e.key.toLowerCase();
         if (key === 'g') this.group(e.shiftKey);
         else if (key === 'd') this.duplicate();
-        else if (key === 'v') this.paste();
+        else if (key === 'v') this.media.armPaste();
         else this.copy(key === 'x');
       }
       return;
@@ -1699,3 +1764,4 @@ export class DesktopEditor {
   }
 }
 import { EditSchema } from './edit-queue.js';
+import { MediaEditor } from './media.js';
