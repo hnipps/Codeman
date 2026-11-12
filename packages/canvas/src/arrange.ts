@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import { knownContentFields } from '../../../src/canvas/model.js';
 import { EditSchema, type Edit } from './edit-queue.js';
 import { targets } from './select.js';
@@ -28,7 +29,7 @@ export function copied(objects: ViewObject[], ids: string[]): ViewObject[] {
         : structuredClone(o)
     );
 }
-export function pasted(objects: ViewObject[], offset: Point, id = () => crypto.randomUUID()): Edit[] {
+export function pasted(objects: ViewObject[], offset: Point, id = uuid): Edit[] {
   const ids = new Map(objects.map((o) => [o.id, id()]));
   const pending = [...objects],
     operations: Edit[] = [];

@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import {
   MIN_PUBLISH_GAP_MS,
   PublishedViewSchema,
@@ -16,11 +17,11 @@ export function tabViewId(storage: Pick<Storage, 'getItem' | 'setItem'> = sessio
   try {
     const stored = storage.getItem(key);
     if (stored && /^[0-9a-f-]{36}$/.test(stored)) return stored;
-    const made = crypto.randomUUID();
+    const made = uuid();
     storage.setItem(key, made);
     return made;
   } catch {
-    return crypto.randomUUID();
+    return uuid();
   }
 }
 const HEARTBEAT_MS = 20_000;

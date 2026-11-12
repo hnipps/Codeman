@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import { chips, type Chip } from './context.js';
 import type { ViewCommand, ViewState } from './commands.js';
 import type { ViewObject } from './model.js';
@@ -438,7 +439,7 @@ export class AssistantView {
     }
     // A failed attempt against the bound conversation is not carried into the new one the choice now asks for.
     const stored = fresh && this.attempt?.conversationId === (this.current?.id ?? null) ? null : this.attempt;
-    const attempt = nextAttempt(stored, target, text, ids, () => crypto.randomUUID());
+    const attempt = nextAttempt(stored, target, text, ids, () => uuid());
     this.attempt = attempt;
     write(this.keys.assistantOutbox, JSON.stringify(attempt));
     this.sending = true;

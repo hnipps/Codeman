@@ -1,3 +1,4 @@
+import { uuid } from './ids.js';
 import { knownContentFields } from '../../../src/canvas/model.js';
 import { copied, pasted, selectionBox, snapped, lockOwner } from './arrange.js';
 import { worldBounds } from './tree.js';
@@ -379,7 +380,7 @@ export class DesktopEditor {
           arguments: {
             operations: targets(this.options.objects(), targetIds).map((o) => ({
               kind: 'delete',
-              opId: crypto.randomUUID(),
+              opId: uuid(),
               objectId: o.id,
             })),
           },
@@ -576,7 +577,7 @@ export class DesktopEditor {
             action: 'group',
             targetIds,
             parentId,
-            groupId: crypto.randomUUID(),
+            groupId: uuid(),
             label: `Untitled ${containerType}`,
             containerType,
           },
@@ -607,7 +608,7 @@ export class DesktopEditor {
         this.compound({
           tool: 'canvas_delete',
           arguments: {
-            operations: this.ids().map((objectId) => ({ kind: 'delete', objectId, opId: crypto.randomUUID() })),
+            operations: this.ids().map((objectId) => ({ kind: 'delete', objectId, opId: uuid() })),
           },
         })
       )
@@ -747,7 +748,7 @@ export class DesktopEditor {
   }
   private create(type: string): void {
     if (!this.available()) return;
-    const id = crypto.randomUUID();
+    const id = uuid();
     // Inside an open sub-canvas, new objects are its children at the middle of the screen.
     const { parentId, at: p } = this.media.placement(null);
     const name = type === 'subcanvas' ? 'Sub-canvas' : type.charAt(0).toUpperCase() + type.slice(1);
@@ -761,7 +762,7 @@ export class DesktopEditor {
             : { type: 'subcanvas', workspaceId: this.options.workspace, label: 'Untitled sub-canvas' };
     const operation = {
       kind: 'create',
-      opId: crypto.randomUUID(),
+      opId: uuid(),
       objectId: id,
       patch: {
         parentId,
@@ -792,7 +793,7 @@ export class DesktopEditor {
     if (
       this.compound({
         tool: 'canvas_delete',
-        arguments: { operations: selected.map((o) => ({ kind: 'delete', opId: crypto.randomUUID(), objectId: o.id })) },
+        arguments: { operations: selected.map((o) => ({ kind: 'delete', opId: uuid(), objectId: o.id })) },
       })
     )
       this.nextSelection = [];
@@ -860,7 +861,7 @@ export class DesktopEditor {
     }
     if (!draft || !object || draft.conflict || draft.sent !== undefined || draft.value === draft.base) return;
     const content = { ...knownContentFields(object.content), [object.type === 'text' ? 'text' : 'label']: draft.value };
-    const opId = crypto.randomUUID();
+    const opId = uuid();
     draft.sent = draft.value;
     draft.sentOp = opId;
     if (
@@ -1477,9 +1478,9 @@ export class DesktopEditor {
   private setGeometry(object: ViewObject, position: Point, size: ViewObject['size']): boolean {
     const operations: Edit[] = [];
     if (object.position.x !== position.x || object.position.y !== position.y)
-      operations.push({ kind: 'move', opId: crypto.randomUUID(), objectId: object.id, patch: { position } });
+      operations.push({ kind: 'move', opId: uuid(), objectId: object.id, patch: { position } });
     if (size && (size.width !== object.size?.width || size.height !== object.size?.height))
-      operations.push({ kind: 'update', opId: crypto.randomUUID(), objectId: object.id, patch: { size } });
+      operations.push({ kind: 'update', opId: uuid(), objectId: object.id, patch: { size } });
     return operations.length ? this.compound({ tool: 'canvas_update', arguments: { operations } }) : true;
   }
   private validDestination(id: string, targetIds?: string[]): boolean {
