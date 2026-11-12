@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Canvas conversations fix round (PC9b)
+
+**Type:** drift
+**Touches:** `src/canvas/conversation-delivery.ts`, `src/canvas/send-limit.ts`, `src/web/routes/canvas-conversation-routes.ts`, `src/session.ts`, `src/web/routes/hook-event-routes.ts`, `packages/canvas/src/{assistant,conversation,outbox}.ts`
+**Why:** A live run against a real Claude session showed the first message stranded in the composer while recorded delivered, the transcript's paste wrapper leaking the context block, no working line, and two ways a conversation could cost money or loop.
+**Links:** [Intent](../intent/2026-11-12-canvas-pc9b-conversations.md)
+
+Delivered now means submitted. Send answers at once and a per-conversation chain pastes once after the composer is ready, then confirms from the prompt-submitted hook or an empty composer, pressing Enter alone while text remains; a timeout leaves the conversation stuck so nothing is pasted behind it and Retry checks the composer first. Docker and remote cases are refused before anything starts. Starting is human-only; an agent inside any conversation cannot send; sends are rate limited per conversation. The context block is now always present so every prompt row carries its message id, which gives the rail author labels and survives the CLI's wrapper. Working comes from the hooks that fire (`hook:prompt_submitted`, `hook:stop`), with `Session.hookTurnRunning` after a reload. Not decided here: the permission mode these sessions launch with (the owner's call).
+
 ## 2026-11-12 — Canvas conversations and projection (PC9b)
 
 **Type:** intent-refinement

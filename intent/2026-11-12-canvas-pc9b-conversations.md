@@ -8,7 +8,7 @@ The assistant rail holds context chips and a draft, but Send only says conversat
 
 ## Proposed outcome
 
-Send starts, then continues, a real Claude session in the case folder, reached through the ordinary session create and write paths. The rail shows that session's own transcript with the chips each message carried, one calm state line, an approval card, and designed failures (could not send, session ended, offline) that keep the draft and chips. Context travels as reference text resolved on the server, recorded as ids and revisions only. Nothing auto-sends, and `canvas_conversation` gives agents the same operations with the same checks.
+Send starts, then continues, a real Claude session in the case folder, reached through the ordinary session create and write paths. The rail shows that session's own transcript with the chips each message carried, one calm state line, an approval card, and designed failures (could not send, session ended, offline) that keep the draft and chips. Context travels as reference text resolved on the server, recorded as ids and revisions only. Delivery is confirmed as submitted (never merely pasted), with a visible Sending state and a Retry that never pastes twice. Nothing auto-sends. Only a person starts a conversation, Docker and remote cases are refused, and `canvas_conversation send` gives agents the same checks plus a rate limit and a refusal from inside any conversation.
 
 ## Affected users and systems
 
