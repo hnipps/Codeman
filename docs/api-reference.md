@@ -1626,9 +1626,10 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
-The eleven command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
+The twelve command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
 `canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
-`canvas_transform`, `canvas_lock`, `canvas_history`, and `canvas_capabilities`.
+`canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_capabilities`, and
+`canvas_link_preview`.
 Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
 support, geometry semantics and reserved future view operations. `canvas_screenshot`
 is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
@@ -1636,6 +1637,39 @@ is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
 and `X-Canvas-Screenshot-Meta`. Unknown or deleted objects are 404. The canvas off is
 404. No Chromium, or a missing canvas bundle, is 503. The MCP tool of the same name
 returns that PNG as image content.
+
+### Canvas media
+
+`POST /api/canvas/:workspaceId/assets` takes the raw image bytes as the body with
+an image `Content-Type` (`image/png`, `image/jpeg`, `image/gif`, `image/webp`; or
+`application/octet-stream` with `?type=image/png`). It answers
+`{ assetId, mime, bytes, width, height }`; `assetId` is the SHA-256 of the bytes.
+Bytes that do not match the declared type are 400 (`refusal: "bytes"`), an
+unsupported type is 415, more than 8 MB is 413. `GET
+/api/canvas/:workspaceId/assets/:assetId` serves the bytes (range-aware,
+`nosniff`); an unknown id is 404. A create or update that names an `assetId` or
+`thumbnailAssetId` the workspace does not hold is refused. Stored assets are
+never deleted with their object. The MCP tool `canvas_upload_image` takes either
+`base64` bytes or a `path` the MCP process reads, and calls the `current` form of
+the upload route.
+
+Content shapes: image `{ type: "image", url: "", alt, assetId }`; link
+`{ type: "link", url, label, preview?: "pending" | "ready" | "unavailable",
+thumbnailAssetId? }`; embed `{ type: "embed", url, label?, thumbnailAssetId? }`.
+`canvas_update` may change a link to an embed or back (the id is kept); no other
+type change is accepted.
+
+`canvas_link_preview` with `{ url }` fetches the page title and thumbnail through
+the web-tab egress guard (at most three redirects, each judged again; no cookies
+or authorization; 5 s) and answers `{ url, host, status: "ready" | "unavailable",
+title, thumbnailAssetId?, reason? }`. It writes no object: the caller writes the
+title and thumbnail with `canvas_update`.
+
+`POST /api/canvas/:workspaceId/objects/:id/frame` answers `{ webviewId, embedUrl }`, a
+`/webview/<cap>/` URL for a live embed object (409 for anything else, 400 for a
+refused address). The frame's web tab record has `origin.kind: "canvas"`, is never
+trusted, is not listed by `GET /api/webviews`, and is removed when the object is
+deleted, turned back into a link or pointed at another URL.
 
 Agents use `current` for the workspace segment. Their
 `X-Codeman-Parent-Session` header resolves through a visible session's working

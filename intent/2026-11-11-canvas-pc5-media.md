@@ -1,6 +1,6 @@
 # Intent: Canvas images, links, website embeds and sub-canvases (PC5)
 
-**Status:** Draft
+**Status:** Implemented on `feat/canvas-pc5-media`, awaiting landing
 
 ## Problem statement
 
@@ -27,6 +27,13 @@ Canvas users on desktop (phone stays read-only), agents through MCP, `src/canvas
 - No second write path: every object write goes through the command route or `/ops`.
 - `canvasEnabled` still gates every route.
 - Public repo: no host names, addresses or ports in committed text.
+
+## Decisions made while building
+
+- The embed frame record uses its own `canvas` origin kind, not `managed`, so it is never listed as a tab and is removed with its object.
+- `canvas_link_preview` writes nothing; the caller writes the result through `canvas_update`.
+- A restored text draft is resent once only when it came from storage at load; a draft refused in this session still waits for the user.
+- A closed sub-canvas keeps its children in the DOM and hides them with `visibility`, so the PC3 read-view test now expects `data-view="out"` rather than a visible child.
 
 ## Open questions
 
