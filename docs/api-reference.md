@@ -1626,10 +1626,10 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
-The thirteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
+The fifteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
 `canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
 `canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_comment`,
-`canvas_capabilities`, and `canvas_link_preview`.
+`canvas_capabilities`, `canvas_link_preview`, `canvas_view` and `canvas_context`.
 Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
 support, geometry semantics and reserved future view operations. `canvas_screenshot`
 is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns

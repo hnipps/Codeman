@@ -25,6 +25,8 @@ tests=(
   test/canvas-assets.test.ts
   test/link-preview.test.ts
   test/canvas-comments.test.ts
+  test/canvas-context.test.ts
+  test/canvas-view-registry.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts

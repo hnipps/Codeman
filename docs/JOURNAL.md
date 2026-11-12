@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Canvas view registry and direct context (PC9a)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/view-registry.ts`, `src/canvas/view-schema.ts`, `src/canvas/commands.ts`, `src/canvas/queries.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/{context,context-capture,assistant,view-sync,entry,commands}.ts`, `src/web/public/canvas.{html,css}`
+**Why:** Agents could not read or steer a person's canvas view, and a person could not hand objects to an assistant without copying text.
+**Links:** [Intent](../intent/2026-11-12-canvas-pc9a-views.md)
+
+Decisions the PC9 plan did not settle. The Assistant is a new desktop dock button (`#assistantTool`); `#chatTool` stays Comments, because PC6 made it the phone dock's Comments entry. `canvas_context` takes `add` and `remove` with `targetIds`; it has no `includeDescendants`, since a container chip always carries its descendants, as it does for a person. A phone refuses the `assistant` rail view (even from an agent) and shows no Add to chat, so the one write-free phone rule has no exception until PC9c. The lasso preview uses its own `context-preview` class beside `selection-preview`, because the editor clears the latter. The restored context list is read once at construction, before the first paint can overwrite storage with the empty starting state. Rate limits: the browser spaces publishes 300 ms apart and the server refuses a faster one with 429. `canvas_view` read results carry `ageMs`; a closed tab stays listed for up to 60 s, which is why an agent should treat `VIEW_GONE` as the only proof of closing. Old text "no server view store" in the architecture notes is replaced: there is a store, in memory only.
+
 ## 2026-11-12 — Canvas images, link cards, embeds and sub-canvases
 
 **Type:** intent-refinement
