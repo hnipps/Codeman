@@ -12,6 +12,10 @@ import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } fr
 import { CommentsView, commentCounts } from './comments.js';
 import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
+import { AssistantView } from './assistant.js';
+import { ContextCapture } from './context-capture.js';
+import { ViewSync } from './view-sync.js';
+import type { ViewAction } from '../../../src/canvas/view-schema.js';
 
 declare global {
   interface Window {
@@ -70,6 +74,9 @@ function inView(all: ViewObject[] = objects): ViewObject[] {
 let paintedRoot: string | null | undefined;
 /** Inside a sub-canvas, keyboard walks and select-all start from its contents, not the workspace. */
 function scopedAction(action: ViewCommand): ViewCommand {
+  // The phone is read-only and has no assistant until PC9c; an agent cannot open one there either.
+  if (action.kind === 'rail' && action.view === 'assistant' && mobile.matches)
+    return { kind: 'rail-close', view: 'assistant' };
   if (state.root === null || state.focusId) return action;
   const first = siblings(objects, state.root)[0];
   if (action.kind === 'navigate' && first) return { kind: 'focus', id: first.id };
@@ -95,6 +102,19 @@ const comments = new CommentsView({
   },
 });
 const history = new HistoryView({ url, workspace: workspaceId, phone: mobile, objects: () => objects });
+const viewer = document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single';
+const assistant = new AssistantView({
+  workspace: workspaceId,
+  viewer,
+  objects: () => objects,
+  view: () => state,
+  remove: (id) => dispatch({ kind: 'context-remove', ids: [id] }),
+  choose: (id) => {
+    dispatch({ kind: 'focus', id });
+    dispatch({ kind: 'selection', ids: [id] });
+    reveal(id);
+  },
+});
 const icons: Record<string, string> = {
   undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',
   redoEdit: 'M13 4l4 4-4 4M17 8H9a5 5 0 0 0-5 5v3',
@@ -102,6 +122,8 @@ const icons: Record<string, string> = {
   panTool:
     'M7 10V5a1 1 0 0 1 2 0v4-1-5a1 1 0 0 1 2 0v5-1-3a1 1 0 0 1 2 0v4-1-2a1 1 0 0 1 2 0v6c0 4-2 6-5 6-2 0-3-1-4-3l-3-5a1 1 0 0 1 2-1z',
   addTool: 'M10 3v14M3 10h14',
+  assistantTool:
+    'M10 3l1.8 4.2L16 9l-4.2 1.8L10 15l-1.8-4.2L4 9l4.2-1.8zM15 14l.7 1.3L17 16l-1.3.7L15 18l-.7-1.3L13 16l1.3-.7z',
   chatTool: 'M3 3h14v11H8l-5 4zM6 7h8M6 10h5',
   keys: 'M6 6a4 4 0 1 1 6 4c-2 1-2 2-2 3M10 17h.01',
   closeOutline: 'M13 4l-6 6 6 6',
@@ -331,6 +353,10 @@ function paint(): void {
   node('readerView').hidden = state.rail.at(-1) !== 'reader';
   node('threadView').hidden = state.rail.at(-1) !== 'thread';
   node('historyView').hidden = state.rail.at(-1) !== 'history';
+  node('assistantView').hidden = state.rail.at(-1) !== 'assistant';
+  button('assistantTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'assistant'));
+  assistant.paint();
+  views.notify();
   const focused = objects.find((o) => o.id === state.focusId);
   const top = state.rail.at(-1);
   if (top === 'thread') comments.show(focused?.id ?? null);
@@ -341,18 +367,21 @@ function paint(): void {
   railView = top;
   const commentCount = focused ? (commentCounts(comments.all).get(focused.id) ?? 0) : 0;
   button('readerComments').textContent = commentCount ? `Comments · ${commentCount}` : 'Comments';
+  const readerTitle = focused
+    ? container(focused)
+      ? label(focused)
+      : focused.type.charAt(0).toUpperCase() + focused.type.slice(1)
+    : 'Object no longer available';
   node('railTitle').textContent =
     top === 'thread'
       ? comments.title(focused?.id ?? null)
-      : top === 'history'
-        ? 'History'
-        : state.rail.at(-1) === 'reader'
-          ? focused
-            ? container(focused)
-              ? label(focused)
-              : focused.type.charAt(0).toUpperCase() + focused.type.slice(1)
-            : 'Object no longer available'
-          : 'Keys';
+      : top === 'assistant'
+        ? 'Assistant'
+        : top === 'history'
+          ? 'History'
+          : top === 'reader'
+            ? readerTitle
+            : 'Keys';
   document.documentElement.style.setProperty('--outline-space', state.outlineOpen && !mobile.matches ? '192px' : '0px');
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
@@ -550,6 +579,95 @@ button('letters').onclick = () => dispatch({ kind: 'letters', enabled: !state.le
 button('selectTool').onclick = () => dispatch({ kind: 'tool', tool: 'select' });
 button('panTool').onclick = () => dispatch({ kind: 'tool', tool: 'pan' });
 button('fit').onclick = () => fit(state.selected.length ? state.selected : undefined);
+function openAssistant(focusComposer: boolean): void {
+  if (mobile.matches) return;
+  if (state.rail.at(-1) !== 'assistant') dispatch({ kind: 'rail', view: 'assistant' });
+  if (focusComposer) requestAnimationFrame(() => assistant.focusComposer());
+}
+function toggleAssistant(): void {
+  if (mobile.matches) return;
+  if (state.rail.at(-1) === 'assistant') dispatch({ kind: 'escape' });
+  else openAssistant(false);
+}
+/** Adds the selection (or the focused object) as pending context. It sends nothing and writes nothing. */
+function addSelectionToChat(): void {
+  const ids = state.selected.length ? state.selected : state.focusId ? [state.focusId] : [];
+  if (!ids.length) {
+    node('announcement').textContent = 'Select objects to add to the chat';
+    return;
+  }
+  dispatch({ kind: 'context-add', ids });
+  openAssistant(true);
+}
+button('assistantTool').onclick = () => (state.rail.at(-1) === 'assistant' ? toggleAssistant() : openAssistant(true));
+button('addToChat').onclick = addSelectionToChat;
+/** An agent's request to this view. It never moves the human's keyboard focus. */
+function applyViewAction(action: ViewAction): void {
+  const was = keyboard;
+  keyboard = false;
+  try {
+    switch (action.action) {
+      case 'set-viewport':
+        dispatch({ kind: 'viewport', viewport: action.viewport });
+        break;
+      case 'fit':
+        fit(action.targetIds);
+        break;
+      case 'select':
+        dispatch({ kind: 'selection', ids: action.targetIds });
+        break;
+      case 'clear-selection':
+        dispatch({ kind: 'selection', ids: [] });
+        break;
+      case 'focus':
+        dispatch({ kind: 'focus', id: action.targetId });
+        break;
+      case 'rail':
+        dispatch({ kind: action.open ? 'rail' : 'rail-close', view: action.view });
+        break;
+      case 'letters':
+        dispatch({ kind: 'letters', enabled: action.enabled });
+        break;
+      case 'context-add':
+        dispatch({ kind: 'context-add', ids: action.targetIds });
+        break;
+      case 'context-remove':
+        dispatch({ kind: 'context-remove', ids: action.targetIds });
+        break;
+    }
+  } finally {
+    keyboard = was;
+  }
+}
+const views = new ViewSync({
+  url,
+  workspace: workspaceId,
+  apply: applyViewAction,
+  read: () => ({
+    viewport: state.viewport,
+    selected: state.selected,
+    focusId: state.focusId,
+    rail: state.rail,
+    context: state.context,
+    conversationId: state.conversationId,
+    root: state.root,
+    letters: state.letters,
+    draftBytes: assistant.draftBytes(),
+    phone: mobile.matches,
+  }),
+});
+new ContextCapture({
+  board,
+  view: () => state,
+  objects: () => objects,
+  candidates: () => inView(),
+  allowed: scope,
+  enabled: () => !mobile.matches,
+  capture: (ids) => {
+    dispatch({ kind: 'context-add', ids });
+    openAssistant(true);
+  },
+});
 function parent(): void {
   const o = objects.find((o) => o.id === state.focusId);
   if (o?.parentId) {
@@ -613,6 +731,14 @@ document.addEventListener('keydown', (e) => {
     else if (target?.type === 'subcanvas') dispatch({ kind: 'enter', id: target.id });
     return;
   }
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && !mobile.matches && (e.key === 'Enter' || e.key === '.')) {
+    e.preventDefault();
+    if (!e.repeat) {
+      if (e.key === 'Enter') addSelectionToChat();
+      else toggleAssistant();
+    }
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
     e.preventDefault();
     dispatch({ kind: 'select-all' });
@@ -655,6 +781,9 @@ document.addEventListener('keydown', (e) => {
     } else if (key === 'x' && state.focusId && !e.repeat) {
       e.preventDefault();
       dispatch({ kind: 'toggle', id: state.focusId });
+    } else if (key === 'c' && !e.repeat && !mobile.matches) {
+      e.preventDefault();
+      toggleAssistant();
     } else if (key === 'v' || key === 'h') dispatch({ kind: 'tool', tool: key === 'v' ? 'select' : 'pan' });
   }
 });
@@ -774,7 +903,7 @@ board.addEventListener(
 const editor = new DesktopEditor({
   url,
   workspace: workspaceId,
-  viewer: document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single',
+  viewer,
   mobile,
   view: () => state,
   objects: () => objects,
@@ -799,6 +928,7 @@ const editor = new DesktopEditor({
     comments.mark(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
+    const restore = initial ? assistant.restoredContext() : [];
     if (initial) {
       initial = false;
       if (mobile.matches) firstPhoneView();
@@ -811,6 +941,7 @@ const editor = new DesktopEditor({
         'A place for the ideas and references for your project. Add an object to get started.';
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
+    dispatch({ kind: 'context-add', ids: restore });
   },
 });
 window.canvasEdit = editor.adapter();
@@ -849,6 +980,7 @@ const sync = new CanvasSync(
     button('retry').hidden = status !== 'error';
   }
 );
+sync.on('canvas:viewCommand', (data) => views.receive(data));
 button('retry').onclick = () => void sync.start();
 void sync.start();
 void fetch(url('/api/canvas/workspaces'))
@@ -868,6 +1000,13 @@ import { z } from 'zod';
 const workspaceNames = z.object({
   data: z.object({ workspaces: z.array(z.object({ id: z.string(), caseName: z.string() })) }),
 });
-window.addEventListener('pagehide', () => sync.stop(), { once: true });
+window.addEventListener(
+  'pagehide',
+  () => {
+    sync.stop();
+    views.stop();
+  },
+  { once: true }
+);
 board.focus({ preventScroll: true });
 dispatch({ kind: 'viewport', viewport: state.viewport });
