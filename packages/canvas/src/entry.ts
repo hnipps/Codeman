@@ -795,7 +795,7 @@ const editor = new DesktopEditor({
     renderer.objects(objects);
     renderer.root(state.root);
     paintedRoot = state.root;
-    editor.media.forget(new Set(objects.map((o) => o.id)));
+    editor.media.forget(new Set(objects.filter((o) => o.type === 'embed').map((o) => o.id)));
     comments.mark(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);

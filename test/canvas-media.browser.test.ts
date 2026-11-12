@@ -423,6 +423,33 @@ describe('canvas media', () => {
     expect((await stored()).find((o) => o.id === 'embed-3')?.type).toBe('link');
   });
 
+  it('loads a fresh frame after an embed goes back to a link and is embedded again, and on Reload', async () => {
+    await seed([
+      { id: 'dash', type: 'embed', x: 40, y: 40, w: 420, h: 300, content: { url: `${site}/page?n=1`, label: 'Dash' } },
+    ]);
+    await open();
+    await page.waitForSelector('[data-object-id="dash"] .embed-stage > iframe');
+    const src = () => page.locator('[data-object-id="dash"] .embed-stage > iframe').getAttribute('src');
+    const first = await src();
+    for (const type of ['link', 'embed']) {
+      await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: ['dash'] }));
+      await page.waitForSelector('#embedSelection:not([hidden])');
+      await page.locator('#embedSelection').click();
+      await saved();
+      expect((await stored()).find((o) => o.id === 'dash')?.type).toBe(type);
+    }
+    await page.waitForSelector('[data-object-id="dash"] .embed-stage > iframe');
+    const second = await src();
+    expect(second).not.toBe(first);
+    expect((await page.request.get(new URL(first!, origin).href)).status()).toBe(403);
+    expect((await page.request.get(new URL(second!, origin).href)).status()).toBe(200);
+    // Reload asks the server again rather than reusing the address it holds.
+    const asked = page.waitForRequest((r) => r.url().endsWith('/objects/dash/frame'));
+    await page.locator('[data-object-id="dash"] [data-media-action="reload"]').click({ force: true });
+    await asked;
+    await page.waitForSelector('[data-object-id="dash"] .embed-stage > iframe');
+    expect((await page.request.get(new URL((await src())!, origin).href)).status()).toBe(200);
+  });
   it('opens a sub-canvas into its own view with a breadcrumb and leaves with Escape', async () => {
     const image = await upload();
     await seed([

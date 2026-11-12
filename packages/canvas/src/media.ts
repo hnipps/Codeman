@@ -485,8 +485,10 @@ export class MediaEditor {
         this.openLink(object);
         break;
       case 'reload': {
-        const frame = this.frameOf(object.id);
-        if (frame) frame.setAttribute('src', frame.getAttribute('src') ?? '');
+        // Ask for the frame again: the address this page holds may have been retired by the server.
+        this.frameUrls.delete(object.id);
+        this.frameOf(object.id)?.remove();
+        this.frames();
         break;
       }
       case 'to-link':
@@ -654,7 +656,7 @@ export class MediaEditor {
     this.endInteraction(true);
     return true;
   }
-  /** Stop live frames whose object was removed; called after every render. */
+  /** Drop frame addresses of objects that are no longer embeds (removed, or switched back to a link): the server retired them. Called after every render. */
   forget(ids: Set<string>): void {
     for (const id of [...this.frameUrls.keys()]) if (!ids.has(id)) this.frameUrls.delete(id);
   }

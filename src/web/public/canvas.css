@@ -1107,10 +1107,10 @@ textarea[readonly] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Both names stay inside the outline: the parent gives way three times as fast as the open one. */
+/* Both names stay inside the outline: the parent gives way first, the open one only after it. */
 #viewPath .crumb-parent {
-  flex: 0 3 auto;
-  min-width: 4em;
+  flex: 0 1000 auto;
+  min-width: 2.5em;
 }
 #viewPath .crumb-current {
   flex: 0 1 auto;
