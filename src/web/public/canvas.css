@@ -2037,3 +2037,8 @@ textarea[readonly] {
     padding: 8px 4px;
   }
 }
+
+/* iOS zooms the page when a control under 16px is focused and never zooms back. */
+:root[data-phone] :is(input, textarea, select) {
+  font-size: 16px !important;
+}
