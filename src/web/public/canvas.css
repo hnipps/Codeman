@@ -1073,6 +1073,7 @@ textarea[readonly] {
   display: flex;
   flex-wrap: nowrap;
   min-width: 0;
+  overflow: hidden;
   align-items: center;
   gap: 4px;
   padding: 0 12px 8px 8px;
@@ -1106,18 +1107,15 @@ textarea[readonly] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The open sub-canvas keeps its name; the parent between them truncates first. */
+/* Both names stay inside the outline: the parent gives way three times as fast as the open one. */
 #viewPath .crumb-parent {
-  flex: 0 1 auto;
-  min-width: 3.5em;
+  flex: 0 3 auto;
+  min-width: 4em;
 }
 #viewPath .crumb-current {
   flex: 0 1 auto;
+  min-width: 4em;
   color: var(--text);
-}
-#viewPath .crumb-parent + .crumb-sep + .crumb-current {
-  flex-shrink: 0;
-  max-width: 55%;
 }
 #viewPath .crumb-sep {
   flex: 0 0 auto;
