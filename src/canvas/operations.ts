@@ -110,6 +110,9 @@ export type BatchResult =
   | { ok: true; state: CanvasState; operations: Operation[] }
   | { ok: false; reasons: Rejection[] };
 const equal = isDeepStrictEqual;
+/** The one type change an update may make: a link card shown as a live page, and back. */
+const isWebSwitch = (from: string, to: string): boolean =>
+  (from === 'link' && to === 'embed') || (from === 'embed' && to === 'link');
 const mutableKeys = Object.keys(MutableSchema.shape) as (keyof z.infer<typeof MutableSchema>)[];
 
 export function applyOperation(state: CanvasState, op: Operation): CanvasState {
@@ -264,8 +267,12 @@ function validateBatchUnchecked(
         case 'reorder':
         case 'revert':
           proposed = { ...proposed, ...command.patch };
-          if ('content' in command.patch && command.patch.content)
-            proposed.content = { ...current.content, ...command.patch.content };
+          if ('content' in command.patch && command.patch.content) {
+            if (command.patch.content.type === current.type)
+              proposed.content = { ...current.content, ...command.patch.content };
+            else if (isWebSwitch(current.type, command.patch.content.type)) proposed.type = command.patch.content.type;
+            else return reject('INVALID', 'Only a link and an embed can change into each other');
+          }
           break;
         case 'lock':
           proposed.lock = command.patch.mode;

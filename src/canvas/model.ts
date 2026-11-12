@@ -14,12 +14,36 @@ export const PositionSchema = z.object({ x: z.number().finite(), y: z.number().f
 export const SizeSchema = z
   .object({ width: z.number().positive().finite(), height: z.number().positive().finite() })
   .strict();
+/** A stored image asset is named by the SHA-256 of its bytes. */
+export const AssetIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const LockSchema = z.enum(['subtree', 'background']).nullable();
 export const ContentSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string().max(1_000_000) }).strict(),
-  z.object({ type: z.literal('image'), url: z.string().max(8192), alt: z.string().max(8192).default('') }).strict(),
-  z.object({ type: z.literal('link'), url: z.string().max(8192), label: z.string().max(8192).default('') }).strict(),
-  z.object({ type: z.literal('embed'), url: z.string().max(8192) }).strict(),
+  z
+    .object({
+      type: z.literal('image'),
+      url: z.string().max(8192),
+      alt: z.string().max(8192).default(''),
+      assetId: AssetIdSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('link'),
+      url: z.string().max(8192),
+      label: z.string().max(8192).default(''),
+      preview: z.enum(['pending', 'ready', 'unavailable']).optional(),
+      thumbnailAssetId: AssetIdSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('embed'),
+      url: z.string().max(8192),
+      label: z.string().max(8192).optional(),
+      thumbnailAssetId: AssetIdSchema.optional(),
+    })
+    .strict(),
   z.object({ type: z.literal('group'), label: z.string().max(8192) }).strict(),
   z.object({ type: z.literal('frame'), label: z.string().max(8192) }).strict(),
   z.object({ type: z.literal('section'), label: z.string().max(8192) }).strict(),
