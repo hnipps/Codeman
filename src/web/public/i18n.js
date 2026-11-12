@@ -722,6 +722,9 @@
     'Could not save the default session group.': '无法保存默认会话分组。',
     'Remote auto-reconnect': '远程自动重连',
     'Experimental agent coordination': '实验性智能体协作',
+    Canvas: '画布',
+    'Gives every case an infinite canvas for notes, sections, images and links that you and your agents both edit. Open it with Open canvas in the case picker. Off hides the entry and its tools; saved canvases are kept.':
+      '为每个案例提供一块无限画布，你和智能体都可以在上面编辑便签、分区、图片和链接。在案例选择器中点击“打开画布”进入。关闭后入口和相关工具会隐藏，已保存的画布会保留。',
     "Lets agents read another session's output in bounded pages and type a prompt into a local Codex composer, then press Enter once after checking it is unchanged (the inspect, stage and submit commands). Experimental: the commands and their HTTP routes may change in any release. Off by default; while off those routes refuse every request.":
       '允许智能体分页读取另一个会话的输出（每页有上限），并把提示词输入本地 Codex 输入框，确认未被改动后只按一次 Enter（即 inspect、stage 和 submit 命令）。实验性功能：这些命令及其 HTTP 路由可能在任何版本中变化。默认关闭；关闭时这些路由拒绝所有请求。',
     'Pin tab names on the CLI': '在 CLI 上固定标签名',
