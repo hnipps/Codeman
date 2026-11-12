@@ -1,5 +1,6 @@
 /** @fileoverview Shared compound canvas commands and machine-readable capabilities. */
 import { z } from 'zod';
+import { ViewActionSchema } from './view-schema.js';
 import { randomUUID, createHash } from 'node:crypto';
 import {
   AuthorSchema,
@@ -127,7 +128,7 @@ export const QuerySchema = z.discriminatedUnion('shape', [
       shape: z.literal('rectangle'),
       position: PositionSchema,
       size: SizeSchema,
-      semantics: z.enum(['containment', 'intersection']),
+      semantics: z.enum(['containment', 'intersection', 'center']),
       root: IdSchema.optional(),
     })
     .strict(),
@@ -135,10 +136,31 @@ export const QuerySchema = z.discriminatedUnion('shape', [
     .object({
       shape: z.literal('polygon'),
       points: z.array(PositionSchema).min(3).max(1000),
-      semantics: z.enum(['containment', 'intersection']),
+      semantics: z.enum(['containment', 'intersection', 'center']),
       root: IdSchema.optional(),
     })
     .strict(),
+]);
+const ViewId = z.uuid();
+const RequestId = z.uuid().optional();
+const [setViewport, fitView, selectView, clearSelection, focusView, railView, lettersView, contextAdd, contextRemove] =
+  ViewActionSchema.options;
+const target = { viewId: ViewId, requestId: RequestId };
+export const ViewToolSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('list') }).strict(),
+  z.object({ action: z.literal('read'), viewId: ViewId }).strict(),
+  z.object({ ...setViewport.shape, ...target }).strict(),
+  z.object({ ...fitView.shape, ...target }).strict(),
+  z.object({ ...selectView.shape, ...target }).strict(),
+  z.object({ ...clearSelection.shape, ...target }).strict(),
+  z.object({ ...focusView.shape, ...target }).strict(),
+  z.object({ ...railView.shape, ...target }).strict(),
+  z.object({ ...lettersView.shape, ...target }).strict(),
+]);
+export const ContextToolSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('read'), viewId: ViewId }).strict(),
+  z.object({ action: z.literal('add'), targetIds: contextAdd.shape.targetIds, ...target }).strict(),
+  z.object({ action: z.literal('remove'), targetIds: contextRemove.shape.targetIds, ...target }).strict(),
 ]);
 const batch = <Schema extends z.ZodType>(schema: Schema) =>
   z.object({ operations: z.array(schema).min(1).max(MAX_CALLER_OPERATIONS) }).strict();
@@ -156,6 +178,8 @@ export const toolSchemas = {
   canvas_lock: LockCommandSchema,
   canvas_history: HistorySchema,
   canvas_comment: CommentToolSchema,
+  canvas_view: ViewToolSchema,
+  canvas_context: ContextToolSchema,
   canvas_capabilities: z.object({}).strict(),
   canvas_link_preview: z.object({ url: z.string().min(1).max(8192) }).strict(),
 };
@@ -248,23 +272,35 @@ export function capabilities() {
         available: 'browser',
         note: 'window.canvasView.dispatch({ kind: "leave" }) returns to the parent view',
       },
+      ...[
+        ['canvas.viewport.read', 'canvas_view read'],
+        ['canvas.viewport.set', 'canvas_view set-viewport'],
+        ['canvas.viewport.fit', 'canvas_view fit'],
+        ['canvas.selection.read', 'canvas_view read'],
+        ['canvas.selection.set', 'canvas_view select'],
+        ['canvas.selection.clear', 'canvas_view clear-selection'],
+        ['canvas.focus.set', 'canvas_view focus'],
+        ['canvas.rail.set', 'canvas_view rail'],
+        ['canvas.context.read', 'canvas_context read'],
+        ['canvas.context.add', 'canvas_context add'],
+        ['canvas.context.remove', 'canvas_context remove'],
+      ].map(([command, tool]) => ({
+        command,
+        available: true,
+        tool,
+        note: 'Acts on one open browser view named by viewId (canvas_view list). The view reports its state every few seconds; a closed view answers VIEW_GONE.',
+      })),
     ],
     reserved: [
-      'canvas.viewport.read',
-      'canvas.viewport.set',
-      'canvas.viewport.fit',
-      'canvas.selection.read',
-      'canvas.selection.set',
-      'canvas.selection.clear',
-      'canvas.focus.set',
-      'canvas.context.add',
-      'canvas.context.remove',
-      'canvas.context.read',
+      'canvas.conversation.list',
+      'canvas.conversation.read',
+      'canvas.conversation.create',
+      'canvas.conversation.send',
     ].map((command) => ({
       command,
       available: false,
-      owner: 'PC3/PC9',
-      reason: 'Per-view browser state; no server view store',
+      owner: 'PC9b',
+      reason: 'Conversations are not part of this release',
     })),
     clipboard: {
       copy: 'canvas_read retains typed content and hierarchy',

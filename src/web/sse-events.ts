@@ -502,6 +502,8 @@ export const WebviewChanged = 'webview:changed' as const;
 /** Owner-scoped layout invalidation. Payload contains only `{ owner, version }`. */
 export const TabLayoutChanged = 'tab:layoutChanged' as const;
 export const CanvasChanged = 'canvas:changed' as const;
+/** An agent asked one open canvas view to act. Payload `{ workspaceId, viewId, commandId, owner, command }`; routed to the view's owner and admins. */
+export const CanvasViewCommand = 'canvas:viewCommand' as const;
 
 // ─── Namespace Re-export ─────────────────────────────────────────────────────
 
@@ -730,4 +732,5 @@ export const SseEvent = {
   WebviewChanged,
   TabLayoutChanged,
   CanvasChanged,
+  CanvasViewCommand,
 } as const;
