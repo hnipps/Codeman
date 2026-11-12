@@ -104,6 +104,8 @@ const comments = new CommentsView({
 const history = new HistoryView({ url, workspace: workspaceId, phone: mobile, objects: () => objects });
 const viewer = document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single';
 const assistant = new AssistantView({
+  url,
+  dispatch: (action) => dispatch(action),
   workspace: workspaceId,
   viewer,
   objects: () => objects,
@@ -988,6 +990,20 @@ const sync = new CanvasSync(
   }
 );
 sync.on('canvas:viewCommand', (data) => views.receive(data));
+for (const name of [
+  'canvas:conversation',
+  'transcript:update',
+  'session:working',
+  'session:idle',
+  'session:exit',
+  'session:deleted',
+  'session:error',
+  'hook:stop',
+  'approval:pending',
+  'approval:updated',
+  'approval:resolved',
+])
+  sync.on(name, (data) => assistant.event(name, data));
 button('retry').onclick = () => void sync.start();
 void sync.start();
 void fetch(url('/api/canvas/workspaces'))
@@ -1012,6 +1028,7 @@ window.addEventListener(
   () => {
     sync.stop();
     views.stop();
+    assistant.stop();
   },
   { once: true }
 );

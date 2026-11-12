@@ -226,9 +226,26 @@
         </form>
       </div>
       <div id="assistantView" class="rail-body" hidden>
-        <p class="secondary">
-          Objects you add are sent with your next message. Selecting elsewhere never changes them.
+        <div id="conversationHead" class="conversation-head" hidden>
+          <label class="sr" for="conversationPicker">Conversation</label>
+          <select id="conversationPicker"></select>
+          <button id="newConversation" type="button" class="quiet">New</button>
+        </div>
+        <ol id="thread" aria-label="Conversation" tabindex="-1"></ol>
+        <p id="assistantEmpty" class="thread-empty">
+          Ask about what is on the canvas. Objects you add as context travel with your next message.
         </p>
+        <p id="threadState" class="thread-state" role="status"></p>
+        <p id="threadEnded" class="thread-ended" hidden>
+          <button id="endedNew" type="button" class="quiet">Start a new conversation</button>
+        </p>
+        <div
+          id="approvalCard"
+          class="approval-card"
+          role="group"
+          aria-label="The agent is waiting for you"
+          hidden
+        ></div>
         <h2 id="contextHeading" class="rail-heading">Context</h2>
         <ul id="contextChips" aria-labelledby="contextHeading"></ul>
         <p id="contextEmpty" class="secondary">
@@ -237,10 +254,11 @@
         </p>
         <form id="assistantForm" class="composer">
           <label class="sr" for="assistantDraft">Message</label>
-          <textarea id="assistantDraft" rows="4" placeholder="Message the assistant" spellcheck="true"></textarea>
+          <textarea id="assistantDraft" rows="3" placeholder="Message the assistant" spellcheck="true"></textarea>
           <div class="composer-row">
             <p id="assistantStatus" class="secondary" role="status"></p>
-            <button id="assistantSend" type="submit" class="primary">Send</button>
+            <button id="assistantRetry" type="button" class="primary" hidden>Retry</button
+            ><button id="assistantSend" type="submit" class="primary">Send</button>
           </div>
         </form>
       </div>

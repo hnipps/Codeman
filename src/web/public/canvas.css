@@ -1843,3 +1843,106 @@ textarea[readonly] {
     bottom: 168px;
   }
 }
+
+/* Assistant conversation (PC9b): the session's own transcript in the rail. Same tokens as comments; no bubbles. */
+.conversation-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.conversation-head select {
+  flex: 1;
+  min-width: 0;
+}
+#thread {
+  flex: 1;
+  min-height: 80px;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overscroll-behavior: contain;
+}
+.turn {
+  padding: 12px 0;
+  border-top: 1px solid var(--divider);
+}
+.turn:first-child {
+  border-top: 0;
+}
+.turn-who {
+  color: var(--muted);
+  font-size: 12px;
+}
+.turn[data-who='you'] .turn-who {
+  color: var(--secondary);
+}
+.turn-text {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.turn[data-who='you'] .turn-text {
+  padding-left: 8px;
+  border-left: 2px solid var(--divider);
+}
+.turn-refs {
+  margin: 4px 0 0 10px;
+  color: var(--secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.thread-state {
+  flex-shrink: 0;
+  min-height: 20px;
+  margin: 8px 0 0;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.thread-state[data-state='working']::after {
+  content: '…';
+}
+.thread-ended {
+  margin: 4px 0 0;
+}
+.approval-card {
+  flex-shrink: 0;
+  margin: 8px 0 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--divider);
+  font-size: 13px;
+}
+.approval-card p {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+#assistantStatus[data-state='failed'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--critical);
+}
+#assistantStatus {
+  margin: 0;
+  font-size: 12px;
+}
+#contextChips {
+  flex: 0 0 auto;
+  max-height: 96px;
+}
+#contextEmpty {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+.thread-empty {
+  flex: 1;
+}
+#thread:empty {
+  display: none;
+}

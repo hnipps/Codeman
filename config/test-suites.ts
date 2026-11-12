@@ -24,6 +24,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/canvas-media.browser.test.ts',
   'test/canvas-comments.browser.test.ts',
   'test/canvas-context.browser.test.ts',
+  'test/canvas-assistant.browser.test.ts',
   'test/mermaid-renderer.browser.test.ts',
   'test/command-palette-agent-arrows.browser.test.ts',
   'test/tmux-capture-sgr.browser.test.ts',

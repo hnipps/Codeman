@@ -38,6 +38,7 @@ export type ViewCommand =
   | { kind: 'context-add'; ids: string[] }
   | { kind: 'context-remove'; ids: string[] }
   | { kind: 'context-clear-sent'; ids?: string[] }
+  | { kind: 'conversation'; id: string | null }
   | { kind: 'escape' }
   | { kind: 'letters'; enabled: boolean }
   | { kind: 'enter'; id: string }
@@ -109,6 +110,8 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
       return { ...state, context: contextRemove(state.context, action.ids) };
     case 'context-clear-sent':
       return { ...state, context: action.ids ? contextRemove(state.context, action.ids) : [] };
+    case 'conversation':
+      return { ...state, conversationId: action.id };
     case 'escape':
       return { ...state, rail: state.rail.slice(0, -1) };
     case 'letters':
