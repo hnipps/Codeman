@@ -392,6 +392,9 @@ describe('canvas assistant conversations', () => {
     expect(before.length).toBeGreaterThan(0);
     await page.waitForFunction(() => !!window.canvasView.read().conversationId);
     const bound = await page.evaluate(() => window.canvasView.read().conversationId);
+    await page.locator('#providerSelect').selectOption('codex');
+    await page.waitForSelector('#choiceNote:not([hidden])');
+    expect(await page.locator('#newConversationNotice').isHidden()).toBe(true);
     await page.locator('#providerSelect').selectOption('copilot');
     await page.locator('#modelInput').fill('gpt-5');
     await page.waitForFunction(() => document.getElementById('newConversationNotice')?.textContent?.includes('gpt-5'));

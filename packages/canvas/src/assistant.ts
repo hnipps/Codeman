@@ -740,8 +740,10 @@ export class AssistantView {
     note.textContent = reasons.join(' ');
     note.hidden = !reasons.length;
     const banner = node('newConversationNotice');
-    banner.textContent = notice;
-    banner.hidden = !notice;
+    // A provider that cannot start says why in the note; promising a new conversation on it would contradict that.
+    const promised = sel.row?.available === false ? '' : notice;
+    banner.textContent = promised;
+    banner.hidden = !promised;
   }
   private paintChips(rows: Chip[]): void {
     const list = node('contextChips');

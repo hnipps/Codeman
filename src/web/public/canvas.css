@@ -1969,12 +1969,16 @@ textarea[readonly] {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
   gap: 8px;
-  padding: 0 0 16px;
+  padding: 8px 0 0;
 }
 .choice select,
 .choice input {
   min-width: 0;
   font-size: 13px;
+}
+.choice select {
+  padding-right: 20px;
+  text-overflow: ellipsis;
 }
 .choice input:disabled {
   opacity: 0.6;
@@ -2017,9 +2021,6 @@ textarea[readonly] {
 }
 :root[data-phone] #thread {
   min-height: 48px;
-}
-:root[data-phone] .choice {
-  padding-bottom: 8px;
 }
 :root[data-phone] .choice select,
 :root[data-phone] .choice input {

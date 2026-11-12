@@ -255,16 +255,6 @@
           Nothing attached. Select objects and press <kbd>Cmd/Ctrl</kbd> <kbd>Enter</kbd>, or hold <kbd>Q</kbd> and drag
           around them.
         </p>
-        <form id="assistantForm" class="composer">
-          <label class="sr" for="assistantDraft">Message</label>
-          <textarea id="assistantDraft" rows="3" placeholder="Message the assistant" spellcheck="true"></textarea>
-          <p id="newConversationNotice" class="secondary notice" role="status" hidden></p>
-          <p id="assistantStatus" class="secondary" role="status"></p>
-          <div class="composer-row composer-actions">
-            <button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
-            ><button id="assistantSend" type="submit" class="primary">Send</button>
-          </div>
-        </form>
         <div
           id="assistantChoice"
           class="choice"
@@ -287,6 +277,16 @@
           <datalist id="modelSuggestions"></datalist>
           <p id="choiceNote" class="secondary" role="status" hidden></p>
         </div>
+        <form id="assistantForm" class="composer">
+          <label class="sr" for="assistantDraft">Message</label>
+          <textarea id="assistantDraft" rows="3" placeholder="Message the assistant" spellcheck="true"></textarea>
+          <p id="newConversationNotice" class="secondary notice" role="status" hidden></p>
+          <p id="assistantStatus" class="secondary" role="status"></p>
+          <div class="composer-row composer-actions">
+            <button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
+            ><button id="assistantSend" type="submit" class="primary">Send</button>
+          </div>
+        </form>
       </div>
       <div id="historyView" class="rail-body" hidden>
         <p class="secondary">Who changed this canvas. Reverting a session removes only what it made and changed.</p>
