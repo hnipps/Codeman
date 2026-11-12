@@ -107,9 +107,22 @@ export function recordMessage(
   });
 }
 export const namedHash = (ids: readonly string[]): string => sha256([...new Set(ids)].sort().join('\n'));
-export function markDelivered(workspaceId: string, conversationId: string, messageId: string, at: number): void {
+export type MessageState = NonNullable<ConversationMessage['state']>;
+/** A row from an earlier release carries no state: it was delivered if it has a time, else it was not. */
+export const messageState = (m: Pick<ConversationMessage, 'state' | 'deliveredAt'>): MessageState =>
+  m.state ?? (m.deliveredAt !== null ? 'delivered' : 'failed');
+/** Moves one message to a new state; `deliveredAt` is set only by a confirmed submit. */
+export function setMessageState(
+  workspaceId: string,
+  conversationId: string,
+  messageId: string,
+  state: MessageState,
+  at?: number
+): void {
   mutate(workspaceId, (list) => {
     const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
-    if (message && message.deliveredAt === null) message.deliveredAt = at;
+    if (!message) return;
+    message.state = state;
+    if (state === 'delivered' && message.deliveredAt === null) message.deliveredAt = at ?? Date.now();
   });
 }

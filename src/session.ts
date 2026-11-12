@@ -5111,8 +5111,36 @@ export class Session extends EventEmitter {
    */
   markPromptSubmitted(prompt?: string): void {
     this._guardedInputRevision++;
+    this._hookPromptSubmittedAt = Date.now();
     if (prompt !== undefined && prompt.trim() !== KEEP_WARM_NUDGE) this._keepAliveTurnUntil = 0;
     this._stampSubmit();
+  }
+
+  private _hookPromptSubmittedAt = 0;
+  private _hookStopAt = 0;
+
+  /** The CLI's stop hook fired: the turn it was running is over. */
+  markHookStop(): void {
+    this._hookStopAt = Date.now();
+  }
+
+  /** A hook-reported turn is running: a prompt was submitted and no stop hook has followed. False for a CLI with no such hooks. */
+  get hookTurnRunning(): boolean {
+    return this._hookPromptSubmittedAt > this._hookStopAt;
+  }
+
+  /** When the CLI's own prompt-submitted hook last fired (0 if never): evidence a prompt left the composer, unlike `lastSubmitAt`, which Codeman's own writes also move. */
+  get hookPromptSubmittedAt(): number {
+    return this._hookPromptSubmittedAt;
+  }
+
+  /**
+   * The rendered pane (`styles` keeps SGR so a faint prompt suggestion can be told from a typed draft), or null when
+   * there is no pane to read: a direct PTY, a stopped session, or a test.
+   */
+  paneSnapshot(styles = false): string | null {
+    if (this._isStopped || !this._mux?.capturePaneText || !this._muxSession) return null;
+    return this._mux.capturePaneText(this._muxSession.muxName, undefined, { styles }) ?? null;
   }
 
   /** Every submit moves `lastSubmitAt`; only one outside a keep-alive turn moves `lastRealPromptAt`. */

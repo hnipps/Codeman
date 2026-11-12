@@ -10,7 +10,7 @@ import {
 import { type CanvasObject, type CanvasState } from './model.js';
 
 export type ResolvedContext = {
-  /** The block, ending with the reference-data notice and a line break; empty when nothing was attached. */
+  /** The block, ending with the reference-data notice and a line break. Always present: its `message` id is how a prompt row is matched to its record, even with nothing attached. */
   block: string;
   refs: ConversationRef[];
   /** Ids named by the caller that no longer exist or are deleted; they are left out, never an error. */
@@ -149,11 +149,17 @@ export function resolveContext(
       stack.push(...[...(children.get(next.id) ?? [])].reverse());
     }
   }
-  if (!refs.length) return { block: '', refs, missing };
   const head = `<canvas-context workspace="${plainLine(workspaceId, 128).replaceAll('"', '')}" seq="${state.seq}" message="${messageId}">`;
   const tail = cut ? ['… more objects were attached than fit; read the rest with canvas_read'] : [];
   return {
-    block: [head, ...lines, ...tail, '</canvas-context>', CONTEXT_NOTICE, ''].join('\n'),
+    block: [
+      head,
+      ...(refs.length ? lines : ['(no objects attached)']),
+      ...tail,
+      '</canvas-context>',
+      CONTEXT_NOTICE,
+      '',
+    ].join('\n'),
     refs,
     missing,
   };

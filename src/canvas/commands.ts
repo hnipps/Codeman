@@ -301,7 +301,7 @@ export function capabilities() {
       command,
       available: true,
       tool,
-      note: 'A conversation is one real Claude session in this case. Send pastes the prompt with the session write primitive and carries the named objects as reference text; it never answers a pending question and an agent cannot message its own conversation.',
+      note: 'A conversation is one real Claude session in this case. Send is accepted at once and delivered in the background (read the message state: queued, sending, delivered, failed); it carries the named objects as reference text, never answers a pending question, and is refused for an agent that is itself in a conversation. Create is for people only: an agent gets 403.',
     })),
     reserved: [],
     clipboard: {

@@ -1391,6 +1391,7 @@ export class WebServer extends EventEmitter {
       canvasStores: () => this.getCanvasStores(),
       broadcast: (event, data) => this.broadcast(event, data),
       startConversationSession: (headers, request) => this.startConversationSession(headers, request),
+      discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
       basePath: this.basePath,
     });
     registerWorktreeRoutes(this.app, ctx);
@@ -2439,12 +2440,24 @@ export class WebServer extends EventEmitter {
     const started = await call(`/api/sessions/${encodeURIComponent(sessionId)}/interactive`);
     if (started.status >= 400 || started.body.success === false) {
       // The tab this call just made would otherwise sit in the strip as a stopped session nobody asked for.
-      await this.app
-        .inject({ method: 'DELETE', url: `/api/sessions/${encodeURIComponent(sessionId)}`, headers: forwarded })
-        .catch(() => undefined);
+      await this.discardConversationSession(headers, sessionId);
       return { ok: false, message: started.body.error || 'The session could not be started' };
     }
     return { ok: true, sessionId };
+  }
+
+  private async discardConversationSession(
+    headers: Readonly<Record<string, string | string[] | undefined>>,
+    sessionId: string
+  ): Promise<void> {
+    const forwarded: Record<string, string> = {};
+    for (const name of ['authorization', 'cookie', 'host']) {
+      const value = headers[name];
+      if (typeof value === 'string') forwarded[name] = value;
+    }
+    await this.app
+      .inject({ method: 'DELETE', url: `/api/sessions/${encodeURIComponent(sessionId)}`, headers: forwarded })
+      .catch(() => undefined);
   }
 
   private async getCanvasStores(): Promise<CanvasStores> {

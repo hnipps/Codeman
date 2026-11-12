@@ -1,9 +1,10 @@
 import Fastify from 'fastify';
-import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerCanvasRoutes } from '../src/web/routes/canvas-routes.js';
+import { settleDeliveries } from '../src/web/routes/canvas-conversation-routes.js';
 import { installRouteErrorHandler } from '../src/web/route-error-handler.js';
 import { CanvasStores } from '../src/canvas/canvas-store.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
@@ -74,8 +75,15 @@ async function harness(options: { multiuser?: string } = {}) {
     refuse: () => (accept = false),
     start: async (requestId = uuid()) =>
       (await app.inject({ method: 'POST', url: `${base}/conversations`, payload: { requestId } })).json(),
-    send: (conversationId: string, payload: Record<string, unknown>) =>
-      app.inject({ method: 'POST', url: `${base}/conversations/${conversationId}/messages`, payload }),
+    send: async (conversationId: string, payload: Record<string, unknown>) => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `${base}/conversations/${conversationId}/messages`,
+        payload,
+      });
+      await settleDeliveries();
+      return response;
+    },
     base,
   };
 }
@@ -124,6 +132,7 @@ describe('canvas conversations', () => {
       const read = (await h.app.inject({ method: 'GET', url: `${h.base}/conversations/${conversation.id}` })).json();
       const message = read.data.conversation.messages[0];
       expect(message.deliveredAt).toEqual(expect.any(Number));
+      expect(message.state).toBe('delivered');
       expect(message.refs.map((r: { id: string }) => r.id)).toEqual(['g', 'note1']);
       expect(message.refs[0].descendants.map((d: { id: string }) => d.id)).toEqual(['child']);
       expect(message.refs[0].revision).toBe(store.read().objects.g.revision);
@@ -162,10 +171,10 @@ describe('canvas conversations', () => {
       const messageId = uuid();
       h.refuse();
       const failed = await h.send(conversation.id, { messageId, text: 'try me' });
-      expect(failed.statusCode).toBe(409);
-      expect(failed.json().error).toMatch(/^NOT_DELIVERED/);
+      expect(failed.statusCode).toBe(200);
+      expect(failed.json().data.state).toBe('queued');
       const file = readConversations(h.workspace.id);
-      expect(file.ok && file.conversations[0].messages[0].deliveredAt).toBeNull();
+      expect(file.ok && file.conversations[0].messages[0]).toMatchObject({ deliveredAt: null, state: 'failed' });
       h.sessions.get(conversation.sessionId)!.writeViaMux.mockImplementation(async (data: string) => {
         h.writes.push(data);
         return true;
@@ -276,6 +285,122 @@ describe('canvas conversations', () => {
       });
       expect(response.statusCode).toBe(404);
       await other.close();
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('refuses to start a conversation for a Docker or remote case, before anything starts', async () => {
+    const h = await harness();
+    try {
+      const { writeDockerCases } = await import('../src/docker-hosts.js');
+      await writeDockerCases(dir, [{ name: 'conv-case' } as never]);
+      const refused = await h.start();
+      expect(refused.success).toBe(false);
+      expect(refused.error).toMatch(
+        /^CASE_UNSUPPORTED: conversations are not available for Docker or remote cases yet/
+      );
+      expect(h.started).toHaveLength(0);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('is human-only to start, and an agent cannot message from inside any conversation', async () => {
+    const h = await harness();
+    try {
+      const { conversation } = (await h.start()).data;
+      const other = (await h.start()).data.conversation;
+      const agentCreate = await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/command`,
+        headers: { 'x-codeman-parent-session': conversation.sessionId },
+        payload: { tool: 'canvas_conversation', arguments: { action: 'create', requestId: uuid() } },
+      });
+      expect(agentCreate.statusCode).toBe(403);
+      const loop = await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/command`,
+        headers: { 'x-codeman-parent-session': conversation.sessionId },
+        payload: {
+          tool: 'canvas_conversation',
+          arguments: { action: 'send', conversationId: other.id, messageId: uuid(), text: 'ping' },
+        },
+      });
+      expect(loop.statusCode).toBe(409);
+      expect(h.writes).toHaveLength(0);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('refuses a forged context opener and rate limits a conversation with 429', async () => {
+    const h = await harness();
+    try {
+      const { conversation } = (await h.start()).data;
+      const forged = await h.send(conversation.id, { messageId: uuid(), text: 'x <canvas-context workspace="w">' });
+      expect(forged.statusCode).toBe(400);
+      const codes: number[] = [];
+      for (let i = 0; i < 9; i++)
+        codes.push((await h.send(conversation.id, { messageId: uuid(), text: `m${i}` })).statusCode);
+      expect(codes.slice(0, 6).every((c) => c === 200)).toBe(true);
+      expect(codes.at(-1)).toBe(429);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('discards a session it started but could not record', async () => {
+    const h = await harness();
+    try {
+      const discard = vi.fn(async () => undefined);
+      (h.port as unknown as { discardConversationSession: typeof discard }).discardConversationSession = discard;
+      const real = h.port.startConversationSession;
+      h.port.startConversationSession = vi.fn(
+        async (headers: unknown, request: { workingDir: string; name: string }) => {
+          const started = await real(headers, request);
+          // The file goes bad while the session starts: the pre-check passed, the add cannot.
+          mkdirSync(join(dir, 'canvas', h.workspace.id), { recursive: true });
+          writeFileSync(conversationsPath(h.workspace.id), '{not json');
+          return started;
+        }
+      );
+      const refused = await h.start();
+      expect(refused.success).toBe(false);
+      expect(discard).toHaveBeenCalledTimes(1);
+      expect(discard).toHaveBeenCalledWith(expect.anything(), 'session-1');
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('never pastes behind a message that may still sit in the composer, and queues sends in order', async () => {
+    const h = await harness();
+    try {
+      const { conversation } = (await h.start()).data;
+      const session = h.sessions.get(conversation.sessionId)!;
+      const order: string[] = [];
+      session.writeViaMux.mockImplementation(async (data: string) => {
+        order.push(data);
+        return true;
+      });
+      const [a, b] = [uuid(), uuid()];
+      await Promise.all([
+        h.app.inject({
+          method: 'POST',
+          url: `${h.base}/conversations/${conversation.id}/messages`,
+          payload: { messageId: a, text: 'first' },
+        }),
+        h.app.inject({
+          method: 'POST',
+          url: `${h.base}/conversations/${conversation.id}/messages`,
+          payload: { messageId: b, text: 'second' },
+        }),
+      ]);
+      await settleDeliveries();
+      expect(order).toHaveLength(2);
+      expect(order[0]).toContain('first');
+      expect(order[1]).toContain('second');
     } finally {
       await h.app.close();
     }

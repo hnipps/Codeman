@@ -93,6 +93,7 @@ export function registerHookEventRoutes(
     // could never legitimately emit one is now dropped instead of steering another
     // agent's control flow.
     const waitSession = ctx.sessions.get(sessionId);
+    if (waitSession && event === 'stop') waitSession.markHookStop();
     if (waitSession && hooksAvailableForMode(waitSession.mode, sessionHookOptions(waitSession))) {
       if (event === 'stop') {
         sessionWaits.notifySignal(sessionId, 'stop');

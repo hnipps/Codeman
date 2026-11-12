@@ -50,7 +50,7 @@ describe('context resolver', () => {
   it('leaves out deleted and unknown objects and writes no block for nothing', () => {
     const state = stateOf(object('gone', { deletedAt: 5 }));
     const r = resolveContext(state, 'ws', msg, ['gone', 'nope']);
-    expect(r.block).toBe('');
+    expect(r.block).toContain('(no objects attached)');
     expect(r.missing.sort()).toEqual(['gone', 'nope']);
   });
   it('keeps control characters and the block tags out of object text', () => {
