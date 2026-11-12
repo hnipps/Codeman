@@ -291,6 +291,8 @@ export interface RequestOptions {
   path: string;
   query?: Record<string, string | number | boolean | undefined>;
   body?: Record<string, unknown>;
+  /** Raw bytes sent instead of a JSON body (an image upload). */
+  rawBody?: { data: Buffer; contentType: string };
   headers?: Record<string, string>;
   /** Socket timeout; long-polls pass their own timeout plus headroom. */
   timeoutMs?: number;
@@ -325,6 +327,9 @@ export const httpRequest: ApiRequest = (ctx, options) => {
   if (bodyText !== undefined) {
     headers['Content-Type'] = 'application/json';
     headers['Content-Length'] = Buffer.byteLength(bodyText);
+  } else if (options.rawBody) {
+    headers['Content-Type'] = options.rawBody.contentType;
+    headers['Content-Length'] = options.rawBody.data.length;
   }
   const transport = url.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
@@ -372,6 +377,7 @@ export const httpRequest: ApiRequest = (ctx, options) => {
     req.on('timeout', () => req.destroy(new Error(`request timed out after ${options.timeoutMs ?? 30_000} ms`)));
     req.on('error', reject);
     if (bodyText !== undefined) req.write(bodyText);
+    else if (options.rawBody) req.write(options.rawBody.data);
     req.end();
   });
 };

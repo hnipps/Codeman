@@ -138,6 +138,7 @@ export const toolSchemas = {
   canvas_lock: LockCommandSchema,
   canvas_history: HistorySchema,
   canvas_capabilities: z.object({}).strict(),
+  canvas_link_preview: z.object({ url: z.string().min(1).max(8192) }).strict(),
 };
 export type CanvasToolName = keyof typeof toolSchemas;
 export const canvasToolNames = Object.keys(toolSchemas) as CanvasToolName[];
@@ -160,6 +161,12 @@ export function capabilities() {
         schema: canvasJsonSchema(toolSchemas[name]),
         objectTypes: types,
       })),
+      {
+        name: 'canvas_upload_image',
+        available: true,
+        objectTypes: ['image'],
+        note: 'POST assets with the image bytes (PNG, JPEG, GIF or WebP, 8 MB). Returns assetId, width and height; create an image object with content.assetId.',
+      },
       {
         name: 'canvas_screenshot',
         available: true,
@@ -202,6 +209,27 @@ export function capabilities() {
       history:
         'Undo selected own operation sequences; redo selects sequences returned by undo. All inverse operations form one atomic batch; changed revisions reject.',
     },
+    media: {
+      image:
+        'content { type: image, url: "", alt, assetId }; assetId comes from canvas_upload_image and must be stored in this workspace',
+      link: 'content { type: link, url, label, preview?, thumbnailAssetId? }; canvas_link_preview fetches label and thumbnail through the egress guard',
+      embed:
+        'Convert with canvas_update: content type link becomes embed and back, keeping the object id. Embeds show a sandboxed live page; at most six frames load at once',
+      subcanvas: 'A container in this workspace; read its contents with canvas_read root',
+      assets: 'Assets are content addressed and kept when no object references them',
+    },
+    views: [
+      {
+        command: 'canvas.view.enter',
+        available: 'browser',
+        note: 'window.canvasView.dispatch({ kind: "enter", id }) opens a sub-canvas in that view; agents read it with canvas_read root',
+      },
+      {
+        command: 'canvas.view.leave',
+        available: 'browser',
+        note: 'window.canvasView.dispatch({ kind: "leave" }) returns to the parent view',
+      },
+    ],
     reserved: [
       'canvas.viewport.read',
       'canvas.viewport.set',

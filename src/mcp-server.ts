@@ -210,6 +210,8 @@ const canvasToolDescriptions = {
     'Read history, undo own operation sequences, redo using undo result sequences, or separately revert the caller author.',
   canvas_capabilities:
     'Get machine-readable command/tool schemas, supported object types, restrictions and reserved future view commands.',
+  canvas_link_preview:
+    'Fetch a web address title and thumbnail on the server through the egress guard; returns label, host, status and thumbnailAssetId to put in link content. Writes no object.',
 } satisfies Record<keyof typeof toolSchemas, string>;
 
 export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[] {
@@ -225,10 +227,28 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
         inputSchema: canvasJsonSchema(toolSchemas[name]),
         annotations: {
           readOnlyHint: ['canvas_read', 'canvas_search', 'canvas_query', 'canvas_capabilities'].includes(name),
-          openWorldHint: false,
+          openWorldHint: name === 'canvas_link_preview',
         },
       })
     ),
+    {
+      name: 'canvas_upload_image',
+      title: 'Canvas upload image',
+      description:
+        'Store a PNG, JPEG, GIF or WebP image (8 MB at most) in the calling session canvas and return its assetId, ' +
+        'width and height. Then create an image object with canvas_create, content { type: "image", url: "", alt, assetId }. ' +
+        'Give exactly one of path (a local file this server reads) or base64. The bytes must be the image type they claim.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', minLength: 1, maxLength: 4096 },
+          base64: { type: 'string', minLength: 1, maxLength: 12_000_000 },
+          type: { type: 'string', enum: ['png', 'jpeg', 'gif', 'webp'] },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
     {
       name: 'canvas_screenshot',
       title: 'Canvas screenshot',
@@ -1084,6 +1104,44 @@ export function createToolRunner(deps: ToolRunnerDeps) {
       };
     };
   }
+  tools.canvas_upload_image = async (args, signal) => {
+    const allowed = new Set(['path', 'base64', 'type']);
+    for (const key of Object.keys(args)) {
+      if (!allowed.has(key)) throw new ToolError(`Unknown field ${key}`);
+    }
+    const path = readString(args, 'path', { max: 4096 });
+    const base64 = readString(args, 'base64', { max: 12_000_000 });
+    if (!path === !base64) throw new ToolError('Give exactly one of path or base64');
+    const fromName = path?.toLowerCase().match(/\.(png|jpe?g|gif|webp)$/)?.[1];
+    const type =
+      args.type === undefined
+        ? fromName === 'jpg'
+          ? 'jpeg'
+          : fromName
+        : readEnum(args, 'type', ['png', 'jpeg', 'gif', 'webp'] as const, 'png');
+    if (!type) throw new ToolError('Give type: png, jpeg, gif or webp');
+    let data: Buffer;
+    if (path) {
+      const { stat, readFile } = await import('node:fs/promises');
+      const info = await stat(path).catch(() => null);
+      if (!info?.isFile()) throw new ToolError('path is not a readable file');
+      if (info.size > 8 * 1024 * 1024) throw new ToolError('Images are limited to 8 MB');
+      data = await readFile(path);
+    } else data = Buffer.from(base64 ?? '', 'base64');
+    const res = await call(
+      {
+        method: 'POST',
+        path: '/api/v1/canvas/current/assets',
+        rawBody: { data, contentType: `image/${type}` },
+        timeoutMs: 60_000,
+      },
+      signal
+    );
+    return {
+      text: JSON.stringify(res.json?.success ? res.json.data : (res.json ?? { error: res.text })),
+      isError: !res.json?.success,
+    };
+  };
   tools.canvas_screenshot = async (args, signal) => {
     const allowed = new Set(['objectId', 'theme']);
     for (const key of Object.keys(args)) {
