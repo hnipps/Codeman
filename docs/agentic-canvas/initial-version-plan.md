@@ -1,7 +1,7 @@
 # Agentic Canvas initial version plan
 
 This plan takes the Codeman fork from its finished self-building loop toward a canvas-native agent workspace. The target includes the canvas and agent-readable object model, queryable logs, a thin ambient assistant rail, direct/gesture context capture, voice, background agents, configured provider/model choice and connected agent comment threads.
-PC1–PC8 cover the original C1–C5/O1–O3/L1–L2 foundation. The owner's subsequent clarification brings native conversations, per-message context and explicit agent comment-thread participation into the design target through PC9–PC12. Code-editing background tasks require isolated worktrees; a general worktree-management UI, PR/CI dashboards and production-operation UI remain later work.
+PC1–PC8 cover the original C1–C5/O1–O3/L1–L2 foundation. The owner's subsequent clarification brings native conversations, per-message context and explicit agent comment-thread participation into the design target through PC9–PC12. PC13 then makes the canvas the shell: Codeman opens on the canvas, and the tab dashboard becomes a fallback. Code-editing background tasks require isolated worktrees; a general worktree-management UI, PR/CI dashboards and production-operation UI remain later work.
 The program enforces one rule. The server's operation log is the only source of truth, and every write names its author.
 Impeccable shape comes first, before any implementation PR starts. The implementation checklist below is provisional until shape resolves the canvas UI/UX.
 PC1–PC8 retain their dependency graph. PC9 follows the canvas, session-access and comment foundations; PC10 connects anchored threads to those real conversations. PC8 remains independent telemetry work. PC9–PC12 require detailed implementation scoping before their owners start; the design does not assert the session adapter already exists.
@@ -43,7 +43,7 @@ The owner approved this plan on 2026-11-10. The shape deliverables are recorded 
 
 ## Design decisions carried into implementation
 
-The shaped brief governs layout, keyboard scope and interaction details where the earlier checklist differs. The selected composition has no navbar. Search and workspace navigation live in the outline; board labels are primarily user/agent content. A 320-pixel right assistant rail collapses completely without changing the canvas camera. Direct selection and hold-Q lasso capture replace the rejected modal picker. Nonmodal shortcuts, voice, configured provider/model controls, background agents and connected comment threads are central. Floating conversation cards are superseded. The phone supports conversation, reading and comments. Codeman is the delivery shell, not the final navigation model. Static studies do not verify any implementation gate.
+The shaped brief governs layout, keyboard scope and interaction details where the earlier checklist differs. The selected composition has no navbar. Search and workspace navigation live in the outline; board labels are primarily user/agent content. A 320-pixel right assistant rail collapses completely without changing the canvas camera. Direct selection and hold-Q lasso capture replace the rejected modal picker. Nonmodal shortcuts, voice, configured provider/model controls, background agents and connected comment threads are central. Floating conversation cards are superseded. The phone supports conversation, reading and comments. Codeman is the delivery shell, not the final navigation model; PC13 replaces it with the canvas. Static studies do not verify any implementation gate.
 
 - PC1 preserves stable sibling order and object IDs for accessible navigation. Focus is tracked by ID; agent insertions do not shift it.
 - PC2 exposes explicit container read targets while allowing workspace-wide agent discovery. Per-message attachments guide attention; they are not an access boundary.
@@ -89,6 +89,7 @@ The shaped brief governs layout, keyboard scope and interaction details where th
   - [ ] PC10 after PC9 and PC6.
   - [ ] PC11 after PC9.
   - [ ] PC12 after PC9 and the existing isolated-session launch contract.
+  - [ ] PC13 after PC10, PC11 and PC12.
 - [ ] Scope PC9–PC12 with explicit session-adapter, request-origin, context-delivery, voice-capability and isolated-task contracts, source ownership, tests and compatibility checks before assigning owners. No owner edits a shared session module concurrently.
 - [ ] Hold the file boundaries. PC1 touches only `src/canvas/**`, `src/web/routes/canvas-routes.ts`, the server wiring and their tests. PC3 to PC6 touch only `packages/canvas/**`, `src/web/public/canvas*`, the build scripts and their tests. PC8 touches only `src/telemetry*.ts`, its route and the MCP tool.
 - [ ] Verify the shaped dark theme and keyboard flows in PC3 through PC6. Exercise focus, selection, editing, undo and escape without a mouse, confirm shortcut suppression in text editors, terminals and embeds, and capture dark desktop and phone evidence.
@@ -668,6 +669,21 @@ No cloud VM exists here. Each live lane runs a throwaway Codeman instance at the
 - [ ] Keep questions and results connected to their request, with artifact links and bounded notifications. Closing the assistant does not cancel tasks; changing provider/model does not retarget existing runs. Reconnect/retry deduplicates task creation and restores ownership.
 - [ ] Verify isolation, per-task cancellation, retry deduplication, foreground continuity, context/provider snapshots, result routing and recovery from a waiting/failed child. The prototype's queued example rows are not real agent verification.
 
+## Make the canvas the shell (PC13)
+
+**Depends on.** PC10, PC11 and PC12. This is added design scope. A shape pass and detailed implementation planning must come before code.
+
+Until PC13, the canvas is a `managed` web tab inside Codeman's dashboard. PC13 turns that around: Codeman opens on the canvas, everything Codeman does is reachable from it, and the tab dashboard becomes a fallback view.
+
+- [ ] Run `/impeccable shape` for the canvas shell before implementation. Inventory every dashboard surface (tab strip, sidebar and rail, tab groups, session terminals, the file preview, the Files and Git panels, App Settings, the approvals inbox, notifications, Cmd+K, case management, the phone overview and keyboard) and give each one a home on the canvas, in the outline, in the assistant rail, or in the classic view. Add the result to `canvas-ui-ux-brief.md`. Pass when no current surface lacks a home.
+- [ ] Make the canvas the landing page. With the shell on, `/` opens the canvas of the last-used workspace, and the outline switches workspaces and cases. A new workspace starts from the outline, not from a tab.
+- [ ] Make every session reachable from the canvas. Terminals, rail conversations and background tasks each have one canvas representation and one full view. Opening a session's full view and closing it returns to the canvas with the camera, selection and rail state unchanged. A session keeps its single transcript owner and its existing input path; the shell adds no second write path to a pane.
+- [ ] Keep the classic dashboard reachable at its own route as a fallback, on the same server and the same state. Switching between the two loses no session, draft or tab layout. Keep the dashboard code intact rather than deleting it, so upstream Codeman releases still merge.
+- [ ] A broken canvas bundle must not lock the owner out. If the canvas page fails to load or render, `/` falls back to the classic view with a visible notice, and the classic route never depends on the canvas bundle. The shell switch survives a blue-green deploy and a rollback.
+- [ ] Gate the shell behind its own setting, default off, independent of `canvasEnabled`. The canvas tab keeps working with the shell off. Turn the shell on by default only after the close-the-program gate passes on the deployed build.
+- [ ] On the phone, the canvas home replaces the phone overview. It keeps reading, conversation and comments from PC6 and PC9, and it keeps a route to a session's terminal and the mobile keyboard.
+- [ ] Verify with the shell on: landing on the canvas, switching workspaces from the outline, opening and closing a terminal's full view without camera change, every inventoried surface reachable without the classic view, a deliberately broken canvas bundle in a throwaway instance falling back to the classic view, and the same sessions visible from both views. Verify at laptop and phone sizes. Run the same independent review and final-head merge and deploy policy as the other PRs.
+
 ## Close the program
 
 - [ ] Every box above is checked with its evidence.
@@ -679,8 +695,8 @@ No cloud VM exists here. Each live lane runs a throwaway Codeman instance at the
   - [ ] Revert the agent session, and assert only the summary block goes.
   - [ ] Plant a failing request in a throwaway instance and diagnose it with `logs_query`. Never inject the fault into production.
 - [ ] Verify the complete foundations matrix, including nested selectable group context, selection lassos, resize, locks and one-to-one human/agent command behavior. Static design checks do not satisfy these implementation requirements.
-- [ ] Before declaring the clarified product complete, verify the ambient rail, connected thread, voice and background tasks against PC9–PC12, with attachment changes that do not erase earlier history, whole-canvas discovery and self-building continuity. The original foundation gate alone is insufficient.
-- [ ] Turn `canvasEnabled` on by default in a final PR after the gate passes. Verify, land and deploy it through the same automatic flow, then check that the canvas is available on the live build.
+- [ ] Before declaring the clarified product complete, verify the ambient rail, connected thread, voice, background tasks and the canvas shell against PC9–PC13, with attachment changes that do not erase earlier history, whole-canvas discovery and self-building continuity. The original foundation gate alone is insufficient.
+- [ ] Turn `canvasEnabled` and the PC13 shell setting on by default in a final PR after the gate passes. Verify, land and deploy it through the same automatic flow, then check that the live build opens on the canvas and the classic view is still reachable.
 - [ ] Tick phase 1 in `TRACKER.local.md` and add a `docs/JOURNAL.md` entry.
 - [ ] Reply to the operator with each PR and its verdict, per `autopilot-stack.md`.
 
@@ -731,5 +747,5 @@ Each later phase gets its own plan when the gate before it passes. The Codeman p
 - **Remaining phase 2 work.** The ambient assistant, direct context, explicit agent threads, voice and isolated background agents are now in PC9–PC12 under the owner's revised direction. A broad worktree/sandbox dashboard remains later work; required isolation for background code editing is included. A plain @mention no longer implicitly starts a session.
 - **Phase 3, documents and live previews (D1, D2, P1 to P4).** A document object uses the file viewer's edit mode and saves with a commit. A live embed is a preview server shown as an `embed` object. Element comments need a script inside the proxied page.
 - **Phase 4, records and internal tools (R1 to R4, I1 to I3).** PR and CI records come from `gh`. Internal tools are cases with their own repository and a preview.
-- **Phase 5, the app builds its own shell (S1).** The self-building loop already exists. This phase moves it onto worktrees and a preview instance.
+- **Phase 5, the app builds its own shell (S1).** The self-building loop already exists. This phase moves it onto worktrees and a preview instance. "Shell" here means the deploy and control plane; making the canvas the UI shell is PC13.
 - **Phase 6, operations (E1, E2).** Error records start an investigation session from the canvas.
