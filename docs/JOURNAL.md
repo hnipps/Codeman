@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — The canvas becomes the shell after PC12 (PC13)
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/initial-version-plan.md`
+**Why:** The owner wants all of Codeman to exist in a canvas, not the canvas as a tab in the dashboard, and no step in the plan got there.
+**Links:** [Intent](../intent/2026-11-12-canvas-first-shell.md)
+
+The canvas tab stays as it is through PC12. PC13, after PC10, PC11 and PC12, makes `/` open the canvas, gives every dashboard surface a home on the canvas, the outline or the rail, and keeps the dashboard at its own route as a fallback that never depends on the canvas bundle. The shell has its own setting, separate from `canvasEnabled`, and the final default switch now turns both on. Phase 5's "shell" in Appendix E is the deploy and control plane, not the UI.
+
 ## 2026-11-12 — Canvas conversations fix round (PC9b)
 
 **Type:** drift
