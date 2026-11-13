@@ -18,6 +18,7 @@ import { TasksView } from './tasks-view.js';
 import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
+import { reportClientErrors } from './client-errors.js';
 import type { ViewAction } from '../../../src/canvas/view-schema.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
@@ -43,6 +44,9 @@ declare global {
     canvasComments: { read: () => CommentsView['all']; post: (objectId: string, text: string) => Promise<boolean> };
   }
 }
+const base = new URL(document.baseURI).pathname.replace(/\/$/, '');
+const url = (path: string): string => joinBasePath(base, path);
+reportClientErrors(url);
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const el = document.getElementById(id);
   if (!(el instanceof type)) throw new Error(`Missing canvas element: ${id}`);
@@ -54,8 +58,6 @@ const input = (id: string): HTMLInputElement => element(id, HTMLInputElement);
 const board = node('board'),
   layer = node('layer'),
   tree = node('tree');
-const base = new URL(document.baseURI).pathname.replace(/\/$/, '');
-const url = (path: string): string => joinBasePath(base, path);
 const workspaceId = pageWorkspaceId();
 const shell = shellOn();
 if (shell) rememberWorkspace(workspaceId, base);

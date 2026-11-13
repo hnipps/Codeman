@@ -14,6 +14,14 @@ The revision number was a stand-in for the real question, which is whether the i
 One consequence is accepted on purpose: if someone changes an object and then puts every field back, an older undo runs, because nothing of theirs is lost. Inverse operation ids now include the sequence the step is built on. Without that, undoing one edit a second time after its redo repeated the first undo's id and was answered as a duplicate that wrote nothing.
 
 The same change makes `S` and `W` answer from the outline's buttons in the canvas shell, and Escape return the keyboard to the board. The shell's own flows left focus there, where no shell key was heard.
+## 2026-11-13 — A canvas fault is diagnosable from telemetry (closing gate fix)
+
+**Type:** propagated-discovery
+**Touches:** `src/web/routes/canvas-failure.ts`, `src/web/routes/canvas-routes.ts`, `src/web/routes/canvas-shell-routes.ts`, `packages/canvas/src/client-errors.ts`, `packages/canvas/src/view-sync.ts`, `src/web/webview-proxy.ts`
+**Why:** The program's closing gate (plant a failing request, diagnose it with `logs_query`) passed only in part: the agent found the 500 and not its cause.
+**Links:** [Intent](../intent/2026-11-13-canvas-telemetry.md), [architecture-invariants, "Canvas failures and telemetry"](architecture-invariants.md#canvas-failures-and-telemetry)
+
+Every canvas answer of 500 or above now goes through one function that logs the cause once, with the route template and the request id of the `requests` line, and answers with a sentence that carries no path. The 503 for a case folder that is not responding lost the path it used to end with; that path is in the log line. Both canvas pages report browser errors with the dashboard's limits. The view publisher's 429 was the page's own pacing: it counted its gap from the send while the server counts from the handling, so the gap is now counted from the answer and one publish is in flight at a time. The server's limit is unchanged. The proxy's attribute rewrite takes unquoted values. The gate was not rerun in this change, which starts no server.
 
 ## 2026-11-13 — An agent's view command only steers the view (PC13 audit fix round 1)
 

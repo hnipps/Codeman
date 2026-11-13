@@ -376,6 +376,25 @@ describe('rewriteHtml', () => {
     expect(out).toContain(`action="${PREFIX}login"`);
   });
 
+  it('rebases an unquoted root-absolute src/href/action like the quoted forms', () => {
+    const out = rewriteHtml(
+      `<head><link rel=stylesheet href=/s.css></head><body><script src=/s.js></script><img src = /i.png><form action=/login></form><script src="/q.js"></script></body>`,
+      CAP
+    );
+    expect(out).toContain(`href=${PREFIX}s.css>`);
+    expect(out).toContain(`<script src=${PREFIX}s.js>`);
+    expect(out).toContain(`src = ${PREFIX}i.png>`);
+    expect(out).toContain(`action=${PREFIX}login>`);
+    expect(out).toContain(`src="${PREFIX}q.js"`);
+  });
+
+  it('leaves unquoted protocol-relative, absolute and relative URLs alone', () => {
+    const out = rewriteHtml('<head></head><script src=//cdn.example/x.js></script><img src=a/b.png><a href=#top>', CAP);
+    expect(out).toContain('src=//cdn.example/x.js>');
+    expect(out).toContain('src=a/b.png>');
+    expect(out).toContain('href=#top>');
+  });
+
   it('leaves protocol-relative and absolute URLs alone', () => {
     const out = rewriteHtml('<head></head><script src="//cdn.example/x.js"></script><img src="https://a/b.png">', CAP);
     expect(out).toContain('src="//cdn.example/x.js"');
