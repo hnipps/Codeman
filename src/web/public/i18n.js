@@ -733,6 +733,9 @@
     'The canvas did not load, so the classic view is shown.': '画布未能加载，因此显示经典视图。',
     'The canvas did not start, so the classic view is shown.': '画布未能启动，因此显示经典视图。',
     'Try the canvas again': '重试画布',
+    'Back to Canvas': '返回画布',
+    'Back to canvas': '返回画布',
+    'Back to the canvas (Ctrl+Shift+Backspace)': '返回画布 (Ctrl+Shift+Backspace)',
     'Gives every case an infinite canvas for notes, sections, images and links that you and your agents both edit. Open it with Open canvas in the case picker. Off hides the entry and its tools; saved canvases are kept.':
       '为每个案例提供一块无限画布，你和智能体都可以在上面编辑便签、分区、图片和链接。在案例选择器中点击“打开画布”进入。关闭后入口和相关工具会隐藏，已保存的画布会保留。',
     "Lets agents read another session's output in bounded pages and type a prompt into a local Codex composer, then press Enter once after checking it is unchanged (the inspect, stage and submit commands). Experimental: the commands and their HTTP routes may change in any release. Off by default; while off those routes refuse every request.":

@@ -161,6 +161,18 @@
       </div>
     </aside>
     <button id="openOutline" aria-label="Open outline" title="Open outline"></button>
+    <section id="fullView" class="shell-only" aria-label="Session terminal" hidden>
+      <div id="fullViewFrame"></div>
+      <div id="fullViewError" role="alert" hidden>
+        <h1>The session page did not open</h1>
+        <p>Its terminal did not load within ten seconds. The session itself is not affected.</p>
+        <div class="full-view-actions">
+          <button id="fullViewRetry" type="button">Try again</button
+          ><a id="fullViewClassic" href="classic">Open in classic view</a
+          ><button id="fullViewBack" type="button" class="quiet">Back to canvas</button>
+        </div>
+      </div>
+    </section>
     <div id="notice" role="status" hidden></div>
     <div id="micIndicator" role="group" aria-label="Voice" hidden>
       <span class="mic-dot" aria-hidden="true"></span><span id="micIndicatorText"></span

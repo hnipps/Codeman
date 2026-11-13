@@ -178,3 +178,19 @@ Made while building. Each replaces what the sections above say where they differ
 - **Settings (classic)** is `classic?open=settings`; the dashboard opens App Settings after the server's settings load and drops the parameter. Shell on only, so nothing changes with the shell off.
 - **A terminal row navigates to the session's page** in this part. Part 3 frames it on a laptop.
 - **Offline** uses the canvas's existing connection state. The last session list stays, marked as last known.
+
+### Part 3
+
+- **The switch on the session page is its address.** `from=canvas` alone turns on the Canvas button and the back chord. The page is still rendered without settings and without shell facts, as part 1 pinned; only the canvas shell writes that address.
+- **The back chord is listed only where it works.** `back-to-canvas` is in `DEFAULT_SHORTCUTS` with `shellOnly`, and the registry leaves it out on every page that was not opened by the canvas. With the shell off the Shortcuts list and Ctrl+Shift+Backspace are what they were. It is rebound from the session page's own settings.
+- **Canvas is a script-built button** (`#soloCanvasBtn`) where the re-dock button is; `index.html` has no new markup. It is the phone's way back, so it shows at phone width, at 44 px on a coarse pointer.
+- **"Canvas root inert" is every child of `<body>` but the full view.** The canvas document has no single root element. A capture listener on `window` also stops keys, because an inert tree still lets a key reach `document` through `<body>`.
+- **The ticket also carries the open sub-canvas and the session**, so the phone returns into the sub-canvas it left and focus lands on the row that opened the session.
+- **An agent's open is refused on a phone.** It would navigate a person's window away. It answers success and changes nothing, like the `letters` action.
+- **A notification for a session of another workspace opens the classic view** on that session, after one read of `GET /api/sessions/:id` says the caller may open it. An unknown id opens nothing. The item said only "opens that session's full view".
+- **Open in classic view** is `classic#session=<id>`, the dashboard's existing session link.
+- **The ready message is also sent in the "session unavailable" state**, whose button reads Back to canvas on such a page.
+- **The pane in the tests is the test stand-in's.** Under vitest a session is a PTY that echoes and tmux is not run, so the typed marker is read from the session's own terminal capture on the server, not from `tmux capture-pane`.
+- **Inventory rows confirmed in the frame:** terminal, voice input, the file viewer button and overlay, paste upload and the shortcut overlay are drawn by the session page. The Git indicator is opt-in per device (`showGitStatus`) and was not switched on in the check.
+- **Phone outline order:** the head (name, Close) stays first, then the workspace list when open, then Sessions, then search and the tree. The dock control that opens it is still labelled Sections.
+

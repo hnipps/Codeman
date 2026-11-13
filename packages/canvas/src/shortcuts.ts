@@ -77,4 +77,7 @@ export const shellShortcuts: Shortcut[] = [
   ['Focus the Sessions section', [['S']]],
   ['Open the workspace list', [['W']]],
   ['Open the focused session', [['Enter']]],
+  // The session page's own key (rebindable in the classic view's Shortcuts); the canvas only lists it.
+  ['Back to the canvas from a terminal', [['Ctrl', 'Shift', 'Backspace']]],
+  ['Close a terminal that did not open', [['Esc']]],
 ];

@@ -1631,6 +1631,7 @@ The sixteen command tool names are `canvas_read`, `canvas_search`, `canvas_creat
 `canvas_update`, `canvas_delete`, `canvas_query`, `canvas_arrange`,
 `canvas_transform`, `canvas_lock`, `canvas_history`, `canvas_comment`,
 `canvas_capabilities`, `canvas_link_preview`, `canvas_view`, `canvas_context` and `canvas_conversation`.
+`canvas_view` action `full-view` with a `viewId` and a `sessionId` (canvas shell pages only) shows that session's own terminal page over the canvas for the person looking at that view, and `sessionId: null` closes it. It opens only a session the view lists, never moves keyboard focus, does nothing on a phone, and sends the session nothing. A view reports the open one as `fullView` in `canvas_view read`.
 Call `canvas_capabilities` with `{}` for machine-readable schemas, object-type
 support, geometry semantics and reserved future view operations. `canvas_screenshot`
 is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns

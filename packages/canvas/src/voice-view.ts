@@ -141,6 +141,10 @@ export class VoiceView {
   pending(): boolean {
     return this.state.phase === 'ready-to-send' || (this.state.phase === 'processing' && this.state.sending);
   }
+  /** Something is about to cover the page (a session's full view): capture ends and nothing is sent, as when the page is hidden. */
+  conceal(): void {
+    this.dispatch({ type: 'hidden' });
+  }
   /** Stops a countdown, exactly as its Cancel send does; the text stays in the composer. */
   cancelPending(): void {
     if (this.state.phase === 'ready-to-send') this.dispatch({ type: 'cancel' });

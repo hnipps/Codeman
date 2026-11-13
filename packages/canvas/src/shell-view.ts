@@ -44,6 +44,8 @@ export type ShellHost = {
   navigate(href: string): void;
   /** The workspace list arrived: the page shows the current workspace's name. */
   named(name: string): void;
+  /** The session list was read from the server and drawn. */
+  listed(rows: SessionViewRow[]): void;
 };
 
 const REFRESH_DELAY_MS = 400;
@@ -216,6 +218,7 @@ export class ShellView {
     }
     if (this.stopped) return;
     this.paintSessions();
+    if (this.sessionsLoaded && !this.sessionsFailed) this.host.listed(this.rows);
     if (this.goto) this.paintGoto();
     if (this.again) {
       this.again = false;

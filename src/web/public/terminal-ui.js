@@ -862,6 +862,10 @@ Object.assign(CodemanApp.prototype, {
       // stop xterm. Every event type, and BEFORE the Shift+Enter branch below.
       if (this.tileShortcutFor?.(ev)) return false;
 
+      // Back to the canvas (PC13), on a session page the canvas opened: the
+      // capture handler has acted; every event type, so no byte reaches the pane.
+      if (this.shouldGoBackToCanvasFromShortcut?.(ev)) return false;
+
       // Smart copy (#211): with a selection, Ctrl+C copies it instead of sending
       // ^C. With NO selection the branch must fall through (return true, and no
       // preventDefault) or the interrupt key is lost, which is the whole reason

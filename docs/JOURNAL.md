@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A session's terminal as a full view over the canvas (PC13 part 3)
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/full-view.ts`, `packages/canvas/src/entry.ts`, `src/canvas/view-schema.ts`, `src/web/public/app.js`, `src/web/public/terminal-ui.js`, `src/web/public/canvas.html`
+**Why:** The intent fixed frame or navigate; it left how the session page learns its origin, where the back chord is listed, and what a notification for another workspace does.
+**Links:** [Intent, "Decisions"](../intent/2026-11-13-canvas-pc13-shell.md#decisions), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+The full view is the existing single-session page: one unsandboxed same-origin frame over an inert canvas on a laptop, a window navigation with a one-use return ticket on a phone. The canvas gained no terminal code and no write to a pane; it hears two messages from the frame it opened and sends none. The session page turns on its Canvas button and back chord from `from=canvas` on its own address, so it still reads no setting, and the chord is a registry entry that exists only on such a page, which keeps Ctrl+Shift+Backspace and the Shortcuts list unchanged everywhere else. A notification for a session outside the open workspace goes to the classic view after one ownership-checked read, since the canvas lists only its own workspace's sessions.
+
 ## 2026-11-13 — Workspaces, sessions and Go to in the canvas outline (PC13 part 2)
 
 **Type:** intent-refinement

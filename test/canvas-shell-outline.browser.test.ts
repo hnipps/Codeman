@@ -181,10 +181,14 @@ describe('canvas shell: the outline', () => {
       b.click();
       b.click();
     });
-    await page.waitForURL(/\/x\/session\/[^/?]+\?from=canvas&ws=/);
-    const id = decodeURIComponent(new URL(page.url()).pathname.split('/').pop()!);
+    // The new session's terminal opens as a full view over the canvas; the window stays where it is.
+    const src = new URL((await page.locator('#fullViewFrame iframe').getAttribute('src', { timeout: 10000 }))!, origin);
+    expect(src.pathname).toMatch(/^\/x\/session\/[^/?]+$/);
+    const id = decodeURIComponent(src.pathname.split('/').pop()!);
     started.push(id);
-    expect(new URL(page.url()).searchParams.get('ws')).toBe(alpha);
+    expect(src.searchParams.get('from')).toBe('canvas');
+    expect(src.searchParams.get('ws')).toBe(alpha);
+    expect(new URL(page.url()).pathname).toBe(`/x/canvas/${alpha}`);
     expect(posts).toHaveLength(1);
     expect(JSON.parse(posts[0]!)).toEqual({ caseName: 'alpha', mode: 'shell' });
     const after = await liveSessions();

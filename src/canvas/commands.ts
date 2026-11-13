@@ -144,7 +144,7 @@ export const QuerySchema = z.discriminatedUnion('shape', [
 ]);
 const ViewId = z.uuid();
 const RequestId = z.uuid().optional();
-const [setViewport, fitView, selectView, clearSelection, focusView, railView, , contextAdd, contextRemove] =
+const [setViewport, fitView, selectView, clearSelection, focusView, railView, , contextAdd, contextRemove, , fullView] =
   ViewActionSchema.options;
 const target = { viewId: ViewId, requestId: RequestId };
 export const ViewToolSchema = z.discriminatedUnion('action', [
@@ -156,6 +156,7 @@ export const ViewToolSchema = z.discriminatedUnion('action', [
   z.object({ ...clearSelection.shape, ...target }).strict(),
   z.object({ ...focusView.shape, ...target }).strict(),
   z.object({ ...railView.shape, ...target }).strict(),
+  z.object({ ...fullView.shape, ...target }).strict(),
 ]);
 export const ContextToolSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read'), viewId: ViewId }).strict(),
@@ -282,6 +283,7 @@ export function capabilities() {
         ['canvas.selection.clear', 'canvas_view clear-selection'],
         ['canvas.focus.set', 'canvas_view focus'],
         ['canvas.rail.set', 'canvas_view rail'],
+        ['canvas.fullView.set', 'canvas_view full-view'],
         ['canvas.context.read', 'canvas_context read'],
         ['canvas.context.add', 'canvas_context add'],
         ['canvas.context.remove', 'canvas_context remove'],
@@ -289,7 +291,8 @@ export function capabilities() {
         command,
         available: true,
         tool,
-        note: 'Acts on one open browser view named by viewId (canvas_view list). The view reports its state every few seconds; a closed view answers VIEW_GONE.',
+        // Repeated per command and counted against MAX_CANVAS_TEXT_BYTES: keep it short.
+        note: 'viewId from canvas_view list; a closed view answers VIEW_GONE.',
       })),
     ],
     conversations: [

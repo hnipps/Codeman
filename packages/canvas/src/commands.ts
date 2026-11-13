@@ -20,6 +20,8 @@ export type ViewState = {
   conversationId: string | null;
   /** The provider and model the NEXT new conversation starts on; null until a person or an agent chooses. A view setting: nothing is written. */
   choice: { cliId: string | null; model: string } | null;
+  /** The session whose terminal covers the canvas as a full view, or null. A view setting: nothing is written. */
+  fullView: string | null;
 };
 export type ViewCommand =
   | { kind: 'pan'; delta: Point }
@@ -42,6 +44,7 @@ export type ViewCommand =
   | { kind: 'context-clear-sent'; ids?: string[] }
   | { kind: 'conversation'; id: string | null }
   | { kind: 'assistant-choice'; choice: ViewState['choice'] }
+  | { kind: 'full-view'; sessionId: string | null }
   | { kind: 'escape' }
   | { kind: 'letters'; enabled: boolean }
   | { kind: 'enter'; id: string }
@@ -58,6 +61,7 @@ export const initialView = (): ViewState => ({
   context: [],
   conversationId: null,
   choice: null,
+  fullView: null,
 });
 export function command(state: ViewState, action: ViewCommand, objects: ViewObject[]): ViewState {
   switch (action.kind) {
@@ -118,6 +122,8 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
       return { ...state, conversationId: action.id };
     case 'assistant-choice':
       return { ...state, choice: action.choice };
+    case 'full-view':
+      return { ...state, fullView: action.sessionId };
     case 'escape':
       return { ...state, rail: state.rail.slice(0, -1) };
     case 'letters':
