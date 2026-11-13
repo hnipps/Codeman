@@ -8,11 +8,13 @@
  */
 import { joinBasePath } from '../../../src/config/base-path.js';
 import { bootReady } from './shell.js';
+import { reportClientErrors } from './client-errors.js';
 import { caseChoices, parseCases, workspaceHref } from './workspaces.js';
 import { createCaseWorkspace, workspaceOfCase, type Made } from './workspace-actions.js';
 
 const base = new URL(document.baseURI).pathname.replace(/\/$/, '');
 const url = (path: string): string => joinBasePath(base, path);
+reportClientErrors(url);
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, text = ''): HTMLElementTagNameMap[K] => {
   const made = document.createElement(tag);
   if (text) made.textContent = text;

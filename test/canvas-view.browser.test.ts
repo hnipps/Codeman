@@ -149,6 +149,47 @@ describe('read-only canvas document', () => {
     await shot(page, 'selected-group');
   });
 
+  it('reports an uncaught error and an unhandled rejection to the client-errors route under the base path', async () => {
+    await open();
+    const reports: { url: string; body: { message: string; stack?: string; url?: string } }[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().endsWith('/api/client-errors'))
+        reports.push({ url: request.url(), body: request.postDataJSON() });
+    });
+    await page.evaluate(() => {
+      setTimeout(() => {
+        throw new Error('planted canvas fault');
+      });
+      void Promise.reject(new Error('planted canvas rejection'));
+    });
+    await expect.poll(() => reports.length).toBe(2);
+    expect(reports.every((report) => report.url === `${origin}/x/api/client-errors`)).toBe(true);
+    const thrown = reports.find((report) => report.body.message.includes('planted canvas fault'))!;
+    expect(thrown.body.stack).toContain('planted canvas fault');
+    expect(thrown.body.url).toBe(`/x/canvas/${workspace}`);
+    expect(reports.some((report) => report.body.message === 'planted canvas rejection')).toBe(true);
+  });
+
+  it('never earns a 429 from its own view publishes while a person clicks about', async () => {
+    await open();
+    const limited: string[] = [];
+    const published: number[] = [];
+    page.on('response', (response) => {
+      if (!/\/api\/canvas\/[^/]+\/views\//.test(response.url()) || response.request().method() !== 'PUT') return;
+      published.push(response.status());
+      if (response.status() === 429) limited.push(response.url());
+    });
+    for (let round = 0; round < 6; round++) {
+      await page.locator('[data-object-id="brief"]').click();
+      await page.locator('[data-object-id="notes"]').click();
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(120);
+    }
+    await page.waitForTimeout(1200);
+    expect(published.length).toBeGreaterThan(1);
+    expect(limited).toEqual([]);
+  });
+
   it('keeps the real group bounds selectable between children while chrome stays outside', async () => {
     await page.route('**/api/canvas/*/objects', async (route) => {
       const response = await route.fetch();
