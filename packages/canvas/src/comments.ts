@@ -14,6 +14,7 @@ import {
   type ThreadRequest,
 } from './ask.js';
 import { errorMessage, sendFailure } from './conversation.js';
+import { hydrateDiagrams, renderMarkdown } from './markdown.js';
 import { normalizePrompt, promptRefusal } from '../../../src/canvas/conversation-schema.js';
 import type { FreshTarget } from './assistant.js';
 
@@ -367,6 +368,7 @@ export class CommentsView {
       this.list.append(li);
       added = true;
     }
+    if (added) hydrateDiagrams(this.list);
     this.list.hidden = !items.length;
     node('threadEmpty').hidden = !!items.length;
     this.paintRequests();
@@ -575,9 +577,13 @@ export class CommentsView {
     };
     this.paintTime(time);
     head.append(authorLabel(comment.author), time);
-    const body = document.createElement('p');
-    body.className = 'comment-text';
-    body.textContent = comment.text;
+    // An agent's comment (an Ask agent reply) is its Markdown rendered; a person's stays the text they typed.
+    let body = comment.author.kind === 'agent' ? renderMarkdown(comment.text) : null;
+    if (!body) {
+      body = document.createElement('p');
+      body.textContent = comment.text;
+    }
+    body.classList.add('comment-text');
     li.append(head, body);
     return li;
   }

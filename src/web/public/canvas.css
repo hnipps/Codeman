@@ -2891,3 +2891,110 @@ textarea[readonly] {
   order: -1;
   max-height: 60%;
 }
+
+/* Rendered agent text (markdown.ts): rail turns and agent comments. Scoped to .md, so plain turns are unchanged. */
+.md {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md :is(p, ul, ol, blockquote, .rv-code-wrap, .md-table) {
+  margin: 0 0 8px;
+}
+.md :is(ul, ol) {
+  padding-left: 20px;
+}
+.md li + li {
+  margin-top: 2px;
+}
+.md :is(h1, h2, h3, h4, h5, h6) {
+  margin: 12px 0 6px;
+  font-size: 1em;
+  font-weight: 600;
+}
+.md h1 {
+  font-size: 1.15em;
+}
+.md a {
+  color: var(--accent);
+}
+.md blockquote {
+  padding-left: 8px;
+  border-left: 2px solid var(--divider);
+  color: var(--secondary);
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--divider);
+  margin: 10px 0;
+}
+.md code {
+  font:
+    0.9em/1.45 ui-monospace,
+    monospace;
+  background: var(--raised);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.md pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  background: var(--raised);
+  border-radius: 4px;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+}
+.md img {
+  max-width: 100%;
+}
+.md-table {
+  overflow-x: auto;
+}
+.md table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.md :is(th, td) {
+  border: 1px solid var(--divider);
+  padding: 3px 8px;
+  text-align: left;
+}
+.md .rv-code-actions:empty {
+  display: none;
+}
+/* Mermaid (mermaid-render.js): the diagram is an inert image on white, as in the dashboard; the source stays one disclosure away. */
+.md .rv-mermaid-preview {
+  overflow: auto;
+  background: #fff;
+  border-radius: 4px;
+}
+.md .rv-mermaid-preview:empty {
+  display: none;
+}
+.md .rv-mermaid-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.md .rv-mermaid-wrap > details > summary {
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.md .rv-mermaid-status {
+  margin: 0 0 4px;
+  color: var(--secondary);
+  font-size: 12px;
+}

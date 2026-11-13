@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Agent text on the canvas renders Markdown and Mermaid
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/markdown.ts`, `packages/canvas/src/assistant.ts`, `packages/canvas/src/comments.ts`, `src/web/public/canvas.html`, `src/web/public/canvas.css`
+**Why:** Claude's replies on the canvas showed raw Markdown and Mermaid source, while the classic Chat rendered both.
+**Links:** [intent/2026-11-13-canvas-agent-markdown.md](../intent/2026-11-13-canvas-agent-markdown.md)
+
+Decision. The rail's Claude turns and agent-authored comments render through the dashboard's own `marked`, DOMPurify allowlist and Mermaid frame, which `canvas.html` now loads. The rule "everything is `textContent`" in the rail and threads now applies to everything except that agent text. A person's prompt and comment stay plain text, since that is what they typed. Without the pipeline a turn falls back to plain text.
+
 ## 2026-11-13 — The assistant rail does not ask for the transcript of a deleted session
 
 **Type:** drift

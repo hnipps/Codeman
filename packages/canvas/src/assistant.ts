@@ -14,6 +14,7 @@ import {
   threadStatus,
   type SentMessage,
   type TranscriptRow,
+  type Turn,
 } from './conversation.js';
 import { nextAttempt, parseAttempt, parseSent, type Attempt } from './outbox.js';
 import {
@@ -27,6 +28,7 @@ import {
   type ThreadItem,
 } from './activity.js';
 import { releaseText } from '../../../src/canvas/release.js';
+import { hydrateDiagrams, renderMarkdown } from './markdown.js';
 import {
   MAX_SENT_TASKS,
   RUN_INTERRUPTED,
@@ -210,6 +212,8 @@ export class AssistantView {
   private stopped = false;
   /** The thread was at its end when it last changed, so a resize or new row keeps it there. */
   private stick = true;
+  /** Claude's rendered turns, reused across repaints so a diagram renders once. Keyed by conversation, row and text. */
+  private rendered = new Map<string, HTMLElement>();
   constructor(private options: Options) {
     this.keys = canvasStorageKeys(options.viewer, options.workspace);
     this.draft.value = read(this.keys.assistantDraft) ?? '';
@@ -308,6 +312,14 @@ export class AssistantView {
       new ResizeObserver(() => {
         if (this.stick) thread.scrollTop = thread.scrollHeight;
       }).observe(thread);
+    // A diagram arrives as an image after the repaint; at its end the thread stays at its end.
+    thread.addEventListener(
+      'load',
+      () => {
+        if (this.stick) thread.scrollTop = thread.scrollHeight;
+      },
+      true
+    );
     void this.refreshList();
   }
   restoredContext(): string[] {
@@ -989,6 +1001,7 @@ export class AssistantView {
     const active = document.activeElement;
     const focused = active instanceof HTMLElement && list.contains(active) ? active.dataset.threadKey : undefined;
     list.replaceChildren();
+    const rendered = new Map<string, HTMLElement>();
     for (const entry of items) {
       if (entry.kind !== 'turn') {
         list.append(this.activityItem(entry));
@@ -1001,10 +1014,7 @@ export class AssistantView {
       const who = document.createElement('span');
       who.className = 'turn-who';
       who.textContent = turn.label;
-      const text = document.createElement('p');
-      text.className = 'turn-text';
-      text.textContent = turn.text;
-      item.append(who, text);
+      item.append(who, this.turnText(turn, conversation?.id ?? '', rendered));
       if (turn.refs.length) {
         const refs = document.createElement('p');
         refs.className = 'turn-refs';
@@ -1039,6 +1049,8 @@ export class AssistantView {
       }
       list.append(item);
     }
+    this.rendered = rendered;
+    hydrateDiagrams(list);
     node('assistantEmpty').hidden = turns.length > 0 || !!conversation;
     const line = node('threadState');
     line.textContent = status.text;
@@ -1051,6 +1063,22 @@ export class AssistantView {
         ?.focus({ preventScroll: true });
     }
     if (atEnd) list.scrollTop = list.scrollHeight;
+  }
+  /** Claude's text as rendered Markdown; a person's or agent's prompt, or a page without the renderer, as plain text. */
+  private turnText(turn: Turn, conversationId: string, used: Map<string, HTMLElement>): HTMLElement {
+    if (turn.who === 'claude') {
+      const key = `${conversationId}\0${turn.key}\0${turn.text}`;
+      const body = this.rendered.get(key) ?? renderMarkdown(turn.text);
+      if (body) {
+        body.classList.add('turn-text');
+        used.set(key, body);
+        return body;
+      }
+    }
+    const text = document.createElement('p');
+    text.className = 'turn-text';
+    text.textContent = turn.text;
+    return text;
   }
   /** A disclosure that stays as the person left it across repaints. Its key is also how focus finds it again. */
   private disclosure(key: string, className: string): { details: HTMLDetailsElement; summary: HTMLElement } {
