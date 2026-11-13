@@ -937,6 +937,12 @@ document.addEventListener('keydown', (e) => {
   // S and a closed full view leave the keyboard on an outline button, which the board's scope below excludes:
   // the shell's own keys answer there too, and Escape hands the keyboard back to the board.
   if (shellView && inOutline(e)) {
+    // W opens the list before its rows load and take focus, so an early Escape still arrives from the row.
+    if (e.key === 'Escape' && !node('workspaceList').hidden) {
+      e.preventDefault();
+      shellView.toggleWorkspaces();
+      return;
+    }
     if (e.key === 'Escape' && !mobile.matches) {
       e.preventDefault();
       node('board').focus({ preventScroll: true });
