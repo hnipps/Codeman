@@ -2,6 +2,25 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The canvas shell is shaped and PC13 is scoped
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/canvas-ui-ux-brief.md`, `docs/agentic-canvas/initial-version-plan.md`, `intent/2026-11-13-canvas-pc13-shell.md`
+**Why:** The plan requires a shape pass and a surface inventory before PC13 code, and its two open questions (synced or per-device setting, the classic route's name) had no answer.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc13-shell.md), [Brief, "Canvas shell (PC13)"](agentic-canvas/canvas-ui-ux-brief.md#canvas-shell-pc13), [earlier intent](../intent/2026-11-12-canvas-first-shell.md)
+
+Documents only; no code. The owner delegated design decisions for this program, so shape's interview was answered from the source documents and the assumptions are listed in the brief.
+
+Decisions. With the shell on, `/` answers with the canvas document for the workspace last used on that device, never with a redirect, because the service worker precaches `/`. The classic dashboard's route is `classic`. The shell setting is `canvasShellEnabled`, synced, off by default and independent of `canvasEnabled`; the shell needs both. Last-used workspace is per device, held in a cookie the server validates, so no `GET` writes settings.
+
+Sessions are rows in a Sessions section of the outline, one row per live session in the workspace's case, ordered by state. No session is placed on the board and none writes to the operation log. Every session has one full view, its terminal, and that view is Codeman's existing single-session page. On a laptop it opens in a same-origin frame over the canvas, so the canvas document is never unloaded and the camera, selection and rail are unchanged by construction. On a phone or a touch-first device the window navigates to the session page and back with a one-use return ticket, because the dashboard reads the software keyboard from `visualViewport`, which a framed page does not see. Hosting the whole dashboard in a frame was rejected: the session page already exists, is a registered route the lost-frame rule never answers, and shows one session.
+
+The fallback has three parts: the server answers `/` with the classic view when a canvas file is missing; an inline guard in the canvas document navigates to the classic view when the bundle does not load or does not start; and a plain link works with no script. The automatic target is `/?view=classic`, which a pre-PC13 release ignores and answers with the dashboard, so a rollback in mid-load still lands on a working page. The guard never navigates when the address already asks for the classic view, which is what prevents a loop when the service worker serves a cached canvas document offline.
+
+The inventory has 65 surfaces: Canvas 5, Outline 8, Rail 1, Full view 8, Classic 42, Server page 1. Classic-only is a deliberate home for deep or rare surfaces, including all of App Settings and Deploys, so recovery never depends on the canvas. The plan's verification line was reworded to match: surfaces not marked classic-only are reachable without the classic view, and classic-only surfaces through the classic link. The first PC13 box is ticked.
+
+Not determined from the code and left to the builder, with a test named for each in the intent: whether a previous release's Settings save echoes an unknown synced key into the strict schema; which of the inventory's Full view surfaces the single-session page really draws; and whether Ctrl+Shift+Backspace is free on every platform.
+
 ## 2026-11-13 — Background tasks: what a cancel, a crash and a restart leave (PC12 fix round 1)
 
 **Type:** intent-refinement
