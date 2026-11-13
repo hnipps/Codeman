@@ -154,9 +154,13 @@ describe('canvas export', () => {
     await page.keyboard.press('Escape');
   });
 
-  it('does not open while the person types an e into a field', async () => {
+  it('does not open while the person types an e into a field, and closes when the keyboard leaves it', async () => {
     await open();
+    await page.locator('#board').focus();
+    await page.keyboard.press('e');
+    await menu().waitFor();
     await page.locator('#search').focus();
+    await menu().waitFor({ state: 'hidden' });
     await page.keyboard.type('release');
     expect(await page.locator('#search').inputValue()).toBe('release');
     expect(await menu().isHidden()).toBe(true);
@@ -219,10 +223,13 @@ describe('canvas export', () => {
       expect((await bytes(opened)).equals(await inner.body())).toBe(true);
       writeFileSync(resolve(MEDIA, `export-${stamp}-file-sub-canvas.png`), await bytes(opened));
     }
+    // Leaving the sub-canvas moves the keyboard to it on the board, and a menu the keyboard left closes.
     await page.evaluate(() => window.canvasView.dispatch({ kind: 'leave' }));
+    await menu().waitFor({ state: 'hidden' });
+    expect(await page.evaluate(() => window.canvasView.read().root)).toBeNull();
     // Two selected objects are not one target: the row says what to do instead.
-    await page.keyboard.press('Escape');
     await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: ['a', 'b'] }));
+    await page.waitForFunction(() => window.canvasView.read().selected.join() === 'a,b');
     await page.locator('#outlineExport').click();
     expect(await page.locator('[data-export-heading="selection"]').textContent()).toBe(
       'Select one object, or group the selection first.'
