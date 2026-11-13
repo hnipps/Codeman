@@ -304,10 +304,15 @@ describe('GET /api/canvas/:workspaceId/sessions', () => {
     const h = await harness();
     h.sessions.set('s-term', { id: 's-term', name: 'term', workingDir: h.casePath });
     vi.mocked(probePathKind).mockResolvedValueOnce('unknown');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const response = await h.list();
     expect(response.statusCode).toBe(503);
+    expect(logged.mock.calls.map(String).join()).toContain('GET /api/canvas/:workspaceId/sessions failed 503');
+    logged.mockRestore();
     expect(response.json().success).toBe(false);
     expect(response.json().error).toContain('Case folder');
+    expect(response.body).not.toContain(h.casePath);
+    expect(response.json().requestId).toBeTruthy();
     expect(response.json().data).toBeUndefined();
     // The page asks by itself, so the probe keeps the stall cap: `pastCap` is for a folder a person named.
     expect(vi.mocked(probePathKind).mock.lastCall).toEqual([h.casePath]);

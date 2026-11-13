@@ -6,7 +6,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { probePathKind, describeUnknownPath } from '../../utils/bounded-path-probe.js';
+import { probePathKind } from '../../utils/bounded-path-probe.js';
 import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
 import { abortOnClientHangUp, canAccessOwned, getAuthUser, ownerFor, parseBody } from '../route-helpers.js';
@@ -42,6 +42,7 @@ import { registerTaskRoutes } from './canvas-task-routes.js';
 import { registerShellRoutes, sessionCounts } from './canvas-shell-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
+import { canvasFailure, caseFolderUnavailable } from './canvas-failure.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
 
@@ -185,7 +186,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       if (!(await ctx.canvasEnabled()))
         return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Canvas is disabled'));
     });
-    scope.setErrorHandler<Error & { statusCode?: number; body?: unknown }>((error, _req, reply) => {
+    scope.setErrorHandler<Error & { statusCode?: number; body?: unknown }>((error, req, reply) => {
       const reasons = commandFailure(error);
       if (reasons)
         return reply
@@ -193,6 +194,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           .send({ ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'), reasons });
       const code =
         error instanceof DeployRoleRefusal ? 409 : error instanceof z.ZodError ? 400 : (error.statusCode ?? 500);
+      if (code >= 500) return canvasFailure(req, reply, code, error);
       return reply
         .code(code)
         .send(
@@ -250,15 +252,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       const { caseName } = parseBody(CanvasWorkspaceSchema, req.body);
       const path = await resolveCasePath(caseName, getAuthUser(req));
       const kind = await probePathKind(path, { pastCap: true });
-      if (kind === 'unknown')
-        return reply
-          .code(503)
-          .send(
-            createErrorResponse(
-              ApiErrorCode.OPERATION_FAILED,
-              describeUnknownPath('Case folder', path, { pastCap: true })
-            )
-          );
+      if (kind === 'unknown') return caseFolderUnavailable(req, reply, path, { pastCap: true });
       if (kind !== 'directory')
         return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Case not found'));
       const { workspaceForCase } = await import('../../canvas/workspace-registry.js');
@@ -750,14 +744,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           } catch (error) {
             if (hangup.signal.aborted || reply.sent) return;
             const failure = screenshotFailure(error);
-            return reply
-              .code(failure.status)
-              .send(
-                createErrorResponse(
-                  failure.status === 404 ? ApiErrorCode.NOT_FOUND : ApiErrorCode.OPERATION_FAILED,
-                  failure.message
-                )
-              );
+            if (failure.status >= 500) return canvasFailure(req, reply, failure.status, error, failure.message);
+            return reply.code(failure.status).send(createErrorResponse(ApiErrorCode.NOT_FOUND, failure.message));
           }
         }
       );

@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A canvas fault is diagnosable from telemetry (closing gate fix)
+
+**Type:** propagated-discovery
+**Touches:** `src/web/routes/canvas-failure.ts`, `src/web/routes/canvas-routes.ts`, `src/web/routes/canvas-shell-routes.ts`, `packages/canvas/src/client-errors.ts`, `packages/canvas/src/view-sync.ts`, `src/web/webview-proxy.ts`
+**Why:** The program's closing gate (plant a failing request, diagnose it with `logs_query`) passed only in part: the agent found the 500 and not its cause.
+**Links:** [Intent](../intent/2026-11-13-canvas-telemetry.md), [architecture-invariants, "Canvas failures and telemetry"](architecture-invariants.md#canvas-failures-and-telemetry)
+
+Every canvas answer of 500 or above now goes through one function that logs the cause once, with the route template and the request id of the `requests` line, and answers with a sentence that carries no path. The 503 for a case folder that is not responding lost the path it used to end with; that path is in the log line. Both canvas pages report browser errors with the dashboard's limits. The view publisher's 429 was the page's own pacing: it counted its gap from the send while the server counts from the handling, so the gap is now counted from the answer and one publish is in flight at a time. The server's limit is unchanged. The proxy's attribute rewrite takes unquoted values. The gate was not rerun in this change, which starts no server.
+
 ## 2026-11-13 — An agent's view command only steers the view (PC13 audit fix round 1)
 
 **Type:** intent-refinement
