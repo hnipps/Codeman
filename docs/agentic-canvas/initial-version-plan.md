@@ -87,7 +87,7 @@ The shaped brief governs layout, keyboard scope and interaction details where th
   - [ ] PC7 after PC3.
   - [ ] PC9 after PC2, PC4 and PC6.
   - [ ] PC10 after PC9 and PC6.
-  - [ ] PC11 after PC9.
+  - [x] PC11 after PC9.
   - [ ] PC12 after PC9 and the existing isolated-session launch contract.
   - [ ] PC13 after PC10, PC11 and PC12.
 - [ ] Scope PC9–PC12 with explicit session-adapter, request-origin, context-delivery, voice-capability and isolated-task contracts, source ownership, tests and compatibility checks before assigning owners. No owner edits a shared session module concurrently.
@@ -653,11 +653,11 @@ No cloud VM exists here. Each live lane runs a throwaway Codeman instance at the
 
 **Depends on.** PC9. Detailed audio/capability planning precedes implementation.
 
-- [ ] Provide distinct dictation and voice-conversation controls and bindings. Dictation edits a draft; conversational voice submits explicit speech turns and supports playback interruption. Never overload one key with both toggle and hold-to-talk behavior.
-- [ ] Define a verified microphone/transcription/playback or realtime adapter for the selected configuration. Do not assume all CLI subscriptions support realtime audio. Unsupported capability and denied permission remain inline with text available.
-- [ ] Show truthful recording/processing/speaking/muted/error states. Active microphone capture retains a minimal stop indicator even with the assistant rail hidden; background agents cannot activate it.
-- [ ] Bind each spoken turn to its committed canvas references, preserve request/provider attribution and support cancel/retry without duplicate work. Desktop and phone keyboard/touch controls must both work.
-- [ ] Verify permission denial, absence of a device, interruptions, network loss, key repeat, IME/text isolation, capture termination and hidden-rail microphone visibility using controlled fixtures before any manual recording exercise. The design prototype's microphone-disconnected state is not audio verification.
+- [x] Provide distinct dictation and voice-conversation controls and bindings. Dictation edits a draft; conversational voice submits explicit speech turns and supports playback interruption. Never overload one key with both toggle and hold-to-talk behavior.
+- [x] Define a verified microphone/transcription/playback or realtime adapter for the selected configuration. Do not assume all CLI subscriptions support realtime audio. Unsupported capability and denied permission remain inline with text available.
+- [x] Show truthful recording/processing/speaking/muted/error states. Active microphone capture retains a minimal stop indicator even with the assistant rail hidden; background agents cannot activate it.
+- [x] Bind each spoken turn to its committed canvas references, preserve request/provider attribution and support cancel/retry without duplicate work. Desktop and phone keyboard/touch controls must both work.
+- [x] Verify permission denial, absence of a device, interruptions, network loss, key repeat, IME/text isolation, capture termination and hidden-rail microphone visibility using controlled fixtures before any manual recording exercise. The design prototype's microphone-disconnected state is not audio verification.
 
 ## Background agent lifecycle (PC12)
 

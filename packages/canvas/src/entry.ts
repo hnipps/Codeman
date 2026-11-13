@@ -13,6 +13,7 @@ import { CommentsView, commentCounts } from './comments.js';
 import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
 import { AssistantView } from './assistant.js';
+import { VoiceView } from './voice-view.js';
 import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
@@ -137,6 +138,22 @@ const assistant: AssistantView = new AssistantView({
     dispatch({ kind: 'rail', view: 'thread' });
   },
   listed: () => comments.requestsChanged(),
+  sent: (messageId, text, conversationId) => voice.sent(messageId, text, conversationId),
+  thread: (rows, status, conversationId) => voice.thread(rows, status, conversationId),
+  turnEnded: (conversationId) => voice.turnEnded(conversationId),
+  voiceRelay: (available) => voice.relayAvailable(available),
+});
+const voice: VoiceView = new VoiceView({
+  url,
+  phone: () => mobile.matches,
+  allowed: (event) => scope(event),
+  letters: () => state.letters,
+  draft: { read: () => assistant.draft.value, write: (text) => assistant.setDraft(text), element: assistant.draft },
+  send: () => assistant.send(),
+  target: () => assistant.sendTarget(),
+  reread: () => assistant.open(),
+  // A capture started from the board, and a turn about to be sent, show the text where it will be sent from; keyboard focus stays where it is.
+  show: () => openAssistant(false),
 });
 const icons: Record<string, string> = {
   undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',
@@ -754,6 +771,11 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'F1') {
     e.preventDefault();
     if (!e.repeat) dispatch({ kind: 'rail', view: 'keys' });
+    return;
+  }
+  // An Escape that ended capture, a pending spoken send or playback (in the voice view's own earlier listener) does not also close the rail.
+  if (e.key === 'Escape' && voice.escape(e)) {
+    e.preventDefault();
     return;
   }
   // Escape from a page in use hands the keyboard back to the canvas before anything else.

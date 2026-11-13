@@ -50,7 +50,7 @@ afterEach(() => {
 });
 const uuid = () => crypto.randomUUID();
 type Request = { workingDir: string; name: string; mode: string; launch: Record<string, unknown> };
-async function harness() {
+async function harness(extra: Record<string, unknown> = {}) {
   const app = Fastify();
   app.addHook('onRequest', async (req) => {
     req.authUser = { username: 'admin', role: 'admin' };
@@ -69,6 +69,7 @@ async function harness() {
       sessions.set(id, { id, workingDir: request.workingDir, writeViaMux: vi.fn(async () => true) });
       return { ok: true as const, sessionId: id };
     }),
+    ...extra,
   };
   registerCanvasRoutes(app, port as never);
   installRouteErrorHandler(app);
@@ -135,6 +136,43 @@ describe('GET /api/canvas/assistant/providers', () => {
       const rows = (await h.app.inject({ method: 'GET', url: '/api/canvas/assistant/providers' })).json().data
         .providers as { id: string }[];
       expect(rows.map((r) => r.id)).toEqual(['claude', 'copilot', 'acme']);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('the voice relay fact on the providers answer', () => {
+  const relay = async (extra: Record<string, unknown>) => {
+    const h = await harness(extra);
+    try {
+      return (await h.app.inject({ method: 'GET', url: '/api/canvas/assistant/providers' })).json().data.voice;
+    } finally {
+      await h.app.close();
+    }
+  };
+  it('is one boolean, true only when the server says the relay would take a stream', async () => {
+    expect(await relay({})).toEqual({ relay: false });
+    expect(await relay({ voiceRelayAvailable: async () => false })).toEqual({ relay: false });
+    expect(await relay({ voiceRelayAvailable: async () => true })).toEqual({ relay: true });
+  });
+  it('a read that throws is no relay, and the answer is kept briefly instead of read on every request', async () => {
+    expect(
+      await relay({
+        voiceRelayAvailable: async () => {
+          throw new Error('unreadable');
+        },
+      })
+    ).toEqual({ relay: false });
+    const read = vi.fn(async () => true);
+    const h = await harness({ voiceRelayAvailable: read });
+    try {
+      for (let i = 0; i < 3; i++) {
+        const response = await h.app.inject({ method: 'GET', url: '/api/canvas/assistant/providers' });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().data.voice).toEqual({ relay: true });
+      }
+      expect(read).toHaveBeenCalledTimes(1);
     } finally {
       await h.app.close();
     }

@@ -176,6 +176,7 @@ const objectLabel = (o: { type: string; content: Record<string, unknown> }): str
   return (text(o.content.label) || text(o.content.alt) || text(o.content.text).split('\n')[0] || o.type).slice(0, 80);
 };
 
+const VOICE_RELAY_CACHE_MS = 5000;
 export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, views = new ViewRegistry()): void {
   void app.register(async (scope) => {
     scope.addHook('onRequest', async (_req, reply) => {
@@ -217,9 +218,24 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
         data: { workspaces: readWorkspaces().filter((w) => canAccessOwned(getAuthUser(req), w.owner)) },
       };
     });
+    // `voice.relay` is the one fact the canvas needs about Claude voice: whether the relay would take a stream now.
+    // The page asks on every window focus, so the answer (a read of the sign-in file) is kept for a few seconds, and
+    // a read that throws is "no relay", never a failed providers answer.
+    let relayAnswer: { at: number; relay: boolean } | null = null;
+    const voiceRelay = async (): Promise<boolean> => {
+      if (relayAnswer && Date.now() - relayAnswer.at < VOICE_RELAY_CACHE_MS) return relayAnswer.relay;
+      let relay = false;
+      try {
+        relay = (await ctx.voiceRelayAvailable?.()) === true;
+      } catch {
+        relay = false;
+      }
+      relayAnswer = { at: Date.now(), relay };
+      return relay;
+    };
     scope.get('/api/canvas/assistant/providers', async () => ({
       success: true,
-      data: { providers: await currentProviders() },
+      data: { providers: await currentProviders(), voice: { relay: await voiceRelay() } },
     }));
     scope.post('/api/canvas/workspaces', async (req, reply) => {
       if (!deployRole.allows('persist'))

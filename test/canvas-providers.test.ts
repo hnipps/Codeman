@@ -214,6 +214,7 @@ describe('Keys', () => {
     });
     expect(rows.get('Send chat message / line break')?.later).toBeUndefined();
     const later = editShortcuts.filter((r) => r[2] === 'later').map((r) => r[1].map((c) => c.join('+')).join(','));
-    expect(later.sort()).toEqual(['B', 'G', 'Mod+Shift+Enter', 'Shift+B']);
+    // B and Shift+B are live since PC11.
+    expect(later.sort()).toEqual(['G', 'Mod+Shift+Enter']);
   });
 });
