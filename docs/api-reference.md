@@ -1624,6 +1624,7 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 ## Canvas structured commands
 
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
+Canvas shell (`canvasShellEnabled`, default false, needs `canvasEnabled`): while both are on, `GET /` answers the canvas document of the caller's last-used workspace (or a first-run page when the caller has none), `GET /classic` and `GET /?view=classic` answer the dashboard, and `GET /?view=classic&canvas=failed&reason=missing|load|boot` answers the dashboard with a notice. `GET /` is never a redirect. With either setting off `GET /` is unchanged and ignores these parameters; `GET /classic` answers the dashboard in every case.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
 The sixteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,

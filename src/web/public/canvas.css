@@ -2401,3 +2401,30 @@ textarea[readonly] {
   height: 24px;
   flex-shrink: 0;
 }
+
+/* Canvas shell (PC13). `data-shell` is written by the server only while the shell is on, and the boot guard
+   removes it when the page is framed, so none of this shows in a canvas tab inside the dashboard. */
+.shell-only {
+  display: none;
+}
+:root[data-shell] .shell-only {
+  display: revert;
+}
+#classicLink {
+  color: var(--secondary);
+  margin-top: 12px;
+}
+:root[data-shell] #classicLink {
+  display: inline-block;
+}
+#classicLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+:root[data-first-run] :is(#outline, #openOutline, .dock-area, #board) {
+  display: none;
+}
+:root[data-first-run] #state {
+  left: 50%;
+  width: min(52ch, calc(100vw - 48px));
+}

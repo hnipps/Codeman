@@ -19,6 +19,7 @@ import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
 import type { ViewAction } from '../../../src/canvas/view-schema.js';
+import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 
 declare global {
   interface Window {
@@ -40,7 +41,9 @@ const board = node('board'),
   tree = node('tree');
 const base = new URL(document.baseURI).pathname.replace(/\/$/, '');
 const url = (path: string): string => joinBasePath(base, path);
-const workspaceId = location.pathname.split('/').filter(Boolean).at(-1) ?? '';
+const workspaceId = pageWorkspaceId();
+const shell = shellOn();
+if (shell) rememberWorkspace(workspaceId, base);
 let state = initialView(),
   objects: ViewObject[] = [],
   keyboard = false,
@@ -1156,8 +1159,18 @@ for (const name of [
     assistant.event(name, data);
     tasks.event(name, data);
   });
-button('retry').onclick = () => void sync.start();
-void sync.start();
+// A saved copy of this page, served while the server could not be reached for an address that asks for the
+// classic view: say so and wait for the person. The boot guard never navigates from here.
+if (shellStale()) {
+  node('state').querySelector('h1')!.textContent = 'Codeman cannot be reached';
+  node('state').querySelector('p')!.textContent =
+    'This is a saved copy of the canvas page. Check the connection, then try again.';
+  button('retry').hidden = false;
+  button('retry').onclick = () => location.reload();
+} else {
+  button('retry').onclick = () => void sync.start();
+  void sync.start();
+}
 void fetch(url('/api/canvas/workspaces'))
   .then((r) => r.json())
   .then((data: unknown) => {
@@ -1187,3 +1200,5 @@ window.addEventListener(
 );
 board.focus({ preventScroll: true });
 dispatch({ kind: 'viewport', viewport: state.viewport });
+// The loading state is drawn and every listener is attached: from here a failure is the canvas's own to show.
+bootReady();

@@ -1240,6 +1240,8 @@ class CodemanApp {
     // strip never flashes before handleInit selects the target session.
     this._initWindowChannel();
     if (this.isSoloWindow) document.body.classList.add('solo-mode');
+    // Canvas shell (PC13): the link back to the canvas and the fallback notice.
+    this._initCanvasShell();
     // A page holding this window switches its tab by changing only the
     // fragment, which keeps the page loaded (see sessionIdFromFragment).
     if (!this.isSoloWindow) {
@@ -2113,6 +2115,61 @@ class CodemanApp {
     document.body.appendChild(el);
     document.title = (window.codemanT?.('Session ended') || 'Session ended')
       + ' — ' + (window.CodemanI18n?.displayName || 'Codeman');
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Canvas shell (PC13)
+  // The server writes `window.__CODEMAN_SHELL__ = { on, notice }` into this page
+  // only while both canvas settings are on. `on` draws a Canvas link back to `/`
+  // (off phones: the phone overview's Canvases section is the phone's link).
+  // `notice` says this view was reached because the canvas did not load. The
+  // dashboard never navigates by itself: both controls are plain links.
+  // Every string is fixed here; nothing from the address reaches the DOM.
+  // ══════════════════════════════════════════════════════════════════════
+
+  _initCanvasShell() {
+    const shell = typeof window !== 'undefined' ? window.__CODEMAN_SHELL__ : null;
+    if (!shell || shell.on !== true || this.isSoloWindow) return;
+    const home = window.CodemanBase?.url('/') || '/';
+    const headerRight = document.getElementById('headerRight');
+    if (headerRight && !document.getElementById('canvasShellLink')) {
+      const link = document.createElement('a');
+      link.id = 'canvasShellLink';
+      link.className = 'btn-canvas-shell';
+      link.href = home;
+      link.textContent = 'Canvas';
+      link.title = 'Back to the canvas';
+      headerRight.insertBefore(link, headerRight.firstChild);
+    }
+    const reasons = {
+      missing: 'The canvas files are missing on the server, so the classic view is shown.',
+      load: 'The canvas did not load, so the classic view is shown.',
+      boot: 'The canvas did not start, so the classic view is shown.',
+    };
+    const text = Object.prototype.hasOwnProperty.call(reasons, shell.notice) ? reasons[shell.notice] : null;
+    if (!text || document.getElementById('canvasShellNotice')) return;
+    const notice = document.createElement('div');
+    notice.id = 'canvasShellNotice';
+    notice.className = 'canvas-shell-notice';
+    notice.setAttribute('role', 'status');
+    notice.dataset.reason = shell.notice;
+    const message = document.createElement('span');
+    message.textContent = text;
+    const retry = document.createElement('a');
+    retry.className = 'canvas-shell-notice-retry';
+    retry.href = home;
+    retry.textContent = 'Try the canvas again';
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'canvas-shell-notice-dismiss';
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      notice.remove();
+      // The address still names the failure; a reload would show the notice again.
+      try { history.replaceState(history.state, '', window.CodemanBase?.url('/classic') || '/classic'); } catch {}
+    });
+    notice.append(message, retry, dismiss);
+    document.body.appendChild(notice);
   }
 
   connectSSE() {

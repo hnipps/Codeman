@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The canvas shell's routes, setting and fallback (PC13 part 1)
+
+**Type:** intent-refinement
+**Touches:** `src/web/shell-landing.ts`, `src/web/server.ts`, `src/web/public/canvas.html`, `packages/canvas/src/shell.ts`, `src/web/public/app.js`, `src/web/public/settings-ui.js`, `docs/architecture-invariants.md`
+**Why:** The intent left four points to the builder, and two of its sentences did not survive the code.
+**Links:** [Intent, "Decisions"](../intent/2026-11-13-canvas-pc13-shell.md#decisions), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+`/` serves the canvas document itself and the page names its workspace with `replaceState`: no redirect, so the lost-frame and auth rules see the same request as before. The dashboard gets its shell flag only while both settings are on, which keeps a shell-off `/` byte-identical even when the query asks for a notice; the intent had the flag appear whenever a notice applied. `/classic` does read the settings, for the Canvas link, where the intent said it would not. The workspace memory is a cookie the page writes, because the server must choose before any script runs. The first-run page is a second small entry (`canvas-home.js`). Without scripts there is only the plain classic link, since the dashboard needs scripts too. The Settings page sends the new key only when its box changed, and saves the rest when a rolled-back server refuses it.
+
 ## 2026-11-13 — The canvas shell is shaped and PC13 is scoped
 
 **Type:** intent-refinement

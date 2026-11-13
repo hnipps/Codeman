@@ -1517,6 +1517,12 @@ export const SettingsUpdateSchema = z
      */
     autoNameSessions: z.boolean().optional(),
     canvasEnabled: z.boolean().optional(),
+    /**
+     * Canvas shell (PC13): with this AND `canvasEnabled` on, `/` opens the canvas of the workspace last used
+     * on the device, and the tab dashboard stays at `/classic`. Synced, default OFF, and it never turns
+     * `canvasEnabled` on.
+     */
+    canvasShellEnabled: z.boolean().optional(),
     /** Prompt-cache keep-warm default for sessions that have not chosen (Session Options overrides it). */
     promptCacheKeepWarm: z.boolean().optional(),
     /** Hours after the last real prompt during which keep-alives are sent (default 2, DEFAULT_KEEP_WARM_MAX_HOURS). */

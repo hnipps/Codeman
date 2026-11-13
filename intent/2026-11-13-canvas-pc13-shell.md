@@ -146,3 +146,20 @@ Three parts, each mergeable and deployable with the setting off.
 - **The rollback window.** Between a rollback and a reload, an open canvas page links to `classic`, which the older release does not have. Reloading `/` recovers. The automatic fallback avoids the route for this reason.
 - **Scope creep.** The inventory lists 42 classic-only surfaces on purpose. A request to move one is a new intent, not part of this change.
 - **Root-route regressions with the shell off.** `/` is the most used route. Test 7 asserts the shell-off response is unchanged.
+
+## Decisions
+
+Made while building. Each replaces what the sections above say where they differ.
+
+### Part 1
+
+- **`/` is never a redirect.** The canvas document is served at `/` and the page writes `canvas/<id>` into the address with `history.replaceState`. One load, and the auth, host-guard and lost-frame rules see the request they saw before.
+- **The dashboard's shell flag needs both settings on.** "Server changes" says the flag is injected when the shell is on or a notice applies. With the shell off the query is ignored instead, so `/` stays byte-identical for everyone who has not turned the shell on.
+- **`/classic` reads the settings.** It goes through `renderIndexHtml`, which reads them to decide on the Canvas link. It references no canvas file either way.
+- **The workspace memory is a cookie** (`codeman_canvas_ws`, written by the page, path = base path, `SameSite=Lax`). The server has to choose before a script runs, so `localStorage` cannot hold it. It is checked against the caller's own workspaces and grants nothing.
+- **First run is a second entry** (`canvas-home.js`), answering the fourth open question. The main entry assumes a workspace throughout.
+- **No-script.** The canvas page carries a plain link to the classic view. There is no meta refresh: the dashboard needs scripts too.
+- **A registry that does not parse counts as a missing canvas**: `/` answers the classic view with the `missing` notice.
+- **The Canvas link and the notice are built in script**, so `index.html` gains no header markup; the link is hidden at phone width, and the notice is fixed-position so the terminal keeps its size.
+- **First open question, answered.** A previous release's Settings page builds its save from a fixed list of fields and never sends `canvasShellEnabled`; the server merges a save into the stored file, so the key survives. This release's page sends the key only when its box changed, and when a rolled-back server refuses it, saves the rest and says so (`test/canvas-shell-compat.test.ts`).
+- **Service worker: no change to `sw.js`.** Offline, a saved canvas document can answer a classic address; the guard does not navigate from a classic address and the page says Codeman cannot be reached.

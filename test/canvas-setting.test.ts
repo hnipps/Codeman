@@ -76,3 +76,59 @@ describe('canvasEnabled', () => {
     expect(chinese.description.match(/[A-Za-z]+/g) ?? []).toEqual([]);
   });
 });
+
+describe('canvasShellEnabled (PC13)', () => {
+  const SHELL = 'appSettingsCanvasShell';
+  const row = source.window.document.getElementById(SHELL)!.closest('.set-row')!;
+
+  it('is a boolean the strict settings schema accepts, independent of the canvas switch', () => {
+    expect(SettingsUpdateSchema.safeParse({ canvasShellEnabled: true }).success).toBe(true);
+    expect(SettingsUpdateSchema.safeParse({ canvasShellEnabled: false, canvasEnabled: true }).success).toBe(true);
+    expect(SettingsUpdateSchema.safeParse({ canvasShellEnabled: 'on' }).success).toBe(false);
+  });
+
+  it('has one checkbox beside the Canvas row, off in the markup, loaded only from an explicit true', () => {
+    expect(INDEX.split(`id="${SHELL}"`)).toHaveLength(2);
+    const box = source.window.document.getElementById(SHELL)!;
+    expect(box.getAttribute('type')).toBe('checkbox');
+    expect(box.hasAttribute('checked')).toBe(false);
+    expect(row.previousElementSibling!.id).toBe('appSettingsCanvasItem');
+    expect(SETTINGS_UI).toContain(
+      `document.getElementById('${SHELL}').checked = settings.canvasShellEnabled === true;`
+    );
+    expect(SETTINGS_UI).toContain(`canvasShellEnabled: document.getElementById('${SHELL}').checked,`);
+  });
+
+  it('says what it does, where the classic dashboard stays, and that it needs the canvas', () => {
+    const text = row.querySelector('.set-row-desc')!.textContent!;
+    expect(row.querySelector('.set-row-label')!.firstChild!.textContent!.trim()).toBe('Open on the canvas');
+    expect(text).toMatch(/the page Codeman opens on/);
+    expect(text).toMatch(/classic dashboard stays at its own address, \/classic/);
+    const needs = source.window.document.getElementById('appSettingsCanvasShellNeeds')!;
+    expect(needs.hasAttribute('hidden')).toBe(true);
+    expect(needs.textContent).toMatch(/^Needs Canvas turned on/);
+    expect(SETTINGS_UI).toContain('needs.hidden = canvas.checked;');
+  });
+
+  it('is synced, never a per-device display key', () => {
+    const displayKeys = SETTINGS_UI.slice(SETTINGS_UI.indexOf('displayKeys = new Set(['));
+    expect(displayKeys.slice(0, displayKeys.indexOf('])'))).not.toContain('canvasShellEnabled');
+    expect(row.closest('.set-group')!.querySelector('.set-group-head .set-scope')!.textContent).toBe('synced');
+  });
+
+  it('is sent to the server only by a save that changes it', () => {
+    // A page left open across a rollback talks to a server whose strict schema does not know the key.
+    expect(SETTINGS_UI).toContain('canvasShellEnabled: _cse,');
+    expect(SETTINGS_UI).toContain(
+      'const _shellFlip = _cse !== (_prev.canvasShellEnabled === true) ? { canvasShellEnabled: _cse } : {};'
+    );
+    expect(SETTINGS_UI).toMatch(/\.\.\.serverSettings,\n\s+\.\.\.\(_chipFlip[^\n]+\n\s+\.\.\.shellFlip,/);
+    expect(SETTINGS_UI).toContain('await _putSettings(_shellFlip);');
+  });
+
+  it('reads in Chinese', () => {
+    const zh = dom.window.document.getElementById(SHELL)!.closest('.set-row')!;
+    expect(zh.querySelector('.set-row-label')!.firstChild!.textContent!.trim()).toBe('在画布上打开');
+    expect(zh.querySelector('.set-row-desc')!.textContent).not.toBe(row.querySelector('.set-row-desc')!.textContent);
+  });
+});

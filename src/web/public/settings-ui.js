@@ -545,6 +545,9 @@ Object.assign(CodemanApp.prototype, {
     // Experimental agent coordination (inspect/stage/submit routes): synced, default OFF.
     document.getElementById('appSettingsAgentCoordination').checked = settings.agentCoordinationEnabled === true;
     document.getElementById('appSettingsCanvas').checked = settings.canvasEnabled === true;
+    // Canvas shell (PC13): synced, default OFF, and only an explicit true turns it on.
+    document.getElementById('appSettingsCanvasShell').checked = settings.canvasShellEnabled === true;
+    this._syncCanvasShellRow();
     // Custom Model Endpoint Profiles: synced, default OFF. The toggle governs both
     // the Run-menu picker's generated entries and this settings panel's visibility;
     // the endpoint list itself is server state, loaded on demand below.
@@ -3014,6 +3017,7 @@ Object.assign(CodemanApp.prototype, {
       mobileOverviewEnabled: document.getElementById('appSettingsMobileOverview').checked,
       sessionLineageLines: document.getElementById('appSettingsLineageLines').checked,
       canvasEnabled: document.getElementById('appSettingsCanvas').checked,
+      canvasShellEnabled: document.getElementById('appSettingsCanvasShell').checked,
       autoNameSessions: document.getElementById('appSettingsAutoNameSessions').checked,
       spawnedTabsFollowParent: document.getElementById('appSettingsSpawnedTabsFollowParent').checked,
       showSessionButton: document.getElementById('appSettingsShowSessionButton').checked,
@@ -3359,8 +3363,13 @@ Object.assign(CodemanApp.prototype, {
       // made EVERY later App Settings save a 400, and every synced key stopped
       // reaching the server while the toast still said "Settings saved".
       shortcutOverrides: _sco,
+      // Canvas shell (PC13). Sent only when this save CHANGES it: a page left open across a rollback
+      // talks to a release whose strict schema does not know the key, and sending it on every save
+      // would refuse the whole PUT there. Unchanged, the server's stored value stands.
+      canvasShellEnabled: _cse,
       ...serverSettings
     } = settings;
+    const _shellFlip = _cse !== (_prev.canvasShellEnabled === true) ? { canvasShellEnabled: _cse } : {};
     let webhookError = '';
     let serverSaved = false;
     try {
@@ -3375,13 +3384,30 @@ Object.assign(CodemanApp.prototype, {
       }
       // A non-admin's save is not sent at all (see settingsReadOnly above): the server
       // would refuse it with a 403, the plan-usage collection flip included.
-      const res = settingsReadOnly ? null : await this._apiPut('/api/settings', {
+      const _putSettings = (shellFlip) => this._apiPut('/api/settings', {
         ...serverSettings,
         ...(_chipFlip !== undefined ? { showPlanUsageLimits: _chipFlip } : {}),
+        ...shellFlip,
         ...(tunnelGate.acknowledge ? { acknowledgeUnauthTunnel: true } : {}),
         notificationPreferences: notifPrefsToSave,
         voiceSettings,
       });
+      let res = settingsReadOnly ? null : await _putSettings(_shellFlip);
+      // Canvas shell (PC13), a page left open across a rollback: the older server refuses the WHOLE save
+      // for the one key it does not know. Save the rest without it, put the box back and say so, rather
+      // than report a save that did not happen.
+      let shellSwitchUnknown = false;
+      if (res && res.status === 400 && 'canvasShellEnabled' in _shellFlip) {
+        const retry = await _putSettings({});
+        if (retry?.ok) {
+          res = retry;
+          shellSwitchUnknown = true;
+          settings.canvasShellEnabled = _prev.canvasShellEnabled === true;
+          this.saveAppSettingsToStorage(settings);
+          const box = document.getElementById('appSettingsCanvasShell');
+          if (box) box.checked = settings.canvasShellEnabled;
+        }
+      }
 
       // Multi-user mode, a non-admin whose role was not known when this save started
       // (/api/me had not answered, or failed and admin-ui.js fell back to a single-user
@@ -3417,6 +3443,8 @@ Object.assign(CodemanApp.prototype, {
       webhookError = this._webhookPending() ? await this.saveWebhook() : '';
       if (webhookError) {
         this.showToast(`Settings saved, but not the webhook: ${webhookError}`, 'warning');
+      } else if (shellSwitchUnknown) {
+        this.showToast('Settings saved, but not "Open on the canvas": this server does not have it. Reload the page.', 'warning');
       } else if (syncedChangeRefused || modelConfigRefused || refusedAsNonAdmin) {
         // ONE toast for the whole save, and only when the user really changed a server-wide
         // setting: a non-admin saving a font size hears "Settings saved" as everyone does.
@@ -3580,6 +3608,21 @@ Object.assign(CodemanApp.prototype, {
       })
       .catch(() => {});
   },
+
+  /**
+   * Canvas shell row (PC13): says so while Canvas itself is off, since the shell does nothing without
+   * it. Follows the Canvas checkbox live; the box stays editable, as the two settings are independent.
+   */
+  _syncCanvasShellRow() {
+    const canvas = document.getElementById('appSettingsCanvas');
+    const needs = document.getElementById('appSettingsCanvasShellNeeds');
+    if (!canvas || !needs) return;
+    needs.hidden = canvas.checked;
+    if (!canvas.dataset.shellRowBound) {
+      canvas.dataset.shellRowBound = '1';
+      canvas.addEventListener('change', () => this._syncCanvasShellRow());
+    }
+    },
 
   /**
    * A non-admin's save in multi-user mode (saveAppSettings): put every SYNCED key of `settings`
