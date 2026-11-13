@@ -41,6 +41,9 @@ Six smaller things were found beside it:
 - One reporter script for both pages, exposed on `window`, with the canvas bundle calling it when present.
 - The canvas records at its two command funnels (`dispatch()` and the editor's submit), the dashboard at the functions a tab action already goes through.
 - An agent's view command is not a UI event.
+- Escape and the rail's close button pop the rail without naming it, so `rail.close` is named from the rail view on top before the command.
+- The console 404 came from a conversation whose session was deleted, not from a session with no response yet (that state answers 200). The conversation summary carries an optional `sessionGone` and the rail skips the transcript read.
+- `test/canvas-ui-events.browser.test.ts` is the end-to-end proof: real keys and clicks, the file read back through `logs_query`, and a check that no draft, object text or session name is in it.
 
 ## Open questions
 
