@@ -341,7 +341,7 @@ No cloud VM exists here. Each live lane runs a throwaway Codeman instance at the
 - [x] Write `resize.ts` with the side/corner, numeric and constrained behaviors specified by the foundation contract, including nested-group transforms and identical agent commands. Evidence: `test/canvas-edit.browser.test.ts` ('resizes at 50% and 200%, keeps child geometry…', 'resizes a combined selection, scales groups uniformly, rotates, and keeps frame children fixed').
 - [x] Edit plain text in the focused panel and submit on blur or debounce. Distinguish Saving, Saved and failed drafts. Preserve local content on a concurrent same-field update and expose conflict resolution. Do not add rich text or Git documents. Evidence: `test/canvas-edit.browser.test.ts` 'preserves a draft when another tab edits the field and resolves explicitly without reload'; `test/canvas-edit-queue.test.ts` 'shows Saving during an automatic resend so in-flight edits are not offered for discard'.
 - [x] Delete with the Delete key as a soft delete. Evidence: `test/canvas-edit.browser.test.ts` 'resizes at 50% and 200%, keeps child geometry, and undoes/redo soft delete through restore'.
-- [ ] Write `undo.ts`. Scoped Cmd/Ctrl+Z appends safe inverses of the user's acknowledged operations without overwriting later work by another author. Handle redo, keyboard move mode, focus restoration and editing/IME exclusions per the brief. Open: built and tested (`test/canvas-edit-queue.test.ts` 'refuses a changed revision, including a later author change to a different field', `test/canvas-edit.browser.test.ts`), with one known defect from the closing live check, 2026-11-13: a second undo on the same object is refused with 409 REVISION. Not fixed on `master`. Undo history also does not survive a reload (PR #22).
+- [x] Write `undo.ts`. Scoped Cmd/Ctrl+Z appends safe inverses of the user's acknowledged operations without overwriting later work by another author. Handle redo, keyboard move mode, focus restoration and editing/IME exclusions per the brief. Evidence: `test/canvas-edit-queue.test.ts` 'refuses a changed revision, including a later author change to a different field', `test/canvas-edit.browser.test.ts`. The closing live check found that a second undo on the same object was refused with 409 REVISION; PR #37 fixed it, with unit, route and browser tests for repeated undo and undo after redo. Undo history does not survive a reload (PR #22).
 - [x] Skip every edit control on a phone. Evidence: `test/canvas-edit.browser.test.ts` 'omits every edit control at phone width, including a desktop-to-phone change'.
 
 **You see.**
@@ -687,22 +687,22 @@ Until PC13, the canvas is a `managed` web tab inside Codeman's dashboard. PC13 t
 ## Close the program
 
 - [ ] Every box above is checked with its evidence. Open: see "Open at close (2026-11-13)" below for every box that is still open.
-- [ ] The coordinating agent runs the phase gate on the deployed build through browser automation at laptop and phone sizes. No manual user step is required. Open: run on the deployed build on 2026-11-13; five of the six items below pass and the planted-fault item is partial.
+- [x] The coordinating agent runs the phase gate on the deployed build through browser automation at laptop and phone sizes. No manual user step is required. Evidence: run on the deployed build on 2026-11-13; all six items below pass. The planted-fault item passed on a throwaway instance after PR #35.
   - [x] On the laptop viewport, build a section named "design exploration" with images, text, links, a website embed and two frames. Evidence: closing live check, 2026-11-13: the section was built by hand on the deployed build with images, text, links, a live embed and two frames.
   - [x] In an agent session, read the section with one `canvas_read` call and one `canvas_screenshot` call; compare the answer with its contents. Evidence: closing live check, 2026-11-13: one `canvas_read` and one `canvas_screenshot` by an agent session matched the section.
   - [x] Have the agent add a summary block. Assert it appears on the open canvas with the agent as author. Evidence: closing live check, 2026-11-13: the agent's summary block appeared on the open page with the agent as author.
   - [x] On the phone viewport, view the section and add a comment. Evidence: closing live check, 2026-11-13: a comment added at the phone size showed on the laptop page.
   - [x] Revert the agent session, and assert only the summary block goes. Evidence: closing live check, 2026-11-13: reverting the agent session removed only the summary block.
-  - [ ] Plant a failing request in a throwaway instance and diagnose it with `logs_query`. Never inject the fault into production. Open: partial. `logs_query` found the failing request but not its cause: a canvas 5xx writes no server log line, and the canvas page reports no browser errors. A fix is in progress and not merged.
-- [ ] Verify the complete foundations matrix, including nested selectable group context, selection lassos, resize, locks and one-to-one human/agent command behavior. Static design checks do not satisfy these implementation requirements. Open: verified live on 2026-11-13 for nested group context, both lassos, resize, locks and twin canvases over about 30 mirrored operations. The matrix is not complete: a human capture or export of a view or group is not built, flip is unsupported, and two defects stand (a second undo on one object is refused; reordering an unlocked object is refused when a sibling is locked).
-- [ ] Before declaring the clarified product complete, verify the ambient rail, connected thread, voice, background tasks and the canvas shell against PC9–PC13, with attachment changes that do not erase earlier history, whole-canvas discovery and self-building continuity. The original foundation gate alone is insufficient. Open: the rail, lassos, attachment history, whole-canvas discovery, the shell and its fallbacks passed live on 2026-11-13, and the last supervised deploy carried its session over. Not exercised: voice with real audio, a real conversation turn in that run (PRs #28, #30, #31 and #33 each ran real Claude at merge time), multi-user mode, a real notification click, a real phone keyboard in that run (PR #30 used a real iPhone for the phone assistant only), contrast pairs, and a walk of all 65 inventoried surfaces. One defect: `W` is ignored on a focused session row.
+  - [x] Plant a failing request in a throwaway instance and diagnose it with `logs_query`. Never inject the fault into production. Evidence: the first run on 2026-11-13 found the failing request but not its cause, because a canvas 5xx wrote no server log line and the canvas page reported no browser errors. PR #35 fixed both. The rerun on a throwaway instance read a read-only operation log back as one `server` line naming the route, `EACCES` and the request id from the HTTP answer, and an error thrown in the canvas page appeared in `client-errors`.
+- [ ] Verify the complete foundations matrix, including nested selectable group context, selection lassos, resize, locks and one-to-one human/agent command behavior. Static design checks do not satisfy these implementation requirements. Open: verified live on 2026-11-13 for nested group context, both lassos, resize, locks and twin canvases over about 30 mirrored operations. The matrix is not complete: a human capture or export of a view or group is not built, flip is unsupported, and one defect stands (reordering an unlocked object is refused when a sibling is locked). The repeated-undo defect was fixed in PR #37.
+- [ ] Before declaring the clarified product complete, verify the ambient rail, connected thread, voice, background tasks and the canvas shell against PC9–PC13, with attachment changes that do not erase earlier history, whole-canvas discovery and self-building continuity. The original foundation gate alone is insufficient. Open: the rail, lassos, attachment history, whole-canvas discovery, the shell and its fallbacks passed live on 2026-11-13, and the last supervised deploy carried its session over. Not exercised: voice with real audio, a real conversation turn in that run (PRs #28, #30, #31 and #33 each ran real Claude at merge time), multi-user mode, a real notification click, a real phone keyboard in that run (PR #30 used a real iPhone for the phone assistant only), contrast pairs, and a walk of all 65 inventoried surfaces. The one defect found, `W` ignored on a focused session row, was fixed in PR #37.
 - [ ] Turn `canvasEnabled` and the PC13 shell setting on by default in a final PR after the gate passes. Verify, land and deploy it through the same automatic flow, then check that the live build opens on the canvas and the classic view is still reachable. Open: not done. Both settings still default off on `master`.
 - [ ] Tick phase 1 in `TRACKER.local.md` and add a `docs/JOURNAL.md` entry. Open: not done. `TRACKER.local.md` is not committed and still shows phase 1 unticked, and `docs/JOURNAL.md` has no closing entry.
 - [ ] Reply to the operator with each PR and its verdict, per `autopilot-stack.md`. Open: process step for the coordinator at close; not yet on record.
 
 ### Open at close (2026-11-13)
 
-This reconciliation ticked 303 boxes and left 53 open. Every open box is listed here once, with the section it comes from. A box that repeats in several sections is one line that names them all. Each open box above carries its own `Open:` note.
+This reconciliation ticked 306 boxes and left 50 open, counted after PRs #35 and #37. Every open box is listed here once, with the section it comes from. A box that repeats in several sections is one line that names them all. Each open box above carries its own `Open:` note.
 
 **Not built, or not built in full**
 
@@ -712,7 +712,7 @@ This reconciliation ticked 303 boxes and left 53 open. Every open box is listed 
 - PC2, Build. The agent surface is not complete: starting a conversation, and starting, cancelling or removing a background task, are human-only by decision; voice is human-only; flip is unsupported.
 - PC4, Build ("Exercise every required control"). The foundations matrix asks for a human capture or export of a view or group. It is not built. Flip is unsupported.
 - PC10. Nothing shows a release outcome in the conversation beyond what the agent writes, and no release was started from the canvas.
-- Close the program. `canvasEnabled` and the shell setting are not on by default on `master`.
+- Close the program. `canvasEnabled` and the shell setting are not on by default on `master`. PR #36 holds the change and waits for the owner's decision.
 
 **Built but not verified live**
 
@@ -725,11 +725,8 @@ This reconciliation ticked 303 boxes and left 53 open. Every open box is listed 
 
 **Known defects, not fixed on `master`**
 
-- PC4, Build (`undo.ts`). A second undo on the same object is refused with 409 REVISION. Undo history does not survive a reload.
 - PC4, Build (grouping and order). Reordering an unlocked object is refused when a sibling is locked.
-- PC13, recorded on the Close box because the PC13 boxes were ticked before this pass. `W` is ignored on a focused session row.
-- Close the program (foundations matrix). Open because of the two PC4 defects above and the missing human capture or export.
-- Close the program (phase gate and its planted-fault item, two boxes). `logs_query` found the failing request but not its cause: a canvas 5xx writes no server log line, and the canvas page reports no browser errors. A fix is in progress and not merged.
+- Close the program (foundations matrix). Open because of the PC4 defect above and the missing human capture or export.
 
 **Process**
 
