@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The canvas and the tab strip write UI events, as tokens in batches
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/ui-events.js`, `packages/canvas/src/ui-events.ts`, `src/web/routes/telemetry-routes.ts`, `src/web/public/app.js`, `packages/canvas/src/entry.ts`
+**Why:** PC8 built the `ui-events.jsonl` stream and its intake, and nothing wrote to it. The plan names the two surfaces and no event list, body shape or limits.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md), [architecture-invariants, "Canvas failures and telemetry"](architecture-invariants.md#canvas-failures-and-telemetry)
+
+Decision. One reporter script serves both pages, because the dashboard is plain script and the canvas is a bundle, and two copies of the batching would drift. The intake keeps the one-event body and gains a batch body of at most 25 events, with optional `n` and `agoMs` on a line. A `target` is now a token on both sides (no whitespace), which is how "no typed text, prompt or object content" is enforced by structure instead of by review. The stream records what a person did: an agent's view command is left out because its request already has a line. Only discrete actions are recorded. Camera, focus and selection commands are left out because they run per frame or per key and the view registry holds their result.
+
+Consequences accepted. A release that does not know the batch body answers 400, so events are lost while two colours overlap during a deploy; nothing is retried. Sends, comments and background runs are not separate events: each is a request with its own `requests.jsonl` line. `docs/self-building.md` still describes the one-event line without `n` and `agoMs`; rule 11 there reserves that file for the owner.
+
 ## 2026-11-13 — The canvas and its shell are on by default, by absence
 
 **Type:** status-transition

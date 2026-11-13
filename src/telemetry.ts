@@ -79,6 +79,8 @@ interface UiEventLogLine {
   surface: 'canvas' | 'tab-strip';
   action: string;
   target?: string | null;
+  n?: number | null;
+  agoMs?: number | null;
 }
 
 interface StreamRecords {

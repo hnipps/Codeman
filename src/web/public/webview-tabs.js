@@ -353,6 +353,7 @@ Object.assign(CodemanApp.prototype, {
 
   handleWebviewTabClick(event, id) {
     event?.preventDefault?.();
+    this._uiEvent('webtab.select', id);
     return this.openWebview(id);
   },
 

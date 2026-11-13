@@ -1258,6 +1258,7 @@ class CodemanApp {
     if (this.isSoloWindow) document.body.classList.add('solo-mode');
     // Canvas shell (PC13): the link back to the canvas and the fallback notice.
     this._initCanvasShell();
+    this._uiEvent('page.open', this.isSoloWindow ? 'solo' : 'dashboard');
     // A page holding this window switches its tab by changing only the
     // fragment, which keeps the page loaded (see sessionIdFromFragment).
     if (!this.isSoloWindow) {
@@ -2311,6 +2312,15 @@ class CodemanApp {
     if (typeof this.openAppSettings === 'function') this.openAppSettings();
   }
 
+  /**
+   * One line in the server's ui-events.jsonl for something the person did with the tabs
+   * (ui-events.js). ⚠️ `target` is an id or a state word, never a session name: names come
+   * from prompts. The reporter drops any value with whitespace.
+   */
+  _uiEvent(action, target) {
+    window.CodemanUiEvents?.record('tab-strip', action, target);
+  }
+
   _initCanvasShell() {
     const shell = typeof window !== 'undefined' ? window.__CODEMAN_SHELL__ : null;
     if (!shell || shell.on !== true || this.isSoloWindow) return;
@@ -2323,6 +2333,7 @@ class CodemanApp {
       link.href = home;
       link.textContent = 'Canvas';
       link.title = 'Back to the canvas';
+      link.addEventListener('click', () => this._uiEvent('canvas.open'));
       headerRight.insertBefore(link, headerRight.firstChild);
     }
     const reasons = {
@@ -8472,6 +8483,7 @@ class CodemanApp {
       : { ids: [], ok: false };
     if (!saved.ok) this._tabCollapseStorageFailed = true;
     this.collapsedTabGroupIds = new Set(saved.ids);
+    this._uiEvent(shouldCollapse ? 'group.collapse' : 'group.expand', groupId);
     // The full render also redraws connectors anchored to rows that just moved.
     this._fullRenderSessionTabs();
     return this.collapsedTabGroupIds.has(groupId) === shouldCollapse;
@@ -8849,6 +8861,7 @@ class CodemanApp {
     } catch {
       return false;
     }
+    this._uiEvent('tab.move', ref.id);
     return this.editTabLayout({ type: 'moveRef', ref, ...destination, parents }, `${ref.kind}:${ref.id}`);
   }
 
@@ -9586,6 +9599,7 @@ class CodemanApp {
           this.sessionOrder.splice(toIndex + 1, 0, draggedId);
         }
 
+        this._uiEvent('tab.move', draggedId);
         // Save and re-render
         this.saveSessionOrder();
         this._fullRenderSessionTabs();
@@ -9617,6 +9631,7 @@ class CodemanApp {
     if (!this._canSwapActiveTabWith(this.sessionOrder[idx - 1])) return;
     [this.sessionOrder[idx - 1], this.sessionOrder[idx]] = [this.sessionOrder[idx], this.sessionOrder[idx - 1]];
     this.saveSessionOrder();
+    this._uiEvent('tab.move', this.activeSessionId);
     this._fullRenderSessionTabs();
   }
 
@@ -9627,6 +9642,7 @@ class CodemanApp {
     if (!this._canSwapActiveTabWith(this.sessionOrder[idx + 1])) return;
     [this.sessionOrder[idx], this.sessionOrder[idx + 1]] = [this.sessionOrder[idx + 1], this.sessionOrder[idx]];
     this.saveSessionOrder();
+    this._uiEvent('tab.move', this.activeSessionId);
     this._fullRenderSessionTabs();
   }
 
@@ -10306,6 +10322,7 @@ class CodemanApp {
     // fails toward acknowledging rather than toward an alert that can never be
     // cleared.
     const userInitiated = options?.auto !== true;
+    if (userInitiated && this.activeSessionId !== sessionId) this._uiEvent('tab.select', sessionId);
     if (this.activeSessionId === sessionId && !forceReload) {
       // Tapping the tab you are already on is still "I checked it". The alert
       // can be armed on the ACTIVE tab (a live idle_prompt fires regardless of
@@ -11217,6 +11234,7 @@ class CodemanApp {
   async closeSession(sessionId, killMux = true) {
     // Already on its way out (a repeated click, the mux panel racing the tab).
     if (this._closingSessions.has(sessionId)) return false;
+    this._uiEvent('tab.close', sessionId);
     // The tab goes FIRST and the server is asked after. The kill takes the server
     // a few hundred ms (SIGTERM grace, the process tree, tmux), and a tab that sat
     // there that long after "Kill" read as a click that did nothing. A refused

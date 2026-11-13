@@ -1,4 +1,5 @@
 import { uuid } from './ids.js';
+import { uiEvent } from './ui-events.js';
 import { knownContentFields } from '../../../src/canvas/model.js';
 import { copied, pasted, selectionBox, snapped, lockOwner } from './arrange.js';
 import { worldBounds } from './tree.js';
@@ -453,6 +454,7 @@ export class DesktopEditor {
       return false;
     }
     const accepted = this.queue.enqueueCommand(request);
+    if (accepted) uiEvent('command', request.tool);
     if (accepted) this.commandFocus = this.options.view().focusId;
     return accepted;
   }
@@ -744,7 +746,9 @@ export class DesktopEditor {
     }
     const focusId = this.options.view().focusId;
     for (const op of operations) this.submittedFocus.set(op.opId, focusId);
-    return this.queue.enqueue(operations);
+    const accepted = this.queue.enqueue(operations);
+    if (accepted) for (const op of operations) uiEvent('edit', op.kind);
+    return accepted;
   }
   private create(type: string): void {
     if (!this.available()) return;

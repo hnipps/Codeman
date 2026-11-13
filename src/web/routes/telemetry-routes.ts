@@ -11,7 +11,8 @@
  *
  * `/api/client-errors` is a write path for anyone who can load the page, so it is bounded
  * three ways: a small body limit, a per-address rate limit, and length-capped fields. A
- * `kind: "ui"` body uses its own rate bucket and `ui-events.jsonl`. With file telemetry
+ * `kind: "ui"` body uses its own rate bucket and `ui-events.jsonl`, carries one event or a
+ * batch of at most `UI_EVENT_BATCH_MAX`, and holds tokens only. With file telemetry
  * off the route accepts the report and drops it. `/api/logs` returns an empty list and a
  * reason in that case, and it never accepts a field that would return the raw line.
  */
@@ -34,14 +35,31 @@ const CLIENT_ERROR_REPORTS_PER_MINUTE = 30;
 const UI_EVENT_REPORTS_PER_MINUTE = 120;
 const MAX_USER_AGENT_CHARS = 300;
 
-const UiEventSchema = z
-  .object({
-    kind: z.literal('ui'),
-    surface: z.enum(['canvas', 'tab-strip']),
-    action: z.string().regex(/^[a-z][a-z0-9._-]{0,39}$/),
-    target: z.string().min(1).max(80).nullish(),
-  })
-  .strict();
+/** Most events one `kind: "ui"` body may carry. The page's reporter sends at most this many. */
+export const UI_EVENT_BATCH_MAX = 25;
+
+const uiEventFields = {
+  surface: z.enum(['canvas', 'tab-strip']),
+  action: z.string().regex(/^[a-z][a-z0-9._-]{0,39}$/),
+  // A token, never prose: no whitespace, so a name, a prompt or object text cannot ride in it.
+  target: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/)
+    .nullish(),
+  /** How many times in a row the page saw this event before it sent the batch. */
+  n: z.number().int().min(2).max(10_000).nullish(),
+  /** Milliseconds between the event and the send, so a batched line can be placed in time. */
+  agoMs: z.number().int().min(0).max(600_000).nullish(),
+};
+const UiEventSchema = z.union([
+  z.object({ kind: z.literal('ui'), ...uiEventFields }).strict(),
+  z
+    .object({
+      kind: z.literal('ui'),
+      events: z.array(z.object(uiEventFields).strict()).min(1).max(UI_EVENT_BATCH_MAX),
+    })
+    .strict(),
+]);
 
 export function registerTelemetryRoutes(
   app: FastifyInstance,
@@ -106,13 +124,17 @@ export function registerTelemetryRoutes(
       if (!takeToken(uiEventBuckets, req.ip, UI_EVENT_REPORTS_PER_MINUTE, Date.now())) {
         return reply.code(429).send(createErrorResponse(ApiErrorCode.RATE_LIMITED, 'Too many UI events'));
       }
-      const event = parseBody(UiEventSchema, raw);
-      ctx.telemetry?.write('ui-events', {
-        buildId: ctx.buildId,
-        surface: event.surface,
-        action: event.action,
-        target: event.target,
-      });
+      const body = parseBody(UiEventSchema, raw);
+      for (const event of 'events' in body ? body.events : [body]) {
+        ctx.telemetry?.write('ui-events', {
+          buildId: ctx.buildId,
+          surface: event.surface,
+          action: event.action,
+          target: event.target,
+          n: event.n,
+          agoMs: event.agoMs,
+        });
+      }
       return { success: true };
     }
     if (!takeToken(clientErrorBuckets, req.ip, CLIENT_ERROR_REPORTS_PER_MINUTE, Date.now())) {
