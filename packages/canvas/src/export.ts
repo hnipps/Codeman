@@ -100,6 +100,13 @@ export class ExportView {
       };
     }
     menu.addEventListener('keydown', (e) => this.key(e));
+    // A menu left open while the keyboard works elsewhere would show a target the view no longer has.
+    // Focus that goes nowhere (the browser's own download prompt) leaves it open.
+    menu.addEventListener('focusout', (e) => {
+      const next = e.relatedTarget;
+      if (this.busy || !(next instanceof Element)) return;
+      if (!next.closest('#exportMenu') && !next.closest('[data-export-open]')) this.close(false);
+    });
     // In the capture phase: the board keeps its own pointer events from bubbling.
     document.addEventListener(
       'pointerdown',
