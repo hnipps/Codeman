@@ -17,6 +17,17 @@ import {
 } from './conversation.js';
 import { nextAttempt, parseAttempt, parseSent, type Attempt } from './outbox.js';
 import {
+  NO_ACTIVITY,
+  parseActivity,
+  sourceLine,
+  toolResult,
+  toolState,
+  weave,
+  type Activity,
+  type ThreadItem,
+} from './activity.js';
+import { releaseText } from '../../../src/canvas/release.js';
+import {
   MAX_SENT_TASKS,
   RUN_INTERRUPTED,
   attemptPending,
@@ -141,6 +152,8 @@ export function parseStoredContext(raw: string | null): string[] {
 }
 const NEAR_END_PX = 24;
 const TRANSCRIPT_DEBOUNCE_MS = 400;
+/** How often a release that is still running is read again; the server reads the supervisor no more often. */
+const RELEASE_POLL_MS = 5_000;
 /** The stored provider and model; anything that is not exactly that reads as no choice. */
 export function parseChoice(raw: string | null): Choice | null {
   if (!raw) return null;
@@ -174,6 +187,10 @@ export class AssistantView {
   private conversations: Summary[] = [];
   private messages: ConversationMessage[] = [];
   private rows: TranscriptRow[] = [];
+  private activity: Activity = NO_ACTIVITY;
+  /** Disclosures the person opened in the thread, by item key, so a repaint leaves them open. */
+  private opened = new Set<string>();
+  private releaseTimer: ReturnType<typeof setTimeout> | undefined;
   private sent: SentMessage[] = [];
   private approval: Approval | null = null;
   private working = false;
@@ -527,6 +544,7 @@ export class AssistantView {
     window.removeEventListener('focus', this.onFocus);
     clearTimeout(this.transcriptTimer);
     clearTimeout(this.listTimer);
+    clearTimeout(this.releaseTimer);
   }
   /** Live conversations a thread request can go to, newest first, named as the picker names them. */
   targets(): { id: string; label: string }[] {
@@ -635,6 +653,7 @@ export class AssistantView {
     if (!conversation) {
       this.messages = [];
       this.rows = [];
+      this.activity = NO_ACTIVITY;
       this.approval = null;
       this.loaded = null;
       this.paintThread();
@@ -643,6 +662,8 @@ export class AssistantView {
     if (this.loaded !== conversation.id) {
       this.loaded = conversation.id;
       this.rows = [];
+      this.activity = NO_ACTIVITY;
+      this.opened.clear();
       this.messages = [];
       this.working = false;
       this.threadSignature = '';
@@ -650,10 +671,15 @@ export class AssistantView {
     await Promise.all([
       this.loadRecord(conversation),
       this.loadTranscript(conversation),
+      this.loadActivity(conversation),
       this.loadApproval(conversation),
     ]);
     this.pruneSent();
     this.paintThread();
+    clearTimeout(this.releaseTimer);
+    if (!this.stopped && this.activity.releases.some((r) => r.state === 'running')) {
+      this.releaseTimer = setTimeout(() => void this.open(), RELEASE_POLL_MS);
+    }
   }
   /** The text this page still holds for messages sent from it: accepted ones, and the one attempt a reload interrupted, so its row keeps Retry. */
   private keptMessages(): SentMessage[] {
@@ -701,6 +727,16 @@ export class AssistantView {
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', text: m.text, queued: m.queued }));
     } catch {
       /* A failed read keeps the thread as it was. */
+    }
+  }
+  /** Tool calls, what they read and any release outcome. A failed read keeps what the thread already shows. */
+  private async loadActivity(c: Summary): Promise<void> {
+    try {
+      const { status, body } = await this.json(`/api/canvas/${this.options.workspace}/conversations/${c.id}/activity`);
+      if (this.current?.id !== c.id || status !== 200) return;
+      this.activity = parseActivity(this.data(body).activity);
+    } catch {
+      /* The thread still shows prompts and replies. */
     }
   }
   private async loadApproval(c: Summary): Promise<void> {
@@ -941,13 +977,21 @@ export class AssistantView {
       const object = t.origin ? this.options.objects().find((o) => o.id === t.origin?.objectId) : undefined;
       return t.origin ? [object ? label(object) : null] : [];
     });
-    const signature = JSON.stringify([turns, status, this.approval, conversation?.id ?? null, origins]);
+    const items = weave(turns, this.rows.length, this.activity);
+    const signature = JSON.stringify([items, status, this.approval, conversation?.id ?? null, origins, this.working]);
     if (signature === this.threadSignature) return;
     this.threadSignature = signature;
     const list = node('thread');
     const atEnd = this.stick;
+    const active = document.activeElement;
+    const focused = active instanceof HTMLElement && list.contains(active) ? active.dataset.threadKey : undefined;
     list.replaceChildren();
-    for (const turn of turns) {
+    for (const entry of items) {
+      if (entry.kind !== 'turn') {
+        list.append(this.activityItem(entry));
+        continue;
+      }
+      const turn = entry.turn;
       const item = document.createElement('li');
       item.className = 'turn';
       item.dataset.who = turn.who;
@@ -998,7 +1042,92 @@ export class AssistantView {
     line.dataset.state = status.kind;
     node('threadEnded').hidden = status.kind !== 'ended';
     this.paintApproval();
+    if (focused) {
+      [...list.querySelectorAll<HTMLElement>('[data-thread-key]')]
+        .find((el) => el.dataset.threadKey === focused)
+        ?.focus({ preventScroll: true });
+    }
     if (atEnd) list.scrollTop = list.scrollHeight;
+  }
+  /** A disclosure that stays as the person left it across repaints. Its key is also how focus finds it again. */
+  private disclosure(key: string, className: string): { details: HTMLDetailsElement; summary: HTMLElement } {
+    const details = document.createElement('details');
+    details.className = className;
+    details.open = this.opened.has(key);
+    details.addEventListener('toggle', () => {
+      if (details.open) this.opened.add(key);
+      else this.opened.delete(key);
+    });
+    const summary = document.createElement('summary');
+    summary.dataset.threadKey = key;
+    details.append(summary);
+    return { details, summary };
+  }
+  /** Tool calls, a release outcome or a turn's sources. Every string is agent or tool output and is set as text. */
+  private activityItem(entry: Exclude<ThreadItem, { kind: 'turn' }>): HTMLLIElement {
+    const item = document.createElement('li');
+    item.className = 'thread-activity';
+    item.dataset.who = entry.kind;
+    const span = (className: string, text: string): HTMLSpanElement => {
+      const el = document.createElement('span');
+      el.className = className;
+      el.textContent = text;
+      return el;
+    };
+    const line = (className: string, text: string): HTMLParagraphElement => {
+      const el = document.createElement('p');
+      el.className = className;
+      el.textContent = text;
+      return el;
+    };
+    if (entry.kind === 'release') {
+      const words = releaseText(entry.view);
+      item.dataset.state = entry.view.state;
+      item.append(
+        span('turn-who', entry.view.action === 'rollback' ? 'Rollback' : 'Release'),
+        line('turn-text release-outcome', words.title),
+        line('turn-note', words.note)
+      );
+      return item;
+    }
+    if (entry.kind === 'sources') {
+      const { details, summary } = this.disclosure(entry.key, 'turn-sources');
+      summary.textContent = `Sources used · ${entry.sent.length + entry.read.length}`;
+      const group = (heading: string, lines: string[]): void => {
+        if (!lines.length) return;
+        const list = document.createElement('ul');
+        list.setAttribute('aria-label', heading);
+        for (const text of lines) {
+          const row = document.createElement('li');
+          row.textContent = text;
+          list.append(row);
+        }
+        details.append(line('sources-heading', heading), list);
+      };
+      group('Sent with the message', entry.sent);
+      group('Read by the agent', entry.read.map(sourceLine));
+      item.append(details);
+      return item;
+    }
+    item.append(span('turn-who', 'Tools'));
+    if (entry.hidden > 0) {
+      item.append(
+        line('turn-note', `${entry.hidden} earlier tool ${entry.hidden === 1 ? 'call is' : 'calls are'} not shown.`)
+      );
+    }
+    for (const row of entry.rows) {
+      const { details, summary } = this.disclosure(`tool:${row.id}`, 'tool-row');
+      details.dataset.status = row.status;
+      summary.append(span('tool-name', row.name), span('tool-input', row.input));
+      const state = toolState(row, this.working);
+      if (state) summary.append(span('tool-state', state));
+      const result = document.createElement('pre');
+      result.className = 'tool-result';
+      result.textContent = toolResult(row);
+      details.append(result);
+      item.append(details);
+    }
+    return item;
   }
   private paintApproval(): void {
     const card = node('approvalCard');
