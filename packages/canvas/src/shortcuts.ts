@@ -65,3 +65,16 @@ export const editShortcuts: Shortcut[] = [
   ['Move mode: coarse / fine', [['↑'], ['Shift', '↑']]],
   ['Resize: proportional / from center', [['Shift'], ['Alt']]],
 ];
+/** Listed in the Keys view only while the canvas is Codeman's shell (PC13). */
+export const shellShortcuts: Shortcut[] = [
+  [
+    'Go to a session, workspace or object',
+    [
+      ['Mod', 'K'],
+      ['Alt', 'K'],
+    ],
+  ],
+  ['Focus the Sessions section', [['S']]],
+  ['Open the workspace list', [['W']]],
+  ['Open the focused session', [['Enter']]],
+];

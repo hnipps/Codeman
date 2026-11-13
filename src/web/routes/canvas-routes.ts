@@ -39,6 +39,7 @@ import {
   registerConversationRoutes,
 } from './canvas-conversation-routes.js';
 import { registerTaskRoutes } from './canvas-task-routes.js';
+import { registerShellRoutes, sessionCounts } from './canvas-shell-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
@@ -214,10 +215,13 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
     );
     scope.get('/api/canvas/workspaces', async (req) => {
       const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
-      return {
-        success: true,
-        data: { workspaces: readWorkspaces().filter((w) => canAccessOwned(getAuthUser(req), w.owner)) },
-      };
+      const user = getAuthUser(req);
+      const mine = readWorkspaces().filter((w) => canAccessOwned(user, w.owner));
+      // `sessions` is additive: how many live sessions sit in the case, and how many wait on a person.
+      const workspaces = await Promise.all(
+        mine.map(async (w) => ({ ...w, sessions: await sessionCounts(ctx, user, w) }))
+      );
+      return { success: true, data: { workspaces } };
     });
     // `voice.relay` is the one fact the canvas needs about Claude voice: whether the relay would take a stream now.
     // The page asks on every window focus, so the answer (a read of the sign-in file) is kept for a few seconds, and
@@ -318,6 +322,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       });
       registerConversationRoutes(workspaceScope, ctx);
       registerTaskRoutes(workspaceScope, ctx);
+      registerShellRoutes(workspaceScope, ctx);
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
         { bodyLimit: 64 * 1024 },

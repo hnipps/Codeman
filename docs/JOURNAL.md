@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Workspaces, sessions and Go to in the canvas outline (PC13 part 2)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/shell-sessions.ts`, `src/web/routes/canvas-shell-routes.ts`, `packages/canvas/src/shell-view.ts`, `packages/canvas/src/home.ts`, `src/web/public/canvas.html`, `src/web/public/app.js`
+**Why:** The brief left the wording of states, the update line and the Settings link to the builder, and one requested line could not be built as asked.
+**Links:** [Intent, "Decisions"](../intent/2026-11-13-canvas-pc13-shell.md#decisions), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+Sessions are rows derived per request and never canvas content. The order is a port of the dashboard's comparator with a parity test, because the canvas bundle cannot load the classic script. An idle prompt somebody already looked at reads Idle, not Waiting, which is what the dashboard's alert does. An "Update available" line was asked for; the server holds no such fact without asking GitHub, so the line says "Codeman was updated" from the release notes file and the browser's own seen version, and the canvas makes no update check. Settings (classic) is a real deep link, `classic?open=settings`, honoured only with the shell on. A terminal row opens the session's own page by navigation in this part; part 3 puts that page in a frame on a laptop.
+
 ## 2026-11-13 — The canvas shell's routes, setting and fallback (PC13 part 1)
 
 **Type:** intent-refinement

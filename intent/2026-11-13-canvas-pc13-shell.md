@@ -163,3 +163,18 @@ Made while building. Each replaces what the sections above say where they differ
 - **The Canvas link and the notice are built in script**, so `index.html` gains no header markup; the link is hidden at phone width, and the notice is fixed-position so the terminal keeps its size.
 - **First open question, answered.** A previous release's Settings page builds its save from a fixed list of fields and never sends `canvasShellEnabled`; the server merges a save into the stored file, so the key survives. This release's page sends the key only when its box changed, and when a rolled-back server refuses it, saves the rest and says so (`test/canvas-shell-compat.test.ts`).
 - **Service worker: no change to `sw.js`.** Offline, a saved canvas document can answer a classic address; the guard does not navigate from a classic address and the page says Codeman cannot be reached.
+
+### Part 2
+
+- **State words.** `needs` Needs you, `error` Error, `waiting` Waiting, `working` Working, `idle` Idle, `done` Ended, each with its own glyph. An idle prompt somebody has already looked at (or one that opened quiet) reads Idle: the dashboard spends that alert the same way.
+- **An exited agent reads Ended** even when the inbox still holds an item for it. Error comes first of all.
+- **Counts.** `needsYou` counts blocking dialogs only. `live` leaves out ended sessions.
+- **One row per session, across kinds.** The kind comes from the conversation index; an index that cannot be read leaves every row a terminal.
+- **The row order is ported, not shared.** `src/canvas/shell-sessions.ts` carries a copy of `CodemanSessionOrder` and a parity test, because the canvas bundle cannot load `constants.js`.
+- **Go to** lists sessions and the other workspaces for an empty query and adds objects once something is typed. Each group is bounded at eight. The current workspace is not a result.
+- **New workspace** offers local cases that answered and have no canvas. Remote and Docker cases stay in the classic view, one link away.
+- **The notice line** (added to the scope by the coordinator; "Risks" had it as a follow-up): one line, most pressing first: sessions to rebuild, a due security notice, a release not yet seen. "Update available" was asked for and is not built: the server has no stored answer and would have to ask GitHub on every canvas load. The line says "Codeman was updated" instead, from data already on the page's origin.
+- **Reboot notice** is that same line, in the outline, not in `#notice` as "Canvas bundle changes" item 9 says: `#notice` is the connection status and is overwritten by it.
+- **Settings (classic)** is `classic?open=settings`; the dashboard opens App Settings after the server's settings load and drops the parameter. Shell on only, so nothing changes with the shell off.
+- **A terminal row navigates to the session's page** in this part. Part 3 frames it on a laptop.
+- **Offline** uses the canvas's existing connection state. The last session list stays, marked as last known.

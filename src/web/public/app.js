@@ -1342,6 +1342,9 @@ class CodemanApp {
     this.setupOnlineDetection();
     // Load server-stored settings (async, re-applies visibility after load)
     this.loadAppSettingsFromServer(settingsPromise).then(() => {
+      // Canvas shell (PC13): `classic?open=settings` opens App Settings once the
+      // server's values are in the form's source, never before.
+      this._takeShellOpenRequest();
       this.applyHeaderVisibilitySettings();
       this.applySkin();
       this.applyLocalization();
@@ -2126,6 +2129,23 @@ class CodemanApp {
   // dashboard never navigates by itself: both controls are plain links.
   // Every string is fixed here; nothing from the address reaches the DOM.
   // ══════════════════════════════════════════════════════════════════════
+
+  /**
+   * `?open=settings`, the address of the canvas's **Settings (classic)** link:
+   * open App Settings and drop the parameter, so a reload does not open it
+   * again. Honoured only while the shell is on, on the dashboard itself.
+   */
+  _takeShellOpenRequest() {
+    const shell = typeof window !== 'undefined' ? window.__CODEMAN_SHELL__ : null;
+    if (!shell || shell.on !== true || this.isSoloWindow) return;
+    let params;
+    try { params = new URLSearchParams(location.search); } catch { return; }
+    if (params.get('open') !== 'settings') return;
+    params.delete('open');
+    const rest = params.toString();
+    try { history.replaceState(history.state, '', location.pathname + (rest ? `?${rest}` : '') + location.hash); } catch {}
+    if (typeof this.openAppSettings === 'function') this.openAppSettings();
+  }
 
   _initCanvasShell() {
     const shell = typeof window !== 'undefined' ? window.__CODEMAN_SHELL__ : null;

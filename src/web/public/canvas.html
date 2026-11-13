@@ -99,7 +99,35 @@
     <aside id="outline" aria-label="Workspace outline">
       <div class="panel-head">
         <span id="workspaceName">Canvas</span
+        ><button
+          id="workspaceSwitch"
+          class="shell-only"
+          aria-expanded="false"
+          aria-controls="workspaceList"
+          title="Workspaces · W"
+        >
+          Canvas</button
         ><button id="closeOutline" aria-label="Close outline" title="Close outline"></button>
+      </div>
+      <div id="workspaceList" class="shell-only shell-list" hidden>
+        <p id="workspaceListState" class="shell-note" role="status" hidden></p>
+        <button id="workspaceListRetry" hidden>Try again</button>
+        <ul id="workspaceRows" aria-label="Workspaces"></ul>
+        <button id="newWorkspace" aria-expanded="false" aria-controls="newWorkspaceForm">New workspace</button>
+        <div id="newWorkspaceForm" hidden>
+          <p id="caseRowsTitle" class="goto-title" hidden>Open the canvas of a case</p>
+          <ul id="caseRows" aria-labelledby="caseRowsTitle"></ul>
+          <label class="sr" for="newCaseName">New case name</label
+          ><input
+            id="newCaseName"
+            placeholder="New case name"
+            autocomplete="off"
+            maxlength="100"
+            aria-describedby="newCaseReason"
+          /><button id="createCase">Create</button>
+          <p id="newCaseReason" class="shell-note" role="status"></p>
+          <a id="moreCases" href="classic">Link, clone, remote and Docker cases are in the classic view</a>
+        </div>
       </div>
       <nav id="viewPath" aria-label="Open sub-canvas" hidden></nav>
       <div class="search-wrap">
@@ -111,9 +139,25 @@
           ×</button
         ><kbd class="search-hint" aria-hidden="true">/</kbd>
       </div>
+      <div id="gotoResults" class="shell-only" aria-label="Go to results" hidden></div>
+      <section id="sessions" class="shell-only" aria-labelledby="sessionsTitle">
+        <div class="section-head">
+          <h2 id="sessionsTitle">Sessions</h2>
+          <button id="newSession" aria-expanded="false" aria-controls="newSessionList">New session</button>
+        </div>
+        <div id="newSessionList" class="shell-list" hidden></div>
+        <p id="newSessionReason" class="shell-note" role="status"></p>
+        <p id="sessionsState" class="shell-note" hidden></p>
+        <button id="sessionsRetry" hidden>Try again</button>
+        <ul id="sessionRows" aria-labelledby="sessionsTitle"></ul>
+        <p id="sessionsAnnounce" class="sr" role="status"></p>
+      </section>
       <nav id="tree" aria-label="Canvas objects"></nav>
+      <p id="shellLine" class="shell-only" hidden><a id="shellLineLink" href="classic"></a></p>
       <div class="outline-foot">
         <button id="outlineHistory">History</button><button id="outlineKeys">Keys <kbd>?</kbd></button>
+        <a id="classicView" class="shell-only" href="classic">Classic view</a
+        ><a id="classicSettings" class="shell-only" href="classic?open=settings">Settings (classic)</a>
       </div>
     </aside>
     <button id="openOutline" aria-label="Open outline" title="Open outline"></button>

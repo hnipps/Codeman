@@ -8,6 +8,11 @@ export interface CanvasSession {
   /** Set while the agent in the pane has exited; the pane itself may still exist. */
   paneExit?: unknown;
   mode?: string;
+  /** What the shell's Sessions section shows of a session; each is absent on a stand-in that has none. */
+  readonly name?: string;
+  readonly status?: string;
+  readonly lastActivityAt?: number;
+  readonly lastSubmitAt?: number;
   writeViaMux?(data: string, options?: { fromUser?: boolean }): Promise<boolean>;
   /** The rendered pane (styled when asked), or null when there is none to read. */
   paneSnapshot?(styles?: boolean): string | null;

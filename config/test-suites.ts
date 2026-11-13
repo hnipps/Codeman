@@ -29,6 +29,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/canvas-voice.browser.test.ts',
   'test/canvas-tasks.browser.test.ts',
   'test/canvas-shell.browser.test.ts',
+  'test/canvas-shell-outline.browser.test.ts',
   'test/mermaid-renderer.browser.test.ts',
   'test/command-palette-agent-arrows.browser.test.ts',
   'test/tmux-capture-sgr.browser.test.ts',

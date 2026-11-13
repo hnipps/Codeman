@@ -5,7 +5,7 @@ import { command, initialView, subcanvasIndex, viewPath, type ViewCommand, type 
 import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
-import { shortcutAllowed, shortcuts, editShortcuts } from './shortcuts.js';
+import { shortcutAllowed, shortcuts, editShortcuts, shellShortcuts } from './shortcuts.js';
 import { outline, siblings, worldBounds } from './tree.js';
 import { hit, union, type Point, type Rect } from './viewport.js';
 import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } from './mobile.js';
@@ -20,6 +20,8 @@ import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
 import type { ViewAction } from '../../../src/canvas/view-schema.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
+import { ShellView } from './shell-view.js';
+import type { SessionViewRow } from './sessions.js';
 
 declare global {
   interface Window {
@@ -575,7 +577,11 @@ const keyNames: Record<string, string> = {
   '↓': 'Down arrow',
   '⌘': 'Command',
 };
-for (const [action, alternatives, later] of [...shortcuts, ...(mobile.matches ? [] : editShortcuts)]) {
+for (const [action, alternatives, later] of [
+  ...shortcuts,
+  ...(shell && !mobile.matches ? shellShortcuts : []),
+  ...(mobile.matches ? [] : editShortcuts),
+]) {
   const row = document.createElement('div'),
     title = document.createElement('span'),
     hints = document.createElement('span');
@@ -857,6 +863,22 @@ document.addEventListener('keydown', (e) => {
     toggleTasks();
     return;
   }
+  // Go to: from anywhere on the page except a field other than the outline's search.
+  if (
+    shellView &&
+    e.key.toLowerCase() === 'k' &&
+    !e.shiftKey &&
+    ((e.altKey && !e.metaKey && !e.ctrlKey) || (!e.altKey && (e.metaKey || e.ctrlKey))) &&
+    !(
+      e.target instanceof Element &&
+      e.target !== input('search') &&
+      e.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')
+    )
+  ) {
+    e.preventDefault();
+    if (!e.repeat) shellView.openGoto();
+    return;
+  }
   if (!scope(e)) return;
   if (e.key === 'Escape') {
     // Escape clears the selection first; with nothing selected it leaves an open sub-canvas.
@@ -940,6 +962,10 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       openAssistant(false);
       requestAnimationFrame(() => assistant.focusChoice(e.shiftKey ? 'model' : 'provider'));
+    } else if (shellView && (key === 's' || key === 'w') && !e.shiftKey && !e.repeat) {
+      e.preventDefault();
+      if (key === 's') shellView.focusSessions();
+      else shellView.toggleWorkspaces();
     } else if (key === 'v' || key === 'h') dispatch({ kind: 'tool', tool: key === 'v' ? 'select' : 'pan' });
   }
 });
@@ -1115,6 +1141,40 @@ window.canvasComments = {
     return comments.post();
   },
 };
+/**
+ * What a Sessions row opens. A conversation opens in the assistant and a task in the task list, as the rail built
+ * them; a terminal, and Open terminal on any row, is the session's own page. The canvas sends that page nothing.
+ */
+function openSessionRow(row: SessionViewRow, how: 'row' | 'terminal'): void {
+  if (how === 'row' && row.kind === 'conversation' && row.conversationId) {
+    openAssistant(false);
+    assistant.showConversation(row.conversationId);
+    return;
+  }
+  if (how === 'row' && row.kind === 'task') {
+    if (state.rail.at(-1) !== 'tasks') toggleTasks();
+    return;
+  }
+  location.assign(url(`/session/${encodeURIComponent(row.id)}?from=canvas&ws=${encodeURIComponent(workspaceId)}`));
+}
+const shellView = shell
+  ? new ShellView({
+      url,
+      workspaceId,
+      objects: () => inView().map((o) => ({ id: o.id, label: label(o) })),
+      focusObject: (id) => choose(id, false, true),
+      openOutline: () => {
+        if (!state.outlineOpen) dispatch({ kind: 'outline', open: true });
+      },
+      openSession: (row, how) => openSessionRow(row, how),
+      navigate: (href) => location.assign(new URL(href, document.baseURI).href),
+      named: (name) => {
+        node('workspaceName').textContent = name;
+        document.title = `${name} · Canvas`;
+        paintViewPath();
+      },
+    })
+  : null;
 const sync = new CanvasSync(
   url,
   workspaceId,
@@ -1127,6 +1187,7 @@ const sync = new CanvasSync(
   },
   (status) => {
     editor.online(status === 'ready');
+    shellView?.setOnline(status !== 'offline');
     node('notice').hidden = status !== 'offline';
     node('notice').textContent = 'Connection lost. Your canvas is still here; reconnecting…';
     if (status === 'error' || status === 'loading') {
@@ -1158,7 +1219,10 @@ for (const name of [
   sync.on(name, (data) => {
     assistant.event(name, data);
     tasks.event(name, data);
+    shellView?.event();
   });
+// The Sessions section also hears a session being made or changed; the rail views do not need those.
+if (shellView) for (const name of ['session:created', 'session:updated']) sync.on(name, () => shellView.event());
 // A saved copy of this page, served while the server could not be reached for an address that asks for the
 // classic view: say so and wait for the person. The boot guard never navigates from here.
 if (shellStale()) {
@@ -1170,20 +1234,23 @@ if (shellStale()) {
 } else {
   button('retry').onclick = () => void sync.start();
   void sync.start();
+  shellView?.start();
 }
-void fetch(url('/api/canvas/workspaces'))
-  .then((r) => r.json())
-  .then((data: unknown) => {
-    if (typeof data !== 'object' || data === null || !('data' in data)) return;
-    // Workspace names are optional presentation data; object loading remains independent.
-    const parsed = workspaceNames.safeParse(data);
-    const name = parsed.success ? parsed.data.data.workspaces.find((w) => w.id === workspaceId)?.caseName : undefined;
-    if (name) {
-      node('workspaceName').textContent = name;
-      document.title = `${name} · Canvas`;
-    }
-  })
-  .catch(() => {});
+// On a shell page the workspace list names the workspace itself (`ShellView.loadWorkspaces`).
+if (!shellView)
+  void fetch(url('/api/canvas/workspaces'))
+    .then((r) => r.json())
+    .then((data: unknown) => {
+      if (typeof data !== 'object' || data === null || !('data' in data)) return;
+      // Workspace names are optional presentation data; object loading remains independent.
+      const parsed = workspaceNames.safeParse(data);
+      const name = parsed.success ? parsed.data.data.workspaces.find((w) => w.id === workspaceId)?.caseName : undefined;
+      if (name) {
+        node('workspaceName').textContent = name;
+        document.title = `${name} · Canvas`;
+      }
+    })
+    .catch(() => {});
 import { z } from 'zod';
 const workspaceNames = z.object({
   data: z.object({ workspaces: z.array(z.object({ id: z.string(), caseName: z.string() })) }),
@@ -1192,6 +1259,7 @@ window.addEventListener(
   'pagehide',
   () => {
     sync.stop();
+    shellView?.stop();
     views.stop();
     assistant.stop();
     tasks.stop();
