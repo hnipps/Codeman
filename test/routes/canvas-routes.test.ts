@@ -81,6 +81,91 @@ describe('canvas routes', () => {
       await app.close();
     }
   });
+  describe.each(['human', 'agent'] as const)('repeated history on one object by a %s', (caller) => {
+    async function fixture(name: string) {
+      const workspace = workspaceForCase(`${name}-${caller}`, 'user-a');
+      const { app, port } = await harness();
+      const store = (await port.canvasStores()).get(workspace.id);
+      store.append([create('a')], human);
+      for (const id of ['session-a', 'session-b'])
+        port.sessions.set(id, {
+          id,
+          owner: 'user-a',
+          workingDir: join(resolveCasesDir({ username: 'user-a', role: 'user' }), `${name}-${caller}`),
+        });
+      const send = (session: string | null, tool: string, args: unknown) =>
+        app.inject({
+          method: 'POST',
+          url: session ? '/api/canvas/current/command' : `/api/canvas/${workspace.id}/command`,
+          headers: session ? { 'x-codeman-parent-session': session } : {},
+          payload: { tool, arguments: args },
+        });
+      const own = caller === 'agent' ? 'session-a' : null;
+      const resize = async (opId: string, width: number) => {
+        const response = await send(own, 'canvas_update', {
+          operations: [{ kind: 'update', opId, objectId: 'a', patch: { size: { width, height: 80 } } }],
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        return response.json().data.sequences as number[];
+      };
+      const history = (action: 'undo' | 'redo', sequences: number[]) =>
+        send(own, 'canvas_history', { action, sequences });
+      const stepped = async (action: 'undo' | 'redo', sequences: number[], width: number) => {
+        const response = await history(action, sequences);
+        expect(response.statusCode, response.body).toBe(200);
+        expect(store.read().objects.a.size).toEqual({ width, height: 80 });
+        return response.json().data.sequences as number[];
+      };
+      return { app, store, send, resize, history, stepped, other: caller === 'agent' ? null : 'session-b' };
+    }
+    it('undoes twice, redoes twice and undoes again', async () => {
+      const { app, resize, stepped } = await fixture('undo-twice');
+      try {
+        const first = await resize('r1', 200);
+        const second = await resize('r2', 300);
+        const undoSecond = await stepped('undo', second, 200);
+        const undoFirst = await stepped('undo', first, 100);
+        const redoFirst = await stepped('redo', undoFirst, 200);
+        const redoSecond = await stepped('redo', undoSecond, 300);
+        await stepped('undo', redoSecond, 200);
+        await stepped('undo', redoFirst, 100);
+      } finally {
+        await app.close();
+      }
+    });
+    it('undoes one edit again after its redo', async () => {
+      const { app, resize, stepped } = await fixture('undo-again');
+      try {
+        const first = await resize('r1', 200);
+        const undone = await stepped('undo', first, 100);
+        await stepped('redo', undone, 200);
+        const again = await stepped('undo', first, 100);
+        expect(again).not.toEqual(undone);
+      } finally {
+        await app.close();
+      }
+    });
+    it('still refuses an older edit after someone else changed the object', async () => {
+      const { app, store, send, resize, history, stepped, other } = await fixture('undo-foreign');
+      try {
+        const first = await resize('r1', 200);
+        const second = await resize('r2', 300);
+        await stepped('undo', second, 200);
+        const foreign = await send(other, 'canvas_update', {
+          operations: [{ kind: 'move', opId: 'foreign', objectId: 'a', patch: { position: { x: 5, y: 5 } } }],
+        });
+        expect(foreign.statusCode, foreign.body).toBe(200);
+        const log = readFileSync(store.logPath, 'utf8');
+        const response = await history('undo', first);
+        expect(response.statusCode).toBe(409);
+        expect(response.json().reasons).toContainEqual(expect.objectContaining({ code: 'REVISION', objectId: 'a' }));
+        expect(readFileSync(store.logPath, 'utf8')).toBe(log);
+        expect(store.read().objects.a).toMatchObject({ size: { width: 200, height: 80 }, position: { x: 5, y: 5 } });
+      } finally {
+        await app.close();
+      }
+    });
+  });
   it.each(['group', 'restore', 'redo'] as const)(
     'refuses %s history with later agent descendants atomically',
     async (variant) => {

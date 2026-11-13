@@ -210,6 +210,44 @@ describe('canvas shell: the session full view', () => {
     ).toEqual([]);
   }, 60000);
 
+  it('keeps the shell keys working from the session row a closed full view returns focus to', async () => {
+    const id = await start('alpha-keys');
+    await open();
+    await row(id).waitFor();
+    const active = () =>
+      page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        return el?.dataset.sessionId ?? el?.id ?? null;
+      });
+    await page.locator('#board').focus();
+    await page.keyboard.press('s');
+    await vi.waitFor(async () => expect(await active()).toBe(id));
+    await page.keyboard.press('Enter');
+    const frame = await sessionPage(id);
+    await frame.locator('.xterm-helper-textarea').focus();
+    await page.keyboard.press('Control+Shift+Backspace');
+    await frames().waitFor({ state: 'detached' });
+    expect(await active()).toBe(id);
+
+    await page.keyboard.press('w');
+    await page.locator('#workspaceList').waitFor({ state: 'visible', timeout: 5000 });
+    await page.keyboard.press('Escape');
+    await page.locator('#workspaceList').waitFor({ state: 'hidden' });
+    expect(await active()).toBe('workspaceSwitch');
+    await page.keyboard.press('s');
+    await vi.waitFor(async () => expect(await active()).toBe(id));
+    // Board keys stay the board's: a letter that is not the shell's does nothing from a row.
+    const before = await view();
+    for (const key of ['c', 'g', 'h', 'x']) await page.keyboard.press(key);
+    expect(await view()).toEqual(before);
+    expect(await frames().count()).toBe(0);
+    await page.keyboard.press('Escape');
+    expect(await active()).toBe('board');
+    await page.keyboard.press('w');
+    await page.locator('#workspaceList').waitFor({ state: 'visible', timeout: 5000 });
+    await page.keyboard.press('Escape');
+  }, 60000);
+
   it('closes from the Canvas button and from Escape on the canvas page, and never holds two frames', async () => {
     const first = await start('one');
     const second = await start('two');
