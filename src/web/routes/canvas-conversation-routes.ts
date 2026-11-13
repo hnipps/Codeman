@@ -63,29 +63,31 @@ import {
   readConversations,
   recordMessage,
   setMessageReply,
+  setTaskHint,
   sha256,
 } from '../../canvas/conversations.js';
+import { cutResult, deriveTaskState, isolationLabel, taskPart, type TaskState } from '../../canvas/tasks.js';
 import type { Author } from '../../canvas/model.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
 
 export type Outcome = { code: number; body: unknown };
-const ok = (data: unknown): Outcome => ({ code: 200, body: { success: true, data } });
-const refuse = (code: number, errorCode: ApiErrorCode, message: string): Outcome => ({
+export const ok = (data: unknown): Outcome => ({ code: 200, body: { success: true, data } });
+export const refuse = (code: number, errorCode: ApiErrorCode, message: string): Outcome => ({
   code,
   body: createErrorResponse(errorCode, message),
 });
-const conflict = (message: string): Outcome => refuse(409, ApiErrorCode.CONFLICT, message);
-const notFound = (message: string): Outcome => refuse(404, ApiErrorCode.NOT_FOUND, message);
+export const conflict = (message: string): Outcome => refuse(409, ApiErrorCode.CONFLICT, message);
+export const notFound = (message: string): Outcome => refuse(404, ApiErrorCode.NOT_FOUND, message);
 
 /** Writes need the live colour, and only the workspace's own owner may start or message a conversation. */
-async function writeGuard(req: FastifyRequest, workspaceId: string): Promise<Outcome | Workspace> {
+export async function writeGuard(req: FastifyRequest, workspaceId: string): Promise<Outcome | Workspace> {
   if (!deployRole.allows('persist')) return conflict('Only the live colour may write canvas data');
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const workspace = readWorkspaces().find((w) => w.id === workspaceId);
   if (!workspace || workspace.owner !== ownerFor(req)) return notFound('Workspace not found');
   return workspace;
 }
-const isOutcome = (value: Outcome | Workspace): value is Outcome => 'code' in value;
+export const isOutcome = (value: Outcome | Workspace): value is Outcome => 'code' in value;
 
 /** Session state as the rail shows it. A session that ended is still a conversation; it just cannot take messages. */
 function sessionState(ctx: CanvasPort, req: FastifyRequest, sessionId: string): 'live' | 'ended' {
@@ -95,9 +97,26 @@ function sessionState(ctx: CanvasPort, req: FastifyRequest, sessionId: string): 
 }
 const sessionBusy = (session: { hookTurnRunning?: boolean; isWorking?: boolean } | undefined): boolean =>
   session?.hookTurnRunning === true || session?.isWorking === true;
-const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
+/** A task's state from what the server holds now. `canSee` is false for a session the caller may not read, which is then as good as gone. */
+export function taskStateOf(ctx: CanvasPort, c: Conversation, canSee = true): TaskState | undefined {
+  const task = taskPart(c);
+  if (!task) return undefined;
+  const session = canSee ? ctx.sessions.get(c.sessionId) : undefined;
+  const message = c.messages.find((m) => m.messageId === task.messageId);
+  const pending = session ? approvalInbox.getForSession(session.id) : undefined;
+  return deriveTaskState({
+    cancelledAt: task.cancelledAt,
+    completedAt: task.completedAt,
+    message: message ? messageState(message) : 'none',
+    session: !session ? 'gone' : session.paneExit ? 'exited' : 'live',
+    approval: !!pending && pending.kind !== 'idle',
+  });
+}
+export const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
   const origin = threadOrigin(c);
   const requests = threadRequests(c);
+  const task = taskPart(c);
+  const visible = canAccessOwned(getAuthUser(req), ctx.sessions.get(c.sessionId)?.owner);
   return {
     id: c.id,
     sessionId: c.sessionId,
@@ -112,6 +131,16 @@ const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
     working: sessionBusy(ctx.sessions.get(c.sessionId)),
     ...(origin ? { origin } : {}),
     ...(requests.length ? { requests } : {}),
+    ...(task
+      ? {
+          task: {
+            name: task.name,
+            state: taskStateOf(ctx, c, visible),
+            isolation: isolationLabel(task.isolation),
+            ...(task.removedAt !== undefined ? { removed: true } : {}),
+          },
+        }
+      : {}),
   };
 };
 /** The requests a conversation took from comment threads: what a thread needs to show a request's state without the transcript. */
@@ -144,11 +173,58 @@ export function listConversations(ctx: CanvasPort, req: FastifyRequest, workspac
   for (const c of file.conversations) reconcileReplies(ctx, workspaceId, c);
   return ok({ conversations: file.conversations.map((c) => summary(ctx, req, c)) });
 }
-export function readConversation(ctx: CanvasPort, req: FastifyRequest, workspaceId: string, id: string): Outcome {
+export async function readConversation(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  id: string
+): Promise<Outcome> {
   const conversation = findConversation(workspaceId, id);
   if (!conversation) return notFound('Conversation not found');
   reconcileReplies(ctx, workspaceId, conversation);
-  return ok({ conversation: { ...summary(ctx, req, conversation), messages: conversation.messages } });
+  const view = summary(ctx, req, conversation);
+  const result = view.task ? await taskResult(ctx, req, conversation) : undefined;
+  return ok({
+    conversation: {
+      ...view,
+      ...(view.task && result ? { task: { ...view.task, result } } : {}),
+      messages: conversation.messages,
+    },
+  });
+}
+/** Result texts already cut for the list, by conversation and transcript stamp, so an unchanged transcript is not read again. */
+const results = new Map<string, { stamp: string; result: { text: string; truncated: boolean } }>();
+const MAX_RESULTS = 200;
+/**
+ * A completed task's result: the reply to its own message, read from the session's transcript the way a thread
+ * reply is. Nothing for a task that is not completed, a session the caller may not read, or a transcript that is gone.
+ */
+export async function taskResult(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  c: Conversation
+): Promise<{ text: string; truncated: boolean } | undefined> {
+  const task = taskPart(c);
+  const session = ctx.sessions.get(c.sessionId);
+  if (!task || task.completedAt === undefined || !session || !ctx.transcriptRows) return undefined;
+  if (!canAccessOwned(getAuthUser(req), session.owner)) return undefined;
+  const stamp = (await ctx.transcriptStamp?.(session.id).catch(() => null)) ?? null;
+  const cached = results.get(c.id);
+  if (stamp !== null && cached?.stamp === stamp) return cached.result;
+  const rows = await ctx.transcriptRows(session.id).catch(() => null);
+  if (!rows) return undefined;
+  const found = extractReply(rows, task.messageId);
+  if (!found.found) return undefined;
+  const result = cutResult(found.text);
+  if (stamp !== null) {
+    results.delete(c.id);
+    results.set(c.id, { stamp, result });
+    for (const oldest of results.keys()) {
+      if (results.size <= MAX_RESULTS) break;
+      results.delete(oldest);
+    }
+  }
+  return result;
 }
 
 const awaitsReply = (m: ConversationMessage): boolean => {
@@ -156,9 +232,23 @@ const awaitsReply = (m: ConversationMessage): boolean => {
   const reply = threadReply(m);
   return reply === undefined || replyExtendable(reply);
 };
-/** Asked from a thread and still on its way into the pane: its turn can end before the delivery is confirmed. */
-const beingDelivered = (m: ConversationMessage): boolean =>
-  threadOrigin(m) !== undefined && threadReply(m) === undefined && ['queued', 'sending'].includes(messageState(m));
+/** A task's own message whose turn end is not recorded yet: settled by the same rule as a thread reply. */
+const taskPending = (c: Conversation, m: ConversationMessage): boolean => {
+  const task = taskPart(c);
+  return (
+    !!task &&
+    task.messageId === m.messageId &&
+    task.completedAt === undefined &&
+    task.cancelledAt === undefined &&
+    task.removedAt === undefined
+  );
+};
+const awaitsResult = (c: Conversation, m: ConversationMessage): boolean =>
+  taskPending(c, m) && messageState(m) === 'delivered';
+/** Asked from a thread, or a task's request, and still on its way into the pane: its turn can end before the delivery is confirmed. */
+const beingDelivered = (c: Conversation, m: ConversationMessage): boolean =>
+  ((threadOrigin(m) !== undefined && threadReply(m) === undefined) || taskPending(c, m)) &&
+  ['queued', 'sending'].includes(messageState(m));
 const textHash = (text: string): string => sha256(text).slice(0, 32);
 /** Timing of reply routing; a test shortens it. */
 export const replyRouting = {
@@ -183,6 +273,8 @@ const rememberIdlePass = (conversationId: string, key: string): void => {
     idlePasses.delete(oldest);
   }
 };
+/** Forgets every cached task result (tests). */
+export const forgetTaskResults = (): void => results.clear();
 /** Resolves when every reply being routed has been (tests). */
 export const settleReplies = async (): Promise<void> => {
   while (replyChains.size || replyRetries.size) await Promise.all([...replyChains.values(), ...replyRetries]);
@@ -195,14 +287,19 @@ export const forgetReplyPasses = (): void => idlePasses.clear();
  * recorded origin decides where a reply goes. A stop that finds the session still working tries again a few times,
  * because idle detection lags the hook and nothing else would run with no browser open.
  */
-function reconcileReplies(
+export function reconcileReplies(
   ctx: CanvasPort,
   workspaceId: string,
   conversation: Conversation,
   retries: number[] = []
 ): void {
   if (!deployRole.allows('persist') || !ctx.transcriptRows) return;
-  if (!conversation.messages.some((m) => awaitsReply(m) || beingDelivered(m))) return;
+  if (
+    !conversation.messages.some(
+      (m) => awaitsReply(m) || awaitsResult(conversation, m) || beingDelivered(conversation, m)
+    )
+  )
+    return;
   const run = () => routeReplies(ctx, workspaceId, conversation.id).catch(() => 'done' as const);
   const job = (replyChains.get(workspaceId) ?? Promise.resolve()).then(run, run);
   const settled = job.then(() => undefined);
@@ -225,7 +322,9 @@ function reconcileReplies(
 }
 type Candidate = {
   message: ConversationMessage;
-  origin: ThreadOrigin;
+  /** Absent for a task's request that was not asked from a thread: its turn end is recorded and nothing is posted. */
+  origin: ThreadOrigin | undefined;
+  result: boolean;
   text: string;
   shared: boolean;
   prior: PostedThreadReply | undefined;
@@ -236,10 +335,10 @@ type Candidate = {
  */
 async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId: string): Promise<'done' | 'working'> {
   const conversation = findConversation(workspaceId, conversationId);
-  const waiting = conversation?.messages.filter(awaitsReply) ?? [];
   if (!conversation) return 'done';
+  const waiting = conversation.messages.filter((m) => awaitsReply(m) || awaitsResult(conversation, m));
   // A stop that came before the delivery was confirmed is looked at again once it is.
-  if (!waiting.length) return conversation.messages.some(beingDelivered) ? 'working' : 'done';
+  if (!waiting.length) return conversation.messages.some((m) => beingDelivered(conversation, m)) ? 'working' : 'done';
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const owner = readWorkspaces().find((w) => w.id === workspaceId)?.owner;
   const now = Date.now();
@@ -258,8 +357,17 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
   };
   /** Nothing more is posted for this request: a reply already posted stays as it is, otherwise the reason is kept. */
   const close = (message: ConversationMessage, drop: ReplyDrop): void => {
+    if (!awaitsReply(message)) return;
     const prior = priorOf(message);
     record(message, prior ? { ...prior, final: true } : { dropped: drop });
+  };
+  /** The task's turn is provably over: the one observation its state needs that cannot be derived when it is read. */
+  const complete = (): void => {
+    try {
+      changed = setTaskHint(workspaceId, conversationId, { completedAt: Date.now() }) || changed;
+    } catch {
+      /* A record that cannot be saved is settled by the next pass. */
+    }
   };
   const finish = (outcome: 'done' | 'working'): 'done' | 'working' => {
     if (changed) {
@@ -291,8 +399,9 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
   const candidates: Candidate[] = [];
   let again = false;
   for (const message of waiting) {
-    const origin = threadOrigin(message);
-    if (!origin) continue;
+    const origin = awaitsReply(message) ? threadOrigin(message) : undefined;
+    const result = awaitsResult(conversation, message);
+    if (!origin && !result) continue;
     const prior = priorOf(message);
     const found = extractReply(rows, message.messageId);
     if (!found.found) {
@@ -322,10 +431,12 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
       if (!found.text) continue;
     }
     if (!found.text) {
+      // A turn a later prompt closed is over with nothing said; an agent that exited mid-turn is a failure the state derives.
+      if (result && found.closed) complete();
       close(message, ended && !found.closed ? 'session-ended' : 'no-reply');
       continue;
     }
-    candidates.push({ message, origin, text: found.text, shared: found.shared, prior });
+    candidates.push({ message, origin, result, text: found.text, shared: found.shared, prior });
   }
   if (!candidates.length) {
     if (!changed && stamp !== null && !again) rememberIdlePass(conversationId, key);
@@ -335,7 +446,7 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
   await new Promise<void>((resolve) => setTimeout(resolve, replyRouting.settleDelayMs));
   const second = await ctx.transcriptRows?.(session.id);
   if (!second || !deployRole.allows('persist')) return finish('done');
-  for (const { message, origin, text, shared, prior } of candidates) {
+  for (const { message, origin, result, text, shared, prior } of candidates) {
     const reread = extractReply(second, message.messageId);
     if (!reread.found || reread.text !== text || reread.shared !== shared) {
       again = true;
@@ -346,6 +457,8 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
       again = true;
       continue;
     }
+    if (result) complete();
+    if (!origin) continue;
     const part = (prior?.parts ?? 0) + 1;
     const last = over || part >= MAX_REPLY_PARTS;
     const added = text.slice(prior?.chars ?? 0).trim();
@@ -444,8 +557,12 @@ export async function createConversation(
     );
   const workspace = await writeGuard(req, workspaceId);
   if (isOutcome(workspace)) return workspace;
+  return serialCreate(workspaceId, () => start(ctx, req, workspace, body));
+}
+/** Runs one create of a workspace after the ones before it; conversations and background tasks share the queue and its caps. */
+export function serialCreate<T>(workspaceId: string, run: () => Promise<T>): Promise<T> {
   const previous = createChains.get(workspaceId) ?? Promise.resolve();
-  const work = previous.then(() => start(ctx, req, workspace, body));
+  const work = previous.then(run);
   const tail = work.catch(() => undefined);
   createChains.set(workspaceId, tail);
   void tail.then(() => {
@@ -454,7 +571,7 @@ export async function createConversation(
   return work;
 }
 /** A Docker or remote case runs its agent elsewhere; the plain create route would run Claude on this host instead. */
-async function caseRunsElsewhere(req: FastifyRequest, caseName: string): Promise<boolean> {
+export async function caseRunsElsewhere(req: FastifyRequest, caseName: string): Promise<boolean> {
   const user = getAuthUser(req);
   const same = (c: { name: string; owner?: string }) => c.name === caseName && canAccessOwned(user, c.owner);
   return (await readDockerCases(getDataDir())).some(same) || (await readRemoteCases(getDataDir())).some(same);
@@ -485,7 +602,7 @@ export function checkChoice(rows: readonly ProviderRow[], cliId: string, model: 
  * One that names a CLI must name an enabled, installed agent that delivery can confirm, and a model id that CLI's
  * launch accepts. Refusals are stated, never replaced by another CLI.
  */
-async function resolveLaunch(
+export async function resolveLaunch(
   cliId: string | undefined,
   model: string | undefined
 ): Promise<{ ok: true; entryId: string; model: string; launch: Record<string, unknown> } | Outcome> {
@@ -614,8 +731,19 @@ function enqueue(
   const run = async (): Promise<void> => {
     // A newer message never goes in behind one that may still be sitting in the composer.
     if (!retry && stuck.has(key)) return set('failed');
+    // A task cancelled while its request waited is never written to the pane.
+    const cancelled = (): boolean => {
+      const current = findConversation(workspace.id, conversation.id);
+      return current !== undefined && taskPart(current)?.cancelledAt !== undefined;
+    };
+    if (cancelled()) return set('failed');
     set('sending');
-    const deps = deliveryDeps(session, composed);
+    const base = deliveryDeps(session, composed);
+    const deps: DeliveryDeps = {
+      ...base,
+      paste: async () => (cancelled() ? false : base.paste()),
+      abandoned: cancelled,
+    };
     let result: DeliveryResult;
     try {
       const plan = retry ? retryPlan(deps.snapshot(), deps.glyph, deps.hookAt(), message.sentAt) : ('paste' as const);
@@ -666,6 +794,9 @@ export async function sendMessage(
     const file = readConversations(workspaceId);
     if (file.ok && file.conversations.some((c) => c.sessionId === author.sessionId))
       return conflict('An agent running in a conversation cannot message a conversation');
+    // A task is a person's request to its own session: an agent may read it, never steer it.
+    if (taskPart(conversation))
+      return refuse(403, ApiErrorCode.FORBIDDEN, 'A background task takes messages only from a person');
   }
 
   // A session that is gone is a conflict the rail words; one the caller may not see is simply not found.
@@ -791,7 +922,7 @@ export function registerConversationRoutes(scope: FastifyInstance, ctx: CanvasPo
   });
   scope.get('/api/canvas/:workspaceId/conversations/:conversationId', async (req, reply) => {
     const p = params.parse(req.params);
-    const outcome = readConversation(ctx, req, p.workspaceId, p.conversationId);
+    const outcome = await readConversation(ctx, req, p.workspaceId, p.conversationId);
     return reply.code(outcome.code).send(outcome.body);
   });
   scope.post<{ Params: { workspaceId: string } }>(

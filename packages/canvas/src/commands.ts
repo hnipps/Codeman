@@ -3,7 +3,7 @@ import type { ViewObject } from './model.js';
 import { nextFocus, siblings } from './tree.js';
 import { contextAdd, contextRemove, contextPrune } from './context.js';
 import { pan, zoomAt, pinch, fit, type Point, type Rect, type Viewport } from './viewport.js';
-export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant';
+export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant' | 'tasks';
 export type ViewState = {
   viewport: Viewport;
   focusId: string | null;

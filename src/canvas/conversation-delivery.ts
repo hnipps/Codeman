@@ -61,6 +61,8 @@ export interface DeliveryDeps {
   readyMark: string;
   now(): number;
   sleep(ms: number): Promise<void>;
+  /** The message is no longer wanted (its task was cancelled): stop waiting for a composer and write nothing. */
+  abandoned?(): boolean;
 }
 /** `unverified`: written, but no pane exists to confirm from (a direct PTY); `not-ready`: nothing was written. */
 export type DeliveryResult = 'confirmed' | 'unverified' | 'not-written' | 'not-ready' | 'timeout';
@@ -78,6 +80,7 @@ export async function deliver(
       const screen = deps.snapshot();
       if (screen !== null && composerReady(screen, deps.readyMark) && composerIsEmpty(screen, deps.glyph) !== false)
         break;
+      if (deps.abandoned?.()) return 'not-written';
       if (deps.now() - began >= READY_MAX_MS) return 'not-ready';
       await deps.sleep(POLL_MS);
     }

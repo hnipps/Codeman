@@ -4,7 +4,7 @@ import { IdSchema } from './model.js';
 
 /** One view publishes at most this often, so a pan cannot flood the server. */
 export const MIN_PUBLISH_GAP_MS = 250;
-export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant'] as const;
+export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant', 'tasks'] as const;
 const ViewportSchema = z
   .object({ x: z.number().finite(), y: z.number().finite(), zoom: z.number().min(0.1).max(4) })
   .strict();

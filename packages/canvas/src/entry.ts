@@ -14,6 +14,7 @@ import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
 import { AssistantView } from './assistant.js';
 import { VoiceView } from './voice-view.js';
+import { TasksView } from './tasks-view.js';
 import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
@@ -142,6 +143,29 @@ const assistant: AssistantView = new AssistantView({
   thread: (rows, status, conversationId) => voice.thread(rows, status, conversationId),
   turnEnded: (conversationId) => voice.turnEnded(conversationId),
   voiceRelay: (available) => voice.relayAvailable(available),
+  taskStarted: () => void tasks.refresh(),
+});
+const tasks: TasksView = new TasksView({
+  url,
+  workspace: workspaceId,
+  viewer,
+  objects: () => objects,
+  open: () => state.rail.at(-1) === 'tasks',
+  // The objects a task carried are selected where they are; the camera does not move.
+  select: (ids) => {
+    if (ids[0]) dispatch({ kind: 'focus', id: ids[0] });
+    dispatch({ kind: 'selection', ids });
+  },
+  openThread: (id) => {
+    dispatch({ kind: 'focus', id });
+    dispatch({ kind: 'selection', ids: [id] });
+    reveal(id);
+    dispatch({ kind: 'rail', view: 'thread' });
+  },
+  inspect: (conversationId) => {
+    assistant.showConversation(conversationId);
+    dispatch({ kind: 'rail', view: 'assistant' });
+  },
 });
 const voice: VoiceView = new VoiceView({
   url,
@@ -165,6 +189,7 @@ const icons: Record<string, string> = {
   assistantTool:
     'M10 3l1.8 4.2L16 9l-4.2 1.8L10 15l-1.8-4.2L4 9l4.2-1.8zM15 14l.7 1.3L17 16l-1.3.7L15 18l-.7-1.3L13 16l1.3-.7z',
   chatTool: 'M3 3h14v11H8l-5 4zM6 7h8M6 10h5',
+  tasksTool: 'M3 5h2M8 5h9M3 10h2M8 10h9M3 15h2M8 15h9',
   keys: 'M6 6a4 4 0 1 1 6 4c-2 1-2 2-2 3M10 17h.01',
   closeOutline: 'M13 4l-6 6 6 6',
   openOutline: 'M3 4h14v12H3zM7 4v12',
@@ -394,6 +419,9 @@ function paint(): void {
   node('threadView').hidden = state.rail.at(-1) !== 'thread';
   node('historyView').hidden = state.rail.at(-1) !== 'history';
   node('assistantView').hidden = state.rail.at(-1) !== 'assistant';
+  node('tasksView').hidden = state.rail.at(-1) !== 'tasks';
+  button('tasksTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'tasks'));
+  tasks.sync();
   button('assistantTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'assistant'));
   assistant.paint();
   views.notify();
@@ -417,11 +445,13 @@ function paint(): void {
       ? comments.title(focused?.id ?? null)
       : top === 'assistant'
         ? 'Assistant'
-        : top === 'history'
-          ? 'History'
-          : top === 'reader'
-            ? readerTitle
-            : 'Keys';
+        : top === 'tasks'
+          ? 'Background tasks'
+          : top === 'history'
+            ? 'History'
+            : top === 'reader'
+              ? readerTitle
+              : 'Keys';
   document.documentElement.style.setProperty('--outline-space', state.outlineOpen && !mobile.matches ? '192px' : '0px');
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
@@ -653,6 +683,16 @@ function addSelectionOnPhone(): boolean {
   return true;
 }
 button('assistantTool').onclick = () => (state.rail.at(-1) === 'assistant' ? toggleAssistant() : openAssistant(true));
+/** Opens or closes the background task list. A view only: it starts nothing. */
+function toggleTasks(): void {
+  if (state.rail.at(-1) === 'tasks') dispatch({ kind: 'escape' });
+  else {
+    dispatch({ kind: 'rail', view: 'tasks' });
+    requestAnimationFrame(() => node('tasksView').focus({ preventScroll: true }));
+  }
+}
+button('tasksTool').onclick = toggleTasks;
+button('tasksOpen').onclick = toggleTasks;
 button('addToChat').onclick = addSelectionToChat;
 /** An agent's request to this view. It never moves the human's keyboard focus. */
 function applyViewAction(action: ViewAction): void {
@@ -802,6 +842,15 @@ document.addEventListener('keydown', (e) => {
     else if (target?.type === 'subcanvas') dispatch({ kind: 'enter', id: target.id });
     return;
   }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && !mobile.matches && e.key === 'Enter') {
+    // The drafted request and its context, run as a background task; the rail and the selection stay as they are.
+    e.preventDefault();
+    if (!e.repeat)
+      void assistant.runInBackground().then((result) => {
+        node('announcement').textContent = result.text;
+      });
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && !mobile.matches && (e.key === 'Enter' || e.key === '.')) {
     e.preventDefault();
     if (!e.repeat) {
@@ -855,6 +904,9 @@ document.addEventListener('keydown', (e) => {
     } else if (key === 'c' && !e.repeat && !mobile.matches) {
       e.preventDefault();
       toggleAssistant();
+    } else if (key === 'g' && !e.shiftKey && !e.repeat && !mobile.matches) {
+      e.preventDefault();
+      toggleTasks();
     } else if (key === 'p' && !e.repeat && !mobile.matches) {
       e.preventDefault();
       openAssistant(false);
@@ -1074,7 +1126,10 @@ for (const name of [
   'approval:updated',
   'approval:resolved',
 ])
-  sync.on(name, (data) => assistant.event(name, data));
+  sync.on(name, (data) => {
+    assistant.event(name, data);
+    tasks.event(name, data);
+  });
 button('retry').onclick = () => void sync.start();
 void sync.start();
 void fetch(url('/api/canvas/workspaces'))
@@ -1100,6 +1155,7 @@ window.addEventListener(
     sync.stop();
     views.stop();
     assistant.stop();
+    tasks.stop();
   },
   { once: true }
 );

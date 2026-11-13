@@ -38,6 +38,7 @@ import {
   currentProviders,
   registerConversationRoutes,
 } from './canvas-conversation-routes.js';
+import { registerTaskRoutes } from './canvas-task-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import type { Operation } from '../../canvas/operations.js';
@@ -316,6 +317,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
       });
       registerConversationRoutes(workspaceScope, ctx);
+      registerTaskRoutes(workspaceScope, ctx);
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
         { bodyLimit: 64 * 1024 },

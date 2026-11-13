@@ -1015,8 +1015,8 @@ describe('canvas voice', () => {
     const row = (name: string) => rows.find(([text]) => text.startsWith(name));
     expect(row('Dictate into chat')?.[1]).toBe(false);
     expect(row('Voice conversation in chat')?.[1]).toBe(false);
-    expect(row('Inspect chat background agents')?.[1]).toBe(true);
-    expect(row('Run chat message in the background')?.[1]).toBe(true);
+    expect(row('Inspect chat background agents')?.[1]).toBe(false);
+    expect(row('Run chat message in the background')?.[1]).toBe(false);
     await shot('keys');
   });
 });

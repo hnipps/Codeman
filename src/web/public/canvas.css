@@ -2226,3 +2226,178 @@ textarea[readonly] {
   min-height: 44px;
   min-width: 44px;
 }
+
+/* Background tasks (PC12): Run in background beside Send, a quiet count on the dock, and the task list as a rail view. */
+.composer-actions {
+  flex-wrap: wrap;
+}
+.run-short,
+:root[data-phone] .run-long {
+  display: none;
+}
+/* The phone composer is sticky above the keyboard: its actions stay on one row, so the button's visible word is shorter there. */
+:root[data-phone] .run-short {
+  display: inline;
+}
+:root[data-phone] .composer-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+:root[data-phone] .composer-actions button {
+  flex-shrink: 0;
+  padding-inline: 10px;
+}
+#runBackground:disabled {
+  color: var(--muted);
+}
+.background-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--critical);
+  overflow-wrap: anywhere;
+}
+.background-share {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+.background-share[hidden] {
+  display: none;
+}
+#tasksTool {
+  position: relative;
+}
+#tasksTool[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--raised);
+}
+.dock-count {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  color: var(--secondary);
+  background: var(--raised);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+.dock-count[hidden],
+.task-count[hidden],
+.tasks-open[hidden] {
+  display: none;
+}
+.tasks-open {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  min-height: 28px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+.task-count {
+  margin-left: 6px;
+  color: var(--secondary);
+}
+.task-count::before {
+  content: '· ';
+}
+#taskList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  overscroll-behavior: contain;
+}
+#taskList:empty {
+  display: none;
+}
+.task-row {
+  padding: 12px 0;
+  border-top: 1px solid var(--divider);
+}
+.task-name {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.task-state,
+.task-meta,
+.task-kept,
+.task-note {
+  margin: 2px 0 0;
+  color: var(--secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.task-state[data-state='waiting'] {
+  color: var(--accent);
+}
+.task-state[data-state='failed'],
+.task-note {
+  color: var(--critical);
+}
+.task-state[data-state='running']::after,
+.task-state[data-state='queued']::after {
+  content: '…';
+}
+.task-result {
+  max-height: 180px;
+  margin: 8px 0 0;
+  padding-left: 8px;
+  overflow: auto;
+  border-left: 2px solid var(--divider);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-links,
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 8px;
+}
+.task-links button,
+.task-actions button {
+  max-width: 100%;
+  min-height: 28px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:root[data-phone] #tasksTool {
+  display: none !important;
+}
+:root[data-phone] #runBackground,
+:root[data-phone] .tasks-open,
+:root[data-phone] .task-links button,
+:root[data-phone] .task-actions button,
+:root[data-phone] .revert-actions button {
+  min-height: 44px;
+}
+:root[data-phone] .task-name,
+:root[data-phone] .task-result {
+  font-size: 16px;
+}
+:root[data-phone] .task-state,
+:root[data-phone] .task-meta,
+:root[data-phone] .task-kept,
+:root[data-phone] .task-note,
+:root[data-phone] .background-note,
+:root[data-phone] .background-share,
+:root[data-phone] .task-links button,
+:root[data-phone] .task-actions button {
+  font-size: 14px;
+}
+:root[data-phone] .background-share input {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}

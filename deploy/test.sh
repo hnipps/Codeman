@@ -34,6 +34,8 @@ tests=(
   test/canvas-conversation-session.test.ts
   test/canvas-thread-reply.test.ts
   test/canvas-thread-requests.test.ts
+  test/canvas-tasks.test.ts
+  test/canvas-task-routes.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts

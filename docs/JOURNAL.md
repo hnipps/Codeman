@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Background agent tasks from the canvas assistant (PC12)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{tasks,conversations,conversation-schema,conversation-delivery,view-schema}.ts`, `src/web/routes/{canvas-task-routes,canvas-conversation-routes,canvas-routes,worktree-routes}.ts`, `src/mcp-server.ts`, `packages/canvas/src/{task,tasks-view,assistant,entry,shortcuts,commands,storage-keys}.ts`, `src/web/public/{canvas.html,canvas.css}`
+**Why:** The assistant held one foreground conversation, Keys listed `G` and Cmd/Ctrl+Shift+Enter as not bound, and two agents asked to edit one case would have shared its checkout.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc12-background.md)
+
+A task is a conversation record with a `task` part, started by one route that makes a git worktree of the case, starts a session in it through the conversation session start, records the task and sends the request through the conversation send. Each step is undone in reverse when a later one fails. The previous release reads the record as an ordinary conversation.
+
+Decisions the intent did not settle. State is derived when a task is read; the record keeps only the cancel time, the time the turn was seen to end, and the removal. That turn end is written by the pass that posts thread replies, on its evidence and its two agreeing reads, so a task is never called completed because agent text is present. A git case always gets a worktree and the consent to share is used only where none can be made. Remove deletes the record when the worktree is gone and keeps the row, with the worktree's place inside the case and the reason, when git will not remove it. Tasks stay out of the conversation picker and are reached through Inspect. An agent can read tasks and can do nothing else to them, including sending a message to one. The composer is cleared on the server's acknowledgement, and the request id is kept with the draft until then.
+
+One change outside the task code: a delivery that is waiting for a composer now stops when its task is cancelled, instead of waiting out the ready timeout.
+
+Limit: sessions in the tests are stand-ins and transcripts are written by the test. No real agent has run a task. Worktrees are made and removed by real git in a temporary repository.
+
 ## 2026-11-12 — Voice ends when its frame is hidden, and a reply waits for the turn to end (PC11 fix round 1)
 
 **Type:** retraction

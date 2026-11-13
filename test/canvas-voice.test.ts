@@ -521,12 +521,12 @@ describe('spoken reply', () => {
 
 describe('voice wiring', () => {
   const source = (name: string) => readFileSync(`packages/canvas/src/${name}`, 'utf8');
-  it('Keys lists B and Shift+B as live, and still marks G and Cmd/Ctrl+Shift+Enter', () => {
+  it('Keys lists B and Shift+B as live, like G and Cmd/Ctrl+Shift+Enter since PC12', () => {
     const later = (keys: string) => editShortcuts.find((s) => JSON.stringify(s[1]) === keys)?.[2];
     expect(later('[["B"]]')).toBeUndefined();
     expect(later('[["Shift","B"]]')).toBeUndefined();
-    expect(later('[["G"]]')).toBe('later');
-    expect(later('[["Mod","Shift","Enter"]]')).toBe('later');
+    expect(later('[["G"]]')).toBeUndefined();
+    expect(later('[["Mod","Shift","Enter"]]')).toBeUndefined();
   });
   it('capture can start only from a trusted press inside the voice view: nothing public, nothing on window', () => {
     const view = source('voice-view.ts');

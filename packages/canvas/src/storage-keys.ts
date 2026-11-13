@@ -14,6 +14,8 @@ export type CanvasStorageKeys = {
   assistantChoice: string;
   threadAsk: string;
   threadDraft: string;
+  taskOutbox: string;
+  tasksSeen: string;
 };
 export function canvasStorageKeys(viewer: string, workspace: string): CanvasStorageKeys {
   const scope = `codeman:canvas:user:${encodeURIComponent(viewer)}`;
@@ -28,6 +30,8 @@ export function canvasStorageKeys(viewer: string, workspace: string): CanvasStor
     assistantChoice: `${scope}:${workspace}:assistant:choice`,
     threadAsk: `${scope}:${workspace}:thread:ask`,
     threadDraft: `${scope}:${workspace}:thread:draft`,
+    taskOutbox: `${scope}:${workspace}:task:outbox`,
+    tasksSeen: `${scope}:${workspace}:task:seen`,
   };
 }
 /**

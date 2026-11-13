@@ -67,6 +67,8 @@ export const ConversationSchema = z
     title: z.string().max(200).optional(),
     /** Set when the conversation was started from a comment thread (`ThreadOriginSchema`). */
     origin: z.unknown().optional(),
+    /** Set when the conversation is a background task (`taskPart()` in tasks.ts reads it); an earlier release sees an ordinary conversation. */
+    task: z.unknown().optional(),
     requestId: z.uuid().optional(),
     createdAt: z.number().int().nonnegative(),
     createdBy: z.string().min(1).max(128),

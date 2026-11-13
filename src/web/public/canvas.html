@@ -185,6 +185,15 @@
           aria-controls="rail"
           title="Assistant · C"
         ></button>
+        <button
+          id="tasksTool"
+          aria-label="Background tasks"
+          aria-pressed="false"
+          aria-controls="rail"
+          title="Background tasks · G"
+        >
+          <span id="tasksCount" class="dock-count" aria-hidden="true" hidden></span>
+        </button>
         <button id="chatTool" aria-label="Comments" title="Comments on the focused object">
           <span class="dock-label">Comments</span>
         </button>
@@ -203,7 +212,7 @@
         ><button id="sheetParent" class="quiet">Focus parent</button>
       </div>
     </section>
-    <aside id="rail" aria-label="Canvas assistant, reader, comments, history and Keys" hidden>
+    <aside id="rail" aria-label="Canvas assistant, background tasks, reader, comments, history and Keys" hidden>
       <div class="panel-head">
         <span id="railTitle">Keys</span
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
@@ -259,6 +268,9 @@
           aria-label="The agent is waiting for you"
           hidden
         ></div>
+        <button id="tasksOpen" type="button" class="quiet tasks-open" title="Background tasks · G" hidden>
+          Background tasks<span id="tasksOpenCount" class="task-count" aria-hidden="true" hidden></span>
+        </button>
         <div class="context-head">
           <h2 id="contextHeading" class="rail-heading">Context</h2>
           <button id="addSelection" type="button" class="quiet phone-only">Add selection</button>
@@ -296,6 +308,11 @@
           <textarea id="assistantDraft" rows="3" placeholder="Message the assistant" spellcheck="true"></textarea>
           <p id="newConversationNotice" class="secondary notice" role="status" hidden></p>
           <p id="assistantStatus" class="secondary" role="status"></p>
+          <p id="backgroundNote" class="secondary background-note" role="status" hidden></p>
+          <label id="backgroundShareRow" class="background-share" hidden>
+            <input id="backgroundShared" type="checkbox" />
+            <span>Run in the case folder, shared with other sessions</span>
+          </label>
           <div class="composer-row composer-actions">
             <button
               id="voiceDictate"
@@ -315,6 +332,15 @@
               Voice</button
             ><span class="composer-gap"></span
             ><button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
+            ><button
+              id="runBackground"
+              type="button"
+              aria-label="Run in background"
+              class="quiet"
+              title="Run as a background task with its own agent session · Cmd/Ctrl+Shift+Enter"
+              disabled
+            >
+              <span class="run-long">Run in background</span><span class="run-short">Background</span></button
             ><button id="assistantSend" type="submit" class="primary">Send</button>
           </div>
           <p id="dictationState" class="secondary voice-state" role="status" aria-label="Dictation"></p>
@@ -326,6 +352,15 @@
             </button>
           </div>
         </form>
+      </div>
+      <div id="tasksView" class="rail-body" tabindex="-1" hidden>
+        <p class="secondary">
+          Requests running in the background, each in its own agent session. Start one from the assistant with Run in
+          background.
+        </p>
+        <ol id="taskList" aria-label="Background tasks"></ol>
+        <p id="tasksEmpty" class="thread-empty">No background tasks.</p>
+        <p id="tasksStatus" class="secondary" role="status"></p>
       </div>
       <div id="historyView" class="rail-body" hidden>
         <p class="secondary">Who changed this canvas. Reverting a session removes only what it made and changed.</p>

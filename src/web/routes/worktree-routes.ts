@@ -64,14 +64,14 @@ import type { SessionPort } from '../ports/index.js';
 const SAFE_CASE_NAME = /^[a-zA-Z0-9_-]+$/;
 
 /** Host paths of every Docker case workspace: git never runs for a case at or inside one. */
-const defaultDockerWorkspaces = async (): Promise<string[]> =>
+export const defaultDockerWorkspaces = async (): Promise<string[]> =>
   (await readDockerCases(getDataDir()).catch(() => [])).map((c) => c.hostWorkspacePath).filter(Boolean);
 
 /**
  * Every workspace skills folder a session of some registry CLI gets Codeman's agent skill in
  * (`capabilities.agentSkillDir`), read from the registry at call time as data, never by CLI id.
  */
-const registryAgentSkillDirs = (): string[] => {
+export const registryAgentSkillDirs = (): string[] => {
   const dirs = new Set<string>();
   for (const cli of listClis()) {
     const dir = agentSkillDir(cli.capabilities);
@@ -119,7 +119,7 @@ function failFrom(reply: FastifyReply, failure: WorktreeFailure): Fail {
  * resolution (remote, then Docker, then linked, then the caller's case space) so a name means
  * the same case here as it does to the Run button.
  */
-async function resolveLocalCaseFolder(
+export async function resolveLocalCaseFolder(
   req: FastifyRequest,
   name: string
 ): Promise<{ ok: true; casePath: string } | { ok: false; code: ApiErrorCode; message: string }> {
