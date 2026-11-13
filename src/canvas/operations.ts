@@ -462,7 +462,8 @@ function validateBatchUnchecked(
 
 const historyId = (key: string): string => createHash('sha256').update(key).digest('hex');
 
-export function invertOperation(op: Operation): Command[] {
+/** `at` is the sequence the inverse is built on, so undoing one edit again after its redo is a new operation, not a repeat of the first undo. */
+export function invertOperation(op: Operation, at: number): Command[] {
   if (
     !knownKinds.has(op.kind) ||
     op.prev.some((change) => !isKnownObject(change.after) || (change.before && !isKnownObject(change.before)))
@@ -473,7 +474,7 @@ export function invertOperation(op: Operation): Command[] {
     return [
       {
         kind: 'restore',
-        opId: historyId(`inverse:${op.opId}`),
+        opId: historyId(`inverse:${at}:${op.opId}`),
         objectId: op.objectId,
         expectedRevision: changedObject?.after.revision,
       },
@@ -482,7 +483,7 @@ export function invertOperation(op: Operation): Command[] {
     return [
       {
         kind: 'unlock',
-        opId: historyId(`inverse:${op.opId}`),
+        opId: historyId(`inverse:${at}:${op.opId}`),
         objectId: op.objectId,
         expectedRevision: changedObject?.after.revision,
       },
@@ -491,7 +492,7 @@ export function invertOperation(op: Operation): Command[] {
     return [
       {
         kind: 'lock',
-        opId: historyId(`inverse:${op.opId}`),
+        opId: historyId(`inverse:${at}:${op.opId}`),
         objectId: op.objectId,
         expectedRevision: changedObject.after.revision,
         patch: { mode: changedObject.before.lock },
@@ -502,7 +503,7 @@ export function invertOperation(op: Operation): Command[] {
     return [
       {
         kind: 'remove-comment',
-        opId: historyId(`inverse:${op.opId}:${op.objectId}`),
+        opId: historyId(`inverse:${at}:${op.opId}:${op.objectId}`),
         objectId: op.objectId,
         patch: { id: op.comment.id },
       },
@@ -511,13 +512,13 @@ export function invertOperation(op: Operation): Command[] {
     return [
       {
         kind: 'comment',
-        opId: historyId(`inverse:${op.opId}:${op.objectId}`),
+        opId: historyId(`inverse:${at}:${op.opId}:${op.objectId}`),
         objectId: op.objectId,
         patch: { id: op.removedComment.id, text: op.removedComment.text },
       },
     ];
   const inverse = {
-    opId: historyId(`inverse:${op.opId}:${op.objectId}`),
+    opId: historyId(`inverse:${at}:${op.opId}:${op.objectId}`),
     objectId: op.objectId,
     expectedRevision: changedObject?.after.revision,
   };
@@ -557,7 +558,7 @@ export function invertOperation(op: Operation): Command[] {
   }
   return op.prev.map((change) => ({
     kind: 'revert',
-    opId: historyId(`inverse:${op.opId}:${change.objectId}`),
+    opId: historyId(`inverse:${at}:${op.opId}:${change.objectId}`),
     objectId: change.objectId,
     expectedRevision: change.after.revision,
     patch: change.before
@@ -565,7 +566,7 @@ export function invertOperation(op: Operation): Command[] {
           ...Object.fromEntries(mutableKeys.map((key) => [key, change.before?.[key]])),
           content: knownContentFields(change.before.content),
         })
-      : { deletedAt: change.after.updatedAt, deletionOpId: historyId(`inverse:${op.opId}:${change.objectId}`) },
+      : { deletedAt: change.after.updatedAt, deletionOpId: historyId(`inverse:${at}:${op.opId}:${change.objectId}`) },
   }));
 }
 

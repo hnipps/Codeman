@@ -22,6 +22,7 @@ tests=(
   test/canvas-store.test.ts
   test/routes/canvas-routes.test.ts
   test/canvas-media-compat.test.ts
+  test/canvas-history-compat.test.ts
   test/canvas-assets.test.ts
   test/link-preview.test.ts
   test/canvas-comments.test.ts

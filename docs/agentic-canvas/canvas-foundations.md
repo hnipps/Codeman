@@ -46,6 +46,12 @@ Group lock protects the group and its subtree. Preserve each child's local lock 
 
 An operation affecting a locked descendant must either be rejected with structured reasons or explicitly target only editable objects with a visible partial-result summary. Do not silently skip or half-apply a compound transform. Use one consistent policy for pointer, keyboard and agent commands. Failed actions are understandable and recoverable.
 
+## History contract
+
+Undo and redo are per viewer: each person or agent steps through its own operations, named by sequence. The server decides whether a step may run, by one rule for people and agents: every object the step would change must still hold exactly what the edit being undone left, in every field except the revision counter and the update time. The inverse then restores what that edit replaced and nothing else.
+
+That is why consecutive edits of one object undo one step per request and redo the same way. An undo writes a new revision, yet it puts the object back to what the older edit left, so the older edit can be undone next. Any other later edit, by another person, an agent or the same person in another tab, leaves the object different, and the step is refused with a structured reason and nothing is written. If that later edit has itself been put back, field for field, the step runs, because nothing of anyone's is lost. An undo never discards a change it did not make, and it never crosses a lock: the inverse runs through the same validation as any edit.
+
 ## Agent-native means the same capability, not mouse imitation
 
 Every human canvas action must have a structured agent operation and readable state/result. This includes ephemeral view actions such as selection, navigation and context attachment as well as stored content changes. A five-tool CRUD wrapper does not satisfy parity by itself. Agents must be able to group, resize, lock, align and perform the rest of the control set directly.

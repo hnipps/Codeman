@@ -174,8 +174,8 @@ describe('canvas domain operations', () => {
     ]);
     const op = result.operations[0];
     if (!op) throw new Error('missing op');
-    expect(invertOperation(op)[0]?.kind).toBe('update');
-    expect(apply(result.state, invertOperation(op)).state.objects.text?.content).toEqual({
+    expect(invertOperation(op, 0)[0]?.kind).toBe('update');
+    expect(apply(result.state, invertOperation(op, 0)).state.objects.text?.content).toEqual({
       type: 'text',
       text: 'text',
     });
@@ -200,7 +200,7 @@ describe('canvas domain operations', () => {
     ]);
     const op = next.operations[0];
     if (!op) throw new Error('missing reparent');
-    const inverse = invertOperation(op);
+    const inverse = invertOperation(op, 0);
     expect(inverse.map((command) => command.kind)).toEqual(['revert']);
     const restored = apply(next.state, inverse).state.objects.child;
     expect(restored).toMatchObject({
@@ -211,7 +211,7 @@ describe('canvas domain operations', () => {
     });
     const created = base.operations[0];
     if (!created) throw new Error('missing create');
-    expect(invertOperation(created)[0]?.kind).toBe('delete');
+    expect(invertOperation(created, 0)[0]?.kind).toBe('delete');
   });
   it('refuses cycles and atomically rejects the preceding valid command', () => {
     const state = apply(emptyState(), [create('group', null, 'group'), create('child', 'group', 'group')]).state;
@@ -436,7 +436,7 @@ describe('canvas domain operations', () => {
     const deleted = apply(resized.state, [{ kind: 'delete', opId: 'delete-sub', objectId: 'sub' }]);
     const operation = deleted.operations[0];
     if (!operation) throw new Error('missing delete');
-    const inverse = invertOperation(operation);
+    const inverse = invertOperation(operation, 0);
     expect(inverse).toHaveLength(1);
     expect(inverse[0]?.kind).toBe('restore');
     const restored = apply(deleted.state, inverse);
@@ -457,10 +457,10 @@ describe('canvas domain operations', () => {
     const locked = apply(base.state, [{ kind: 'lock', opId: 'lock', objectId: 'text', patch: { mode: 'subtree' } }]);
     const lockOp = locked.operations[0];
     if (!lockOp) throw new Error('missing lock');
-    const unlocked = apply(locked.state, invertOperation(lockOp));
+    const unlocked = apply(locked.state, invertOperation(lockOp, 0));
     expect(unlocked.state.objects.text?.lock).toBeNull();
     const unlockOp = unlocked.operations[0];
     if (!unlockOp) throw new Error('missing unlock');
-    expect(apply(unlocked.state, invertOperation(unlockOp)).state.objects.text?.lock).toBe('subtree');
+    expect(apply(unlocked.state, invertOperation(unlockOp, 0)).state.objects.text?.lock).toBe('subtree');
   });
 });

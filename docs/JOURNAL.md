@@ -2,6 +2,18 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Undo compares what an edit left, not the revision number
+
+**Type:** drift
+**Touches:** `src/canvas/commands.ts`, `src/canvas/operations.ts`, `packages/canvas/src/entry.ts`, `docs/agentic-canvas/canvas-foundations.md`
+**Why:** The closing check of the canvas program found that a second Ctrl+Z on the same object was refused with `REVISION`. The server required the object's revision to equal the revision the undone edit produced, and the first undo had already bumped it.
+**Links:** [Intent](../intent/2026-11-13-canvas-repeated-undo.md), [canvas foundations, "History contract"](agentic-canvas/canvas-foundations.md#history-contract)
+
+The revision number was a stand-in for the real question, which is whether the inverse still restores exactly what the edit replaced. A history step is now accepted while every object it touches holds the fields the edit left, ignoring `revision` and `updatedAt`. A person's own undo or redo in between passes; any other later edit changes a field and is refused as before. Two alternatives were set aside. Recording on each undo which revision it restores would add a field to the stored operation record, which the previous release must keep reading. Letting the browser send the expected revision would fix people and leave agents broken, and the server would trust a number it cannot check.
+
+One consequence is accepted on purpose: if someone changes an object and then puts every field back, an older undo runs, because nothing of theirs is lost. Inverse operation ids now include the sequence the step is built on. Without that, undoing one edit a second time after its redo repeated the first undo's id and was answered as a duplicate that wrote nothing.
+
+The same change makes `S` and `W` answer from the outline's buttons in the canvas shell, and Escape return the keyboard to the board. The shell's own flows left focus there, where no shell key was heard.
 ## 2026-11-13 — A canvas fault is diagnosable from telemetry (closing gate fix)
 
 **Type:** propagated-discovery
