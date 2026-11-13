@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A stalled case folder is logged per state change on the polled sessions route
+
+**Type:** drift
+**Touches:** `src/web/routes/canvas-failure.ts`, `src/web/routes/canvas-shell-routes.ts`
+**Why:** Every canvas 5xx writes one error line. The sessions route is asked by the page on a timer, so one folder on a mount that stopped answering wrote an error line every few seconds for as long as a canvas page stayed open.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md), [architecture-invariants, "Canvas failures and telemetry"](architecture-invariants.md#canvas-failures-and-telemetry)
+
+Decision. The rule "every canvas 5xx writes a line" now has one stated exception: a polled route writes the line when a folder stops answering and one `recovered` line when it answers again. Each 503 still has its `requests.jsonl` line and its `requestId`, so a single answer can still be found. Workspace creation is a person's own request and keeps a line per answer. The memory is in the process and capped. It is lost on restart, which costs one repeated line.
+
 ## 2026-11-13 — The deploy gate runs four more canvas and telemetry tests
 
 **Type:** intent-refinement

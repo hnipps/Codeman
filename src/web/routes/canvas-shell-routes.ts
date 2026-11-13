@@ -17,7 +17,7 @@ import { approvalInbox } from '../approval-inbox.js';
 import { readConversations } from '../../canvas/conversations.js';
 import { taskPart } from '../../canvas/tasks.js';
 import { probePathKind } from '../../utils/bounded-path-probe.js';
-import { caseFolderUnavailable } from './canvas-failure.js';
+import { caseFolderAnswered, caseFolderUnavailable } from './canvas-failure.js';
 import { MAX_CONCURRENT_SESSIONS_CEILING } from '../../config/map-limits.js';
 import { deriveSessionState, needsYou, sortSessions, type ShellSessionRow } from '../../canvas/shell-sessions.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
@@ -121,7 +121,8 @@ export function registerShellRoutes(scope: FastifyInstance, ctx: CanvasPort): vo
       const folder = await workspaceFolder(workspace, user);
       // The page asks on a timer and on events, not because a person named this folder: the stall cap applies.
       const kind = await probePathKind(folder);
-      if (kind === 'unknown') return caseFolderUnavailable(req, reply, folder);
+      if (kind === 'unknown') return caseFolderUnavailable(req, reply, folder, { polled: true });
+      caseFolderAnswered(req, folder);
       return { success: true, data: { sessions: sessionsInside(ctx, user, workspace.id, folder) } };
     }
   );

@@ -318,6 +318,39 @@ describe('GET /api/canvas/:workspaceId/sessions', () => {
     expect(vi.mocked(probePathKind).mock.lastCall).toEqual([h.casePath]);
   });
 
+  it('logs a stalled case folder once, and once more when it answers again, however often the page asks', async () => {
+    const h = await harness();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const infos = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const count = (spy: typeof errors, text: string) =>
+      spy.mock.calls.filter((c) => String(c[0]).includes(text)).length;
+    try {
+      await h.list();
+      vi.mocked(probePathKind).mockResolvedValue('unknown');
+      for (let i = 0; i < 5; i++) {
+        const response = await h.list();
+        expect(response.statusCode).toBe(503);
+        expect(response.json().requestId).toBeTruthy();
+      }
+      expect(count(errors, 'sessions failed 503')).toBe(1);
+      expect(count(infos, 'recovered')).toBe(0);
+
+      vi.mocked(probePathKind).mockResolvedValue('directory');
+      for (let i = 0; i < 3; i++) expect((await h.list()).statusCode).toBe(200);
+      expect(count(infos, 'GET /api/canvas/:workspaceId/sessions recovered')).toBe(1);
+      expect(String(infos.mock.calls.find((c) => String(c[0]).includes('recovered'))?.[0])).not.toContain(h.casePath);
+
+      vi.mocked(probePathKind).mockResolvedValue('unknown');
+      await h.list();
+      await h.list();
+      expect(count(errors, 'sessions failed 503')).toBe(2);
+    } finally {
+      vi.mocked(probePathKind).mockReset();
+      errors.mockRestore();
+      infos.mockRestore();
+    }
+  });
+
   it('leaves out a remote session whose path on the other machine sits under the local case folder', async () => {
     const h = await harness();
     h.sessions.set('s-local', { id: 's-local', name: 'local', workingDir: h.casePath });
