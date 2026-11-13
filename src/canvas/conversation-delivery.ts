@@ -61,9 +61,17 @@ export interface DeliveryDeps {
   readyMark: string;
   now(): number;
   sleep(ms: number): Promise<void>;
+  /**
+   * The message is no longer wanted (its task was cancelled). Asked before the paste and before every Enter: nothing
+   * is written once it is true, and a paste already made is reported `abandoned` without another key.
+   */
+  abandoned?(): boolean;
 }
-/** `unverified`: written, but no pane exists to confirm from (a direct PTY); `not-ready`: nothing was written. */
-export type DeliveryResult = 'confirmed' | 'unverified' | 'not-written' | 'not-ready' | 'timeout';
+/**
+ * `unverified`: written, but no pane exists to confirm from (a direct PTY); `not-ready`: nothing was written;
+ * `abandoned`: pasted, then given up before it was seen submitted, so the text may still sit in the composer.
+ */
+export type DeliveryResult = 'confirmed' | 'unverified' | 'not-written' | 'not-ready' | 'timeout' | 'abandoned';
 
 export async function deliver(
   deps: DeliveryDeps,
@@ -75,6 +83,7 @@ export async function deliver(
   if (mode === 'paste') {
     if (deps.snapshot() === null) return (await deps.paste()) ? 'unverified' : 'not-written';
     for (;;) {
+      if (deps.abandoned?.()) return 'not-written';
       const screen = deps.snapshot();
       if (screen !== null && composerReady(screen, deps.readyMark) && composerIsEmpty(screen, deps.glyph) !== false)
         break;
@@ -89,6 +98,7 @@ export async function deliver(
   let lastEnter = from;
   for (;;) {
     await deps.sleep(mode === 'enter-only' && enters === 0 ? 0 : POLL_MS);
+    if (deps.abandoned?.()) return 'abandoned';
     const screen = deps.snapshot();
     const step = confirmStep({
       hookAt: deps.hookAt(),
@@ -102,6 +112,8 @@ export async function deliver(
     if (step === 'confirmed') return 'confirmed';
     if (step === 'timeout') return 'timeout';
     if (step === 'press-enter') {
+      // Asked again with no await between the answer and the key: a cancel that landed during the read wins.
+      if (deps.abandoned?.()) return 'abandoned';
       enters++;
       lastEnter = deps.now();
       await deps.enter().catch(() => false);

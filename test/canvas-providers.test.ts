@@ -206,7 +206,7 @@ describe('the selectors', () => {
 });
 
 describe('Keys', () => {
-  it('lists the new bindings, and marks the ones that arrive later as not bound', () => {
+  it('lists the new bindings, and none is left marked as not bound', () => {
     const rows = new Map(editShortcuts.map(([title, chords, later]) => [title, { chords, later }]));
     expect(rows.get('Choose chat provider / model (focus the selector)')).toEqual({
       chords: [['P'], ['Shift', 'P']],
@@ -214,7 +214,7 @@ describe('Keys', () => {
     });
     expect(rows.get('Send chat message / line break')?.later).toBeUndefined();
     const later = editShortcuts.filter((r) => r[2] === 'later').map((r) => r[1].map((c) => c.join('+')).join(','));
-    // B and Shift+B are live since PC11.
-    expect(later.sort()).toEqual(['G', 'Mod+Shift+Enter']);
+    // B and Shift+B are live since PC11, G and Cmd/Ctrl+Shift+Enter since PC12.
+    expect(later).toEqual([]);
   });
 });

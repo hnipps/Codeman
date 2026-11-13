@@ -1365,6 +1365,7 @@ export class WebServer extends EventEmitter {
       discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
       transcriptRows: async (sessionId) => (await this.transcriptReader?.rows(sessionId)) ?? null,
       transcriptStamp: async (sessionId) => (await this.transcriptReader?.stamp(sessionId)) ?? null,
+      transcriptModifiedAt: async (sessionId) => (await this.transcriptReader?.modifiedAt(sessionId)) ?? null,
       turnEndObservedAt: (sessionId) => {
         const session = this.sessions.get(sessionId);
         if (!session) return 0;
@@ -2431,6 +2432,7 @@ export class WebServer extends EventEmitter {
   private transcriptReader?: {
     rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
     stamp(sessionId: string): Promise<string | null>;
+    modifiedAt(sessionId: string): Promise<number | null>;
   };
 
   /**

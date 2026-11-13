@@ -63,29 +63,31 @@ import {
   readConversations,
   recordMessage,
   setMessageReply,
+  setTaskHint,
   sha256,
 } from '../../canvas/conversations.js';
+import { cutResult, deriveTaskState, isolationLabel, taskPart, type TaskState } from '../../canvas/tasks.js';
 import type { Author } from '../../canvas/model.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
 
 export type Outcome = { code: number; body: unknown };
-const ok = (data: unknown): Outcome => ({ code: 200, body: { success: true, data } });
-const refuse = (code: number, errorCode: ApiErrorCode, message: string): Outcome => ({
+export const ok = (data: unknown): Outcome => ({ code: 200, body: { success: true, data } });
+export const refuse = (code: number, errorCode: ApiErrorCode, message: string): Outcome => ({
   code,
   body: createErrorResponse(errorCode, message),
 });
-const conflict = (message: string): Outcome => refuse(409, ApiErrorCode.CONFLICT, message);
-const notFound = (message: string): Outcome => refuse(404, ApiErrorCode.NOT_FOUND, message);
+export const conflict = (message: string): Outcome => refuse(409, ApiErrorCode.CONFLICT, message);
+export const notFound = (message: string): Outcome => refuse(404, ApiErrorCode.NOT_FOUND, message);
 
 /** Writes need the live colour, and only the workspace's own owner may start or message a conversation. */
-async function writeGuard(req: FastifyRequest, workspaceId: string): Promise<Outcome | Workspace> {
+export async function writeGuard(req: FastifyRequest, workspaceId: string): Promise<Outcome | Workspace> {
   if (!deployRole.allows('persist')) return conflict('Only the live colour may write canvas data');
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const workspace = readWorkspaces().find((w) => w.id === workspaceId);
   if (!workspace || workspace.owner !== ownerFor(req)) return notFound('Workspace not found');
   return workspace;
 }
-const isOutcome = (value: Outcome | Workspace): value is Outcome => 'code' in value;
+export const isOutcome = (value: Outcome | Workspace): value is Outcome => 'code' in value;
 
 /** Session state as the rail shows it. A session that ended is still a conversation; it just cannot take messages. */
 function sessionState(ctx: CanvasPort, req: FastifyRequest, sessionId: string): 'live' | 'ended' {
@@ -95,9 +97,33 @@ function sessionState(ctx: CanvasPort, req: FastifyRequest, sessionId: string): 
 }
 const sessionBusy = (session: { hookTurnRunning?: boolean; isWorking?: boolean } | undefined): boolean =>
   session?.hookTurnRunning === true || session?.isWorking === true;
-const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
+/** A task's state from what the server holds now. `canSee` is false for a session the caller may not read, which is then as good as gone. */
+export function taskStateOf(ctx: CanvasPort, c: Conversation, canSee = true): TaskState | undefined {
+  const task = taskPart(c);
+  if (!task) return undefined;
+  const session = canSee ? ctx.sessions.get(c.sessionId) : undefined;
+  const message = c.messages.find((m) => m.messageId === task.messageId);
+  const pending = session ? approvalInbox.getForSession(session.id) : undefined;
+  return deriveTaskState({
+    cancelledAt: task.cancelledAt,
+    completedAt: task.completedAt,
+    message: message ? messageState(message) : 'none',
+    session: !session ? 'gone' : session.paneExit ? 'exited' : 'live',
+    approval: !!pending && pending.kind !== 'idle',
+    working: sessionBusy(session),
+  });
+}
+/** The agent left its pane and nothing says it left cleanly: an exit status other than 0, a signal, or no status at all. */
+const exitedAbnormally = (paneExit: unknown): boolean => {
+  if (!paneExit) return false;
+  const exit = paneExit as { status?: unknown; signal?: unknown };
+  return exit.status !== 0 || exit.signal !== undefined;
+};
+export const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
   const origin = threadOrigin(c);
   const requests = threadRequests(c);
+  const task = taskPart(c);
+  const visible = canAccessOwned(getAuthUser(req), ctx.sessions.get(c.sessionId)?.owner);
   return {
     id: c.id,
     sessionId: c.sessionId,
@@ -112,6 +138,16 @@ const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
     working: sessionBusy(ctx.sessions.get(c.sessionId)),
     ...(origin ? { origin } : {}),
     ...(requests.length ? { requests } : {}),
+    ...(task
+      ? {
+          task: {
+            name: task.name,
+            state: taskStateOf(ctx, c, visible),
+            isolation: isolationLabel(task.isolation),
+            ...(task.removedAt !== undefined ? { removed: true } : {}),
+          },
+        }
+      : {}),
   };
 };
 /** The requests a conversation took from comment threads: what a thread needs to show a request's state without the transcript. */
@@ -144,11 +180,66 @@ export function listConversations(ctx: CanvasPort, req: FastifyRequest, workspac
   for (const c of file.conversations) reconcileReplies(ctx, workspaceId, c);
   return ok({ conversations: file.conversations.map((c) => summary(ctx, req, c)) });
 }
-export function readConversation(ctx: CanvasPort, req: FastifyRequest, workspaceId: string, id: string): Outcome {
+export async function readConversation(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  id: string
+): Promise<Outcome> {
   const conversation = findConversation(workspaceId, id);
   if (!conversation) return notFound('Conversation not found');
   reconcileReplies(ctx, workspaceId, conversation);
-  return ok({ conversation: { ...summary(ctx, req, conversation), messages: conversation.messages } });
+  const view = summary(ctx, req, conversation);
+  const result = view.task ? await taskResult(ctx, req, conversation, view.task.state) : undefined;
+  return ok({
+    conversation: {
+      ...view,
+      ...(view.task && result ? { task: { ...view.task, result } } : {}),
+      messages: conversation.messages,
+    },
+  });
+}
+/** Result texts already cut for the list, by conversation and by what they were read from, so an unchanged transcript is not read again. */
+const results = new Map<string, { stamp: string; result: TaskResultText }>();
+const MAX_RESULTS = 200;
+type TaskResultText = { text: string; truncated: boolean; partial?: true };
+/**
+ * A task's result: the reply to its own message, read from the session's transcript the way a thread reply is.
+ * A completed task has its reply; a task that failed because its agent exited mid-turn has what was written by then,
+ * marked `partial`. Nothing for any other state (a task running again is not shown an old result), a session the
+ * caller may not read, or a transcript that is gone. Where the transcript has no stamp the text is kept by the
+ * recorded turn end (or the exit), which is when it last could have changed.
+ */
+export async function taskResult(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  c: Conversation,
+  state: TaskState | undefined
+): Promise<TaskResultText | undefined> {
+  const task = taskPart(c);
+  const session = ctx.sessions.get(c.sessionId);
+  if (!task || !session || !ctx.transcriptRows) return undefined;
+  const exit = session.paneExit as { at?: unknown } | undefined;
+  const partial = state === 'failed' && !!exit && task.completedAt === undefined;
+  if (!(state === 'completed' && task.completedAt !== undefined) && !partial) return undefined;
+  if (partial && c.messages.find((m) => m.messageId === task.messageId)?.deliveredAt == null) return undefined;
+  if (!canAccessOwned(getAuthUser(req), session.owner)) return undefined;
+  const fileStamp = (await ctx.transcriptStamp?.(session.id).catch(() => null)) ?? null;
+  const stamp = `${fileStamp ?? ''}|${partial ? `exit:${String(exit?.at ?? '')}` : `done:${task.completedAt}`}`;
+  const cached = results.get(c.id);
+  if (cached?.stamp === stamp) return cached.result;
+  const rows = await ctx.transcriptRows(session.id).catch(() => null);
+  if (!rows) return undefined;
+  const found = extractReply(rows, task.messageId);
+  if (!found.found || (partial && !found.text)) return undefined;
+  const result: TaskResultText = { ...cutResult(found.text), ...(partial ? { partial: true as const } : {}) };
+  results.delete(c.id);
+  results.set(c.id, { stamp, result });
+  for (const oldest of results.keys()) {
+    if (results.size <= MAX_RESULTS) break;
+    results.delete(oldest);
+  }
+  return result;
 }
 
 const awaitsReply = (m: ConversationMessage): boolean => {
@@ -156,9 +247,23 @@ const awaitsReply = (m: ConversationMessage): boolean => {
   const reply = threadReply(m);
   return reply === undefined || replyExtendable(reply);
 };
-/** Asked from a thread and still on its way into the pane: its turn can end before the delivery is confirmed. */
-const beingDelivered = (m: ConversationMessage): boolean =>
-  threadOrigin(m) !== undefined && threadReply(m) === undefined && ['queued', 'sending'].includes(messageState(m));
+/** A task's own message whose turn end is not recorded yet: settled by the same rule as a thread reply. */
+const taskPending = (c: Conversation, m: ConversationMessage): boolean => {
+  const task = taskPart(c);
+  return (
+    !!task &&
+    task.messageId === m.messageId &&
+    task.completedAt === undefined &&
+    task.cancelledAt === undefined &&
+    task.removedAt === undefined
+  );
+};
+const awaitsResult = (c: Conversation, m: ConversationMessage): boolean =>
+  taskPending(c, m) && messageState(m) === 'delivered';
+/** Asked from a thread, or a task's request, and still on its way into the pane: its turn can end before the delivery is confirmed. */
+const beingDelivered = (c: Conversation, m: ConversationMessage): boolean =>
+  ((threadOrigin(m) !== undefined && threadReply(m) === undefined) || taskPending(c, m)) &&
+  ['queued', 'sending'].includes(messageState(m));
 const textHash = (text: string): string => sha256(text).slice(0, 32);
 /** Timing of reply routing; a test shortens it. */
 export const replyRouting = {
@@ -168,7 +273,18 @@ export const replyRouting = {
   retryDelaysMs: [1_500, 4_000, 10_000, 30_000],
   /** A request whose prompt never appears in the transcript is given up after this long. */
   maxAgeMs: 24 * 60 * 60 * 1000,
+  /** A task whose turn end this process never saw settles only once its transcript has not been written for this long. */
+  quietMs: 30_000,
 };
+/**
+ * Messages a delivery of THIS process is carrying, as `<workspace>:<conversation>:<message>`. A message recorded
+ * `queued` or `sending` that is not here was left by a process that is gone, and nothing will ever move it.
+ */
+const inFlight = new Set<string>();
+const flightKey = (workspaceId: string, conversationId: string, messageId: string): string =>
+  `${workspaceId}:${conversationId}:${messageId.toLowerCase()}`;
+const orphaned = (workspaceId: string, c: Conversation, m: ConversationMessage): boolean =>
+  ['queued', 'sending'].includes(messageState(m)) && !inFlight.has(flightKey(workspaceId, c.id, m.messageId));
 /** Reply routing of one workspace runs one conversation at a time, so two signals for the same turn post once. */
 const replyChains = new Map<string, Promise<void>>();
 const replyRetries = new Set<Promise<void>>();
@@ -183,6 +299,8 @@ const rememberIdlePass = (conversationId: string, key: string): void => {
     idlePasses.delete(oldest);
   }
 };
+/** Forgets every cached task result (tests). */
+export const forgetTaskResults = (): void => results.clear();
 /** Resolves when every reply being routed has been (tests). */
 export const settleReplies = async (): Promise<void> => {
   while (replyChains.size || replyRetries.size) await Promise.all([...replyChains.values(), ...replyRetries]);
@@ -195,14 +313,23 @@ export const forgetReplyPasses = (): void => idlePasses.clear();
  * recorded origin decides where a reply goes. A stop that finds the session still working tries again a few times,
  * because idle detection lags the hook and nothing else would run with no browser open.
  */
-function reconcileReplies(
+export function reconcileReplies(
   ctx: CanvasPort,
   workspaceId: string,
   conversation: Conversation,
   retries: number[] = []
 ): void {
   if (!deployRole.allows('persist') || !ctx.transcriptRows) return;
-  if (!conversation.messages.some((m) => awaitsReply(m) || beingDelivered(m))) return;
+  if (
+    !conversation.messages.some(
+      (m) =>
+        awaitsReply(m) ||
+        awaitsResult(conversation, m) ||
+        beingDelivered(conversation, m) ||
+        orphaned(workspaceId, conversation, m)
+    )
+  )
+    return;
   const run = () => routeReplies(ctx, workspaceId, conversation.id).catch(() => 'done' as const);
   const job = (replyChains.get(workspaceId) ?? Promise.resolve()).then(run, run);
   const settled = job.then(() => undefined);
@@ -225,7 +352,11 @@ function reconcileReplies(
 }
 type Candidate = {
   message: ConversationMessage;
-  origin: ThreadOrigin;
+  /** Absent for a task's request that was not asked from a thread: its turn end is recorded and nothing is posted. */
+  origin: ThreadOrigin | undefined;
+  result: boolean;
+  /** The turn end was not seen by this process; it is inferred from a quiet transcript and an idle screen, for task state only. */
+  inferred: boolean;
   text: string;
   shared: boolean;
   prior: PostedThreadReply | undefined;
@@ -235,20 +366,48 @@ type Candidate = {
  * agree, or a reply was posted into a turn that can still add text), so the stop path tries again.
  */
 async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId: string): Promise<'done' | 'working'> {
-  const conversation = findConversation(workspaceId, conversationId);
-  const waiting = conversation?.messages.filter(awaitsReply) ?? [];
+  let conversation = findConversation(workspaceId, conversationId);
   if (!conversation) return 'done';
-  // A stop that came before the delivery was confirmed is looked at again once it is.
-  if (!waiting.length) return conversation.messages.some(beingDelivered) ? 'working' : 'done';
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const owner = readWorkspaces().find((w) => w.id === workspaceId)?.owner;
+  const session = ctx.sessions.get(conversation.sessionId);
+  let changed = false;
+  // A message a process that is gone left on its way in: the transcript says whether the agent took it. Nothing
+  // delivers it now, so it is recorded delivered or not delivered, and Retry is the way to send it again.
+  const left = conversation.messages.filter((m) => orphaned(workspaceId, conversation!, m));
+  if (left.length && session && deployRole.allows('persist')) {
+    const rows = session.paneExit ? null : await ctx.transcriptRows?.(session.id).catch(() => null);
+    for (const message of left) {
+      // A delivery that began while the transcript was read owns the message again.
+      if (inFlight.has(flightKey(workspaceId, conversationId, message.messageId))) continue;
+      const took = !!rows && extractReply(rows, message.messageId).found;
+      try {
+        setMessageState(workspaceId, conversationId, message.messageId, took ? 'delivered' : 'failed');
+        changed = true;
+      } catch {
+        /* Tried again on the next pass. */
+      }
+    }
+    conversation = findConversation(workspaceId, conversationId);
+    if (!conversation) return 'done';
+  }
+  const current = conversation;
+  const finish = (outcome: 'done' | 'working'): 'done' | 'working' => {
+    if (changed) {
+      idlePasses.delete(conversationId);
+      ctx.broadcast(SseEvent.CanvasConversation, { workspaceId, conversationId, change: 'message', owner });
+    }
+    return outcome;
+  };
+  const waiting = current.messages.filter((m) => awaitsReply(m) || awaitsResult(current, m));
+  // A stop that came before the delivery was confirmed is looked at again once it is.
+  if (!waiting.length) return finish(current.messages.some((m) => beingDelivered(current, m)) ? 'working' : 'done');
   const now = Date.now();
   const expired = (m: ConversationMessage): boolean => now - m.sentAt > replyRouting.maxAgeMs;
   const priorOf = (m: ConversationMessage): PostedThreadReply | undefined => {
     const reply = threadReply(m);
     return replyExtendable(reply) ? reply : undefined;
   };
-  let changed = false;
   const record = (message: ConversationMessage, reply: ThreadReply): void => {
     try {
       changed = setMessageReply(workspaceId, conversationId, message.messageId, reply) || changed;
@@ -258,41 +417,68 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
   };
   /** Nothing more is posted for this request: a reply already posted stays as it is, otherwise the reason is kept. */
   const close = (message: ConversationMessage, drop: ReplyDrop): void => {
+    if (!awaitsReply(message)) return;
     const prior = priorOf(message);
     record(message, prior ? { ...prior, final: true } : { dropped: drop });
   };
-  const finish = (outcome: 'done' | 'working'): 'done' | 'working' => {
-    if (changed) {
-      idlePasses.delete(conversationId);
-      ctx.broadcast(SseEvent.CanvasConversation, { workspaceId, conversationId, change: 'message', owner });
+  /** The task's turn is provably over: the one observation its state needs that cannot be derived when it is read. */
+  const complete = (): void => {
+    try {
+      changed = setTaskHint(workspaceId, conversationId, { completedAt: Date.now() }) || changed;
+    } catch {
+      /* A record that cannot be saved is settled by the next pass. */
     }
-    return outcome;
   };
-  const session = ctx.sessions.get(conversation.sessionId);
   if (!session) {
     // A session this process does not hold may only be late to restore, so nothing is read and only age gives up.
     for (const message of waiting) if (expired(message)) close(message, 'session-ended');
     return finish('done');
   }
   const ended = !!session.paneExit;
+  // An agent that left its pane with a failure, a signal or no status did not finish its turn; only a clean exit may have.
+  const crashed = exitedAbnormally(session.paneExit);
   const observedAt = ctx.turnEndObservedAt?.(session.id) ?? 0;
+  // A turn end this process saw after it began writing the message to the pane: never a flag that is false after a
+  // restart, and not the confirmation, which a quick turn can precede.
+  const observed = (m: ConversationMessage): boolean => observedAt > (m.submittedAt ?? m.deliveredAt ?? Infinity);
   const busy = (): boolean => sessionBusy(session);
+  // The cheap evidence first: a working session's task has nothing to settle, so its transcript, which changes
+  // with every line the agent writes, is not read.
+  // A thread request is still read: a later prompt can close its turn while the session works on that prompt.
+  if (!ended && busy() && !waiting.some((m) => expired(m) || awaitsReply(m)))
+    return finish(waiting.some(observed) ? 'working' : 'done');
+  // A task whose turn end nobody in this process saw (every task, after a restart) may still be over. That is taken
+  // from the screen and the file together: no work on the screen, no question pending, a transcript not written for
+  // `quietMs`, and below the prompt row found and two reads that agree. It settles the task's state and posts nothing.
+  const unseen = waiting.some((m) => awaitsResult(current, m) && !observed(m));
+  let quiet = false;
+  if (unseen && !ended && !busy()) {
+    const pending = approvalInbox.getForSession(session.id);
+    const modifiedAt = (await ctx.transcriptModifiedAt?.(session.id).catch(() => null)) ?? null;
+    quiet =
+      modifiedAt !== null &&
+      now - modifiedAt >= replyRouting.quietMs &&
+      !(pending && pending.kind !== 'idle') &&
+      session.paneShowsWork?.() === false;
+  }
   const stamp = (await ctx.transcriptStamp?.(session.id)) ?? null;
   const key = [
     stamp,
     ended,
     observedAt,
     busy(),
+    quiet,
     ...waiting.map((m) => `${m.messageId}:${expired(m)}:${priorOf(m)?.chars ?? ''}`),
   ].join('|');
-  if (stamp !== null && idlePasses.get(conversationId) === key) return 'done';
+  if (stamp !== null && idlePasses.get(conversationId) === key) return finish('done');
   const rows = await ctx.transcriptRows?.(session.id);
-  if (!rows || !deployRole.allows('persist')) return 'done';
+  if (!rows || !deployRole.allows('persist')) return finish('done');
   const candidates: Candidate[] = [];
   let again = false;
   for (const message of waiting) {
-    const origin = threadOrigin(message);
-    if (!origin) continue;
+    const asked = awaitsReply(message) ? threadOrigin(message) : undefined;
+    const result = awaitsResult(current, message);
+    if (!asked && !result) continue;
     const prior = priorOf(message);
     const found = extractReply(rows, message.messageId);
     if (!found.found) {
@@ -301,31 +487,50 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
       continue;
     }
     const over = found.closed || ended;
+    // A task is completed by a turn that closed or a session that did not exit abnormally; a crash leaves it failed.
+    const settles = result && (found.closed || !crashed);
+    if (!asked && !settles) continue;
+    // Where the reply text goes; cleared when there is nothing new to post and only the task's state is left to settle.
+    let post = asked;
     if (prior) {
       const posted = prior.chars ?? 0;
       // Text that no longer starts with what was posted cannot be continued without guessing.
       const continues = found.text.length >= posted && textHash(found.text.slice(0, posted)) === prior.hash;
       if (!continues || found.text.length === posted) {
         if (over || expired(message)) close(message, 'no-reply');
-        continue;
+        if (!settles) continue;
+        post = undefined;
       }
     }
+    let inferred = false;
     if (!over) {
-      // An open turn is over only on a turn end this process saw after it began writing this message to the pane:
-      // never on a flag that is false after a restart, and not on the confirmation, which a quick turn can precede.
-      if (observedAt <= (message.submittedAt ?? message.deliveredAt ?? Infinity)) continue;
-      if (busy()) {
+      if (!observed(message)) {
+        if (!(settles && quiet)) continue;
+        inferred = true;
+      } else if (busy()) {
         again = true;
         continue;
       }
-      // Text may still be on its way to the file; a turn that wrote none is left to the prompt that closes it.
-      if (!found.text) continue;
+      // Text may still be on its way to the file; a turn that wrote none is left to the prompt that closes it,
+      // except a task settled from a quiet transcript, which has waited long enough for any text to arrive.
+      if (!found.text && !inferred) continue;
     }
-    if (!found.text) {
+    if (!found.text && !inferred) {
+      // A turn a later prompt closed is over with nothing said; an agent that exited mid-turn is a failure the state derives.
+      if (result && found.closed) complete();
       close(message, ended && !found.closed ? 'session-ended' : 'no-reply');
       continue;
     }
-    candidates.push({ message, origin, text: found.text, shared: found.shared, prior });
+    candidates.push({
+      message,
+      // A turn end that was only inferred never posts into a thread: that waits for one this process sees.
+      origin: inferred ? undefined : post,
+      result: settles,
+      inferred,
+      text: found.text,
+      shared: found.shared,
+      prior,
+    });
   }
   if (!candidates.length) {
     if (!changed && stamp !== null && !again) rememberIdlePass(conversationId, key);
@@ -335,7 +540,7 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
   await new Promise<void>((resolve) => setTimeout(resolve, replyRouting.settleDelayMs));
   const second = await ctx.transcriptRows?.(session.id);
   if (!second || !deployRole.allows('persist')) return finish('done');
-  for (const { message, origin, text, shared, prior } of candidates) {
+  for (const { message, origin, result, inferred, text, shared, prior } of candidates) {
     const reread = extractReply(second, message.messageId);
     if (!reread.found || reread.text !== text || reread.shared !== shared) {
       again = true;
@@ -346,21 +551,16 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
       again = true;
       continue;
     }
+    if (inferred && !over && session.paneShowsWork?.() !== false) continue;
+    if (result && (reread.closed || !exitedAbnormally(session.paneExit))) complete();
+    if (!origin) continue;
     const part = (prior?.parts ?? 0) + 1;
     const last = over || part >= MAX_REPLY_PARTS;
     const added = text.slice(prior?.chars ?? 0).trim();
     const body = added + (shared ? REPLY_SHARED_NOTE : '') + (last && !over ? REPLY_MORE_NOTE : '');
     const progress = { parts: part, chars: text.length, hash: textHash(text), ...(last ? { final: true } : {}) };
     const reply = added
-      ? await postReply(
-          ctx,
-          workspaceId,
-          owner,
-          conversation.sessionId,
-          origin,
-          replyPartId(message.messageId, part),
-          body
-        )
+      ? await postReply(ctx, workspaceId, owner, current.sessionId, origin, replyPartId(message.messageId, part), body)
       : null;
     if (!reply) continue;
     if (!prior) record(message, 'commentId' in reply ? { ...reply, ...progress } : reply);
@@ -444,8 +644,12 @@ export async function createConversation(
     );
   const workspace = await writeGuard(req, workspaceId);
   if (isOutcome(workspace)) return workspace;
+  return serialCreate(workspaceId, () => start(ctx, req, workspace, body));
+}
+/** Runs one create of a workspace after the ones before it; conversations and background tasks share the queue and its caps. */
+export function serialCreate<T>(workspaceId: string, run: () => Promise<T>): Promise<T> {
   const previous = createChains.get(workspaceId) ?? Promise.resolve();
-  const work = previous.then(() => start(ctx, req, workspace, body));
+  const work = previous.then(run);
   const tail = work.catch(() => undefined);
   createChains.set(workspaceId, tail);
   void tail.then(() => {
@@ -454,7 +658,7 @@ export async function createConversation(
   return work;
 }
 /** A Docker or remote case runs its agent elsewhere; the plain create route would run Claude on this host instead. */
-async function caseRunsElsewhere(req: FastifyRequest, caseName: string): Promise<boolean> {
+export async function caseRunsElsewhere(req: FastifyRequest, caseName: string): Promise<boolean> {
   const user = getAuthUser(req);
   const same = (c: { name: string; owner?: string }) => c.name === caseName && canAccessOwned(user, c.owner);
   return (await readDockerCases(getDataDir())).some(same) || (await readRemoteCases(getDataDir())).some(same);
@@ -485,7 +689,7 @@ export function checkChoice(rows: readonly ProviderRow[], cliId: string, model: 
  * One that names a CLI must name an enabled, installed agent that delivery can confirm, and a model id that CLI's
  * launch accepts. Refusals are stated, never replaced by another CLI.
  */
-async function resolveLaunch(
+export async function resolveLaunch(
   cliId: string | undefined,
   model: string | undefined
 ): Promise<{ ok: true; entryId: string; model: string; launch: Record<string, unknown> } | Outcome> {
@@ -572,6 +776,20 @@ export const settleDeliveries = async (): Promise<void> => {
   while (chains.size) await Promise.all([...chains.values()]);
 };
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/**
+ * Waits, at most `maxMs`, for the deliveries of one conversation to end. `left` says a pasted prompt may still sit in
+ * the composer (it timed out or was abandoned after the paste).
+ */
+export async function deliveryEnded(
+  workspaceId: string,
+  conversationId: string,
+  maxMs: number
+): Promise<{ ended: boolean; left: boolean }> {
+  const key = `${workspaceId}:${conversationId}`;
+  const job = chains.get(key);
+  const ended = job ? await Promise.race([job.then(() => true), delay(maxMs).then(() => false)]) : true;
+  return { ended, left: stuck.has(key) };
+}
 
 function deliveryDeps(session: CanvasSession, composed: string): DeliveryDeps {
   const capabilities = getCli(session.mode ?? 'claude')?.capabilities;
@@ -611,11 +829,24 @@ function enqueue(
     }
     announce();
   };
+  const flight = flightKey(workspace.id, conversation.id, message.messageId);
+  inFlight.add(flight);
   const run = async (): Promise<void> => {
     // A newer message never goes in behind one that may still be sitting in the composer.
     if (!retry && stuck.has(key)) return set('failed');
+    // A task cancelled while its request waited is never written to the pane.
+    const cancelled = (): boolean => {
+      const current = findConversation(workspace.id, conversation.id);
+      return current !== undefined && taskPart(current)?.cancelledAt !== undefined;
+    };
+    if (cancelled()) return set('failed');
     set('sending');
-    const deps = deliveryDeps(session, composed);
+    const base = deliveryDeps(session, composed);
+    const deps: DeliveryDeps = {
+      ...base,
+      paste: async () => (cancelled() ? false : base.paste()),
+      abandoned: cancelled,
+    };
     let result: DeliveryResult;
     try {
       const plan = retry ? retryPlan(deps.snapshot(), deps.glyph, deps.hookAt(), message.sentAt) : ('paste' as const);
@@ -638,10 +869,14 @@ function enqueue(
       return;
     }
     // Only a paste that was written and never taken leaves text behind; a refused or never-ready one wrote nothing.
-    if (result === 'timeout') stuck.add(key);
+    if (result === 'timeout' || result === 'abandoned') stuck.add(key);
     set('failed');
   };
-  const job = (chains.get(key) ?? Promise.resolve()).then(run, run).catch(() => undefined);
+  const done = (): void => void inFlight.delete(flight);
+  const job = (chains.get(key) ?? Promise.resolve())
+    .then(run, run)
+    .catch(() => undefined)
+    .finally(done);
   chains.set(key, job);
   void job.then(() => {
     if (chains.get(key) === job) chains.delete(key);
@@ -666,8 +901,14 @@ export async function sendMessage(
     const file = readConversations(workspaceId);
     if (file.ok && file.conversations.some((c) => c.sessionId === author.sessionId))
       return conflict('An agent running in a conversation cannot message a conversation');
+    // A task is a person's request to its own session: an agent may read it, never steer it.
+    if (taskPart(conversation))
+      return refuse(403, ApiErrorCode.FORBIDDEN, 'A background task takes messages only from a person');
   }
 
+  // A cancelled task takes nothing more: its request may still sit unsubmitted in the composer, and any later Enter would run it.
+  if (taskPart(conversation)?.cancelledAt !== undefined)
+    return conflict('TASK_CANCELLED: this task was cancelled and takes no more messages');
   // A session that is gone is a conflict the rail words; one the caller may not see is simply not found.
   if (!ctx.sessions.has(conversation.sessionId)) return conflict('SESSION_ENDED: the session has ended');
   const session = findSessionOrFail({ sessions: ctx.sessions } as unknown as SessionPort, conversation.sessionId, req);
@@ -728,7 +969,12 @@ export async function sendMessage(
       : recorded.reason === 'FULL'
         ? conflict('TOO_MANY: this conversation is full; start a new one')
         : notFound('Conversation not found');
-  if (recorded.duplicate && (knownState === 'queued' || knownState === 'sending'))
+  // A message a delivery of this process is carrying is simply on its way; one a process that is gone left behind is sent again.
+  if (
+    recorded.duplicate &&
+    (knownState === 'queued' || knownState === 'sending') &&
+    inFlight.has(flightKey(workspaceId, conversationId, body.messageId))
+  )
     return accepted(body.messageId, recorded.message, resolved.missing, true);
 
   // Pasting while a permission or question dialog is open would answer it with this text's Enter.
@@ -791,7 +1037,7 @@ export function registerConversationRoutes(scope: FastifyInstance, ctx: CanvasPo
   });
   scope.get('/api/canvas/:workspaceId/conversations/:conversationId', async (req, reply) => {
     const p = params.parse(req.params);
-    const outcome = readConversation(ctx, req, p.workspaceId, p.conversationId);
+    const outcome = await readConversation(ctx, req, p.workspaceId, p.conversationId);
     return reply.code(outcome.code).send(outcome.body);
   });
   scope.post<{ Params: { workspaceId: string } }>(

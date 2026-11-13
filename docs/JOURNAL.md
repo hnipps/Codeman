@@ -2,6 +2,40 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Background tasks: what a cancel, a crash and a restart leave (PC12 fix round 1)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{tasks,conversation-delivery}.ts`, `src/web/routes/{canvas-task-routes,canvas-conversation-routes,session-routes}.ts`, `src/web/ports/canvas-port.ts`, `src/session.ts`, `src/git-worktrees.ts`, `packages/canvas/src/{task,tasks-view,assistant,entry,voice,voice-view,storage-keys}.ts`
+**Why:** A review and a run on a real agent found that a cancelled task's request could still be submitted, a crashed agent read as completed, a restart left tasks running for ever, and a task that only replied could not be removed on a machine whose git ignores differ.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc12-background.md)
+
+Decisions made in this round. A cancel is recorded before any key is sent, and the delivery asks whether its message is still wanted before the paste and immediately before every Enter, so the order of the two cannot let an Enter through. A request left in the composer is cleared with Escape only on evidence, a fresh screen read that shows text there, and at most three times; an Escape to an empty composer means something else in the CLI, so none is sent blind. When the composer cannot be read or will not clear, the row says so and the task refuses every later message, because any Enter in that session would run the request.
+
+State still is not stored, and live evidence now comes first: a session that is working or asking outranks a recorded turn end. After a restart the turn-end time held in memory is gone, so a turn end nobody saw is inferred only from the screen and the transcript together (no work on the screen, no question pending, the request found in the transcript, no write to it for thirty seconds, two reads that agree). The inference settles the task and never posts into a thread; a thread reply still waits for a turn end this process sees. A message recorded on its way with no delivery of this process carrying it is an orphan: the transcript decides delivered or not delivered, and Retry is the only thing that sends it again.
+
+An abnormal exit is an exit status other than 0, a signal, or no status at all. It fails the task and shows what was written as a partial result. A clean exit with a reply still completes it.
+
+The repository's `info/exclude` gets Codeman's own lines every time a task worktree is made, without asking git whether they are already ignored. The probe answered for the server's git configuration at that moment, and Remove can run under another. The alternative, deciding at Remove that only Codeman's files changed, would need to tell them from an agent's edit of the same files and was rejected.
+
+A worktree named by this subsystem that no record names is listed, not swept: a start that died after `git worktree add` may have been followed by a person's own work in that folder.
+
+"Only a person" is the caller-declared agent header. The docs now say what that does and does not keep out.
+
+## 2026-11-13 — Background agent tasks from the canvas assistant (PC12)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{tasks,conversations,conversation-schema,conversation-delivery,view-schema}.ts`, `src/web/routes/{canvas-task-routes,canvas-conversation-routes,canvas-routes,worktree-routes}.ts`, `src/mcp-server.ts`, `packages/canvas/src/{task,tasks-view,assistant,entry,shortcuts,commands,storage-keys}.ts`, `src/web/public/{canvas.html,canvas.css}`
+**Why:** The assistant held one foreground conversation, Keys listed `G` and Cmd/Ctrl+Shift+Enter as not bound, and two agents asked to edit one case would have shared its checkout.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc12-background.md)
+
+A task is a conversation record with a `task` part, started by one route that makes a git worktree of the case, starts a session in it through the conversation session start, records the task and sends the request through the conversation send. Each step is undone in reverse when a later one fails. The previous release reads the record as an ordinary conversation.
+
+Decisions the intent did not settle. State is derived when a task is read; the record keeps only the cancel time, the time the turn was seen to end, and the removal. That turn end is written by the pass that posts thread replies, on its evidence and its two agreeing reads, so a task is never called completed because agent text is present. A git case always gets a worktree and the consent to share is used only where none can be made. Remove deletes the record when the worktree is gone and keeps the row, with the worktree's place inside the case and the reason, when git will not remove it. Tasks stay out of the conversation picker and are reached through Inspect. An agent can read tasks and can do nothing else to them, including sending a message to one. The composer is cleared on the server's acknowledgement, and the request id is kept with the draft until then.
+
+One change outside the task code: a delivery that is waiting for a composer now stops when its task is cancelled, instead of waiting out the ready timeout.
+
+Limit: sessions in the tests are stand-ins and transcripts are written by the test. No real agent has run a task. Worktrees are made and removed by real git in a temporary repository.
+
 ## 2026-11-12 — Voice ends when its frame is hidden, and a reply waits for the turn to end (PC11 fix round 1)
 
 **Type:** retraction

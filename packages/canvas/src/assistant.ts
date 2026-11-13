@@ -16,6 +16,18 @@ import {
   type TranscriptRow,
 } from './conversation.js';
 import { nextAttempt, parseAttempt, parseSent, type Attempt } from './outbox.js';
+import {
+  MAX_SENT_TASKS,
+  RUN_INTERRUPTED,
+  attemptPending,
+  nextTaskAttempt,
+  parseSentTasks,
+  parseTaskAttempt,
+  taskFailure,
+  type SentTask,
+  type TaskAttempt,
+  type TaskRow,
+} from './task.js';
 import { promptRefusal, splitPrompt } from '../../../src/canvas/conversation-schema.js';
 import {
   agentLabel,
@@ -37,6 +49,8 @@ type Summary = {
   model?: string;
   working?: boolean;
   requests?: Omit<ThreadRequest, 'conversationId' | 'working' | 'ended'>[];
+  /** Present when the conversation is a background task: it is listed with the tasks, not in the picker. */
+  task?: { name: string; state: string; isolation: string };
 };
 /** Where a request from a comment thread goes when it starts a new conversation, or why it cannot. */
 export type FreshTarget = { ok: true; cliId?: string; model?: string; label: string } | { ok: false; reason: string };
@@ -78,11 +92,19 @@ type Options = {
   ) => void;
   /** The bound conversation's session reported the end of a turn (a stop hook or idle). */
   turnEnded?: (conversationId: string) => void;
+  /** A background task was started from the draft. */
+  taskStarted?: (task: TaskRow) => void;
+  /** A spoken turn is counting down or being sent: a run would start the same text a second time. */
+  voicePending?: () => boolean;
+  /** A run is starting: a spoken turn that began counting down in the same moment is not sent. */
+  runStarting?: () => void;
   /** Whether the server's Claude voice relay can transcribe, from the providers answer. */
   voiceRelay?: (available: boolean) => void;
 };
 /** `refusal` is set when the text was not sent at all and Retry does not apply. */
 export type SendResult = { ok: boolean; refusal?: string };
+/** `text` is what the person is told, wherever the run was asked from. */
+export type RunResult = { ok: boolean; text: string };
 const node = (id: string): HTMLElement => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing canvas element: ${id}`);
@@ -155,6 +177,11 @@ export class AssistantView {
   private working = false;
   private sending = false;
   private attempt: Attempt | null;
+  private taskAttempt: TaskAttempt | null;
+  private sentTasks: SentTask[];
+  private runningTask: Promise<RunResult> | null = null;
+  /** The page is unloading: a request that fails now was cut off, not answered. */
+  private leaving = false;
   private loaded: string | null = null;
   private transcriptTimer: ReturnType<typeof setTimeout> | undefined;
   private listTimer: ReturnType<typeof setTimeout> | undefined;
@@ -170,14 +197,35 @@ export class AssistantView {
     this.restoredChoiceValue = parseChoice(read(this.keys.assistantChoice));
     this.attempt = parseAttempt(read(this.keys.assistantOutbox));
     this.sent = parseSent(read(this.keys.assistantSent));
+    this.taskAttempt = parseTaskAttempt(read(this.keys.taskOutbox));
+    this.sentTasks = parseSentTasks(read(this.keys.taskSent));
+    // A run a reload cut off is never left silent: the line stays until the task shows up in the list or the text changes.
+    if (this.taskAttempt && attemptPending(read(this.keys.taskOutbox))) this.backgroundNote(RUN_INTERRUPTED);
+    for (const name of ['pagehide', 'beforeunload']) window.addEventListener(name, () => (this.leaving = true));
+    // A page restored from the back/forward cache is in use again.
+    window.addEventListener('pageshow', () => (this.leaving = false));
     this.draft.addEventListener('input', () => {
       write(this.keys.assistantDraft, this.draft.value);
       this.say('');
+      // A refusal is about the text as it was; the question about sharing the folder stays until it is answered.
+      if (node('backgroundShareRow').hidden) this.backgroundNote('');
+      this.syncRun();
     });
+    const run = node('runBackground');
+    // The press must not take focus from the composer or the board: after a run, focus is where it was.
+    run.addEventListener('mousedown', (e) => e.preventDefault());
+    run.addEventListener('click', () => void this.runInBackground());
+    this.syncRun();
     this.draft.addEventListener('keydown', (e) => {
       // Enter sends; Shift+Enter is a line break. A key that ends an IME composition or repeats never sends.
       if (this.options.phone()) return;
-      if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229 || e.repeat) return;
+      if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || e.repeat) return;
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        void this.runInBackground();
+        return;
+      }
+      if (e.shiftKey) return;
       e.preventDefault();
       void this.submit();
     });
@@ -224,6 +272,8 @@ export class AssistantView {
       const id = (e.target as HTMLSelectElement).value;
       this.agentChose = false;
       this.options.dispatch({ kind: 'conversation', id: id || null });
+      // A task that was being inspected leaves the picker with the choice that left it.
+      this.paintPicker();
       // The selectors steer only the NEXT new conversation: opening an old one never carries a pending choice over to it.
       this.options.dispatch({ kind: 'assistant-choice', choice: null });
       void this.open();
@@ -281,7 +331,180 @@ export class AssistantView {
     this.draft.value = text;
     write(this.keys.assistantDraft, text);
     this.say('');
+    this.syncRun();
     this.draft.scrollTop = this.draft.scrollHeight;
+  }
+  /**
+   * Run in background is offered only for a request that has text and while no run is travelling. While one travels
+   * the draft is still in the composer, so Send is off too: the same text must not also go to the conversation.
+   */
+  private syncRun(): void {
+    node('runBackground').toggleAttribute('disabled', !this.draft.value.trim() || this.runningTask !== null);
+    node('assistantSend').toggleAttribute('disabled', this.sending || this.runningTask !== null);
+  }
+  /** The rail shows a background task (through Inspect) rather than a conversation. */
+  showsTask(): boolean {
+    return !!this.current?.task;
+  }
+  /**
+   * The task list was read: a run a reload interrupted is settled once its task is listed (the text that was run
+   * leaves the composer, as on a normal acknowledgement), and texts kept for tasks that are gone are dropped.
+   */
+  tasksListed(rows: readonly Pick<TaskRow, 'id' | 'requestId' | 'name'>[]): void {
+    const attempt = this.taskAttempt;
+    const started = attempt && !this.runningTask ? rows.find((r) => r.requestId === attempt.requestId) : undefined;
+    if (attempt && started) {
+      this.acknowledged(attempt, started);
+      this.backgroundNote('');
+      this.say(`Running in the background: ${started.name}`);
+    }
+    const kept = this.sentTasks.filter((t) => rows.some((r) => r.id === t.id));
+    if (kept.length !== this.sentTasks.length) {
+      this.sentTasks = kept;
+      write(this.keys.taskSent, kept.length ? JSON.stringify(kept) : null);
+    }
+  }
+  /** The server has the task: its request id has done its work, and only what was run leaves the composer. */
+  private acknowledged(attempt: TaskAttempt, task: Pick<TaskRow, 'id'>): void {
+    this.taskAttempt = null;
+    write(this.keys.taskOutbox, null);
+    this.sentTasks = [
+      ...this.sentTasks.filter((t) => t.id !== task.id),
+      { id: task.id, requestId: attempt.requestId, text: attempt.text, refIds: attempt.refIds },
+    ].slice(-MAX_SENT_TASKS);
+    write(this.keys.taskSent, JSON.stringify(this.sentTasks));
+    const now = this.draft.value;
+    if (now.startsWith(attempt.text)) this.draft.value = now.slice(attempt.text.length).replace(/^\s+/, '');
+    write(this.keys.assistantDraft, this.draft.value || null);
+    this.options.dispatch({ kind: 'context-clear-sent', ids: attempt.refIds });
+    this.syncRun();
+  }
+  /** Whether this browser still holds the request of a task whose delivery failed, so it can be sent again. */
+  canRetryTask(id: string): boolean {
+    return this.sentTasks.some((t) => t.id === id);
+  }
+  /**
+   * Sends a task's undelivered request again: the same request id and text, marked as a retry, through the route
+   * that started it. Null when it went; otherwise what to tell the person. Reached only from the row's own Retry.
+   */
+  async retryTask(id: string): Promise<string | null> {
+    const kept = this.sentTasks.find((t) => t.id === id);
+    if (!kept) return 'This browser no longer holds that request. Run it again from the assistant.';
+    try {
+      const answer = await this.json(`/api/canvas/${this.options.workspace}/tasks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: kept.requestId, text: kept.text, refIds: kept.refIds, retry: true }),
+      });
+      if (answer.status >= 400) return taskFailure(errorMessage(answer.body), answer.status).text;
+      return this.data(answer.body).retried === true ? null : 'This task can no longer be sent again.';
+    } catch {
+      return 'Could not reach the server. Try again.';
+    }
+  }
+  private backgroundNote(text: string, share = false): void {
+    const note = node('backgroundNote');
+    note.textContent = text;
+    note.hidden = !text;
+    const row = node('backgroundShareRow');
+    if (!share) (node('backgroundShared') as HTMLInputElement).checked = false;
+    row.hidden = !share;
+  }
+  /**
+   * Starts the draft and its context as a background task: its own agent session, apart from the conversation the
+   * rail is on. Only a person's key or press reaches this. A run already travelling is joined, never doubled.
+   */
+  runInBackground(): Promise<RunResult> {
+    if (this.runningTask) return this.runningTask;
+    const origin = document.activeElement;
+    const run = this.background().finally(() => {
+      this.runningTask = null;
+      this.syncRun();
+      // A control that went away under the keyboard (the button disables on an empty draft) hands focus back.
+      const active = document.activeElement;
+      if (active === null || active === document.body || active === node('runBackground'))
+        (origin instanceof HTMLElement && origin.isConnected && origin !== node('runBackground')
+          ? origin
+          : this.draft
+        ).focus({ preventScroll: true });
+    });
+    this.runningTask = run;
+    this.syncRun();
+    this.options.runStarting?.();
+    return run;
+  }
+  private async background(): Promise<RunResult> {
+    const fail = (text: string, share = false): RunResult => {
+      this.backgroundNote(text, share);
+      return { ok: false, text };
+    };
+    if (this.sending || this.inflight) return fail('A message is being sent. Try again in a moment.');
+    if (this.options.voicePending?.())
+      return fail('A voice turn is about to be sent. Cancel it or wait, then run in the background.');
+    const text = this.draft.value;
+    const refusal = promptRefusal(text);
+    if (refusal) return fail(refusal);
+    const ids = chips(this.options.objects(), this.options.view().context).map((c) => c.id);
+    if (typeof navigator !== 'undefined' && navigator.onLine === false)
+      return fail('You are offline. Your message is kept; try again when the connection is back.');
+    const choice = this.options.view().choice;
+    const sel = selection(this.providers, choice);
+    const model = choice?.model ?? '';
+    if (this.providersLoaded && sel.row) {
+      if (!sel.row.available)
+        return fail(`${sel.row.reason ?? 'That provider cannot start a session.'} Pick another provider.`);
+      const field = modelField(sel.row, model);
+      if (field.invalid) return fail(field.reason);
+    }
+    const attempt = nextTaskAttempt(this.taskAttempt, text, ids, () => uuid());
+    this.taskAttempt = attempt;
+    // Marked as travelling until an answer is seen, so a reload in between is never silent.
+    write(this.keys.taskOutbox, JSON.stringify({ ...attempt, pending: true }));
+    const answered = (): void => {
+      if (this.taskAttempt === attempt) write(this.keys.taskOutbox, JSON.stringify(attempt));
+    };
+    const shared = !node('backgroundShareRow').hidden && (node('backgroundShared') as HTMLInputElement).checked;
+    const parent = this.current;
+    this.backgroundNote('');
+    this.say('Starting in the background…', 'sending');
+    try {
+      const answer = await this.json(`/api/canvas/${this.options.workspace}/tasks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: attempt.requestId,
+          text,
+          refIds: ids,
+          ...(this.providersLoaded && sel.row ? { cliId: sel.row.id } : {}),
+          ...(model ? { model } : {}),
+          ...(shared ? { shared: true } : {}),
+          ...(parent && !parent.task && /^[0-9a-fA-F-]{36}$/.test(parent.id)
+            ? { parentConversationId: parent.id }
+            : {}),
+        }),
+      });
+      const task = this.data(answer.body).task as TaskRow | undefined;
+      if (answer.status >= 400 || !task) {
+        answered();
+        const failure = taskFailure(errorMessage(answer.body), answer.status);
+        if (failure.fresh) {
+          this.taskAttempt = null;
+          write(this.keys.taskOutbox, null);
+        }
+        this.say('');
+        return fail(failure.text, failure.share);
+      }
+      this.acknowledged(attempt, task);
+      const said = `Running in the background: ${task.name}`;
+      this.say(said);
+      this.options.taskStarted?.(task);
+      return { ok: true, text: said };
+    } catch {
+      // A page that is going away fails its own request; that is the interruption the next load reports.
+      if (!this.leaving) answered();
+      this.say('');
+      return fail('Could not reach the server. Your message is kept.');
+    }
   }
   /** Sends the draft exactly as Send does. A send already travelling is joined, not refused. */
   send(): Promise<SendResult> {
@@ -305,7 +528,7 @@ export class AssistantView {
   }
   /** Live conversations a thread request can go to, newest first, named as the picker names them. */
   targets(): { id: string; label: string }[] {
-    const sorted = [...this.conversations].sort((a, b) => b.createdAt - a.createdAt);
+    const sorted = this.conversations.filter((c) => !c.task).sort((a, b) => b.createdAt - a.createdAt);
     return sorted.flatMap((c, index) =>
       c.session === 'ended' ? [] : [{ id: c.id, label: `Conversation ${sorted.length - index}` }]
     );
@@ -313,7 +536,7 @@ export class AssistantView {
   /** The conversation a thread request goes to unless the person picks another: the one the rail is on, if it is live. */
   preferredTarget(): string | null {
     const bound = this.current;
-    return bound && bound.session !== 'ended' ? bound.id : null;
+    return bound && !bound.task && bound.session !== 'ended' ? bound.id : null;
   }
   /** The provider and model a new conversation would start on, from the rail's current choice. */
   freshTarget(): FreshTarget {
@@ -396,7 +619,8 @@ export class AssistantView {
     }
     const bound = this.options.view().conversationId;
     if (!this.conversations.some((c) => c.id === bound) && bound === null && !this.attempt?.conversationId) {
-      const newest = [...this.conversations].sort((a, b) => b.createdAt - a.createdAt)[0];
+      // A background task is reached from the task list, never by the rail landing on it.
+      const newest = this.conversations.filter((c) => !c.task).sort((a, b) => b.createdAt - a.createdAt)[0];
       if (newest && !this.sending) this.options.dispatch({ kind: 'conversation', id: newest.id });
     }
     this.paintPicker();
@@ -551,6 +775,10 @@ export class AssistantView {
   }
   private async deliver(): Promise<SendResult> {
     if (this.sending) return { ok: false };
+    // The draft is on its way to a background task: sent here too, the same request would run twice.
+    if (this.runningTask) return { ok: false, refusal: 'A background run is starting with this text. Wait for it.' };
+    // A cancelled task may still hold its request unsubmitted in its input; nothing more is sent into that session.
+    if (this.current?.task?.state === 'cancelled') return this.refuse('This task was cancelled. Start a new one.');
     const text = this.draft.value;
     const refusal = promptRefusal(text);
     if (refusal) return this.refuse(refusal);
@@ -575,7 +803,7 @@ export class AssistantView {
     this.attempt = attempt;
     write(this.keys.assistantOutbox, JSON.stringify(attempt));
     this.sending = true;
-    node('assistantSend').toggleAttribute('disabled', true);
+    this.syncRun();
     this.say('Sending…', 'sending');
     try {
       let conversationId = target;
@@ -619,6 +847,7 @@ export class AssistantView {
       write(this.keys.assistantDraft, this.draft.value || null);
       this.options.dispatch({ kind: 'context-clear-sent', ids });
       this.say('');
+      this.syncRun();
       this.options.sent?.(attempt.messageId, text, conversationId);
       void this.open();
       return { ok: true };
@@ -641,7 +870,7 @@ export class AssistantView {
     } finally {
       this.sending = false;
       this.draft.readOnly = false;
-      node('assistantSend').toggleAttribute('disabled', false);
+      this.syncRun();
     }
   }
   /** Retry for a message the server accepted but could not deliver: same id, same text, so the server checks the composer first and never pastes twice. */
@@ -670,7 +899,9 @@ export class AssistantView {
   private paintPicker(): void {
     const picker = node('conversationPicker') as HTMLSelectElement;
     const bound = this.options.view().conversationId ?? '';
-    const sorted = [...this.conversations].sort((a, b) => b.createdAt - a.createdAt);
+    // Tasks stay out of the picker; the one being inspected is named so the picker says what the rail shows.
+    const sorted = this.conversations.filter((c) => !c.task).sort((a, b) => b.createdAt - a.createdAt);
+    const task = this.conversations.find((c) => c.id === bound && c.task);
     picker.replaceChildren();
     const none = document.createElement('option');
     none.value = '';
@@ -682,8 +913,14 @@ export class AssistantView {
       option.textContent = `Conversation ${sorted.length - index}${c.session === 'ended' ? ' (ended)' : ''}`;
       picker.append(option);
     });
-    picker.value = sorted.some((c) => c.id === bound) ? bound : '';
-    node('conversationHead').hidden = !sorted.length;
+    if (task?.task) {
+      const option = document.createElement('option');
+      option.value = task.id;
+      option.textContent = `Task · ${task.task.name}`;
+      picker.append(option);
+    }
+    picker.value = task || sorted.some((c) => c.id === bound) ? bound : '';
+    node('conversationHead').hidden = !sorted.length && !task;
   }
   private paintThread(): void {
     const conversation = this.current;

@@ -89,6 +89,42 @@ describe('deliver', () => {
     expect(await deliver(f.deps, 'enter-only', 0)).toBe('confirmed');
     expect(f.log).toEqual(['enter@0']);
   });
+  it('an abandoned message gets no key: nothing pasted before the paste, no Enter after it, even on a pane that ignores Enter', async () => {
+    // The composer shows the pasted text for ever: Enter is ignored, as a real CLI does just after it paints.
+    const ignoring = (at: number | null) => (at === null ? frame('') : frame('[Pasted text #1 +9 lines]'));
+    let cancelledAt = Infinity;
+    const f = fake((_t, at) => ignoring(at));
+    f.deps.abandoned = () => f.time() >= cancelledAt;
+    cancelledAt = 9_000;
+    expect(await deliver(f.deps, 'paste', 0)).toBe('abandoned');
+    const enters = f.log.filter((l) => l.startsWith('enter')).map((l) => Number(l.slice(6)));
+    expect(enters.length).toBeGreaterThan(0);
+    expect(enters.every((at) => at < cancelledAt)).toBe(true);
+    expect(f.log.filter((l) => l.startsWith('paste'))).toHaveLength(1);
+
+    // Cancelled while it still waits for the composer: nothing is written at all.
+    const early = fake((t) => (t < 5_000 ? 'starting…' : frame('')));
+    early.deps.abandoned = () => early.time() >= 3_000;
+    expect(await deliver(early.deps, 'paste', 0)).toBe('not-written');
+    expect(early.log).toEqual([]);
+
+    // Cancelled during the screen read that decided on Enter: the key is not sent.
+    let reads = 0;
+    let gone = false;
+    const racing = fake((_t, at) => {
+      if (at !== null && ++reads >= 2) gone = true;
+      return ignoring(at);
+    });
+    racing.deps.abandoned = () => gone;
+    expect(await deliver(racing.deps, 'paste', 0)).toBe('abandoned');
+    expect(racing.log.filter((l) => l.startsWith('enter'))).toEqual([]);
+
+    // A retry of text already in the composer presses nothing for a cancelled message.
+    const retry = fake(() => frame('[Pasted text #1 +9 lines]'));
+    retry.deps.abandoned = () => true;
+    expect(await deliver(retry.deps, 'enter-only', 0)).toBe('abandoned');
+    expect(retry.log).toEqual([]);
+  });
   it('treats a session with no pane as written but unverified', async () => {
     const f = fake(() => null);
     expect(await deliver(f.deps, 'paste', 0)).toBe('unverified');

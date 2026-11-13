@@ -15,6 +15,10 @@ export interface CanvasSession {
   readonly hookPromptSubmittedAt?: number;
   readonly hookTurnRunning?: boolean;
   readonly isWorking?: boolean;
+  /** The screen shows the agent working; null when there is no pane to read. True after a restart too, unlike `isWorking`. */
+  paneShowsWork?(): boolean | null;
+  /** Stops the session's own Enter re-presses for the last prompt written with Enter. */
+  cancelPendingSubmit?(): void;
 }
 export type StartedConversationSession = { ok: true; sessionId: string } | { ok: false; message: string };
 export interface CanvasPort {
@@ -43,6 +47,8 @@ export interface CanvasPort {
   transcriptRows?(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
   /** Changes whenever the transcript file does (its identity, modified time and size); null when that cannot be told. */
   transcriptStamp?(sessionId: string): Promise<string | null>;
+  /** When the transcript file was last written (ms); null when there is none or that cannot be told. */
+  transcriptModifiedAt?(sessionId: string): Promise<number | null>;
   /**
    * When THIS process last saw the session's turn end: the stop hook for a CLI that has one, else a finished-turn idle
    * transition. 0 when it has seen none, which is the case for every session after a restart.

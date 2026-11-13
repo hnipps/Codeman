@@ -31,6 +31,8 @@ type Options = {
   /** The canvas shortcut scope: false while typing, composing, on a control or outside the board. */
   allowed: (event: KeyboardEvent) => boolean;
   letters: () => boolean;
+  /** The rail shows a background task: a spoken turn is not started for one. */
+  taskShown?: () => boolean;
   draft: { read: () => string; write: (text: string) => void; element: HTMLTextAreaElement };
   /** The composer's own send. A spoken turn has no other way out. */
   send: () => Promise<{ ok: boolean; refusal?: string }>;
@@ -135,6 +137,14 @@ export class VoiceView {
     this.dispatch({ type: 'capability', capability: this.capability() });
   }
   /** True when this Escape press ended capture, a pending send or playback, so it should not also close the rail. */
+  /** A spoken turn is counting down or on its way: its text is still in the composer. */
+  pending(): boolean {
+    return this.state.phase === 'ready-to-send' || (this.state.phase === 'processing' && this.state.sending);
+  }
+  /** Stops a countdown, exactly as its Cancel send does; the text stays in the composer. */
+  cancelPending(): void {
+    if (this.state.phase === 'ready-to-send') this.dispatch({ type: 'cancel' });
+  }
   escape(event: Event): boolean {
     return this.escaped === event;
   }
@@ -213,7 +223,14 @@ export class VoiceView {
   }
   private toggle(mode: VoiceMode, allowed: boolean, repeat: boolean): void {
     const before = this.state.capture;
-    this.dispatch({ type: 'toggle', mode, allowed, repeat, draft: this.options.draft.read() });
+    this.dispatch({
+      type: 'toggle',
+      mode,
+      allowed,
+      repeat,
+      draft: this.options.draft.read(),
+      taskShown: this.options.taskShown?.() === true,
+    });
     if (this.state.capture !== before) this.options.show();
   }
   private dispatch(event: VoiceEvent): void {

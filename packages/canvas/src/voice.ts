@@ -91,7 +91,8 @@ export type CaptureEnd = 'finalized' | 'relay-closed' | 'device-lost' | 'network
 export type VoiceEvent =
   | { type: 'capability'; capability: VoiceCapability }
   /** A key press or a tap on a control. `allowed` is false while typing, composing or outside the canvas. */
-  | { type: 'toggle'; mode: VoiceMode; allowed: boolean; repeat: boolean; draft: string }
+  /** `taskShown`: the rail shows a background task, which takes no spoken turns. */
+  | { type: 'toggle'; mode: VoiceMode; allowed: boolean; repeat: boolean; draft: string; taskShown?: boolean }
   | { type: 'permission-granted' }
   | { type: 'permission-denied' }
   | { type: 'no-device' }
@@ -119,6 +120,8 @@ export type VoiceEvent =
   | { type: 'speech-end' }
   | { type: 'speech-failed' }
   | { type: 'stop-speaking' };
+export const VOICE_TASK_SHOWN =
+  'Voice turns go to the foreground conversation. Pick a conversation in the rail to speak to it.';
 export type VoiceEffect =
   | { kind: 'capture-start' }
   | { kind: 'capture-finalize' }
@@ -233,6 +236,9 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
         };
       }
       if (state.phase === 'processing' || state.phase === 'ready-to-send') return same(state);
+      // A spoken turn is for the conversation in the foreground; with a background task on the rail nothing is captured for one.
+      if (event.mode === 'conversation' && event.taskShown)
+        return same(state.phase === 'speaking' ? state : { ...state, mode: 'conversation', message: VOICE_TASK_SHOWN });
       return {
         state: {
           ...state,

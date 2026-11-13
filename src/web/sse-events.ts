@@ -504,7 +504,7 @@ export const TabLayoutChanged = 'tab:layoutChanged' as const;
 export const CanvasChanged = 'canvas:changed' as const;
 /** An agent asked one open canvas view to act. Payload `{ workspaceId, viewId, commandId, owner, command }`; routed to the view's owner and admins. */
 export const CanvasViewCommand = 'canvas:viewCommand' as const;
-/** A canvas conversation was started or took a message. Payload `{ workspaceId, conversationId, change: 'created' | 'message', owner }`, no text; routed to the workspace owner and admins. The browser refetches the conversation. */
+/** A canvas conversation or background task was started, took a message or changed (`task`: cancelled, completed or removed). Payload `{ workspaceId, conversationId, change: 'created' | 'message' | 'task', owner }` (no `conversationId` when a left-behind task worktree was removed), no text; routed to the workspace owner and admins. The browser refetches the conversation. */
 export const CanvasConversation = 'canvas:conversation' as const;
 
 // ─── Namespace Re-export ─────────────────────────────────────────────────────

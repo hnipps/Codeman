@@ -67,7 +67,7 @@ export type CreateResult = { ok: true; conversation: Conversation; duplicate: bo
 export function addConversation(
   workspaceId: string,
   make: () => Pick<Conversation, 'id' | 'sessionId' | 'cliId' | 'createdAt' | 'createdBy'> &
-    Pick<Partial<Conversation>, 'model' | 'origin'>,
+    Pick<Partial<Conversation>, 'model' | 'origin' | 'task'>,
   requestId: string
 ): CreateResult {
   const existing = readConversations(workspaceId);
@@ -153,6 +153,25 @@ export function setMessageReply(
       if (!replyExtendable(current) || !('commentId' in reply) || reply.commentId !== current.commentId) return false;
     }
     message.reply = reply;
+    return true;
+  });
+}
+
+/** Merges recorded observations into a task's part (a cancel, an observed turn end, a removal). False when the conversation holds no task part to merge into. */
+export function setTaskHint(workspaceId: string, conversationId: string, patch: Record<string, unknown>): boolean {
+  return mutate(workspaceId, (list) => {
+    const conversation = list.find((c) => c.id === conversationId);
+    if (!conversation || typeof conversation.task !== 'object' || conversation.task === null) return false;
+    conversation.task = { ...conversation.task, ...patch };
+    return true;
+  });
+}
+/** Drops one conversation's record: a task that was removed, or one whose creation failed part-way. */
+export function removeConversation(workspaceId: string, conversationId: string): boolean {
+  return mutate(workspaceId, (list) => {
+    const index = list.findIndex((c) => c.id === conversationId);
+    if (index < 0) return false;
+    list.splice(index, 1);
     return true;
   });
 }

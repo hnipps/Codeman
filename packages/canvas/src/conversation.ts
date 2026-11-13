@@ -106,6 +106,8 @@ export function sendFailure(message: string, status: number): { text: string; en
   switch (code) {
     case 'SESSION_ENDED':
       return plain('The session has ended. Your message is kept.', true);
+    case 'TASK_CANCELLED':
+      return plain('This task was cancelled. Start a new one.');
     case 'APPROVAL_PENDING':
       return plain('Answer the pending question first. Your message is kept.');
     case 'NOT_DELIVERED':
