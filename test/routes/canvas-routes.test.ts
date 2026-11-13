@@ -502,6 +502,7 @@ describe('canvas routes', () => {
   });
   it('returns a diagnostic 503 without minting when the case probe is unknown', async () => {
     const probe = vi.spyOn(pathProbe, 'probePathKind').mockResolvedValue('unknown');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { app } = await harness();
     try {
       const response = await app.inject({
@@ -512,10 +513,14 @@ describe('canvas routes', () => {
       expect(response.statusCode).toBe(503);
       const path = join(resolveCasesDir({ username: 'user-a', role: 'user' }), 'unreachable');
       expect(probe).toHaveBeenCalledWith(path, { pastCap: true });
-      expect(response.json().error).toBe(pathProbe.describeUnknownPath('Case folder', path, { pastCap: true }));
+      const reason = pathProbe.describeUnknownPath('Case folder', path, { pastCap: true });
+      expect(response.json().error).toBe(reason.replace(`: ${path}`, ''));
+      expect(response.body).not.toContain(path);
+      expect(logged.mock.calls.join()).toContain('POST /api/canvas/workspaces failed 503');
       expect(readWorkspaces()).toEqual([]);
     } finally {
       probe.mockRestore();
+      logged.mockRestore();
       await app.close();
     }
   });

@@ -235,7 +235,7 @@ layers cooperate so a dashboard talking to its own backend just works:
 
 1. `<base href>` handles relative URLs in the markup.
 2. Attribute rewriting handles root-absolute `src`/`href`/`action` in the page the
-   proxy serves.
+   proxy serves, quoted or unquoted (`<script src=/app.js>`).
 3. A small injected script rebases URLs built at **runtime**, which the first two
    cannot see: `fetch('/api/data')` and `new WebSocket('/live')`, but equally
    `card.innerHTML = '<img src="/api/hero">'`, `img.src = '/api/slide'`, and

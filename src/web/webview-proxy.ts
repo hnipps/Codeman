@@ -703,9 +703,8 @@ export function rewriteHtml(
   const prefix = proxyPrefixFor(capability, basePath);
 
   // Fresh regexes per call: module-level /g patterns carry `lastIndex` between calls.
-  const rebased = html
-    .replace(/(\s(?:src|href|action)\s*=\s*")\/(?!\/)/gi, `$1${prefix}`)
-    .replace(/(\s(?:src|href|action)\s*=\s*')\/(?!\/)/gi, `$1${prefix}`);
+  // The quote is optional: HTML allows `<script src=/app.js>`, and the browser asks the server root for it.
+  const rebased = html.replace(/(\s(?:src|href|action)\s*=\s*["']?)\/(?!\/)/gi, `$1${prefix}`);
 
   // A page that ships its own <base> keeps it (overriding it would break the
   // author's intent), but it STILL needs the shim, which is the layer that
