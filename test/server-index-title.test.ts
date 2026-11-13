@@ -117,7 +117,9 @@ describe('WebServer index.html <title> templating (#82)', () => {
       // Likewise the page-key mode list: an array, possibly empty, always injected.
       .replace(/<script>window\.__codemanTranscriptPageKeys=\[.*?\];<\/script>\n/, '')
       // And the keyboard-hold mode list, built the same way.
-      .replace(/<script>window\.__codemanKeyboardHoldModes=\[.*?\];<\/script>\n/, '');
+      .replace(/<script>window\.__codemanKeyboardHoldModes=\[.*?\];<\/script>\n/, '')
+      // The canvas shell fact: injected while the shell is on, which an empty data dir is.
+      .replace(/<script>window\.__CODEMAN_SHELL__=\{.*?\};<\/script>\n/, '');
     const beforeTitle = rawTemplate.split('<title>Codeman</title>')[0];
     const afterTitle = rawTemplate.split('<title>Codeman</title>')[1];
     expect(html.startsWith(beforeTitle)).toBe(true);

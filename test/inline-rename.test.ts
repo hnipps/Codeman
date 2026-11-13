@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 let baseUrl: string;
 
@@ -28,6 +29,7 @@ describe('Inline rename input', () => {
   let page: Page;
 
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true); // testMode = true
     await server.start();
     baseUrl = `http://localhost:${server.boundPort}`;
@@ -664,6 +666,7 @@ describe('Inline rename write ordering', () => {
   type Pending = { body: string; resolve: (response: Response) => void };
 
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });
@@ -1011,6 +1014,7 @@ describe('Vertical rail rename editor with a long prefix', () => {
   let sessionId = '';
 
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     const res = await fetch(`http://localhost:${server.boundPort}/api/sessions`, {

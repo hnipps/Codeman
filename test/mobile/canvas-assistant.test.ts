@@ -62,7 +62,7 @@ describe('phone assistant', () => {
   const view = () => page.evaluate(() => window.canvasView.read());
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc9c-phone');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'phone-assistant'), { recursive: true });
     workspace = workspaceForCase('phone-assistant').id;
     const stores = new CanvasStores();

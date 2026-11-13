@@ -20,6 +20,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 let baseUrl: string;
 const IME_PUNCTUATION = '，。！？；：“”、《》、（）';
@@ -30,6 +31,7 @@ describe('terminal Ctrl+C smart copy', () => {
   let page: Page;
 
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     baseUrl = `http://localhost:${server.boundPort}`;

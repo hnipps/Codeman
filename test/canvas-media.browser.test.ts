@@ -87,7 +87,7 @@ describe('canvas media', () => {
     serial = 0;
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc5-media');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     server = new WebServer(0, false, true, undefined, undefined, undefined, '/x');
     await server.start();
     origin = `http://localhost:${server.boundPort}`;

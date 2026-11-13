@@ -39,7 +39,7 @@ describe('canvas assistant conversations', () => {
   const api = (path: string) => `${origin}/x/api${path}`;
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc9b-owner');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'Fieldnotes'), { recursive: true });
     workspace = workspaceForCase('Fieldnotes').id;
     const stores = new CanvasStores();

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 const ENV = {
   ...process.env,
@@ -85,6 +86,7 @@ describe('Git status indicator in a real browser', () => {
     write('a.txt', '2\n');
     write('new file.txt', 'n\n');
 
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });

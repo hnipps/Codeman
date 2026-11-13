@@ -544,9 +544,9 @@ Object.assign(CodemanApp.prototype, {
     document.getElementById('appSettingsAgentInboxPersist').checked = settings.agentInboxPersistEnabled === true;
     // Experimental agent coordination (inspect/stage/submit routes): synced, default OFF.
     document.getElementById('appSettingsAgentCoordination').checked = settings.agentCoordinationEnabled === true;
-    document.getElementById('appSettingsCanvas').checked = settings.canvasEnabled === true;
-    // Canvas shell (PC13): synced, default OFF, and only an explicit true turns it on.
-    document.getElementById('appSettingsCanvasShell').checked = settings.canvasShellEnabled === true;
+    // Canvas and its shell: synced, ON unless the stored value is an explicit false (canvasSettingOn).
+    document.getElementById('appSettingsCanvas').checked = this.canvasSettingOn('canvasEnabled', settings);
+    document.getElementById('appSettingsCanvasShell').checked = this.canvasSettingOn('canvasShellEnabled', settings);
     this._syncCanvasShellRow();
     // Custom Model Endpoint Profiles: synced, default OFF. The toggle governs both
     // the Run-menu picker's generated entries and this settings panel's visibility;
@@ -3369,7 +3369,7 @@ Object.assign(CodemanApp.prototype, {
       canvasShellEnabled: _cse,
       ...serverSettings
     } = settings;
-    const _shellFlip = _cse !== (_prev.canvasShellEnabled === true) ? { canvasShellEnabled: _cse } : {};
+    const _shellFlip = _cse !== this.canvasSettingOn('canvasShellEnabled', _prev) ? { canvasShellEnabled: _cse } : {};
     let webhookError = '';
     let serverSaved = false;
     try {
@@ -3402,7 +3402,7 @@ Object.assign(CodemanApp.prototype, {
         if (retry?.ok) {
           res = retry;
           shellSwitchUnknown = true;
-          settings.canvasShellEnabled = _prev.canvasShellEnabled === true;
+          settings.canvasShellEnabled = this.canvasSettingOn('canvasShellEnabled', _prev);
           this.saveAppSettingsToStorage(settings);
           const box = document.getElementById('appSettingsCanvasShell');
           if (box) box.checked = settings.canvasShellEnabled;
@@ -4537,6 +4537,16 @@ Object.assign(CodemanApp.prototype, {
     return s.showPlanUsageLimits ?? this.getDefaultSettings().showPlanUsageLimits ?? true;
   },
 
+  // Canvas (`canvasEnabled`) and its shell (`canvasShellEnabled`) are ON unless the
+  // stored value is an explicit false: an absent key reads as ON, and nothing writes
+  // the key to make it so. The one browser reader of either key; the server's are
+  // canvasOn() / shellActive() in src/web/shell-landing.ts. The shell acts only
+  // while Canvas is on too, which the server decides.
+  canvasSettingOn(key, settings = null) {
+    const s = settings ?? this.loadAppSettingsFromStorage();
+    return s?.[key] !== false;
+  },
+
   // What a settings save tells the server about plan-usage COLLECTION: the new
   // chip value when this save FLIPS it relative to what this device resolved
   // before (stored value, else the per-device default), otherwise undefined,
@@ -5230,6 +5240,10 @@ Object.assign(CodemanApp.prototype, {
             // Non-display keys: server always wins
             merged[key] = value;
           }
+        }
+        // An absent canvas key means ON, so the server's absence must win over a stale local value.
+        for (const key of ['canvasEnabled', 'canvasShellEnabled']) {
+          if (!(key in appSettings)) delete merged[key];
         }
         this.saveAppSettingsToStorage(merged);
 

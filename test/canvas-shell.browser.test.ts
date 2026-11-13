@@ -132,7 +132,7 @@ describe('canvas shell: landing and fallback', () => {
     await link.waitFor({ state: 'visible' });
     expect(await link.getAttribute('href')).toBe('./?view=classic');
     expect(new URL(await link.evaluate((a: HTMLAnchorElement) => a.href)).pathname).toBe('/x/');
-    settings({ canvasEnabled: true });
+    settings({ canvasEnabled: true, canvasShellEnabled: false });
     await fresh();
     await page.route('**/api/canvas/*/objects', () => {});
     await page.goto(`${origin}/x/canvas/${alpha}`, { waitUntil: 'domcontentloaded' });
@@ -156,7 +156,7 @@ describe('canvas shell: landing and fallback', () => {
     await page.waitForSelector('[data-object-id="n1"]');
     expect(new URL(page.url()).pathname).toMatch(/^\/x\/canvas\//);
     // With the shell off the dashboard has no such link.
-    settings({ canvasEnabled: true });
+    settings({ canvasEnabled: true, canvasShellEnabled: false });
     await fresh();
     await page.goto(`${origin}/x/`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.header');

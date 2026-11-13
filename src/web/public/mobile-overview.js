@@ -574,8 +574,7 @@ Object.assign(CodemanApp.prototype, {
    * (test/mobile-header-buttons-policy.test.ts).
    */
   _buildMobileOverviewCanvasRows() {
-    const enabled = this.loadAppSettingsFromStorage?.().canvasEnabled === true;
-    if (!enabled) return [];
+    if (!this.canvasSettingOn?.('canvasEnabled')) return [];
     return (this.cases || [])
       .filter((c) => c && c.name)
       .map((c) => {

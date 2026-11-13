@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium, type Browser } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 describe('Command-K agent arrow keys in Chromium', () => {
   let server: WebServer;
   let browser: Browser;
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });

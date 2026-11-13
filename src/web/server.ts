@@ -115,7 +115,14 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
-import { decideLanding, shellActive, cookieValue, LAST_WORKSPACE_COOKIE, type ShellNotice } from './shell-landing.js';
+import {
+  canvasOn,
+  decideLanding,
+  shellActive,
+  cookieValue,
+  LAST_WORKSPACE_COOKIE,
+  type ShellNotice,
+} from './shell-landing.js';
 import { resolveVoiceStatus } from './routes/voice-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
 import type { CanvasPort } from './ports/canvas-port.js';
@@ -1149,7 +1156,7 @@ export class WebServer extends EventEmitter {
     this.app.get('/canvas.html', async (_req, reply) => reply.code(404).send());
     this.app.get<{ Params: { workspaceId: string } }>('/canvas/:workspaceId', async (req, reply) => {
       const settings = await this.readSettings(true);
-      if (settings.canvasEnabled !== true) return reply.code(404).send();
+      if (!canvasOn(settings)) return reply.code(404).send();
       const { readWorkspaces } = await import('../canvas/workspace-registry.js');
       const { canAccessOwned, getAuthUser } = await import('./route-helpers.js');
       const workspace = readWorkspaces().find((w) => w.id === req.params.workspaceId);
@@ -1407,7 +1414,7 @@ export class WebServer extends EventEmitter {
     const ctx = this.createRouteContext();
     const canvasPort: CanvasPort = {
       sessions: this.sessions,
-      canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
+      canvasEnabled: async () => canvasOn(await this.readSettings(true)),
       canvasStores: () => this.getCanvasStores(),
       broadcast: (event, data) => this.broadcast(event, data),
       startConversationSession: (headers, request) => this.startConversationSession(headers, request),

@@ -156,7 +156,7 @@ describe('canvas background tasks', () => {
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc12-tasks');
     Object.assign(replyRouting, { settleDelayMs: 50, retryDelaysMs: [200, 600] });
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     casePath = repo('Tasknotes', true);
     repo('Plainnotes', false);
     workspace = seed('Tasknotes');

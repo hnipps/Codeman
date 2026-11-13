@@ -48,7 +48,7 @@ describe('canvas voice', () => {
   const api = (path: string) => `${origin}/x/api${path}`;
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc11-voice');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'Voicenotes'), { recursive: true });
     workspace = workspaceForCase('Voicenotes').id;
     const stores = new CanvasStores();

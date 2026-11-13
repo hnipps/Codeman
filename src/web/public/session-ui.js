@@ -387,7 +387,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   casePickerActions() {
-    return this.loadAppSettingsFromStorage?.().canvasEnabled === true
+    return this.canvasSettingOn?.('canvasEnabled')
       ? [...CASE_PICKER_ACTIONS, { id: 'canvas', icon: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h14v14H3zM3 8h14M8 8v9"/></svg>', label: 'Open canvas', run: (app) => app.openCaseCanvas() }]
       : CASE_PICKER_ACTIONS;
   },
@@ -5460,7 +5460,7 @@ Object.assign(CodemanApp.prototype, {
     }
 
     listContainer.innerHTML = html;
-    if (this.loadAppSettingsFromStorage?.().canvasEnabled === true) {
+    if (this.canvasSettingOn?.('canvasEnabled')) {
       const open = document.createElement('button');
       open.className = 'mobile-case-item';
       open.textContent = 'Open canvas';
