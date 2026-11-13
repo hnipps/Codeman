@@ -44,6 +44,30 @@ describe('phone voice', () => {
       spoken,
       final,
     ] as const);
+  /** The rail's own controls that are on screen, each checked at five points to be what a finger would hit. */
+  async function uncovered(): Promise<string[]> {
+    const seen: string[] = [];
+    for (const id of ['closeRail', 'conversationPicker', 'newConversation']) {
+      const target = page.locator(`#${id}`);
+      if (!(await target.isVisible())) continue;
+      seen.push(id);
+      const box = (await target.boundingBox())!;
+      for (const [fx, fy] of [
+        [0.5, 0.5],
+        [0.1, 0.5],
+        [0.9, 0.5],
+        [0.5, 0.15],
+        [0.5, 0.85],
+      ]) {
+        const hit = await page.evaluate(
+          ([x, y]) => document.elementFromPoint(x, y)?.closest('button, select')?.id ?? null,
+          [box.x + box.width * fx, box.y + box.height * fy]
+        );
+        expect(hit, `${id} at ${fx},${fy}`).toBe(id);
+      }
+    }
+    return seen;
+  }
   const micLive = () => page.evaluate(() => window.__voice.tracks.some((t) => t.readyState === 'live'));
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc11-phone');
@@ -148,6 +172,7 @@ describe('phone voice', () => {
     );
     expect(top).toBe('micIndicator');
     await shot('dictating');
+    expect(await uncovered()).toContain('closeRail');
     await page.locator('#micStop').tap();
     await waitPhase('idle');
     expect(await micLive()).toBe(false);
@@ -211,6 +236,19 @@ describe('phone voice', () => {
     const sent = posts.filter((p) => p.url.endsWith('/messages'));
     expect(sent).toHaveLength(1);
     expect(sent[0].body.text).toBe('summarise the brief');
+    // With a conversation bound the picker and New are on screen; the mark covers neither, nor Close, at its widest.
+    await page.locator('#voiceConversation').tap();
+    await waitPhase('listening');
+    await frame('and one more');
+    await page.locator('#voiceConversation').tap();
+    await waitPhase('ready-to-send');
+    expect(await page.locator('#micStop').textContent()).toBe('Cancel send');
+    expect(await uncovered()).toEqual(['closeRail', 'conversationPicker', 'newConversation']);
+    await shot('countdown');
+    await page.locator('#micStop').tap();
+    await waitPhase('idle');
+    await page.waitForTimeout(3300);
+    expect(posts.filter((p) => p.url.endsWith('/messages'))).toHaveLength(1);
   });
 
   it('a hardware B on a phone does nothing', async () => {

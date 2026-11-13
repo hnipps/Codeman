@@ -35,10 +35,11 @@
     </aside>
     <button id="openOutline" aria-label="Open outline" title="Open outline"></button>
     <div id="notice" role="status" hidden></div>
-    <div id="micIndicator" role="status" aria-label="Microphone" hidden>
+    <div id="micIndicator" role="group" aria-label="Voice" hidden>
       <span class="mic-dot" aria-hidden="true"></span><span id="micIndicatorText"></span
       ><button id="micStop" type="button" class="quiet" title="Stop · Esc">Stop</button>
     </div>
+    <p id="voiceAnnounce" role="status" aria-label="Voice"></p>
     <section id="state" role="status">
       <h1>Opening your canvas</h1>
       <p>Loading the workspace…</p>
@@ -316,14 +317,8 @@
             ><button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
             ><button id="assistantSend" type="submit" class="primary">Send</button>
           </div>
-          <p id="dictationState" class="secondary voice-state" role="status" aria-label="Dictation" hidden></p>
-          <p
-            id="conversationState"
-            class="secondary voice-state"
-            role="status"
-            aria-label="Voice conversation"
-            hidden
-          ></p>
+          <p id="dictationState" class="secondary voice-state" role="status" aria-label="Dictation"></p>
+          <p id="conversationState" class="secondary voice-state" role="status" aria-label="Voice conversation"></p>
           <div id="voiceActions" class="composer-row voice-actions" hidden>
             <button id="voiceCancel" type="button" class="quiet" title="Do not send · Esc" hidden>Cancel send</button
             ><button id="voiceStopSpeaking" type="button" class="quiet" title="Stop speaking · Esc" hidden>

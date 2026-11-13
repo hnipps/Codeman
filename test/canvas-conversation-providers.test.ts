@@ -156,6 +156,27 @@ describe('the voice relay fact on the providers answer', () => {
     expect(await relay({ voiceRelayAvailable: async () => false })).toEqual({ relay: false });
     expect(await relay({ voiceRelayAvailable: async () => true })).toEqual({ relay: true });
   });
+  it('a read that throws is no relay, and the answer is kept briefly instead of read on every request', async () => {
+    expect(
+      await relay({
+        voiceRelayAvailable: async () => {
+          throw new Error('unreadable');
+        },
+      })
+    ).toEqual({ relay: false });
+    const read = vi.fn(async () => true);
+    const h = await harness({ voiceRelayAvailable: read });
+    try {
+      for (let i = 0; i < 3; i++) {
+        const response = await h.app.inject({ method: 'GET', url: '/api/canvas/assistant/providers' });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().data.voice).toEqual({ relay: true });
+      }
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      await h.app.close();
+    }
+  });
 });
 
 describe('starting a conversation on a chosen CLI and model', () => {

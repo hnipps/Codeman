@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Voice ends when its frame is hidden, and a reply waits for the turn to end (PC11 fix round 1)
+
+**Type:** retraction
+**Touches:** `packages/canvas/src/{voice,voice-capture,voice-view,assistant,entry}.ts`, `src/web/routes/canvas-routes.ts`, `src/web/public/{canvas.html,canvas.css}`
+**Why:** An audit of the first PC11 commit and a run in the real dashboard found the microphone could stay open with no indicator on screen, and a reply could be read early or to nobody.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc11-voice.md)
+
+This replaces three statements in the entry below. "A hidden page ends capture" was not enough: the canvas runs as a frame in the dashboard, and a tab switch there hides the frame with no visibility event, so capture went on unseen. A frame that is no longer drawn is now a hidden page, checked on blur and twice a second while anything of voice is live. "Read once when the turn has settled" read whatever agent text was present the first time the session was not working: the reply now waits for a turn end seen after the send, is read again 1.5 seconds later and spoken only if unchanged (the same late last row that PC10's thread replies met), and is not read into a hidden page or for another conversation. "Stop, Escape, ... end capture without sending" left out the composer's own Send and Enter, which sent the message and left the capture running to write the same words back; a composer send now ends the capture.
+
+Other decisions of this round. Escape is heard before every other handler and stops none, so a menu or lasso still acts on the same press. The turn is bound to the conversation a send would reach when the countdown starts. The composer's send joins a send already travelling. The relay is called listening only after its `ready` frame. Playback needs a voice, not just a synthesis object. The rail opens for the countdown and the indicator carries it with Cancel send.
+
+Limit, unchanged: every test runs on fixtures. A real microphone was shown to open inside the dashboard's frame in a manual run by the coordinator, not by these tests.
+
 ## 2026-11-12 — Dictation and voice conversation in the canvas assistant (PC11)
 
 **Type:** intent-refinement

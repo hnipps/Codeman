@@ -6,6 +6,16 @@
 export type VoiceHarness = {
   /** What the next getUserMedia call does. */
   microphone: 'grant' | 'deny' | 'none';
+  /** The next granted track reports itself muted from the start. */
+  startMuted: boolean;
+  /** The relay does not say `ready` until `sockets[n].ready()` is called. */
+  holdReady: boolean;
+  /** How the relay answers a finalize: at once, after 1.5 s, or never. */
+  finalize: 'answer' | 'slow' | 'never';
+  /** The relay accepts the socket and closes it with this code (4008: too many streams). */
+  rejectWith: number | null;
+  /** A recognizer's `stop()` is never followed by its end. */
+  recognizerHangs: boolean;
   requests: number;
   tracks: MediaStreamTrack[];
   sockets: {
@@ -14,6 +24,7 @@ export type VoiceHarness = {
     control: string[];
     closed: boolean;
     open(): void;
+    ready(): void;
     frame(data: Record<string, unknown>): void;
     serverClose(code: number, reason?: string): void;
   }[];
@@ -21,6 +32,10 @@ export type VoiceHarness = {
   spoken: string[];
   cancels: number;
   finishSpeech(): void;
+  /** The utterance in progress fails the way a browser with no usable voice fails it. */
+  failSpeech(): void;
+  /** Voices arrive late: the synthesis object gains one and says so. */
+  loadVoices(): void;
   recognizers: {
     started: boolean;
     stopped: boolean;
@@ -38,7 +53,7 @@ declare global {
 
 /** Passed to `addInitScript`, so it must stand alone. `localStorage['test:voice']` picks which browser features exist. */
 export function installVoiceFixtures(): void {
-  let config: { recognition?: boolean; synthesis?: boolean } = {};
+  let config: { recognition?: boolean; synthesis?: boolean; insecure?: boolean; voices?: boolean } = {};
   try {
     config = JSON.parse(localStorage.getItem('test:voice') ?? '{}');
   } catch {
@@ -46,6 +61,11 @@ export function installVoiceFixtures(): void {
   }
   const harness: VoiceHarness = {
     microphone: 'grant',
+    startMuted: false,
+    holdReady: false,
+    finalize: 'answer',
+    rejectWith: null,
+    recognizerHangs: false,
     requests: 0,
     tracks: [],
     sockets: [],
@@ -53,9 +73,16 @@ export function installVoiceFixtures(): void {
     spoken: [],
     cancels: 0,
     finishSpeech: () => {},
+    failSpeech: () => {},
+    loadVoices: () => {},
     recognizers: [],
   };
   window.__voice = harness;
+  // A plain http page that is not localhost: the browser calls it insecure and gives it no microphone.
+  if (config.insecure) {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, get: () => false });
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, get: () => undefined });
+  }
 
   if (navigator.mediaDevices)
     navigator.mediaDevices.getUserMedia = async () => {
@@ -67,6 +94,9 @@ export function installVoiceFixtures(): void {
       const out = audio.createMediaStreamDestination();
       tone.connect(out);
       tone.start();
+      if (harness.startMuted)
+        for (const track of out.stream.getAudioTracks())
+          Object.defineProperty(track, 'muted', { configurable: true, get: () => true });
       harness.tracks.push(...out.stream.getAudioTracks());
       return out.stream;
     };
@@ -101,7 +131,10 @@ export function installVoiceFixtures(): void {
           if (this.readyState !== 0) return;
           this.readyState = 1;
           this.onopen?.(new Event('open'));
+          if (harness.rejectWith !== null) this.record.serverClose(harness.rejectWith, 'Too many voice streams');
+          else if (!harness.holdReady) this.record.ready();
         },
+        ready: () => this.record.frame({ t: 'ready' }),
         frame: (data) => {
           if (data.t === 'transcript') this.pending = data.final ? '' : String(data.text ?? '');
           this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(data) }));
@@ -123,12 +156,16 @@ export function installVoiceFixtures(): void {
       }
       this.record.control.push(data);
       // The relay answers a finalize with the pending utterance as final, then closes cleanly.
-      if (JSON.parse(data).t === 'finalize')
-        setTimeout(() => {
-          if (this.pending) this.record.frame({ t: 'transcript', text: this.pending, final: true });
-          this.record.frame({ t: 'closed' });
-          this.record.serverClose(1000);
-        }, 30);
+      if (JSON.parse(data).t === 'finalize' && harness.finalize !== 'never')
+        setTimeout(
+          () => {
+            if (this.readyState === 3) return;
+            if (this.pending) this.record.frame({ t: 'transcript', text: this.pending, final: true });
+            this.record.frame({ t: 'closed' });
+            this.record.serverClose(1000);
+          },
+          harness.finalize === 'slow' ? 1500 : 30
+        );
     }
     close(): void {
       this.readyState = 3;
@@ -174,7 +211,7 @@ export function installVoiceFixtures(): void {
     }
     stop(): void {
       this.record.stopped = true;
-      setTimeout(() => this.onend?.(), 20);
+      if (!harness.recognizerHangs) setTimeout(() => this.onend?.(), 20);
     }
     abort(): void {
       this.record.aborted = true;
@@ -185,7 +222,9 @@ export function installVoiceFixtures(): void {
   define('SpeechRecognition', config.recognition ? Recognizer : undefined);
   define('webkitSpeechRecognition', undefined);
 
-  let current: { onend: (() => void) | null } | null = null;
+  let current: { onend: (() => void) | null; onerror: ((e: unknown) => void) | null } | null = null;
+  let voices = config.voices !== false;
+  const voiceListeners: (() => void)[] = [];
   define(
     'SpeechSynthesisUtterance',
     class {
@@ -199,7 +238,11 @@ export function installVoiceFixtures(): void {
     config.synthesis === false
       ? undefined
       : {
-          speak(utterance: { text: string; onend: (() => void) | null }) {
+          getVoices: () => (voices ? [{ name: 'fixture' }] : []),
+          addEventListener(type: string, listener: () => void) {
+            if (type === 'voiceschanged') voiceListeners.push(listener);
+          },
+          speak(utterance: { text: string; onend: (() => void) | null; onerror: ((e: unknown) => void) | null }) {
             harness.spoken.push(utterance.text);
             current = utterance;
           },
@@ -209,6 +252,15 @@ export function installVoiceFixtures(): void {
           },
         }
   );
+  harness.failSpeech = () => {
+    const failed = current;
+    current = null;
+    failed?.onerror?.({ error: 'synthesis-failed' });
+  };
+  harness.loadVoices = () => {
+    voices = true;
+    for (const listener of voiceListeners) listener();
+  };
   harness.finishSpeech = () => {
     const done = current;
     current = null;

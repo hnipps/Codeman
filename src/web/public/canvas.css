@@ -2137,13 +2137,26 @@ textarea[readonly] {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.voice-state:empty {
+  margin: 0;
+}
+/* Always rendered so a change is announced; the visible mark is #micIndicator. */
+#voiceAnnounce {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .voice-state:is([data-phase='denied'], [data-phase='error']) {
   color: var(--critical);
 }
 .voice-actions {
   justify-content: flex-start;
 }
-/* The microphone is open, or a reply is being read: this stays on the canvas whether or not the rail is. */
+/* The microphone is open, a spoken turn is about to go, or a reply is being read: this stays on the canvas whether or not the rail is. */
 #micIndicator {
   position: fixed;
   z-index: 20;
@@ -2174,7 +2187,13 @@ textarea[readonly] {
 #micIndicator[data-phase='listening'] .mic-dot {
   animation: mic-live 1.6s ease-in-out infinite;
 }
-#micIndicator:is([data-phase='muted'], [data-phase='requesting-permission']) .mic-dot {
+#micIndicator:is(
+    [data-phase='muted'],
+    [data-phase='requesting-permission'],
+    [data-phase='processing'],
+    [data-kind='pending']
+  )
+  .mic-dot {
   background: var(--muted);
 }
 @keyframes mic-live {
@@ -2187,9 +2206,20 @@ textarea[readonly] {
     animation: none;
   }
 }
+/* On a phone the rail is the whole screen: the mark stays inside the rail head, clear of Close on its right, and a
+   long line is cut rather than wrapped onto the conversation picker below. The state line carries the full text. */
 :root[data-phone] #micIndicator {
   top: calc(var(--viewport-top, 0px) + env(safe-area-inset-top, 0px) + 4px);
+  max-width: calc(100vw - 144px);
   font-size: 14px;
+}
+#micIndicator :is(.mic-dot, #micStop) {
+  flex: none;
+}
+:root[data-phone] #micIndicatorText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 :root[data-phone]
   :is(#voiceDictate, #voiceConversation, #voiceCancel, #voiceStopSpeaking, #micStop, #assistantSend, #assistantRetry) {

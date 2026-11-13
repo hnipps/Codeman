@@ -138,8 +138,9 @@ const assistant: AssistantView = new AssistantView({
     dispatch({ kind: 'rail', view: 'thread' });
   },
   listed: () => comments.requestsChanged(),
-  sent: (messageId, text) => voice.sent(messageId, text),
-  thread: (rows, status) => voice.thread(rows, status),
+  sent: (messageId, text, conversationId) => voice.sent(messageId, text, conversationId),
+  thread: (rows, status, conversationId) => voice.thread(rows, status, conversationId),
+  turnEnded: (conversationId) => voice.turnEnded(conversationId),
   voiceRelay: (available) => voice.relayAvailable(available),
 });
 const voice: VoiceView = new VoiceView({
@@ -149,7 +150,9 @@ const voice: VoiceView = new VoiceView({
   letters: () => state.letters,
   draft: { read: () => assistant.draft.value, write: (text) => assistant.setDraft(text), element: assistant.draft },
   send: () => assistant.send(),
-  // A turn started from the board shows its text where it will be sent from; keyboard focus stays on the board.
+  target: () => assistant.sendTarget(),
+  reread: () => assistant.open(),
+  // A capture started from the board, and a turn about to be sent, show the text where it will be sent from; keyboard focus stays where it is.
   show: () => openAssistant(false),
 });
 const icons: Record<string, string> = {
@@ -770,8 +773,8 @@ document.addEventListener('keydown', (e) => {
     if (!e.repeat) dispatch({ kind: 'rail', view: 'keys' });
     return;
   }
-  // Escape ends capture, a pending spoken send or playback first, and only that.
-  if (e.key === 'Escape' && voice.escape()) {
+  // An Escape that ended capture, a pending spoken send or playback (in the voice view's own earlier listener) does not also close the rail.
+  if (e.key === 'Escape' && voice.escape(e)) {
     e.preventDefault();
     return;
   }

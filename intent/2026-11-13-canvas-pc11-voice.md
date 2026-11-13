@@ -52,16 +52,37 @@ Settled while building; none changes the outcome above.
 - The capture worklet is the dashboard's file, loaded by URL and not copied. The canvas page carries a `<link rel="codeman-voice-worklet">` that fetches nothing; the server stamps it with the worklet's own modification time like every other asset reference, and the page loads the module from that URL, so an edited worklet is never served from an old cache entry.
 - Without an AudioWorklet the relay path is not offered; there is no ScriptProcessor fallback. Deepgram is not offered. Nothing stops capture on silence.
 - Voice text always lands in the composer's draft, after whatever was typed. A conversation turn sends the composer's content through the ordinary send, so typed text before the speech travels with it.
-- A conversation turn is two presses of the same control: start, then end. Only that second press leads to a send, and the finished text is shown for three seconds with Cancel before it goes. Stop on the indicator finishes the transcript without sending. Escape, a hidden page, an edit to the draft, IME composition and going offline end capture without sending. The text is kept in every case.
-- While one control captures, the other control's key or tap does nothing; a press while a transcript is finishing or a send is counting down does nothing.
-- A window that loses focus keeps capturing with the indicator showing. A hidden page ends capture and playback.
+- A conversation turn is two presses of the same control: start, then end. Only that second press leads to a send, and the finished text is shown for three seconds with Cancel before it goes; the rail is opened at that moment if it was closed, and the indicator carries the countdown with Cancel send. Stop on the indicator finishes the transcript without sending. Escape, a hidden page, a frame its host stopped drawing, an edit to the draft, IME composition and going offline end capture without sending. The text is kept in every case.
+- Send or Enter in the composer while the microphone is open sends the message and ends the capture, so the sent words cannot return to the box or go twice.
+- The turn is bound to the conversation a send would reach when the countdown starts. If that is a different conversation by send time, the send is cancelled and the text kept.
+- While one control captures, the other control's key or tap does nothing; a press while the microphone is still opening, a transcript is finishing or a send is counting down does nothing. A held Enter on a focused control counts once.
+- A window that loses focus keeps capturing with the indicator showing. A hidden page ends capture and playback. The canvas usually runs as a frame inside the dashboard, where switching tabs hides the frame with no visibility event, so a frame that is no longer drawn is treated as a hidden page: it is checked on blur and twice a second while anything of voice is live.
 - Muted means the microphone track reports itself muted (a hardware switch or the system). A missing device is its own state and the control can be tried again.
-- The spoken reply is the agent's text rows after that prompt, up to the next prompt that was not queued, with no tool output, read once when the turn is no longer working or waiting. It is cut at about 600 characters at a sentence end and followed by "The rest of the reply is on screen." A reply that arrives while the microphone is capturing is left on screen and not spoken.
-- Without speech synthesis the turn is still sent and the state line says replies are shown as text only.
+- The spoken reply is the agent's text rows after that prompt, up to the next prompt that was not queued, with no tool output. It is read once, and only after a turn end (a stop hook or idle) seen after the send, with the session neither working nor waiting; the transcript is then read again 1.5 seconds later and the text is spoken only if it is unchanged, because a turn's last row can arrive after its stop. It is cut at about 600 characters at a sentence end and followed by "The rest of the reply is on screen." A reply that arrives while the microphone is capturing, or while the page or frame is hidden, is left on screen and not spoken. Only the reply of the conversation the turn went to is ever read.
+- Without speech synthesis, or with a synthesis that has no voice (checked again when voices load), the turn is still sent and the state line says replies are shown as text only. Speech that fails says the reply could not be read aloud and is on screen.
 - Any send of the turn's text counts as that turn (the countdown, Send, or Retry after a failure), so Retry reuses the same message id and the reply to it is still spoken.
-- The indicator also shows while the microphone is being opened and while a reply is spoken (with Stop speaking). Starting from the board opens the assistant rail without moving focus.
+- The indicator also shows while the microphone is being opened, while a transcript is finishing, during the countdown (Cancel send) and the send, and while a reply is spoken (Stop speaking). Starting from the board opens the assistant rail without moving focus. On a phone it stays inside the rail head, clear of Close, the conversation picker and New.
+- Escape always ends capture, a pending spoken send or playback: the voice view hears it before every other handler and stops none of them, so a menu, lasso or editor that uses the same press still acts on it. Only closing the rail is skipped for that press.
+- The relay is called listening only after it has said it is ready and the worklet is running; audio before that would be dropped. A plain http page that is not localhost says voice needs https or localhost.
 - Only a trusted key press or click starts capture: a scripted click or a synthetic key event does nothing. The start function is private to the voice view, which registers its own listeners; it is not a view command, is not on `window`, and no assistant or agent path can call it.
 - On a phone the controls are tap targets only; a hardware `B` does nothing there.
+
+## Fix round 1
+
+An audit of the first commit and a run in the real dashboard found the following; each is fixed and has a test.
+
+- Capture outlived its indicator inside the dashboard: the canvas is a frame there, and switching dashboard tabs hides the frame without any visibility event. A frame that is no longer drawn now counts as hidden.
+- Send or Enter during a capture left the capture running; its next frame put the sent words back and a second press sent them again. The capture now ends with the send.
+- A turn ended with the rail closed could be sent unseen. The rail opens for the countdown and the indicator shows it with Cancel send.
+- A reply was read into a hidden page, and a partly written reply was read as the answer. The reply now waits for an observed turn end, a second unchanged read, and a visible page.
+- The browser recognizer had no backstop when it never reported its end; it now has the relay's five seconds.
+- A send joined while another was travelling was reported as "Not sent". The composer now shares the travelling send. Text the composer refuses shows the refusal instead of pointing at Retry, and an edit after a failed send gives the turn up.
+- Escape could be swallowed by a menu or lasso before it reached voice.
+- The state lines and the indicator's text are live regions that stay rendered. A track muted from the start is said to be muted.
+- Synthesis that failed was reported as read; a synthesis with no voice was offered as playback.
+- The relay capture kept one worklet listener per capture. A microphone the browser cannot open is no longer said to be in use by another program.
+- The providers answer no longer fails when the sign-in read throws, and keeps the relay answer for five seconds.
+- On a phone the indicator could cover the rail's Close.
 
 ## Verification limits
 

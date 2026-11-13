@@ -19,7 +19,9 @@ export type VoicePhase =
 export type VoiceEnv = {
   /** The server's Claude voice relay is switched on and has a usable login. */
   relay: boolean;
-  /** `navigator.mediaDevices.getUserMedia` exists (a secure page). */
+  /** The page is on https or localhost. Browsers give a microphone to no other page. */
+  secure: boolean;
+  /** `navigator.mediaDevices.getUserMedia` exists. */
   microphone: boolean;
   /** An AudioContext with an AudioWorklet, which the relay's PCM capture needs. */
   worklet: boolean;
@@ -33,6 +35,13 @@ export type VoiceCapability = { transcription: 'relay' | 'browser' | null; playb
 /** The one capability decision the controls, the state lines and the tests read. */
 export function voiceCapability(env: VoiceEnv): VoiceCapability {
   const playback = env.synthesis;
+  if (!env.secure)
+    return {
+      transcription: null,
+      playback,
+      reason:
+        'Voice input needs https or localhost: browsers give no microphone to a plain http page. Type your message instead.',
+    };
   if (env.relay && env.microphone && env.worklet && env.socket) return { transcription: 'relay', playback, reason: '' };
   if (env.recognition) return { transcription: 'browser', playback, reason: '' };
   return {
@@ -63,6 +72,16 @@ export type VoiceState = {
   turnText: string | null;
   /** The message whose reply will be read aloud. */
   awaiting: string | null;
+  /** The conversation that message went to. No other conversation's reply is ever read. */
+  conversation: string | null;
+  /** A turn end was seen after the send. Agent text alone is not a finished reply. */
+  turnEnded: boolean;
+  /** The conversation a send would go to now (null: a new one), as the composer reports it. */
+  target: string | null;
+  /** That target when the countdown began. A different one by send time cancels the send. */
+  turnTarget: string | null;
+  /** The microphone track reported itself muted before capture was confirmed. */
+  trackMuted: boolean;
   message: string;
   /** Counts captures, so a late callback from an earlier one is dropped. */
   capture: number;
@@ -89,11 +108,16 @@ export type VoiceEvent =
   | { type: 'capture-ended'; reason: CaptureEnd; message?: string }
   | { type: 'send-timer' }
   | { type: 'cancel' }
-  | { type: 'sent'; messageId: string; text: string }
-  | { type: 'send-failed' }
-  | { type: 'reply'; text: string }
-  | { type: 'reply-gone' }
+  | { type: 'target'; id: string | null }
+  | { type: 'sent'; messageId: string; text: string; conversationId: string | null }
+  /** `refusal` is the composer's own reason when it would not send the text at all; Retry does not apply then. */
+  | { type: 'send-failed'; refusal?: string }
+  | { type: 'turn-ended'; conversationId: string | null }
+  | { type: 'reply'; text: string; conversationId: string | null }
+  /** `hidden`: the reply came while the page or its frame was not on screen. */
+  | { type: 'reply-gone'; conversationId: string | null; hidden?: boolean }
   | { type: 'speech-end' }
+  | { type: 'speech-failed' }
   | { type: 'stop-speaking' };
 export type VoiceEffect =
   | { kind: 'capture-start' }
@@ -111,6 +135,8 @@ export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 export const SEND_DELAY_MS = 3000;
 /** A longer reply is cut here for speech; the whole of it is on screen. */
 export const MAX_SPOKEN_CHARS = 600;
+/** After a turn ends its last row can still be on its way; the reply is read again this much later and spoken only if unchanged. */
+export const REPLY_SETTLE_MS = 1500;
 
 export const initialVoice = (capability: VoiceCapability): VoiceState => ({
   phase: capability.transcription ? 'idle' : 'unavailable',
@@ -123,6 +149,11 @@ export const initialVoice = (capability: VoiceCapability): VoiceState => ({
   sending: false,
   turnText: null,
   awaiting: null,
+  conversation: null,
+  turnEnded: false,
+  target: null,
+  turnTarget: null,
+  trackMuted: false,
   message: capability.transcription ? '' : capability.reason,
   capture: 0,
 });
@@ -194,7 +225,8 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
       if (capturing(state)) {
         // The other control's key does nothing while this one holds the microphone: a key never changes meaning mid-capture.
         if (state.mode !== event.mode) return same(state);
-        if (state.phase === 'requesting-permission') return halt(state, 'idle', stopped(state));
+        // A press while the microphone is still opening is not a second decision (a held Enter on the button); Stop and Escape cancel it.
+        if (state.phase === 'requesting-permission') return same(state);
         return {
           state: { ...state, phase: 'processing', sendOnEnd: state.mode === 'conversation', message: '' },
           effects: [{ kind: 'capture-finalize' }],
@@ -213,6 +245,8 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
           sending: false,
           turnText: null,
           awaiting: null,
+          turnEnded: false,
+          trackMuted: false,
           message: '',
           capture: state.capture + 1,
         },
@@ -224,7 +258,9 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
       };
     }
     case 'permission-granted':
-      return same(state.phase === 'requesting-permission' ? { ...state, phase: 'listening' } : state);
+      return same(
+        state.phase === 'requesting-permission' ? { ...state, phase: state.trackMuted ? 'muted' : 'listening' } : state
+      );
     case 'permission-denied':
       // A recognizer can report the refusal after it reported starting.
       return capturing(state)
@@ -241,6 +277,7 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
     case 'start-failed':
       return state.phase === 'requesting-permission' ? halt(state, 'error', event.message) : same(state);
     case 'muted':
+      if (state.phase === 'requesting-permission') return same({ ...state, trackMuted: event.muted });
       if (state.phase === 'listening' && event.muted) return same({ ...state, phase: 'muted' });
       if (state.phase === 'muted' && !event.muted) return same({ ...state, phase: 'listening' });
       return same(state);
@@ -270,8 +307,12 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
       // The window is still on screen with its indicator, so capture goes on; a hidden page ends it.
       return same(state);
     case 'composition':
-    case 'edited':
-      return interrupt(state, 'Stopped while you type. Nothing was sent.');
+    case 'edited': {
+      const step = interrupt(state, 'Stopped while you type. Nothing was sent.');
+      // An edit after a failed send gives the turn up: a later message with the same words is not that turn.
+      const travelling = step.state.phase === 'processing' && step.state.sending;
+      return step.state.turnText !== null && !travelling ? { ...step, state: { ...step.state, turnText: null } } : step;
+    }
     case 'offline':
       return interrupt(state, 'The connection was lost. What was heard is in the message box.', 'error');
     case 'capture-ended': {
@@ -291,7 +332,7 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
       const text = draftText(done);
       if (state.phase === 'processing' && state.sendOnEnd && done.heard)
         return {
-          state: { ...done, phase: 'ready-to-send', turnText: text, message: '' },
+          state: { ...done, phase: 'ready-to-send', turnText: text, turnTarget: state.target, message: '' },
           effects: [{ kind: 'draft', text }, { kind: 'send-timer' }],
         };
       const message =
@@ -308,10 +349,29 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
         : same(state);
     case 'cancel':
       return state.phase === 'ready-to-send' ? interrupt(state, '') : same(state);
+    case 'target': {
+      const next = { ...state, target: event.id };
+      // The turn was shown against one conversation; it is not sent into another.
+      if (state.phase === 'ready-to-send' && event.id !== state.turnTarget)
+        return {
+          state: {
+            ...next,
+            phase: 'idle',
+            turnText: null,
+            message: 'Not sent: the conversation changed. Your message is in the box.',
+          },
+          effects: [{ kind: 'send-timer-clear' }],
+        };
+      return same(next);
+    }
     case 'sent': {
+      // Send or Enter while the microphone is open: the message has gone, so the capture that produced it ends too.
+      // Left running, its next frame would put the sent words back in the box.
+      if (capturing(state) || (state.phase === 'processing' && !state.sending))
+        return halt({ ...state, turnText: null }, 'idle', 'Sent from the message box. The microphone is off.');
       // Any send of this turn's text is this turn: the timer's, Enter in the composer, or Retry after a failure.
-      if (state.turnText === null || event.text !== state.turnText) return same(state);
-      if (capturing(state) || state.phase === 'speaking') return same({ ...state, turnText: null });
+      if (state.turnText === null || event.text !== state.turnText)
+        return same(state.turnText === null ? state : { ...state, turnText: null });
       return {
         state: {
           ...state,
@@ -320,19 +380,37 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
           sending: false,
           turnText: null,
           awaiting: state.capability.playback ? event.messageId : null,
+          conversation: event.conversationId,
+          turnEnded: false,
           message: state.capability.playback
             ? 'Sent. The reply will be read aloud.'
-            : 'Sent. The reply will be shown as text: this browser has no speech synthesis.',
+            : 'Sent. The reply will be shown as text: this browser has no voice to read with.',
         },
-        effects: state.phase === 'ready-to-send' ? [{ kind: 'send-timer-clear' }] : [],
+        effects: [
+          ...(state.phase === 'ready-to-send' ? [{ kind: 'send-timer-clear' } as const] : []),
+          ...(state.phase === 'speaking' ? [{ kind: 'speak-cancel' } as const] : []),
+        ],
       };
     }
     case 'send-failed':
-      return state.phase === 'processing' && state.sending
-        ? same({ ...state, phase: 'error', sending: false, message: 'Not sent. Your message is kept; use Retry.' })
-        : same(state);
+      if (state.phase !== 'processing' || !state.sending) return same(state);
+      return same(
+        event.refusal
+          ? {
+              ...state,
+              phase: 'error',
+              sending: false,
+              turnText: null,
+              message: `Not sent. ${event.refusal} Your words are in the message box to edit.`,
+            }
+          : { ...state, phase: 'error', sending: false, message: 'Not sent. Your message is kept; use Retry.' }
+      );
+    case 'turn-ended':
+      return same(
+        state.awaiting && event.conversationId === state.conversation ? { ...state, turnEnded: true } : state
+      );
     case 'reply':
-      if (!state.awaiting) return same(state);
+      if (!state.awaiting || !state.turnEnded || event.conversationId !== state.conversation) return same(state);
       // A reply that lands while the person is speaking or about to send is left on screen.
       if (capturing(state) || state.phase === 'processing' || state.phase === 'ready-to-send')
         return same({ ...state, awaiting: null });
@@ -341,7 +419,19 @@ export function voice(state: VoiceState, event: VoiceEvent): VoiceStep {
         effects: [{ kind: 'speak', text: event.text }],
       };
     case 'reply-gone':
-      return same(state.awaiting ? { ...state, awaiting: null, message: '' } : state);
+      if (!state.awaiting || event.conversationId !== state.conversation) return same(state);
+      return same({
+        ...state,
+        awaiting: null,
+        message:
+          event.hidden && state.phase === 'idle' ? 'The reply came while this page was hidden. It is on screen.' : '',
+      });
+    case 'speech-failed':
+      return same(
+        state.phase === 'speaking'
+          ? { ...state, phase: 'idle', message: 'The reply could not be read aloud; it is on screen.' }
+          : state
+      );
     case 'speech-end':
       return same(state.phase === 'speaking' ? { ...state, phase: 'idle', message: '' } : state);
     case 'stop-speaking':
@@ -386,13 +476,17 @@ export function voiceLines(state: VoiceState): Record<VoiceMode, string> {
     conversation:
       conversation ||
       (state.capability.transcription && !state.capability.playback && !capturing(state)
-        ? 'Replies are shown as text only: this browser has no speech synthesis.'
+        ? 'Replies are shown as text only: this browser has no voice to read with.'
         : ''),
   };
 }
 
-export type VoiceIndicator = { kind: 'microphone' | 'speaking'; text: string; action: string };
-/** The fixed mark on the canvas: present whenever the microphone is open or a reply is being read, rail open or not. */
+/** `action` is empty when there is nothing to stop. */
+export type VoiceIndicator = { kind: 'microphone' | 'pending' | 'speaking'; text: string; action: string };
+/**
+ * The fixed mark on the canvas, rail open or not: present while the microphone is open, while a transcript is being
+ * finished, while a spoken turn is about to be sent or is being sent, and while a reply is read.
+ */
 export function voiceIndicator(state: VoiceState): VoiceIndicator | null {
   const what = state.mode === 'conversation' ? 'voice turn' : 'dictation';
   switch (state.phase) {
@@ -402,6 +496,16 @@ export function voiceIndicator(state: VoiceState): VoiceIndicator | null {
       return { kind: 'microphone', text: `Microphone on · ${what}`, action: 'Stop' };
     case 'muted':
       return { kind: 'microphone', text: 'Microphone muted', action: 'Stop' };
+    case 'processing':
+      return state.sending
+        ? { kind: 'pending', text: 'Sending your voice turn', action: '' }
+        : { kind: 'microphone', text: 'Finishing the transcript', action: 'Stop' };
+    case 'ready-to-send':
+      return {
+        kind: 'pending',
+        text: `Sending your voice turn in ${Math.round(SEND_DELAY_MS / 1000)} seconds`,
+        action: 'Cancel send',
+      };
     case 'speaking':
       return { kind: 'speaking', text: 'Reading the reply', action: 'Stop speaking' };
     default:
@@ -437,4 +541,20 @@ export function spokenReply(
   const sentence = Math.max(head.lastIndexOf('. '), head.lastIndexOf('? '), head.lastIndexOf('! '));
   const cut = sentence > max / 2 ? head.slice(0, sentence + 1) : head.slice(0, Math.max(head.lastIndexOf(' '), 1));
   return { text: `${cut.trim()} The rest of the reply is on screen.`, truncated: true };
+}
+
+/**
+ * The reply text that may be spoken now, or null. It needs all of: a spoken turn waiting for its reply, the thread
+ * shown being that turn's conversation, a turn end seen after the send, and the session neither working nor waiting
+ * for an answer. Agent text that is merely present is a reply still being written.
+ */
+export function replyToSpeak(
+  state: VoiceState,
+  rows: readonly TranscriptRow[],
+  status: { working: boolean; waiting: boolean },
+  conversationId: string | null
+): string | null {
+  if (!state.awaiting || !state.turnEnded || conversationId !== state.conversation) return null;
+  if (status.working || status.waiting) return null;
+  return spokenReply(rows, state.awaiting)?.text ?? null;
 }

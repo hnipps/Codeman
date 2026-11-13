@@ -18,7 +18,7 @@ export type Capture = {
   abort(): void;
 };
 
-/** The relay answers a finalize within a few hundred milliseconds; this is the backstop for one that never does. */
+/** A finalize is answered within a few hundred milliseconds; this is the backstop for a relay or recognizer that never does. */
 const FINALIZE_TIMEOUT_MS = 5000;
 
 const UNAVAILABLE: Record<string, string> = {
@@ -41,7 +41,24 @@ export function relayCapture(
   let socket: WebSocket | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastError = '';
+  let frames: AudioWorkletNode | null = null;
+  // The relay drops audio until its upstream is connected and says `ready`, so listening is claimed only once the
+  // microphone is feeding the worklet AND the relay has said it.
+  let pumping = false;
+  let ready = false;
+  let announced = false;
+  const live = (): void => {
+    if (over || finalizing || announced || !pumping || !ready) return;
+    announced = true;
+    handlers.listening();
+  };
   const release = (): void => {
+    // The worklet's port keeps its listener, and with it this capture, until it is cleared and closed.
+    if (frames) {
+      frames.port.onmessage = null;
+      frames.port.close();
+      frames = null;
+    }
     void context?.close().catch(() => {});
     context = null;
     for (const track of stream?.getTracks() ?? []) {
@@ -76,8 +93,9 @@ export function relayCapture(
     await audio.audioWorklet.addModule(options.workletUrl);
     if (over || finalizing || context !== audio) return;
     const source = audio.createMediaStreamSource(stream);
-    const frames = new AudioWorkletNode(audio, 'pcm-frame-processor');
-    frames.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+    const node = new AudioWorkletNode(audio, 'pcm-frame-processor');
+    frames = node;
+    node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       if (over || finalizing || socket?.readyState !== WebSocket.OPEN) return;
       try {
         socket.send(event.data);
@@ -85,12 +103,13 @@ export function relayCapture(
         /* The close handler reports a socket that died. */
       }
     };
-    source.connect(frames);
+    source.connect(node);
     // A node with no destination is not pulled in some engines; a silent sink keeps it running without echo.
     const sink = audio.createGain();
     sink.gain.value = 0;
-    frames.connect(sink).connect(audio.destination);
-    handlers.listening();
+    node.connect(sink).connect(audio.destination);
+    pumping = true;
+    live();
   };
   const open = (): void => {
     const query = new URLSearchParams({ language: options.language });
@@ -108,7 +127,10 @@ export function relayCapture(
       }
       if (frame.t === 'transcript' && typeof frame.text === 'string' && frame.text)
         handlers.transcript(frame.text, frame.final === true);
-      else if (frame.t === 'error' && typeof frame.message === 'string') lastError = frame.message;
+      else if (frame.t === 'ready') {
+        ready = true;
+        live();
+      } else if (frame.t === 'error' && typeof frame.message === 'string') lastError = frame.message;
     };
     ws.onclose = (event) => {
       if (event.code === 4004)
@@ -132,7 +154,9 @@ export function relayCapture(
       const name = error instanceof Error ? error.name : '';
       if (name === 'NotAllowedError' || name === 'SecurityError') handlers.denied();
       else if (name === 'NotFoundError' || name === 'OverconstrainedError') handlers.noDevice();
-      else handlers.failed('The microphone could not be opened. It may be in use by another program.');
+      else if (name === 'NotReadableError' || name === 'AbortError')
+        handlers.failed('The microphone could not be opened. It may be in use by another program.');
+      else handlers.failed('The microphone could not be opened in this browser.');
       return;
     }
     if (over) {
@@ -144,6 +168,8 @@ export function relayCapture(
       track.onended = () => end('device-lost');
       track.onmute = () => handlers.muted(true);
       track.onunmute = () => handlers.muted(false);
+      // A track can arrive already muted (a hardware switch); no event follows for that.
+      if (track.muted) handlers.muted(true);
     }
     try {
       open();
@@ -201,6 +227,7 @@ export function browserCapture(options: { language: string }, handlers: CaptureH
   const Recognizer = browserRecognition();
   let over = false;
   let failure: [CaptureEnd, string?] | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   if (!Recognizer) {
     queueMicrotask(() => handlers.failed('This browser has no speech recognition.'));
     return { finalize() {}, abort() {} };
@@ -237,6 +264,7 @@ export function browserCapture(options: { language: string }, handlers: CaptureH
   recognition.onend = () => {
     if (over) return;
     over = true;
+    clearTimeout(timer);
     handlers.ended(...(failure ?? ['finalized']));
   };
   try {
@@ -247,17 +275,37 @@ export function browserCapture(options: { language: string }, handlers: CaptureH
   }
   return {
     finalize() {
-      if (!over) recognition.stop();
+      if (over || timer !== undefined) return;
+      recognition.stop();
+      // A recognizer that never reports its end would hold the microphone with nothing on screen saying so.
+      timer = setTimeout(() => {
+        if (over) return;
+        over = true;
+        try {
+          recognition.abort();
+        } catch {
+          /* Already stopped. */
+        }
+        handlers.ended(...(failure ?? ['finalized']));
+      }, FINALIZE_TIMEOUT_MS);
     },
     abort() {
       if (over) return;
       over = true;
+      clearTimeout(timer);
       recognition.abort();
     },
   };
 }
 
-export type Speaker = { speak(text: string, done: () => void): void; cancel(): void };
+export type Speaker = {
+  /** `done(false)` when the browser could not read the text; a cancel of ours reports nothing. */
+  speak(text: string, done: (spoken: boolean) => void): void;
+  cancel(): void;
+  /** A synthesis object with no voice reads nothing. Voices can load late, so this is asked again on `changed`. */
+  hasVoice(): boolean;
+  changed(listener: () => void): void;
+};
 /** Reads a reply through the browser's speech synthesis; null when the browser has none. */
 export function browserSpeaker(win: Window = window): Speaker | null {
   const synthesis = win.speechSynthesis;
@@ -268,18 +316,32 @@ export function browserSpeaker(win: Window = window): Speaker | null {
       synthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       current = utterance;
-      const finish = (): void => {
+      const finish = (spoken: boolean): void => {
         if (current !== utterance) return;
         current = null;
-        done();
+        done(spoken);
       };
-      utterance.onend = finish;
-      utterance.onerror = finish;
+      utterance.onend = () => finish(true);
+      // `interrupted` and `canceled` follow a cancel; anything else is speech that did not happen.
+      utterance.onerror = (event) =>
+        finish(
+          (event as { error?: string }).error === 'interrupted' || (event as { error?: string }).error === 'canceled'
+        );
       synthesis.speak(utterance);
     },
     cancel() {
       current = null;
       synthesis.cancel();
+    },
+    hasVoice() {
+      try {
+        return synthesis.getVoices().length > 0;
+      } catch {
+        return false;
+      }
+    },
+    changed(listener) {
+      synthesis.addEventListener?.('voiceschanged', listener);
     },
   };
 }
