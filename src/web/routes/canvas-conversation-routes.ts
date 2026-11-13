@@ -67,7 +67,16 @@ import {
   sha256,
 } from '../../canvas/conversations.js';
 import { cutResult, deriveTaskState, isolationLabel, taskPart, type TaskState } from '../../canvas/tasks.js';
+import { joinRelease, type ReleaseRecord, type ReleaseView } from '../../canvas/release.js';
+import type { ToolRow } from '../../canvas/transcript-activity.js';
 import type { Author } from '../../canvas/model.js';
+import {
+  AGENT_START_REFUSALS,
+  agentStartedAncestor,
+  agentStartRefusal,
+  startedBy,
+  type StartedBy,
+} from '../../canvas/agent-start.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
 
 export type Outcome = { code: number; body: unknown };
@@ -133,6 +142,7 @@ export const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) =
     ...(c.title ? { title: c.title } : {}),
     createdAt: c.createdAt,
     createdBy: c.createdBy,
+    ...(startedBy(c) ? { startedBy: startedBy(c) } : {}),
     messageCount: c.messages.length,
     session: sessionState(ctx, req, c.sessionId),
     working: sessionBusy(ctx.sessions.get(c.sessionId)),
@@ -200,6 +210,80 @@ export async function readConversation(
       messages: conversation.messages,
     },
   });
+}
+type Activity = { supported: boolean; tools: Omit<ToolRow, 'release'>[]; dropped: number; releases: ReleaseView[] };
+const NO_ACTIVITY: Activity = { supported: false, tools: [], dropped: 0, releases: [] };
+/** Tool rows already read, by conversation and transcript stamp, so a refresh of an unchanged transcript parses nothing. */
+const activities = new Map<string, { stamp: string; read: { tools: ToolRow[]; dropped: number } }>();
+/** Each entry can hold a few hundred cut rows, so few are kept. */
+const MAX_ACTIVITIES = 20;
+/** The supervisor's recent runs, kept briefly: its status command is a process start, and a rail refreshes often. */
+export const releaseReads = { ttlMs: 5_000, at: 0, records: null as ReleaseRecord[] | null };
+async function recentReleases(ctx: CanvasPort): Promise<ReleaseRecord[] | null> {
+  if (Date.now() - releaseReads.at < releaseReads.ttlMs) return releaseReads.records;
+  // A supervisor that does not answer is "no record", which the row then says; it is never an error for the thread.
+  releaseReads.records = (await ctx.releaseRecords?.().catch(() => null)) ?? null;
+  releaseReads.at = Date.now();
+  return releaseReads.records;
+}
+/**
+ * What the conversation's agent did between its replies: tool calls with their results, and any release it asked the
+ * deploy supervisor for, joined with the supervisor's own record. Read from the session's transcript on every call
+ * and never stored. A session the caller may not read, one this process does not hold, or a transcript that carries no
+ * tool calls answers `supported: false` with nothing in it.
+ */
+export async function conversationActivity(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  id: string
+): Promise<Outcome> {
+  const conversation = findConversation(workspaceId, id);
+  if (!conversation) return notFound('Conversation not found');
+  const session = ctx.sessions.get(conversation.sessionId);
+  if (!session || !ctx.transcriptActivity || !canAccessOwned(getAuthUser(req), session.owner)) {
+    return ok({ activity: NO_ACTIVITY });
+  }
+  const stamp = (await ctx.transcriptStamp?.(session.id).catch(() => null)) ?? null;
+  const cached = activities.get(conversation.id);
+  let read = stamp !== null && cached?.stamp === stamp ? cached.read : null;
+  if (!read) {
+    read = await ctx.transcriptActivity(session.id).catch(() => null);
+    if (!read) return ok({ activity: NO_ACTIVITY });
+    activities.delete(conversation.id);
+    if (stamp !== null) activities.set(conversation.id, { stamp, read });
+    for (const oldest of activities.keys()) {
+      if (activities.size <= MAX_ACTIVITIES) break;
+      activities.delete(oldest);
+    }
+  }
+  const asked = read.tools.filter((t) => t.release);
+  const records = asked.length ? await recentReleases(ctx) : null;
+  const releases = asked.flatMap((t) =>
+    t.release
+      ? [
+          joinRelease(
+            { toolId: t.id, ...t.release, at: t.at, pending: t.status === 'pending' && !session.paneExit },
+            records
+          ),
+        ]
+      : []
+  );
+  const tools = read.tools.map(({ release: _release, ...row }) => row);
+  return ok({ activity: { supported: true, tools, dropped: read.dropped, releases } satisfies Activity });
+}
+/** A tool answer is one bounded text, so an agent gets the newest calls that fit and a count of the rest. */
+export const MAX_TOOL_ACTIVITY_BYTES = 12_000;
+function fitForTool(activity: Activity): Activity {
+  let bytes = 0;
+  let from = activity.tools.length;
+  while (from > 0) {
+    const size = Buffer.byteLength(JSON.stringify(activity.tools[from - 1]));
+    if (bytes + size > MAX_TOOL_ACTIVITY_BYTES) break;
+    bytes += size;
+    from -= 1;
+  }
+  return { ...activity, tools: activity.tools.slice(from), dropped: activity.dropped + from };
 }
 /** Result texts already cut for the list, by conversation and by what they were read from, so an unchanged transcript is not read again. */
 const results = new Map<string, { stamp: string; result: TaskResultText }>();
@@ -629,6 +713,60 @@ export async function conversationTurnEnded(ctx: CanvasPort, sessionId: string):
   }
 }
 
+/**
+ * Sessions this process started for an agent. A removed task's record is gone, but a worker its session spawned may
+ * still run; remembering the id keeps that worker below agent-started work. Bounded; a restart forgets it.
+ */
+const agentStartedHere = new Set<string>();
+const MAX_REMEMBERED_AGENT_STARTS = 10_000;
+export function noteAgentStarted(sessionId: string): void {
+  agentStartedHere.add(sessionId);
+  if (agentStartedHere.size > MAX_REMEMBERED_AGENT_STARTS)
+    agentStartedHere.delete(agentStartedHere.values().next().value as string);
+}
+/** Every session an agent started, in any canvas: what the depth rule looks for above a caller. */
+async function agentStartedSessions(): Promise<Set<string>> {
+  const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+  const found = new Set<string>(agentStartedHere);
+  for (const workspace of readWorkspaces()) {
+    const file = readConversations(workspace.id);
+    if (!file.ok) continue;
+    for (const c of file.conversations) if (startedBy(c)) found.add(c.sessionId);
+  }
+  return found;
+}
+/**
+ * The bounds an agent caller is held to before it starts a conversation or a task: depth one (no start from a session
+ * an agent started, or from below one in its spawn chain) and the agents' share of the canvas's places. Undefined for a
+ * person and for an agent within bounds; the agent it returns is who the record names as having started the work. Run
+ * it inside `serialCreate`, so the count and the add are one step. `agentLive` counts what agents already hold here.
+ */
+export async function agentStartGate(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  kind: 'conversation' | 'task',
+  agentLive: number
+): Promise<Outcome | StartedBy | undefined> {
+  const author = req.canvasAuthor;
+  if (author?.kind !== 'agent') return undefined;
+  const above = agentStartedAncestor(
+    author.sessionId,
+    (id) => ctx.sessions.get(id)?.parentSessionId,
+    await agentStartedSessions()
+  );
+  const refused = agentStartRefusal({ kind, inLineage: above, agentLive });
+  if (refused)
+    return refused === 'NESTED_AGENT'
+      ? refuse(403, ApiErrorCode.FORBIDDEN, AGENT_START_REFUSALS[refused])
+      : conflict(AGENT_START_REFUSALS[refused]);
+  return { kind: 'agent', sessionId: author.sessionId };
+}
+/** A conversation an agent started whose session can still take a message. */
+const agentLiveConversation = (ctx: CanvasPort, c: Conversation): boolean => {
+  const session = ctx.sessions.get(c.sessionId);
+  return !!startedBy(c) && !taskPart(c) && !!session && !session.paneExit;
+};
+
 /** Creates in one workspace run one at a time, so the cap check and the add are one step and a retry finds the first's conversation. */
 const createChains = new Map<string, Promise<unknown>>();
 export async function createConversation(
@@ -638,12 +776,9 @@ export async function createConversation(
   input: unknown
 ): Promise<Outcome> {
   const body = parseBody(CreateConversationBodySchema, input);
-  if (req.canvasAuthor?.kind === 'agent')
-    return refuse(
-      403,
-      ApiErrorCode.FORBIDDEN,
-      'Starting a conversation starts a Claude session, so only a person can do it. Ask the person to start one from the canvas.'
-    );
+  // The tool's create carries no origin; an agent reaching the route directly is held to the same.
+  if (req.canvasAuthor?.kind === 'agent' && body.origin)
+    return refuse(400, ApiErrorCode.INVALID_INPUT, 'An agent cannot start a conversation from a comment thread');
   const workspace = await writeGuard(req, workspaceId);
   if (isOutcome(workspace)) return workspace;
   return serialCreate(workspaceId, () => start(ctx, req, workspace, body));
@@ -722,6 +857,13 @@ async function start(
   if (prior) return ok({ conversation: summary(ctx, req, prior), duplicate: true });
   if (file.conversations.length >= MAX_CONVERSATIONS_PER_WORKSPACE)
     return conflict(`TOO_MANY: a canvas keeps at most ${MAX_CONVERSATIONS_PER_WORKSPACE} conversations`);
+  const agent = await agentStartGate(
+    ctx,
+    req,
+    'conversation',
+    file.conversations.filter((c) => agentLiveConversation(ctx, c)).length
+  );
+  if (agent && 'code' in agent) return agent;
   const launch = await resolveLaunch(body.cliId, body.model);
   if (!('ok' in launch)) return launch;
   if (await caseRunsElsewhere(req, workspace.caseName))
@@ -733,8 +875,10 @@ async function start(
     name: `Canvas · ${workspace.caseName}`.slice(0, 100),
     mode: launch.entryId,
     launch: launch.launch,
+    ...(agent ? { parentSessionId: agent.sessionId } : {}),
   });
   if (!started.ok) return refuse(409, ApiErrorCode.OPERATION_FAILED, `START_FAILED: ${started.message}`);
+  if (agent) noteAgentStarted(started.sessionId);
   let created: ReturnType<typeof addConversation> | undefined;
   try {
     created = addConversation(
@@ -745,6 +889,7 @@ async function start(
         cliId: launch.entryId,
         ...(launch.model ? { model: launch.model } : {}),
         ...(body.origin ? { origin: body.origin } : {}),
+        ...(agent ? { startedBy: agent } : {}),
         createdAt: Date.now(),
         createdBy: ownerFor(req) ?? '@single',
       }),
@@ -890,7 +1035,9 @@ export async function sendMessage(
   req: FastifyRequest,
   workspaceId: string,
   conversationId: string,
-  input: unknown
+  input: unknown,
+  /** The request a task carries, sent by the create that just passed `agentStartGate` for this caller. */
+  taskStart = false
 ): Promise<Outcome> {
   const body = parseBody(SendBodySchema, input);
   const workspace = await writeGuard(req, workspaceId);
@@ -898,7 +1045,7 @@ export async function sendMessage(
   const conversation = findConversation(workspaceId, conversationId);
   if (!conversation) return notFound('Conversation not found');
   const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
-  if (author.kind === 'agent') {
+  if (author.kind === 'agent' && !taskStart) {
     // A conversation session messaging any conversation is how two of them could answer each other for ever.
     const file = readConversations(workspaceId);
     if (file.ok && file.conversations.some((c) => c.sessionId === author.sessionId))
@@ -1015,8 +1162,17 @@ export async function conversationTool(
   switch (input.action) {
     case 'list':
       return listConversations(ctx, req, workspaceId);
-    case 'read':
-      return readConversation(ctx, req, workspaceId, input.conversationId);
+    case 'read': {
+      const read = await readConversation(ctx, req, workspaceId, input.conversationId);
+      if (read.code !== 200) return read;
+      const activity = await conversationActivity(ctx, req, workspaceId, input.conversationId);
+      if (activity.code !== 200) return activity;
+      const { conversation } = (read.body as { data: { conversation: object } }).data;
+      return ok({
+        conversation,
+        activity: fitForTool((activity.body as { data: { activity: Activity } }).data.activity),
+      });
+    }
     case 'create':
       return createConversation(ctx, req, workspaceId, {
         requestId: input.requestId,
@@ -1040,6 +1196,11 @@ export function registerConversationRoutes(scope: FastifyInstance, ctx: CanvasPo
   scope.get('/api/canvas/:workspaceId/conversations/:conversationId', async (req, reply) => {
     const p = params.parse(req.params);
     const outcome = await readConversation(ctx, req, p.workspaceId, p.conversationId);
+    return reply.code(outcome.code).send(outcome.body);
+  });
+  scope.get('/api/canvas/:workspaceId/conversations/:conversationId/activity', async (req, reply) => {
+    const p = params.parse(req.params);
+    const outcome = await conversationActivity(ctx, req, p.workspaceId, p.conversationId);
     return reply.code(outcome.code).send(outcome.body);
   });
   scope.post<{ Params: { workspaceId: string } }>(

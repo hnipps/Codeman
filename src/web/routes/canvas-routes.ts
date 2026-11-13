@@ -38,7 +38,7 @@ import {
   currentProviders,
   registerConversationRoutes,
 } from './canvas-conversation-routes.js';
-import { registerTaskRoutes } from './canvas-task-routes.js';
+import { registerTaskRoutes, taskTool } from './canvas-task-routes.js';
 import { registerShellRoutes, sessionCounts } from './canvas-shell-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
@@ -449,6 +449,10 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                 return applyViewCommand(reply, ctx, views, req.params.workspaceId, viewId, canSee, action, requestId);
               }
               const outcome = await conversationTool(ctx, req, req.params.workspaceId, conversation);
+              return reply.code(outcome.code).send(outcome.body);
+            }
+            case 'canvas_task': {
+              const outcome = await taskTool(ctx, req, req.params.workspaceId, toolSchemas.canvas_task.parse(args));
               return reply.code(outcome.code).send(outcome.body);
             }
             case 'canvas_view':

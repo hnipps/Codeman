@@ -216,6 +216,7 @@ import {
 import { readDeepSeekLastResponse } from '../../deepseek-transcript.js';
 import { appendClaudeCustomTitle } from '../../claude-session-title.js';
 import { UPLOADS_DIR } from '../paste-image-gc.js';
+import { ToolLedger, type ToolRow } from '../../canvas/transcript-activity.js';
 
 // Path to linked-cases registry (same file used by case-routes resolveCasePath)
 const LINKED_CASES_FILE = dataPath('linked-cases.json');
@@ -1039,6 +1040,8 @@ export function registerSessionRoutes(
     /** Handed the reader behind `last-response?context=full`, for callers that hold a session id and no request. */
     transcriptReader?: (reader: {
       rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
+      /** The session's tool calls, each placed after the count of rows `rows()` gives before it; null for a transcript this cannot read them from. */
+      activity(sessionId: string): Promise<{ tools: ToolRow[]; dropped: number } | null>;
       stamp(sessionId: string): Promise<string | null>;
       modifiedAt(sessionId: string): Promise<number | null>;
     }) => void;
@@ -2715,7 +2718,8 @@ export function registerSessionRoutes(
    */
   function parseClaudeResponseTranscript(
     content: string,
-    full: boolean
+    full: boolean,
+    tools?: ToolLedger
   ): { text: string; timestamp: string; messages?: ClaudeResponseMessage[] } {
     let lastText = '';
     let lastTimestamp = '';
@@ -2771,6 +2775,7 @@ export function registerSessionRoutes(
       }
 
       if (entry.type === 'user') {
+        tools?.results(entry.message?.content);
         const text = extractClaudeText(entry.message?.content, '\n').trim();
         // A tool_result block has no text block and naturally drops out here.
         if (!text || isClaudeSyntheticUserMessage(entry, text)) continue;
@@ -2785,6 +2790,7 @@ export function registerSessionRoutes(
       }
 
       if (entry.type !== 'assistant') continue;
+      tools?.uses(entry.message?.content, entry.timestamp, messages.length);
       const text = extractClaudeText(entry.message?.content, '\n\n').trim();
       if (!text) continue;
       lastText = text;
@@ -2900,6 +2906,14 @@ export function registerSessionRoutes(
           : []
       );
     },
+    activity: async (sessionId) => {
+      const session = ctx.sessions.get(sessionId);
+      if (!session || session.remote || session.docker) return null;
+      if (getCli(session.mode)?.capabilities.transcript !== 'claude-jsonl') return null;
+      const ledger = new ToolLedger();
+      await lastResponse(session, 'full', ledger);
+      return { tools: ledger.rows(), dropped: ledger.droppedCount };
+    },
     stamp: async (sessionId) => {
       const found = await transcriptStat(sessionId);
       if (found === null || found === 'none') return found;
@@ -2924,7 +2938,11 @@ export function registerSessionRoutes(
     return stat ? { sessionId: transcript.sessionId, mtimeMs: stat.mtimeMs, size: stat.size } : null;
   }
 
-  async function lastResponse(session: ReturnType<typeof findSessionOrFail>, context: string | undefined) {
+  async function lastResponse(
+    session: ReturnType<typeof findSessionOrFail>,
+    context: string | undefined,
+    tools?: ToolLedger
+  ) {
     // Codex sessions don't write to ~/.claude/projects — their transcripts
     // live in ~/.codex/sessions/**. Branch to a Codex-specific reader so the
     // response-viewer works for Codex panes too.
@@ -3047,7 +3065,7 @@ export function registerSessionRoutes(
 
     try {
       const content = await fs.readFile(transcript.path, 'utf8');
-      const parsed = parseClaudeResponseTranscript(content, wantsMessages);
+      const parsed = parseClaudeResponseTranscript(content, wantsMessages, tools);
       if (query.context === 'turn') {
         return {
           text: parsed.text,

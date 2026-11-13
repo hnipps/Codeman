@@ -10,8 +10,10 @@
  *   DELETE /api/canvas/:workspaceId/tasks/:conversationId         remove a finished task: its session, then its worktree
  *   DELETE /api/canvas/:workspaceId/tasks/left-behind/:name       remove a `task-*` worktree no task names (non-force)
  *
- * "Only a person" on the routes that start, cancel, remove or retry rests on the caller-declared agent header
- * (`req.canvasAuthor`), the same check conversations use: a caller that does not declare itself an agent is a person.
+ * An agent caller (the caller-declared agent header, `req.canvasAuthor`, the same check conversations use) may start,
+ * retry, cancel and remove tasks under the bounds in `src/canvas/agent-start.ts`: depth one, the agents' share of the
+ * cap, a worktree only (it cannot consent to the shared case folder), and cancel or remove only of what it started.
+ * The left-behind remove stays a person's.
  *
  * A task's state is never stored: `deriveTaskState()` reads it from the message's delivery state, the recorded cancel
  * and turn end, the approvals inbox and the session. No answer carries a server path; a worktree is named by its
@@ -67,6 +69,7 @@ import {
   NO_ISOLATION,
   taskActive,
   taskPart,
+  TaskToolSchema,
   type CreateTaskBody,
   type LeftBehindRow,
   type NoIsolation,
@@ -76,8 +79,11 @@ import {
   type TaskRow,
 } from '../../canvas/tasks.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
+import { AGENT_START_REFUSALS, startedBy } from '../../canvas/agent-start.js';
 import {
+  agentStartGate,
   caseRunsElsewhere,
+  noteAgentStarted,
   conflict,
   deliveryEnded,
   isOutcome,
@@ -122,9 +128,12 @@ const leftBehindCache = new Map<string, { at: number; rows: LeftBehindRow[] }>()
 /** Forgets the cached left-behind lists (tests). */
 export const forgetLeftBehind = (): void => leftBehindCache.clear();
 
-const HUMAN_ONLY =
-  'A background task starts an agent session, so only a person can start, cancel or remove one. Ask the person to do it from the canvas.';
+const HUMAN_ONLY = 'Only a person can remove a left-behind worktree. Ask the person to do it from the canvas.';
 const agentCaller = (req: FastifyRequest): boolean => req.canvasAuthor?.kind === 'agent';
+/** The task an agent caller started itself; a person may act on any task of their canvas. */
+const callerMayAct = (req: FastifyRequest, c: Conversation): boolean =>
+  req.canvasAuthor?.kind !== 'agent' || startedBy(c)?.sessionId === req.canvasAuthor.sessionId;
+const notYours = (): Outcome => refuse(403, ApiErrorCode.FORBIDDEN, AGENT_START_REFUSALS.NOT_YOURS);
 
 /** One list row. `canSee` is false for a session the caller may not read; its task then reads as gone. */
 async function taskRow(ctx: CanvasPort, req: FastifyRequest, c: Conversation, task: TaskPart): Promise<TaskRow> {
@@ -164,6 +173,7 @@ async function taskRow(ctx: CanvasPort, req: FastifyRequest, c: Conversation, ta
     ...(task.unsubmitted && state === 'cancelled' ? { unsubmitted: true as const } : {}),
     ...(task.excludeWarning ? { excludeWarning: true as const } : {}),
     refs: (message?.refs ?? []).map((r) => ({ id: r.id, label: r.label })),
+    ...(startedBy(c) ? { startedBy: startedBy(c) } : {}),
     ...(origin ? { origin: { objectId: origin.objectId, commentId: origin.commentId } } : {}),
     ...(task.parentConversationId ? { parentConversationId: task.parentConversationId } : {}),
     ...(task.kept ? { kept: { label: isolationLabel(task.isolation), reason: task.kept } } : {}),
@@ -381,7 +391,13 @@ export async function createTask(
   input: unknown
 ): Promise<Outcome> {
   const body = parseBody(CreateTaskBodySchema, input);
-  if (agentCaller(req)) return refuse(403, ApiErrorCode.FORBIDDEN, HUMAN_ONLY);
+  // The shared folder is the person's consent to give; a thread or parent link is the person's context.
+  if (agentCaller(req) && (body.shared || body.origin || body.parentConversationId))
+    return refuse(
+      400,
+      ApiErrorCode.INVALID_INPUT,
+      'An agent starts a task in its own worktree only, with no shared folder, thread origin or parent conversation'
+    );
   const workspace = await writeGuard(req, workspaceId);
   if (isOutcome(workspace)) return workspace;
   const text = normalizePrompt(body.text);
@@ -408,12 +424,16 @@ async function start(
       return conflict('TASK_CHANGED: this request id already started a task with a different request');
     const row = await taskRow(ctx, req, prior, task);
     if (body.retry !== true || !row.retryable || !first) return ok({ task: row, duplicate: true });
+    if (!callerMayAct(req, prior)) return notYours();
     // The same message id through the conversation send path: it looks at the composer first and never pastes twice.
-    const again = await sendMessage(ctx, req, workspace.id, prior.id, {
-      messageId: task.messageId,
-      text,
-      refIds: body.refIds,
-    }).catch(() => conflict('NOT_DELIVERED: the request could not be sent'));
+    const again = await sendMessage(
+      ctx,
+      req,
+      workspace.id,
+      prior.id,
+      { messageId: task.messageId, text, refIds: body.refIds },
+      agentCaller(req)
+    ).catch(() => conflict('NOT_DELIVERED: the request could not be sent'));
     if (again.code >= 400) return again;
     const current = findConversation(workspace.id, prior.id) ?? prior;
     return ok({ task: await taskRow(ctx, req, current, task), duplicate: true, retried: true });
@@ -448,6 +468,16 @@ async function start(
   }
   if (activeCount(ctx, file.conversations) >= MAX_ACTIVE_TASKS)
     return conflict(`TOO_MANY_TASKS: at most ${MAX_ACTIVE_TASKS} background tasks run at once on a canvas`);
+  const agent = await agentStartGate(
+    ctx,
+    req,
+    'task',
+    activeCount(
+      ctx,
+      file.conversations.filter((c) => startedBy(c))
+    )
+  );
+  if (agent && 'code' in agent) return agent;
 
   let isolation: TaskIsolation = { kind: 'shared' };
   let workingDir = located.casePath;
@@ -493,6 +523,7 @@ async function start(
       excludeWarning,
       launch,
       startSession,
+      agent,
       parent: file.conversations.some((c) => c.id === body.parentConversationId && !taskPart(c)),
     });
   } finally {
@@ -516,11 +547,13 @@ async function launchTask(
     excludeWarning: boolean;
     launch: { entryId: string; model: string; launch: Record<string, unknown> };
     startSession: NonNullable<CanvasPort['startConversationSession']>;
+    /** The agent that asked, once it passed `agentStartGate`; undefined for a person. */
+    agent: { kind: 'agent'; sessionId: string } | undefined;
     /** The parent conversation the request named is an ordinary conversation of this workspace. */
     parent: boolean;
   }
 ): Promise<Outcome> {
-  const { located, repo, isolation, workingDir, launch, startSession } = made;
+  const { located, repo, isolation, workingDir, launch, startSession, agent } = made;
   /** Undoes what this attempt made, newest first; what cannot be undone is named in the answer, never left silent. */
   const undo = async (made: { sessionId?: string; conversationId?: string }): Promise<string> => {
     if (made.conversationId) {
@@ -545,7 +578,9 @@ async function launchTask(
     name: `Task · ${name}`.slice(0, 100),
     mode: launch.entryId,
     launch: launch.launch,
+    ...(agent ? { parentSessionId: agent.sessionId } : {}),
   }).catch(() => ({ ok: false as const, message: 'the session could not be started' }));
+  if (agent && started.ok) noteAgentStarted(started.sessionId);
   if (!started.ok) {
     const left = await undo({});
     const why = withoutPaths(started.message, located, 'the session could not be started');
@@ -572,6 +607,7 @@ async function launchTask(
         ...(launch.model ? { model: launch.model } : {}),
         ...(body.origin ? { origin: body.origin } : {}),
         task,
+        ...(agent ? { startedBy: agent } : {}),
         createdAt: Date.now(),
         createdBy: ownerFor(req) ?? '@single',
       }),
@@ -587,12 +623,14 @@ async function launchTask(
   const conversation = created.conversation;
   let sent: Outcome;
   try {
-    sent = await sendMessage(ctx, req, workspace.id, conversation.id, {
-      messageId,
-      text,
-      refIds: body.refIds,
-      ...(body.origin ? { origin: body.origin } : {}),
-    });
+    sent = await sendMessage(
+      ctx,
+      req,
+      workspace.id,
+      conversation.id,
+      { messageId, text, refIds: body.refIds, ...(body.origin ? { origin: body.origin } : {}) },
+      !!agent
+    );
   } catch {
     sent = conflict('NOT_DELIVERED: the request could not be sent');
   }
@@ -616,18 +654,18 @@ async function launchTask(
   return ok({ task: await taskRow(ctx, req, current, task), duplicate: false });
 }
 
-/** The task a route names, for a person who owns the workspace; an agent caller is refused before anything is read. */
+/** The task a route names, for the workspace's owner; an agent caller reaches only a task it started itself. */
 async function locateTask(
   req: FastifyRequest,
   workspaceId: string,
   conversationId: string
 ): Promise<Outcome | { workspace: Workspace; conversation: Conversation; task: TaskPart }> {
-  if (agentCaller(req)) return refuse(403, ApiErrorCode.FORBIDDEN, HUMAN_ONLY);
   const workspace = await writeGuard(req, workspaceId);
   if (isOutcome(workspace)) return workspace;
   const conversation = findConversation(workspaceId, conversationId);
   const task = conversation ? taskPart(conversation) : undefined;
   if (!conversation || !task) return notFound('Task not found');
+  if (!callerMayAct(req, conversation)) return notYours();
   return { workspace, conversation, task };
 }
 
@@ -801,6 +839,28 @@ export async function removeLeftBehind(
       ? ok({ removed: true, ...(gone.branchKept ? { branchKept: gone.branchKept } : {}) })
       : ok({ removed: false, kept: { label, reason: gone.reason } });
   });
+}
+
+/** The `canvas_task` tool: the task routes' own functions, so a tool call and a click are held to the same rules. */
+export async function taskTool(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  input: z.infer<typeof TaskToolSchema>
+): Promise<Outcome> {
+  switch (input.action) {
+    case 'list':
+      return listTasks(ctx, req, workspaceId);
+    case 'start': {
+      const { action: _action, ...body } = input;
+      void _action;
+      return createTask(ctx, req, workspaceId, body);
+    }
+    case 'cancel':
+      return cancelTask(ctx, req, workspaceId, input.taskId);
+    case 'remove':
+      return removeTask(ctx, req, workspaceId, input.taskId);
+  }
 }
 
 export function registerTaskRoutes(scope: FastifyInstance, ctx: CanvasPort): void {

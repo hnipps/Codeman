@@ -33,6 +33,10 @@ tests=(
   test/canvas-conversation-thread.test.ts
   test/canvas-conversation-delivery.test.ts
   test/canvas-conversation-session.test.ts
+  test/canvas-conversation-activity.test.ts
+  test/canvas-transcript-activity.test.ts
+  test/canvas-release.test.ts
+  test/canvas-thread-reply-reader.test.ts
   test/canvas-thread-reply.test.ts
   test/canvas-thread-requests.test.ts
   test/canvas-tasks.test.ts
@@ -40,6 +44,7 @@ tests=(
   test/canvas-shell-compat.test.ts
   test/canvas-failure-routes.test.ts
   test/canvas-client-errors.test.ts
+  test/canvas-agent-start.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts

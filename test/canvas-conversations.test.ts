@@ -35,29 +35,40 @@ async function harness(options: { multiuser?: string } = {}) {
   let accept = true;
   const sessions = new Map<
     string,
-    { id: string; owner?: string; workingDir: string; paneExit?: unknown; writeViaMux: ReturnType<typeof vi.fn> }
+    {
+      id: string;
+      owner?: string;
+      workingDir: string;
+      paneExit?: unknown;
+      parentSessionId?: string;
+      writeViaMux: ReturnType<typeof vi.fn>;
+    }
   >();
-  const started: { workingDir: string; name: string }[] = [];
+  const started: { workingDir: string; name: string; parentSessionId?: string }[] = [];
   const stores = new CanvasStores();
   const port = {
     sessions,
     canvasEnabled: async () => true,
     canvasStores: async () => stores,
     broadcast: vi.fn(),
-    startConversationSession: vi.fn(async (_headers: unknown, request: { workingDir: string; name: string }) => {
-      started.push(request);
-      const id = `session-${sessions.size + 1}`;
-      sessions.set(id, {
-        id,
-        owner: options.multiuser,
-        workingDir: request.workingDir,
-        writeViaMux: vi.fn(async (data: string) => {
-          writes.push(data);
-          return accept;
-        }),
-      });
-      return { ok: true as const, sessionId: id };
-    }),
+    startConversationSession: vi.fn(
+      async (_headers: unknown, request: { workingDir: string; name: string; parentSessionId?: string }) => {
+        started.push(request);
+        const id = `session-${sessions.size + 1}`;
+        sessions.set(id, {
+          id,
+          owner: options.multiuser,
+          workingDir: request.workingDir,
+          // The create route stores the asking agent as the new session's spawn parent.
+          ...(request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}),
+          writeViaMux: vi.fn(async (data: string) => {
+            writes.push(data);
+            return accept;
+          }),
+        });
+        return { ok: true as const, sessionId: id };
+      }
+    ),
   };
   registerCanvasRoutes(app, port as never);
   installRouteErrorHandler(app);
@@ -310,18 +321,52 @@ describe('canvas conversations', () => {
     }
   });
 
-  it('is human-only to start, and an agent cannot message from inside any conversation', async () => {
+  it('lets an agent start one level of conversations, marked as its own, and never from inside any conversation to message', async () => {
     const h = await harness();
     try {
       const { conversation } = (await h.start()).data;
       const other = (await h.start()).data.conversation;
-      const agentCreate = await h.app.inject({
-        method: 'POST',
-        url: `${h.base}/command`,
-        headers: { 'x-codeman-parent-session': conversation.sessionId },
-        payload: { tool: 'canvas_conversation', arguments: { action: 'create', requestId: uuid() } },
+      const create = (asSession: string) =>
+        h.app.inject({
+          method: 'POST',
+          url: `${h.base}/command`,
+          headers: { 'x-codeman-parent-session': asSession },
+          payload: { tool: 'canvas_conversation', arguments: { action: 'create', requestId: uuid() } },
+        });
+      // The session of a conversation the person started may start one; the record and the tab name it.
+      const agentCreate = await create(conversation.sessionId);
+      expect(agentCreate.statusCode).toBe(200);
+      const made = agentCreate.json().data.conversation;
+      expect(made.startedBy).toEqual({ kind: 'agent', sessionId: conversation.sessionId });
+      expect(h.started.at(-1)?.parentSessionId).toBe(conversation.sessionId);
+      expect(Object.keys(h.started.at(-1)!).sort()).toEqual([
+        'launch',
+        'mode',
+        'name',
+        'parentSessionId',
+        'workingDir',
+      ]);
+      // What an agent started cannot start more, nor can a session spawned below it.
+      const nested = await create(made.sessionId);
+      expect(nested.statusCode).toBe(403);
+      expect(nested.json().error).toMatch(/^NESTED_AGENT/);
+      h.sessions.set('spawned', {
+        id: 'spawned',
+        workingDir: h.sessions.get(made.sessionId)!.workingDir,
+        parentSessionId: made.sessionId,
+        writeViaMux: vi.fn(),
       });
-      expect(agentCreate.statusCode).toBe(403);
+      expect((await create('spawned')).statusCode).toBe(403);
+      // Agents hold at most two live conversations of a canvas; one that ended frees its place.
+      expect((await create(conversation.sessionId)).statusCode).toBe(200);
+      const capped = await create(conversation.sessionId);
+      expect(capped.statusCode).toBe(409);
+      expect(capped.json().error).toMatch(/^AGENT_CAP/);
+      h.sessions.get(made.sessionId)!.paneExit = { status: 0 };
+      expect((await create(conversation.sessionId)).statusCode).toBe(200);
+      // A person is held to none of that.
+      expect((await h.start()).data.conversation.startedBy).toBeUndefined();
+      expect(h.writes).toHaveLength(0);
       const loop = await h.app.inject({
         method: 'POST',
         url: `${h.base}/command`,

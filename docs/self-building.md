@@ -160,6 +160,7 @@ A release judges itself with its own health check, so a weakened check would pas
 - `src/web/routes/telemetry-routes.ts` serves `GET /api/health`, `/ws/health`, `GET /api/logs` and `POST /api/client-errors`.
 - `src/web/routes/deploy-routes.ts` serves `POST /api/deploy/role`. It accepts only loopback requests that carry no forwarding headers.
 - `src/deploy-control.ts` and `src/web/routes/deploy-control-routes.ts` back the Deploys section in Settings, and `src/web/public/deploy-ui.js` draws it. They run the supervisor command named in `CODEMAN_SUPERVISOR_CLI` and pass on only shas, times and outcomes. A rollback request needs the `requestDeploy` capability, which only a `live` colour has.
+- `src/canvas/release.ts` and the canvas conversation activity read show the outcome of a deploy or rollback an agent asked for, inside the canvas conversation that asked. They read the same supervisor status through `readOverview()` and can request nothing.
 - `src/web/pane-api-url.ts` hands panes `CODEMAN_STABLE_API_URL` as their `CODEMAN_API_URL` when it is an http or https URL on a loopback host, so their hooks reach whichever colour is live.
 - `decideBuildReload()` in `src/web/public/constants.js` decides when a page reloads for a new build. `handleInit()` in `app.js` calls it.
 

@@ -126,6 +126,7 @@ import {
 import { resolveVoiceStatus } from './routes/voice-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
 import type { CanvasPort } from './ports/canvas-port.js';
+import { readOverview, supervisorCli } from '../deploy-control.js';
 import { stopScreenshotRenders } from '../canvas/canvas-screenshot.js';
 import { deriveWebviewSseHint } from './webview-sse.js';
 import {
@@ -1434,6 +1435,11 @@ export class WebServer extends EventEmitter {
       startConversationSession: (headers, request) => this.startConversationSession(headers, request),
       discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
       transcriptRows: async (sessionId) => (await this.transcriptReader?.rows(sessionId)) ?? null,
+      transcriptActivity: async (sessionId) => (await this.transcriptReader?.activity(sessionId)) ?? null,
+      releaseRecords: async () => {
+        const cli = supervisorCli();
+        return cli ? (await readOverview(cli)).recent : null;
+      },
       transcriptStamp: async (sessionId) => (await this.transcriptReader?.stamp(sessionId)) ?? null,
       transcriptModifiedAt: async (sessionId) => (await this.transcriptReader?.modifiedAt(sessionId)) ?? null,
       turnEndObservedAt: (sessionId) => {
@@ -2547,6 +2553,7 @@ export class WebServer extends EventEmitter {
   private canvasStoreService?: CanvasStores;
   private transcriptReader?: {
     rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
+    activity(sessionId: string): ReturnType<NonNullable<CanvasPort['transcriptActivity']>>;
     stamp(sessionId: string): Promise<string | null>;
     modifiedAt(sessionId: string): Promise<number | null>;
   };
@@ -2558,7 +2565,13 @@ export class WebServer extends EventEmitter {
    */
   private async startConversationSession(
     headers: Readonly<Record<string, string | string[] | undefined>>,
-    request: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
+    request: {
+      workingDir: string;
+      name: string;
+      mode: string;
+      launch: Record<string, unknown>;
+      parentSessionId?: string;
+    }
   ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
     const forwarded: Record<string, string> = { 'content-type': 'application/json' };
     for (const name of ['authorization', 'cookie', 'host']) {
@@ -2580,6 +2593,7 @@ export class WebServer extends EventEmitter {
       mode: request.mode,
       name: request.name,
       ...request.launch,
+      ...(request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}),
     });
     const sessionId = created.body.data?.session?.id;
     if (created.status >= 400 || created.body.success === false || typeof sessionId !== 'string')

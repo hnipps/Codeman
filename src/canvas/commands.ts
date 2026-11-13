@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { ViewActionSchema } from './view-schema.js';
 import { ConversationToolSchema } from './conversation-schema.js';
+import { TaskToolSchema } from './tasks.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -183,13 +184,25 @@ export const toolSchemas = {
   canvas_view: ViewToolSchema,
   canvas_context: ContextToolSchema,
   canvas_conversation: ConversationToolSchema,
+  canvas_task: TaskToolSchema,
   canvas_capabilities: z.object({}).strict(),
   canvas_link_preview: z.object({ url: z.string().min(1).max(8192) }).strict(),
 };
 export type CanvasToolName = keyof typeof toolSchemas;
 export const canvasToolNames = Object.keys(toolSchemas) as CanvasToolName[];
+/**
+ * A schema as callers see it. A uuid field keeps `format: "uuid"` and loses the long pattern zod spells it with, which
+ * the capability document repeated dozens of times against MAX_CANVAS_TEXT_BYTES; the server still parses strictly.
+ */
+const inputJsonSchema = (schema: z.ZodType) =>
+  z.toJSONSchema(schema, {
+    io: 'input',
+    override: ({ jsonSchema }) => {
+      if (jsonSchema.format === 'uuid') delete jsonSchema.pattern;
+    },
+  });
 export function canvasJsonSchema(schema: z.ZodType) {
-  const generated = z.toJSONSchema(schema, { io: 'input' });
+  const generated = inputJsonSchema(schema);
   if (generated.type === 'object') return generated;
   const properties = Object.fromEntries(
     (generated.anyOf ?? generated.oneOf ?? []).flatMap((branch) =>
@@ -224,12 +237,12 @@ export function capabilities() {
       const actions = s.shape.action instanceof z.ZodEnum ? s.shape.action.options : [s.shape.action.value];
       return actions.map((command) => ({
         command,
-        schema: z.toJSONSchema(s, { io: 'input' }),
+        schema: inputJsonSchema(s),
         objectTypes: command === 'ungroup' ? ['group'] : types,
       }));
     }),
     transforms: {
-      schema: z.toJSONSchema(TransformSchema, { io: 'input' }),
+      schema: inputJsonSchema(TransformSchema),
       objectTypes: types,
       groupScale: 'Uniform only; includes the entire subtree',
       nonuniformScale:
@@ -238,7 +251,7 @@ export function capabilities() {
     },
     commands: CommandSchema.options.map((s) => ({
       command: s.shape.kind.value,
-      schema: z.toJSONSchema(s, { io: 'input' }),
+      schema: inputJsonSchema(s),
       objectTypes: types,
     })),
     geometry: {
@@ -312,7 +325,19 @@ export function capabilities() {
       command,
       available: true,
       tool,
-      note: "A conversation is one real agent session in this case, on the CLI and model the person chose for the next new one (model, with a viewId, reads or sets that open view's choice; it starts nothing). Send is accepted at once and delivered in the background (message state: queued, sending, delivered, failed); it carries the named objects as reference text, never answers a pending question, and is refused for an agent itself in a conversation. Create is for people only: agents get 403.",
+      // Repeated per command and counted against MAX_CANVAS_TEXT_BYTES: the tool description carries the rest.
+      note: 'One real agent session in this case. Send is delivered in the background and refused from an agent itself in a conversation; an agent creates within bounds (canvas_conversation description).',
+    })),
+    tasks: [
+      ['canvas.task.list', 'canvas_task list'],
+      ['canvas.task.start', 'canvas_task start'],
+      ['canvas.task.cancel', 'canvas_task cancel'],
+      ['canvas.task.remove', 'canvas_task remove'],
+    ].map(([command, tool]) => ({
+      command,
+      available: true,
+      tool,
+      note: 'One agent session in its own worktree of this case, sent one request. An agent starts within bounds and cancels or removes only its own (canvas_task description).',
     })),
     reserved: [],
     clipboard: {
