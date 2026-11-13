@@ -377,6 +377,57 @@ describe('desktop canvas editing', () => {
     const log = await (await page.request.get(`${origin}/x/api/canvas/${workspace}/ops?since=0`)).json();
     expect(log.data.operations.some((o: { kind: string }) => o.kind === 'restore')).toBe(true);
   });
+  it('undoes two resizes of one object one step per Ctrl+Z, redoes them, and still refuses across a foreign edit', async () => {
+    const size = async () => (await stored()).find((o) => o.id === 'frame')?.size;
+    const key = async (chord: string) => {
+      await page.locator('#board').focus();
+      await page.keyboard.press(chord);
+      await saved();
+    };
+    await page.locator('[data-object-id="frame"] > .object-title').click();
+    const start = await size();
+    if (!start) throw new Error('Missing frame size');
+    const grown = (dx: number, dy: number) => ({ width: start.width + dx, height: start.height + dy });
+    for (const [dx, dy] of [
+      [40, 20],
+      [60, 30],
+    ]) {
+      const handle = page.locator('[data-object-id="frame"] > .handle-se');
+      await handle.waitFor({ state: 'visible' });
+      const box = await handle.boundingBox();
+      if (!box) throw new Error('Missing resize handle');
+      await page.keyboard.down('Control');
+      await page.mouse.move(box.x + 8, box.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 8 + dx, box.y + 8 + dy, { steps: 8 });
+      await page.mouse.up();
+      await page.keyboard.up('Control');
+      await saved();
+    }
+    expect(await size()).toEqual(grown(100, 50));
+    await key('Control+z');
+    expect(await size()).toEqual(grown(40, 20));
+    await key('Control+z');
+    expect(await size()).toEqual(start);
+    await key('Control+Shift+z');
+    expect(await size()).toEqual(grown(40, 20));
+    await key('Control+Shift+z');
+    expect(await size()).toEqual(grown(100, 50));
+    await key('Control+z');
+    expect(await size()).toEqual(grown(40, 20));
+
+    const foreign = await page.request.post(`${origin}/x/api/canvas/${workspace}/ops`, {
+      data: {
+        operations: [{ kind: 'update', opId: 'foreign-rotate', objectId: 'frame', patch: { rotation: 90 } }],
+      },
+    });
+    expect(foreign.ok()).toBe(true);
+    await page.waitForFunction(() => window.canvasEdit.read().objects.find((o) => o.id === 'frame')?.rotation === 90);
+    await page.locator('#board').focus();
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => page.locator('#actionMessage').textContent()).toContain("can't be undone");
+    expect((await stored()).find((o) => o.id === 'frame')).toMatchObject({ size: grown(40, 20), rotation: 90 });
+  });
   it('cancels marquee/lasso and move mode without writes, supports scoped select all, and edits numeric geometry', async () => {
     const before = await stored();
     await page.locator('#board').focus();

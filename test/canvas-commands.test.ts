@@ -245,6 +245,79 @@ describe('shared compound canvas commands', () => {
     expect(redo.state.objects.a.position).toEqual({ x: 50, y: 60 });
     expect(() => historyCommands(undo.state, result.operations, [result.state.seq], human)).toThrow();
   });
+  describe('repeated history on one object', () => {
+    const resize = (opId: string, width: number): Command => ({
+      kind: 'update',
+      opId,
+      objectId: 'a',
+      patch: { size: { width, height: 80 } },
+    });
+    const width = (state: CanvasState, id = 'a') => state.objects[id].size?.width;
+    const step = (state: CanvasState, of: ReturnType<typeof apply>) =>
+      apply(
+        state,
+        historyCommands(
+          state,
+          of.operations,
+          of.operations.map((o) => o.seq),
+          human
+        )
+      );
+    it('walks back through consecutive own edits and forward again', () => {
+      const first = apply(seed(), [resize('r1', 200)]);
+      const second = apply(first.state, [resize('r2', 300)]);
+      const undoSecond = step(second.state, second);
+      expect(width(undoSecond.state)).toBe(200);
+      const undoFirst = step(undoSecond.state, first);
+      expect(width(undoFirst.state)).toBe(100);
+      const redoFirst = step(undoFirst.state, undoFirst);
+      expect(width(redoFirst.state)).toBe(200);
+      const redoSecond = step(redoFirst.state, undoSecond);
+      expect(width(redoSecond.state)).toBe(300);
+      const undoAgain = step(redoSecond.state, redoSecond);
+      expect(width(undoAgain.state)).toBe(200);
+      expect(width(step(undoAgain.state, redoFirst).state)).toBe(100);
+    });
+    it('walks back through edits interleaved across two objects', () => {
+      const a1 = apply(seed(), [resize('a1', 200)]);
+      const b1 = apply(a1.state, [{ kind: 'move', opId: 'b1', objectId: 'b', patch: { position: { x: 70, y: 70 } } }]);
+      const a2 = apply(b1.state, [resize('a2', 300)]);
+      const undoA2 = step(a2.state, a2);
+      const undoB1 = step(undoA2.state, b1);
+      const undoA1 = step(undoB1.state, a1);
+      expect(width(undoA1.state)).toBe(100);
+      expect(undoA1.state.objects.b.position).toEqual({ x: 10, y: 20 });
+    });
+    it.each([
+      ['another author', agent],
+      ['the same author elsewhere', human],
+    ])('still refuses an older edit after a later edit by %s', (_name, other) => {
+      const first = apply(seed(), [resize('r1', 200)]);
+      const second = apply(first.state, [resize('r2', 300)]);
+      const undoSecond = step(second.state, second);
+      const foreign = validateBatch(
+        undoSecond.state,
+        [{ kind: 'move', opId: 'foreign', objectId: 'a', patch: { position: { x: 5, y: 5 } } }],
+        other,
+        2
+      );
+      if (!foreign.ok) throw new Error('fixture rejected');
+      expect(() => historyCommands(foreign.state, first.operations, [first.state.seq], human)).toThrow(
+        expect.objectContaining({ reasons: [expect.objectContaining({ code: 'REVISION', objectId: 'a' })] })
+      );
+    });
+    it('refuses an older edit across a lock taken after it', () => {
+      const first = apply(seed(), [resize('r1', 200)]);
+      const second = apply(first.state, [resize('r2', 300)]);
+      const undoSecond = step(second.state, second);
+      const locked = apply(undoSecond.state, [
+        { kind: 'lock', opId: 'lock', objectId: 'section', patch: { mode: 'subtree' } },
+      ]);
+      expect(() => historyCommands(locked.state, first.operations, [first.state.seq], human)).toThrow(
+        expect.objectContaining({ reasons: [expect.objectContaining({ code: 'LOCKED' })] })
+      );
+    });
+  });
   it('uses point, rectangle and polygon world AABB semantics, including touching edges', () => {
     const state = seed();
     expect(queryObjects(state, { shape: 'point', point: { x: 20, y: 40 } }).map((o) => o.id)).toContain('a');
