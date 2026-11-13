@@ -332,7 +332,69 @@ describe('canvas thread requests', () => {
     await page.locator('#commentDraft').fill('');
   });
 
-  it('a retry after a lost answer posts no second comment and writes no second prompt', async () => {
+  it('an ask cut off by a reload comes back with its draft and finishes under the same ids', async () => {
+    await openThread('n2', 'Reference notes');
+    await page.locator('#askTarget').selectOption({ label: 'Conversation 1' });
+    // The comment lands; the message never reaches the server.
+    await page.route('**/conversations/*/messages', (route) => route.abort());
+    await page.locator('#commentDraft').fill('Does this hold?');
+    await page.locator('#askAgent').click();
+    await page.waitForSelector('#retryComment:not([hidden])');
+    expect(await page.locator('#commentStatus').textContent()).toContain('Your comment is posted');
+    const firstTry = posts.map((p) => p.body);
+    expect(posts.map((p) => p.path)).toEqual(['/command', '/conversations/:id/messages']);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.canvasView && !!document.querySelector('[data-object-id="n2"]'));
+    await page.unroute('**/conversations/*/messages');
+    posts.length = 0;
+    await openThread('n2', 'Reference notes');
+    // Nothing here types the draft again: it comes back from the kept attempt.
+    expect(await page.locator('#commentDraft').inputValue()).toBe('Does this hold?');
+    await page.waitForSelector('#retryComment:not([hidden])');
+    expect(await page.locator('#commentStatus').textContent()).toContain('nothing is posted twice');
+    await page.waitForFunction(() => document.querySelectorAll('#askTarget option').length === 2);
+    await page.locator('#askTarget').selectOption({ label: 'Conversation 1' });
+    await page.locator('#retryComment').click();
+    await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
+    expect(posts.map((p) => p.path)).toEqual(['/command', '/conversations/:id/messages']);
+    expect(posts[0].body.requestId).toBe(firstTry[0].requestId);
+    expect((posts[0].body.arguments as { commentId: string }).commentId).toBe(
+      (firstTry[0].arguments as { commentId: string }).commentId
+    );
+    expect(posts[1].body.messageId).toBe(firstTry[1].messageId);
+    expect((await comments('n2')).filter((c) => c.text === 'Does this hold?')).toHaveLength(1);
+    const [conversation] = await conversations();
+    expect(conversation.requests!.filter((r) => r.objectId === 'n2')).toHaveLength(1);
+  });
+
+  it('Post after a comment that was posted but not asked sends the same comment again, not a second one', async () => {
+    await openThread('n2', 'Reference notes');
+    await page.locator('#askTarget').selectOption({ label: 'Conversation 1' });
+    await page.route('**/conversations/*/messages', (route) => route.abort());
+    await page.locator('#commentDraft').fill('Only a note after all');
+    await page.locator('#askAgent').click();
+    await page.waitForSelector('#retryComment:not([hidden])');
+    await page.unroute('**/conversations/*/messages');
+    await page.locator('#commentDraft').press('Control+Enter');
+    await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
+    const commands = posts.filter((p) => p.path === '/command').map((p) => p.body);
+    expect(commands).toHaveLength(2);
+    expect(commands[1].requestId).toBe(commands[0].requestId);
+    expect(commands[1].arguments).toEqual(commands[0].arguments);
+    expect((await comments('n2')).filter((c) => c.text === 'Only a note after all')).toHaveLength(1);
+    expect(await page.locator('#retryComment').isVisible()).toBe(false);
+    expect(
+      await page.evaluate(() =>
+        Object.keys(localStorage)
+          .filter((k) => /threadAsk|thread-ask|ask/i.test(k))
+          .map((k) => localStorage.getItem(k))
+      )
+    ).toEqual([]);
+    const [conversation] = await conversations();
+    expect(conversation.requests!.filter((r) => r.objectId === 'n2')).toHaveLength(1);
+  });
+
+  it('an ask whose answer was lost is finished already: nothing is posted or written twice, before or after a reload', async () => {
     await openThread('n3', 'Open questions');
     await page.locator('#askTarget').selectOption({ label: 'Conversation 1' });
     let dropped = 0;
@@ -344,26 +406,17 @@ describe('canvas thread requests', () => {
     });
     await page.locator('#commentDraft').fill('Is this still open?');
     await page.locator('#askAgent').click();
-    await page.waitForSelector('#retryComment:not([hidden])');
-    expect(await page.locator('#commentStatus').textContent()).toContain('Your comment is posted');
-    expect(await page.locator('#commentDraft').inputValue()).toBe('Is this still open?');
-    const firstTry = posts.map((p) => p.body);
+    await page.waitForSelector('#threadList .comment-request');
+    await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.canvasView && !!document.querySelector('[data-object-id="n3"]'));
+    await page.unroute('**/conversations/*/messages');
     posts.length = 0;
     await openThread('n3', 'Open questions');
-    await page.waitForFunction(() => document.querySelectorAll('#askTarget option').length === 2);
-    await page.locator('#askTarget').selectOption({ label: 'Conversation 1' });
-    await page.locator('#commentDraft').fill('Is this still open?');
-    await page.locator('#askAgent').click();
+    await page.waitForSelector('#threadList .comment-request');
     await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
-    await page.unroute('**/conversations/*/messages');
-    expect(posts.map((p) => p.path)).toEqual(['/command', '/conversations/:id/messages']);
-    expect((posts[0].body.arguments as { commentId: string }).commentId).toBe(
-      (firstTry[0].arguments as { commentId: string }).commentId
-    );
-    expect(posts[0].body.requestId).toBe(firstTry[0].requestId);
-    expect(posts[1].body.messageId).toBe(firstTry[1].messageId);
+    expect(await page.locator('#retryComment').isVisible()).toBe(false);
+    expect(posts.filter((p) => p.path === '/command' || p.path.endsWith('/messages'))).toEqual([]);
     expect((await comments('n3')).map((c) => c.text)).toEqual(['Is this still open?']);
     const [conversation] = await conversations();
     expect(conversation.requests!.filter((r) => r.objectId === 'n3')).toHaveLength(1);
@@ -389,8 +442,60 @@ describe('canvas thread requests', () => {
     ]);
     expect((await hook('stop', conversation.sessionId)).status()).toBe(200);
     await expect
-      .poll(async () => (await conversations())[0].requests!.find((r) => r.objectId === 'n3')?.reply)
+      .poll(async () => (await conversations())[0].requests!.find((r) => r.objectId === 'n3')?.reply, {
+        timeout: 15_000,
+      })
       .toEqual({ dropped: 'object-removed' });
     expect(await page.evaluate(() => window.canvasComments.read().some((c) => c.text === 'Yes, for now.'))).toBe(false);
+  });
+
+  it('a thread draft survives a reload, per object, and goes once it is posted', async () => {
+    await openThread('n2', 'Reference notes');
+    await page.locator('#commentDraft').fill('half a thought');
+    await openThread('n1', 'Reading patterns');
+    expect(await page.locator('#commentDraft').inputValue()).toBe('');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.canvasView && !!document.querySelector('[data-object-id="n2"]'));
+    await openThread('n1', 'Reading patterns');
+    expect(await page.locator('#commentDraft').inputValue()).toBe('');
+    await openThread('n2', 'Reference notes');
+    expect(await page.locator('#commentDraft').inputValue()).toBe('half a thought');
+    expect(await page.locator('#retryComment').isVisible()).toBe(false);
+    expect(await page.locator('#postComment').isVisible()).toBe(true);
+    await page.locator('#commentDraft').press('Control+Enter');
+    await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
+    expect((await comments('n2')).filter((c) => c.text === 'half a thought')).toHaveLength(1);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.canvasView && !!document.querySelector('[data-object-id="n2"]'));
+    await openThread('n2', 'Reference notes');
+    expect(await page.locator('#commentDraft').inputValue()).toBe('');
+  });
+
+  it('F1 opens Keys while typing in the thread composer, as it does from the assistant composer', async () => {
+    await openThread('n1', 'Reading patterns');
+    await page.locator('#commentDraft').focus();
+    await page.keyboard.press('F1');
+    await page.waitForSelector('#keysView:not([hidden])');
+    await closeRail();
+    await page.locator('#assistantTool').click();
+    await page.locator('#assistantDraft').focus();
+    await page.keyboard.press('F1');
+    await page.waitForSelector('#keysView:not([hidden])');
+    await closeRail();
+  });
+
+  it('says Reply removed, and posts nothing again, once the reply comment was reverted', async () => {
+    const [conversation] = await conversations();
+    await openThread('n1', 'Reading patterns');
+    await page.waitForFunction(() => document.querySelector('.request-state')?.textContent?.endsWith('Replied'));
+    const reverted = await page.request.post(api(`/canvas/${workspace}/revert`), {
+      data: { author: { kind: 'agent', sessionId: conversation.sessionId }, requestId: crypto.randomUUID() },
+    });
+    expect(reverted.status()).toBe(200);
+    await page.waitForFunction(() => document.querySelector('.request-state')?.textContent?.endsWith('Reply removed'));
+    await hook('stop', conversation.sessionId);
+    await page.waitForTimeout(2500);
+    expect((await comments('n1')).filter((c) => c.author.kind === 'agent')).toEqual([]);
+    expect(await page.locator('.request-state').first().textContent()).toBe('Asked an agent · Reply removed');
   });
 });

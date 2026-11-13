@@ -63,6 +63,29 @@ export function nextAsk(
   if (stored.target === target) return stored;
   return { ...stored, target, createRequestId: makeId(), messageId: makeId(), conversationId: target };
 }
+/** Unposted thread drafts kept across reloads, newest last: one per object, bounded in count and in size. */
+export type ThreadDrafts = Record<string, string>;
+export const MAX_STORED_DRAFTS = 16;
+export const MAX_STORED_DRAFT_CHARS = 20_000;
+export function parseDrafts(raw: string | null): ThreadDrafts {
+  if (!raw) return {};
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return {};
+    const kept = Object.entries(v).filter(
+      ([id, text]) => id.length <= 128 && typeof text === 'string' && text.length <= MAX_STORED_DRAFT_CHARS
+    );
+    return Object.fromEntries(kept.slice(-MAX_STORED_DRAFTS)) as ThreadDrafts;
+  } catch {
+    return {};
+  }
+}
+/** An empty draft, or one too long to keep, is dropped; the oldest go first past the bound. */
+export function storeDraft(drafts: ThreadDrafts, objectId: string, text: string): ThreadDrafts {
+  const rest = Object.entries(drafts).filter(([id]) => id !== objectId);
+  if (text.trim() && text.length <= MAX_STORED_DRAFT_CHARS) rest.push([objectId, text]);
+  return Object.fromEntries(rest.slice(-MAX_STORED_DRAFTS));
+}
 export const storeAsks = (list: readonly AskAttempt[], attempt: AskAttempt): AskAttempt[] =>
   [...list.filter((a) => a.objectId !== attempt.objectId), attempt].slice(-MAX_STORED_ASKS);
 
@@ -77,23 +100,32 @@ export type ThreadRequest = {
   working: boolean;
   ended: boolean;
 };
-export type RequestStatus = { kind: 'queued' | 'sending' | 'working' | 'asked' | 'replied' | 'failed'; text: string };
-/** One calm line on the asking comment. */
-export function requestStatus(r: ThreadRequest): RequestStatus {
+export type RequestStatus = {
+  kind: 'queued' | 'sending' | 'working' | 'asked' | 'replied' | 'removed' | 'failed';
+  text: string;
+};
+/** The comments a posted reply is made of: the first, then one per later part. */
+export const replyCommentIds = (reply: { commentId: string; parts?: number }): string[] => [
+  reply.commentId,
+  ...Array.from({ length: Math.max(0, Math.min(reply.parts ?? 1, 64) - 1) }, (_, i) => `${reply.commentId}-${i + 2}`),
+];
+const DROPPED: Record<string, string> = {
+  'object-removed': 'Reply not posted: the object was removed',
+  'no-reply': 'The agent finished without a reply',
+  'session-ended': 'Session ended before a reply',
+  'timed-out': 'No reply was found. Read the conversation.',
+  refused: 'Reply not posted here. Read it in the conversation.',
+};
+/** One calm line on the asking comment. `has` says whether a comment is still in the thread, so a reverted reply is not called a reply. */
+export function requestStatus(r: ThreadRequest, has: (commentId: string) => boolean = () => true): RequestStatus {
   if (r.state === 'failed') return { kind: 'failed', text: 'Not delivered' };
   if (r.state === 'queued') return { kind: 'queued', text: 'Queued' };
   if (r.state === 'sending') return { kind: 'sending', text: 'Sending' };
-  if (r.reply && 'commentId' in r.reply) return { kind: 'replied', text: 'Replied' };
-  if (r.reply)
-    return {
-      kind: 'failed',
-      text:
-        r.reply.dropped === 'object-removed'
-          ? 'Reply not posted: the object was removed'
-          : r.reply.dropped === 'no-reply'
-            ? 'The agent finished without a reply'
-            : 'Reply not posted here. Read it in the conversation.',
-    };
+  if (r.reply && 'commentId' in r.reply)
+    return replyCommentIds(r.reply).some(has)
+      ? { kind: 'replied', text: 'Replied' }
+      : { kind: 'removed', text: 'Reply removed' };
+  if (r.reply) return { kind: 'failed', text: DROPPED[r.reply.dropped] ?? DROPPED.refused };
   if (r.ended) return { kind: 'failed', text: 'Session ended before a reply' };
   return r.working ? { kind: 'working', text: 'Working' } : { kind: 'asked', text: 'Waiting for a reply' };
 }

@@ -185,4 +185,18 @@ describe('phone thread requests', () => {
     await page.waitForSelector('#threadView:not([hidden])');
     expect((await view()).selected).toEqual(['brief']);
   });
+
+  it('says Working on the asking comment while the turn runs, as the desktop does', async () => {
+    const listed = await page.request.get(`${origin}/x/api/canvas/${workspace}/conversations`);
+    const [conversation] = (await listed.json()).data.conversations as { sessionId: string }[];
+    const hooked = await page.request.post(`${origin}/x/api/hook-event`, {
+      data: {
+        event: 'prompt_submitted',
+        sessionId: conversation.sessionId,
+        data: { session_id: conversation.sessionId },
+      },
+    });
+    expect(hooked.status()).toBe(200);
+    await page.waitForFunction(() => document.querySelector('.request-state')?.textContent?.endsWith('Working'));
+  });
 });

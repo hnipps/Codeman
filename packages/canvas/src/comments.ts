@@ -5,9 +5,12 @@ import {
   askFailure,
   nextAsk,
   parseAsks,
+  parseDrafts,
   requestStatus,
   storeAsks,
+  storeDraft,
   type AskAttempt,
+  type ThreadDrafts,
   type ThreadRequest,
 } from './ask.js';
 import { errorMessage, sendFailure } from './conversation.js';
@@ -138,6 +141,8 @@ export type AskPort = {
   open(conversationId: string): void;
 };
 const NEW_TARGET = '';
+const ASK_INTERRUPTED =
+  'Ask agent did not finish before the page reloaded. Retry finishes it; nothing is posted twice.';
 /** Composers kept at once; the oldest idle one goes first. */
 export const MAX_COMPOSERS = 64;
 
@@ -166,6 +171,7 @@ export class CommentsView {
   private list = node('threadList');
   private draft: HTMLTextAreaElement;
   private asks: AskAttempt[] = [];
+  private drafts: ThreadDrafts = {};
   private target = node('askTarget') as HTMLSelectElement;
   /** The person picked a target in this thread; until then the choice follows the rail. */
   private picked: string | null = null;
@@ -180,10 +186,13 @@ export class CommentsView {
       assistant: AskPort;
       /** Where Ask agent attempts are kept across reloads. */
       askKey: string;
+      /** Where unposted drafts are kept across reloads, one per object. */
+      draftKey: string;
     }
   ) {
     try {
       this.asks = parseAsks(localStorage.getItem(options.askKey));
+      this.drafts = parseDrafts(localStorage.getItem(options.draftKey));
     } catch {
       /* Storage that cannot be read keeps no attempt; a retry then uses fresh ids. */
     }
@@ -194,6 +203,7 @@ export class CommentsView {
       if (this.shown) {
         const composer = this.composer(this.shown);
         composer.draft = draft.value;
+        this.keepDraft(this.shown, draft.value);
         if (composer.failure && !composer.failure.retry) composer.failure = null;
       }
       this.paintComposer();
@@ -231,13 +241,15 @@ export class CommentsView {
     if (composer) this.composers.delete(objectId);
     else {
       const object = this.options.objects().find((o) => o.id === objectId);
+      // An Ask agent attempt a reload interrupted comes back with its text, so finishing it reuses its ids.
+      const interrupted = this.asks.find((ask) => ask.objectId === objectId);
       composer = {
-        draft: '',
+        draft: interrupted?.text ?? this.drafts[objectId] ?? '',
         name: object ? label(object) : '',
         pending: null,
         sending: false,
-        action: 'post',
-        failure: null,
+        action: interrupted ? 'ask' : 'post',
+        failure: interrupted ? { retry: true, message: ASK_INTERRUPTED } : null,
       };
     }
     this.composers.set(objectId, composer);
@@ -264,6 +276,7 @@ export class CommentsView {
 
   /** The conversations were read again: repaint request states and the target chooser, never the scroll or focus. */
   requestsChanged(): void {
+    this.settleAsks();
     if (this.shown === null) return;
     this.paintRequests();
     this.paintTarget();
@@ -305,7 +318,9 @@ export class CommentsView {
     if (changed) {
       this.rendered.clear();
       this.list.replaceChildren();
-      this.draft.value = objectId ? (this.composers.get(objectId)?.draft ?? '') : '';
+      const kept = objectId !== null && (this.asks.some((ask) => ask.objectId === objectId) || objectId in this.drafts);
+      const composer = objectId ? (kept ? this.composer(objectId) : this.composers.get(objectId)) : undefined;
+      this.draft.value = composer?.draft ?? '';
     }
     this.paintThread(changed);
     clearInterval(this.clock);
@@ -362,6 +377,7 @@ export class CommentsView {
   /** The state line on each asking comment, with Open conversation and, for one not delivered, Retry. */
   private paintRequests(): void {
     const requests = new Map(this.options.assistant.requests().map((r) => [r.commentId, r]));
+    const present = new Set(this.comments.map((c) => c.id));
     for (const [id, li] of this.rendered) {
       const request = requests.get(id);
       let line = li.querySelector<HTMLElement>(':scope > .comment-request');
@@ -369,7 +385,7 @@ export class CommentsView {
         line?.remove();
         continue;
       }
-      const status = requestStatus(request);
+      const status = requestStatus(request, (commentId) => present.has(commentId));
       const signature = JSON.stringify([status, request.conversationId]);
       if (line?.dataset.signature === signature) continue;
       const held = line?.contains(document.activeElement) ? document.activeElement?.className : undefined;
@@ -532,6 +548,7 @@ export class CommentsView {
     discard.textContent = 'Discard';
     discard.onclick = () => {
       this.composers.delete(objectId);
+      this.keepDraft(objectId, '');
       this.paintPicker();
       node('threadView').focus({ preventScroll: true });
     };
@@ -612,8 +629,16 @@ export class CommentsView {
     if (object) composer.name = label(object);
     composer.draft = text;
     composer.action = 'post';
-    if (!composer.pending || composer.pending.text !== text)
-      composer.pending = { requestId: uuid(), commentId: uuid(), text, objectId };
+    if (!composer.pending || composer.pending.text !== text) {
+      // The same text an Ask agent attempt already posted here goes out under that attempt's ids, so it lands once.
+      const asked = this.asks.find((ask) => ask.objectId === objectId && ask.text === text);
+      composer.pending = {
+        requestId: asked?.commentRequestId ?? uuid(),
+        commentId: asked?.commentId ?? uuid(),
+        text,
+        objectId,
+      };
+    }
     const pending = composer.pending;
     composer.sending = true;
     composer.failure = null;
@@ -638,7 +663,11 @@ export class CommentsView {
     composer.sending = false;
     if (ok) {
       composer.pending = null;
-      if (composer.draft === pending.text) composer.draft = '';
+      if (this.asks.some((ask) => ask.objectId === objectId && ask.text === pending.text)) this.keepAsk(null, objectId);
+      if (composer.draft === pending.text) {
+        composer.draft = '';
+        this.keepDraft(objectId, '');
+      }
       if (this.shown === objectId && this.draft.value === pending.text) {
         this.draft.value = '';
         this.list.scrollTop = this.list.scrollHeight;
@@ -652,6 +681,36 @@ export class CommentsView {
     if (this.shown === objectId) this.paintComposer();
     else if (this.shown === null) this.paintPicker();
     return ok;
+  }
+
+  /** An attempt the server already took (its answer was lost, or a reload cut in) is finished: its draft and ids go. */
+  private settleAsks(): void {
+    const taken = new Set(this.options.assistant.requests().map((r) => r.messageId));
+    for (const ask of this.asks.filter((a) => taken.has(a.messageId))) {
+      const composer = this.composers.get(ask.objectId);
+      if (composer?.sending) continue;
+      this.keepAsk(null, ask.objectId);
+      if (!composer || composer.draft !== ask.text) continue;
+      composer.draft = '';
+      this.keepDraft(ask.objectId, '');
+      composer.failure = null;
+      composer.action = 'post';
+      if (this.shown === ask.objectId) {
+        if (this.draft.value === ask.text) this.draft.value = '';
+        this.paintComposer();
+      }
+      this.forget(ask.objectId);
+    }
+  }
+
+  private keepDraft(objectId: string, text: string): void {
+    this.drafts = storeDraft(this.drafts, objectId, text);
+    try {
+      if (Object.keys(this.drafts).length) localStorage.setItem(this.options.draftKey, JSON.stringify(this.drafts));
+      else localStorage.removeItem(this.options.draftKey);
+    } catch {
+      /* A draft that cannot be stored stays in the composer; only a reload loses it. */
+    }
   }
 
   private keepAsk(attempt: AskAttempt | null, objectId: string): void {
@@ -751,7 +810,10 @@ export class CommentsView {
     if (!sent.ok) return fail(`${posted} ${sent.message}`, true);
     composer.sending = false;
     this.keepAsk(null, objectId);
-    if (composer.draft === text) composer.draft = '';
+    if (composer.draft === text) {
+      composer.draft = '';
+      this.keepDraft(objectId, '');
+    }
     if (this.shown === objectId && this.draft.value === text) {
       this.draft.value = '';
       this.list.scrollTop = this.list.scrollHeight;

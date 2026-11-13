@@ -1037,7 +1037,10 @@ export function registerSessionRoutes(
   options: {
     remoteWake?: RemoteWakeRegistry;
     /** Handed the reader behind `last-response?context=full`, for callers that hold a session id and no request. */
-    transcriptReader?: (read: (sessionId: string) => Promise<{ role: string; text: string }[] | null>) => void;
+    transcriptReader?: (reader: {
+      rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
+      stamp(sessionId: string): Promise<string | null>;
+    }) => void;
   } = {}
 ): RemoteWakeRegistry {
   // Wake-on-LAN for sleeping remote hosts (see remote-wake.ts). One registry per
@@ -2884,14 +2887,28 @@ export function registerSessionRoutes(
     const session = findSessionOrFail(ctx, id, req);
     return lastResponse(session, (req.query as { context?: string }).context);
   });
-  options.transcriptReader?.(async (sessionId) => {
-    const session = ctx.sessions.get(sessionId);
-    if (!session) return null;
-    const answer = (await lastResponse(session, 'full')) as { messages?: unknown };
-    if (!Array.isArray(answer.messages)) return null;
-    return answer.messages.flatMap((m: { role?: unknown; text?: unknown }) =>
-      typeof m?.role === 'string' && typeof m.text === 'string' ? [{ role: m.role, text: m.text }] : []
-    );
+  options.transcriptReader?.({
+    rows: async (sessionId) => {
+      const session = ctx.sessions.get(sessionId);
+      if (!session) return null;
+      const answer = (await lastResponse(session, 'full')) as { messages?: unknown };
+      if (!Array.isArray(answer.messages)) return null;
+      return answer.messages.flatMap((m: { role?: unknown; text?: unknown; queued?: unknown }) =>
+        typeof m?.role === 'string' && typeof m.text === 'string'
+          ? [{ role: m.role, text: m.text, ...(m.queued === true ? { queued: true } : {}) }]
+          : []
+      );
+    },
+    stamp: async (sessionId) => {
+      const session = ctx.sessions.get(sessionId);
+      if (!session || session.remote || session.docker) return null;
+      if (getCli(session.mode)?.capabilities.transcript !== 'claude-jsonl') return null;
+      const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
+      const transcript = await findClaudeTranscript(projectsDir, session.claudeSessionId || session.id, session.id);
+      if (!transcript) return 'none';
+      const stat = await fs.stat(transcript.path).catch(() => null);
+      return stat ? `${transcript.sessionId}:${stat.mtimeMs}:${stat.size}` : null;
+    },
   });
 
   async function lastResponse(session: ReturnType<typeof findSessionOrFail>, context: string | undefined) {

@@ -125,6 +125,25 @@ describe('hook-event-routes', () => {
       }
     });
 
+    it('does not tell its stop listener about a stop claimed for a session whose CLI has no stop hook', async () => {
+      const stopped: string[] = [];
+      const local = await createEnvelopeHarness((app, ctx) =>
+        registerHookEventRoutes(app, ctx, { onStop: (sessionId) => stopped.push(sessionId) })
+      );
+      try {
+        local.ctx._session.mode = 'shell';
+        const response = await local.app.inject({
+          method: 'POST',
+          url: '/api/hook-event',
+          payload: { event: 'stop', sessionId: local.ctx._sessionId, data: null },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(stopped).toEqual([]);
+      } finally {
+        await local.app.close();
+      }
+    });
+
     it('opens the stop and idle prompt of a keep-alive turn pre-acknowledged and pushes nothing', async () => {
       harness.ctx._session.keepAliveTurnActive = true;
       for (const event of ['stop', 'idle_prompt']) {

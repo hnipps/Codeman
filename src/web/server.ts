@@ -125,7 +125,7 @@ import {
   attachSessionListeners,
   detachSessionListeners,
 } from './session-listener-wiring.js';
-import { sessionWaits } from './session-wait-registry.js';
+import { sessionWaits, hooksAvailableForMode, sessionHookOptions } from './session-wait-registry.js';
 import { intentStore } from '../intent-store.js';
 import { agentInbox } from './agent-inbox.js';
 import { agentInboxPersistence } from './agent-inbox-persistence.js';
@@ -1362,7 +1362,15 @@ export class WebServer extends EventEmitter {
       broadcast: (event, data) => this.broadcast(event, data),
       startConversationSession: (headers, request) => this.startConversationSession(headers, request),
       discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
-      transcriptRows: async (sessionId) => (await this.readTranscriptRows?.(sessionId)) ?? null,
+      transcriptRows: async (sessionId) => (await this.transcriptReader?.rows(sessionId)) ?? null,
+      transcriptStamp: async (sessionId) => (await this.transcriptReader?.stamp(sessionId)) ?? null,
+      turnEndObservedAt: (sessionId) => {
+        const session = this.sessions.get(sessionId);
+        if (!session) return 0;
+        return hooksAvailableForMode(session.mode, sessionHookOptions(session))
+          ? session.hookStopAt
+          : session.turnEndedAt;
+      },
       basePath: this.basePath,
     };
     registerPushRoutes(this.app, ctx);
@@ -1406,7 +1414,7 @@ export class WebServer extends EventEmitter {
     // The registry's lifetime is the server's: it drops per-session wake state on every
     // cleanup path and resolves in-flight wakes on shutdown.
     this.remoteWake = registerSessionRoutes(this.app, ctx, {
-      transcriptReader: (read) => (this.readTranscriptRows = read),
+      transcriptReader: (reader) => (this.transcriptReader = reader),
     });
     registerAgentSessionRoutes(this.app, ctx);
     registerRespawnRoutes(this.app, ctx);
@@ -2418,7 +2426,10 @@ export class WebServer extends EventEmitter {
   // post-save reload) pass forceFresh=true to bypass the cache.
   private _settingsCache: { data: Record<string, unknown>; ts: number } | null = null;
   private canvasStoreService?: CanvasStores;
-  private readTranscriptRows?: (sessionId: string) => Promise<{ role: string; text: string }[] | null>;
+  private transcriptReader?: {
+    rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
+    stamp(sessionId: string): Promise<string | null>;
+  };
 
   /**
    * One Claude session for a canvas conversation, started through `POST /api/sessions` and `.../interactive` with the

@@ -100,6 +100,7 @@ const comments: CommentsView = new CommentsView({
     reveal(id);
   },
   askKey: canvasStorageKeys(viewer, workspaceId).threadAsk,
+  draftKey: canvasStorageKeys(viewer, workspaceId).threadDraft,
   assistant: {
     targets: () => assistant.targets(),
     preferred: () => assistant.preferredTarget(),

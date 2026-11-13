@@ -9,6 +9,8 @@ import {
   MAX_MESSAGES_PER_CONVERSATION,
   type Conversation,
   type ConversationMessage,
+  replyExtendable,
+  threadReply,
   type ThreadReply,
 } from './conversation-schema.js';
 
@@ -128,7 +130,7 @@ export function setMessageState(
     if (state === 'delivered' && message.deliveredAt === null) message.deliveredAt = at ?? Date.now();
   });
 }
-/** Records what became of a thread request's reply, once: a second record for the same message changes nothing. */
+/** Records what became of a thread request's reply. A record is replaced only by further progress of the same posted reply. */
 export function setMessageReply(
   workspaceId: string,
   conversationId: string,
@@ -137,7 +139,11 @@ export function setMessageReply(
 ): boolean {
   return mutate(workspaceId, (list) => {
     const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
-    if (!message || message.reply !== undefined) return false;
+    if (!message) return false;
+    if (message.reply !== undefined) {
+      const current = threadReply(message);
+      if (!replyExtendable(current) || !('commentId' in reply) || reply.commentId !== current.commentId) return false;
+    }
     message.reply = reply;
     return true;
   });

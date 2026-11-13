@@ -36,8 +36,18 @@ export interface CanvasPort {
     headers: Readonly<Record<string, string | string[] | undefined>>,
     sessionId: string
   ): Promise<void>;
-  /** The session's transcript as prompt and reply rows, the way `last-response?context=full` reports it; null when it cannot be read. */
-  transcriptRows?(sessionId: string): Promise<{ role: string; text: string }[] | null>;
+  /**
+   * The session's transcript as prompt and reply rows, the way `last-response?context=full` reports it; null when it
+   * cannot be read. `queued` marks a prompt absorbed in the middle of a turn.
+   */
+  transcriptRows?(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
+  /** Changes whenever the transcript file does (its identity, modified time and size); null when that cannot be told. */
+  transcriptStamp?(sessionId: string): Promise<string | null>;
+  /**
+   * When THIS process last saw the session's turn end: the stop hook for a CLI that has one, else a finished-turn idle
+   * transition. 0 when it has seen none, which is the case for every session after a restart.
+   */
+  turnEndObservedAt?(sessionId: string): number;
   /** Reverse-proxy base path for embed frame URLs; '' at the root. */
   readonly basePath?: string;
 }

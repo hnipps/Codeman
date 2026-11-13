@@ -6,17 +6,31 @@ import {
   CreateConversationBodySchema,
   SendBodySchema,
   threadOrigin,
+  replyExtendable,
   threadReply,
 } from '../src/canvas/conversation-schema.js';
 import {
   cutReply,
   extractReply,
   MAX_COMMENT_CHARS,
+  MAX_REPLY_PARTS,
   REPLY_CUT_NOTE,
   replyCommentId,
+  replyPartId,
 } from '../src/canvas/thread-reply.js';
 import { CommentSchema, IdSchema } from '../src/canvas/model.js';
-import { askFailure, nextAsk, parseAsks, requestStatus, storeAsks } from '../packages/canvas/src/ask.js';
+import {
+  askFailure,
+  MAX_STORED_DRAFT_CHARS,
+  MAX_STORED_DRAFTS,
+  nextAsk,
+  parseAsks,
+  parseDrafts,
+  replyCommentIds,
+  requestStatus,
+  storeAsks,
+  storeDraft,
+} from '../packages/canvas/src/ask.js';
 import { buildThread } from '../packages/canvas/src/conversation.js';
 
 const A = '11111111-1111-4111-8111-111111111111';
@@ -101,19 +115,43 @@ describe('thread reply extraction', () => {
       user(prompt(B, 'next')),
       reply('about the next one'),
     ];
-    expect(extractReply(rows, A)).toEqual({ found: true, closed: true, text: 'First part.\n\nSecond part.' });
-    expect(extractReply(rows, B)).toEqual({ found: true, closed: false, text: 'about the next one' });
+    expect(extractReply(rows, A)).toEqual({
+      found: true,
+      closed: true,
+      shared: false,
+      text: 'First part.\n\nSecond part.',
+    });
+    expect(extractReply(rows, B)).toEqual({ found: true, closed: false, shared: false, text: 'about the next one' });
     expect(extractReply(rows, A.toUpperCase()).text).toBe('First part.\n\nSecond part.');
   });
   it('reports a prompt the transcript does not hold, and one with no reply text', () => {
-    expect(extractReply([user('plain'), reply('x')], A)).toEqual({ found: false, closed: false, text: '' });
-    expect(extractReply([user(prompt(A, 'q'))], A)).toEqual({ found: true, closed: false, text: '' });
-    expect(extractReply([user(prompt(A, 'q')), user('again')], A)).toEqual({ found: true, closed: true, text: '' });
+    expect(extractReply([user('plain'), reply('x')], A)).toEqual({
+      found: false,
+      closed: false,
+      shared: false,
+      text: '',
+    });
+    expect(extractReply([user(prompt(A, 'q'))], A)).toEqual({ found: true, closed: false, shared: false, text: '' });
+    expect(extractReply([user(prompt(A, 'q')), user('again')], A)).toEqual({
+      found: true,
+      closed: true,
+      shared: false,
+      text: '',
+    });
   });
   it('derives one comment id per message that the comment schema accepts', () => {
     expect(replyCommentId(A.toUpperCase())).toBe(replyCommentId(A));
     expect(replyCommentId(A)).not.toBe(replyCommentId(B));
     expect(IdSchema.safeParse(replyCommentId(A)).success).toBe(true);
+  });
+  it('names each part of a reply, the first under the reply id itself', () => {
+    expect(replyPartId(A, 1)).toBe(replyCommentId(A));
+    expect(replyPartId(A, 2)).toBe(`${replyCommentId(A)}-2`);
+    expect(IdSchema.safeParse(replyPartId(A, MAX_REPLY_PARTS)).success).toBe(true);
+    expect(replyCommentIds({ commentId: replyCommentId(A), parts: 3 })).toEqual(
+      [1, 2, 3].map((part) => replyPartId(A, part))
+    );
+    expect(replyCommentIds({ commentId: 'r' })).toEqual(['r']);
   });
   it('cuts a long reply to the comment limit with a pointer, never through a surrogate pair', () => {
     expect(cutReply('short')).toBe('short');
@@ -142,10 +180,22 @@ describe('thread request records', () => {
     expect(threadReply({ reply: { dropped: 'object-removed' } })).toEqual({ dropped: 'object-removed' });
     expect(threadReply({ reply: { dropped: 'a-later-reason' } })).toBe('unknown');
   });
+  it('a posted reply can grow only while its progress is whole and it is not final', () => {
+    const grown = { commentId: 'reply-x', postedAt: 5, parts: 2, chars: 40, hash: 'abc' };
+    expect(threadReply({ reply: grown })).toEqual(grown);
+    expect(replyExtendable(threadReply({ reply: grown }))).toBe(true);
+    expect(replyExtendable(threadReply({ reply: { ...grown, final: true } }))).toBe(false);
+    // The record the first release wrote, and progress this release cannot read, are settled replies.
+    expect(replyExtendable(threadReply({ reply: { commentId: 'reply-x', postedAt: 5 } }))).toBe(false);
+    expect(replyExtendable(threadReply({ reply: { ...grown, chars: 'many' } }))).toBe(false);
+    expect(threadReply({ reply: { ...grown, hash: 7 } })).toEqual({ commentId: 'reply-x', postedAt: 5, parts: 2 });
+    expect(replyExtendable(threadReply({ reply: { dropped: 'no-reply' } }))).toBe(false);
+    expect(replyExtendable(undefined)).toBe(false);
+  });
   it('a file written with origin and reply parses under the previous schema, and a previous file under this one', () => {
     const now = file(
       [
-        stored({ origin, reply: { commentId: replyCommentId(A), postedAt: 9 } }),
+        stored({ origin, reply: { commentId: replyCommentId(A), postedAt: 9, parts: 2, chars: 12, hash: 'ab' } }),
         stored({ messageId: B, origin, reply: { dropped: 'no-reply' } }),
       ],
       { origin }
@@ -228,6 +278,38 @@ describe('ask agent attempts', () => {
     expect(say({ reply: { dropped: 'no-reply' } }).text).toContain('without a reply');
     expect(say({ ended: true }).text).toBe('Session ended before a reply');
     expect(say({ ended: true, reply: { commentId: 'r', postedAt: 1 } }).kind).toBe('replied');
+  });
+  it('says a reply was removed once none of its comments is in the thread', () => {
+    const request = {
+      conversationId: 'c',
+      messageId: A,
+      objectId: 'o',
+      commentId: 'q',
+      state: 'delivered',
+      reply: { commentId: 'r', postedAt: 1, parts: 2 },
+      working: false,
+      ended: false,
+    } as const;
+    expect(requestStatus(request, (id) => id === 'r-2')).toEqual({ kind: 'replied', text: 'Replied' });
+    expect(requestStatus(request, () => false)).toEqual({ kind: 'removed', text: 'Reply removed' });
+  });
+  it('keeps thread drafts per object within a bound, and drops an empty or oversized one', () => {
+    let drafts = storeDraft({}, 'a', 'one');
+    drafts = storeDraft(drafts, 'b', 'two');
+    drafts = storeDraft(drafts, 'a', 'one more');
+    expect(Object.entries(drafts)).toEqual([
+      ['b', 'two'],
+      ['a', 'one more'],
+    ]);
+    expect(storeDraft(drafts, 'a', '  ')).toEqual({ b: 'two' });
+    expect(storeDraft(drafts, 'b', 'x'.repeat(MAX_STORED_DRAFT_CHARS + 1))).toEqual({ a: 'one more' });
+    for (let i = 0; i < MAX_STORED_DRAFTS + 4; i++) drafts = storeDraft(drafts, `o${i}`, 'text');
+    expect(Object.keys(drafts)).toHaveLength(MAX_STORED_DRAFTS);
+    expect(drafts).not.toHaveProperty('a');
+    expect(parseDrafts(JSON.stringify(drafts))).toEqual(drafts);
+    expect(parseDrafts('not json')).toEqual({});
+    expect(parseDrafts('[1]')).toEqual({});
+    expect(parseDrafts(JSON.stringify({ a: 1, b: 'kept' }))).toEqual({ b: 'kept' });
   });
   it('words a refusal for the thread from the server code', () => {
     expect(askFailure('SESSION_ENDED: the session has ended', 409)).toContain('Pick another conversation');

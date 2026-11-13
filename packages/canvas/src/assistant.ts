@@ -316,6 +316,9 @@ export class AssistantView {
     this.sent = [...this.sent.filter((m) => m.messageId !== message.messageId), message].slice(-10);
     this.persistSent();
     void this.refreshList();
+    // The turn starts a moment after the message is taken; read once more so the thread says Working without waiting for an event.
+    clearTimeout(this.listTimer);
+    this.listTimer = setTimeout(() => void this.refreshList(), 1_500);
   }
   /** Binds the rail to one conversation, as the picker does; the caller opens the rail. */
   showConversation(id: string): void {
@@ -473,7 +476,8 @@ export class AssistantView {
     const id = data.id ?? data.sessionId ?? session;
     const conversation = this.current;
     // A request asked from a thread shows its state there, whichever conversation the rail is on.
-    if (name !== 'transcript:update' && this.conversations.some((c) => c.sessionId === id && c.requests?.length)) {
+    // The list is read for any of this canvas's sessions: a request can be newer than the list that would name it.
+    if (name !== 'transcript:update' && this.conversations.some((c) => c.sessionId === id)) {
       clearTimeout(this.listTimer);
       this.listTimer = setTimeout(() => void this.refreshList(), TRANSCRIPT_DEBOUNCE_MS);
     }

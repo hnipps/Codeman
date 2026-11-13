@@ -44,15 +44,39 @@ Settled while building; none changes the outcome above.
 - The reply comment id is `reply-<messageId>`. The existing comment under that id is the dedupe, and reply work is one chain per workspace.
 - The reply is appended by the server with the agent session as author. The stop hook carries no person's credentials, so the HTTP command route is not called; the operation and the change notice are the same.
 - The transcript is read with the reader behind the session's last-response route, handed to the canvas port.
-- Routing runs when the stop hook fires and whenever the conversations are listed or read, in the background. The newest prompt is settled only when no hook-reported turn is running and either the stop just fired or the session is not working. Known limit: after a restart in the middle of a turn, a reconcile can post the text written so far.
-- A session that ended before a reply leaves the request unsettled; the thread says "Session ended before a reply". A closed turn with no text records `no-reply`. A refused append records `refused`.
+- Routing runs when the stop hook fires and whenever the conversations are listed or read, in the background. An open turn is settled only on a turn end this process observed after the message was delivered, with the session not working, and after a second read of the transcript gives the same text. A turn closed by a later submitted prompt, or an exited agent, settles on any pass. Accepted cost: a turn whose stop this process never saw stays "Waiting for a reply" until a later prompt closes it or 24 hours pass.
+- A prompt the CLI queued during a turn does not close that turn. A turn that absorbed a queued prompt gives every thread request in it the turn's whole text, with a line saying the turn answered more than one message; otherwise the reply is the text after the request's own prompt.
+- An agent that exited before a reply records `session-ended`. A request whose prompt is not in the transcript after 24 hours records `timed-out`; one whose session the server no longer holds records `session-ended` after the same bound. A closed turn with no text records `no-reply`. An append the command path refuses records `refused`; a throw records nothing and is tried again.
+- A comment already under the reply id counts as the reply only on the origin object and by that conversation's agent session. Any other records `refused`.
+- A reply can grow while its turn is open and never changes what was posted: later text is a further comment, at most five in all, the last saying more may follow. Splitting one turn's text over two comments is accepted; posting a wrong or partial final reply is not.
 - A new message whose comment or object is gone is refused with `ORIGIN_GONE` before anything is written to the pane.
 - The prompt is the comment text alone, with the object as context. No extra instruction is added.
 - The chooser is an inline native select: the rail's live conversation first, else the newest live one, else New conversation on the rail's provider and model. Ended conversations are not offered. A provider that cannot start is explained in line and nothing is posted.
-- Retry on a request line reuses the comment's own text and ids. The same text on the same object keeps its comment ids whichever conversation is chosen next.
+- Retry on a request line reuses the comment's own text and ids. The same text on the same object keeps its comment ids whichever conversation is chosen next. An attempt cut off by a reload comes back as the draft with Retry; Post on it sends the same comment again, never a second; the attempt is dropped once the conversation list shows the message.
 - Ask agent has no keyboard shortcut. Cmd/Ctrl+Enter already posts an ordinary comment and the brief names no other.
 - An agent may send with an origin through `canvas_conversation`; it cannot create with one. The field is kept out of the tool's create shape, which also keeps the capabilities answer inside its byte budget.
 - The route test's mock session gained `markHookStop`; nine hook-event route tests failed without it on the default branch.
+
+## Fix round 1
+
+An audit of the first commit found reply-routing defects with one cause: a reply is recorded once and never corrected. The rule is now to keep waiting rather than record a wrong final reply.
+
+1. A queued prompt no longer closes the turn before it (rows carry `queued`); the shared-turn attribution above.
+2. An unclosed request settles only on a stop or idle transition observed after delivery, never while the session works, and only when two reads agree.
+3. A throw while posting records nothing. `refused` is for an invalid append.
+4. An unchanged transcript is not re-read; a request gives up with `session-ended` or `timed-out`; the list computes each conversation's requests once.
+5. The stop callback is inside the branch for modes whose hooks are available.
+6. A comment under the reply id counts only on the origin object by the conversation's agent session.
+7. Post after "Your comment is posted. The agent was not asked" reuses the stored comment ids and clears the draft; a draft survives a reload in the middle of an ask.
+
+A run on a real agent added these:
+
+8. A reply is extendable, not final: it is all the text after its prompt up to the next submitted prompt. Text that arrives after the first post (a last row written after the stop hook, or a turn the agent resumed by itself after a background task) is posted as a further comment, `reply-<messageId>-2` up to `-5`, deduped by the posted length recorded on the message. A record of the first shape stays settled.
+9. The two reads are 1.5 seconds apart and the pass after a stop posts by itself, with no read by a client.
+10. The thread says "Reply removed" when the reply's comments are gone, and nothing is posted again.
+11. The list's `working` is a hook turn or the session's working state, and the list is read again shortly after an ask, so phone and desktop agree.
+12. An unposted thread draft is kept per object across a reload.
+13. F1 while typing opens Keys in the rail composer too, so the thread composer was left the same.
 
 ## MCP parity
 

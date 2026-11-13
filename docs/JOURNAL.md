@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Thread replies wait for evidence instead of guessing (PC10 fix round 1)
+
+**Type:** retraction
+**Touches:** `src/canvas/{thread-reply,conversation-schema}.ts`, `src/web/routes/{canvas-conversation-routes,hook-event-routes,session-routes}.ts`, `src/web/ports/canvas-port.ts`, `src/web/server.ts`, `src/session.ts`, `packages/canvas/src/{ask,comments}.ts`
+**Why:** An audit of the first PC10 commit found that a reply could be posted wrong or early, and a reply is recorded once and never corrected.
+**Links:** [Intent](../intent/2026-11-12-canvas-pc10-threads.md)
+
+This replaces the settle rule in the entry below ("the newest prompt is settled only when no hook turn is running", with its known limit, and "a session that ended before a reply leaves the request waiting"). A prompt the CLI queued during a turn no longer closes the turn before it; a turn that absorbed one gives each thread request in it the turn's whole text with a line saying so, because the text cannot be split between the messages. An open turn is settled only on a turn end this process observed after the message was delivered, with the session not working, and only when a second read a moment later gives the same text. A throw while posting records nothing and is retried; `refused` is kept for an append the command path answers as invalid, and for a comment already under the reply id that is not on the origin object by that conversation's agent session. An exited agent records `session-ended`, and a request with no prompt in the transcript, or a session this process does not hold, gives up after 24 hours (`timed-out`, `session-ended`). An unchanged transcript is not re-read. The stop callback runs only for a mode whose hooks are available. In the browser, an attempt cut off by a reload comes back as the draft with Retry, Post on it reuses the stored comment ids, and the attempt is dropped once the list shows the message. Accepted cost: a turn whose stop this process never saw stays "Waiting for a reply" until a later prompt closes it or the age bound passes.
+
+A run on a real agent then showed two more ways to post the wrong text, and both are answered by letting a reply grow instead of making it final. A turn of text, a tool call and text posted only the first text, because the stop hook came before the last row was written; and an agent that ended its turn waiting on a background task had its interim line posted, while the answer it wrote after resuming by itself was never posted. A reply is now all the text after its prompt up to the next submitted prompt. The record keeps how much was posted, and text added later goes out as a further comment (`reply-<messageId>-2` to `-5`) under the same rules, deduped by the recorded length so a reverted part is not posted again. The two reads are 1.5 seconds apart, and a pass that posted into an open turn tries again by itself. The thread says "Reply removed" when the reply's comments are gone, keeps an unposted draft per object across a reload, and reads Working from the same server state on phone and desktop. F1 while typing opens Keys in the thread composer as it does in the rail composer; that was left as it is.
+
 ## 2026-11-12 — Ask an agent from a comment thread (PC10)
 
 **Type:** intent-refinement

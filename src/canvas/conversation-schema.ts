@@ -82,11 +82,38 @@ export const ThreadOriginSchema = z
   .strict();
 export type ThreadOrigin = z.infer<typeof ThreadOriginSchema>;
 /** Why a reply was not posted: the object is gone, the turn produced no text, or the canvas refused the comment. */
-export type ReplyDrop = 'object-removed' | 'no-reply' | 'refused';
-export type ThreadReply = { commentId: string; postedAt: number } | { dropped: ReplyDrop };
+export type ReplyDrop = 'object-removed' | 'no-reply' | 'refused' | 'session-ended' | 'timed-out';
+/**
+ * A posted reply names its first comment. `chars` and `hash` say how much of the turn's text is posted, so text the
+ * agent adds later in the same turn goes out as a further part (`parts`) instead of being lost; `final` ends that.
+ * A record without `chars` is one an earlier release wrote and is settled.
+ */
+export type PostedThreadReply = {
+  commentId: string;
+  postedAt: number;
+  parts?: number;
+  chars?: number;
+  hash?: string;
+  final?: boolean;
+};
+export type ThreadReply = PostedThreadReply | { dropped: ReplyDrop };
+/** More of this turn's text may still be posted under the reply. */
+export const replyExtendable = (reply: ThreadReply | 'unknown' | undefined): reply is PostedThreadReply =>
+  typeof reply === 'object' && 'commentId' in reply && reply.chars !== undefined && reply.final !== true;
 const StoredOrigin = z.object({ kind: z.literal('thread'), objectId: IdSchema, commentId: IdSchema }).passthrough();
-const PostedReply = z.object({ commentId: IdSchema, postedAt: z.number().int().nonnegative() }).passthrough();
-const DroppedReply = z.object({ dropped: z.enum(['object-removed', 'no-reply', 'refused']) }).passthrough();
+const PostedReply = z
+  .object({
+    commentId: IdSchema,
+    postedAt: z.number().int().nonnegative(),
+    parts: z.number().int().min(1).max(64).optional().catch(undefined),
+    chars: z.number().int().nonnegative().optional().catch(undefined),
+    hash: z.string().max(128).optional().catch(undefined),
+    final: z.boolean().optional().catch(undefined),
+  })
+  .passthrough();
+const DroppedReply = z
+  .object({ dropped: z.enum(['object-removed', 'no-reply', 'refused', 'session-ended', 'timed-out']) })
+  .passthrough();
 export function threadOrigin(source: { origin?: unknown }): ThreadOrigin | undefined {
   const parsed = StoredOrigin.safeParse(source.origin);
   if (!parsed.success) return undefined;
@@ -97,7 +124,18 @@ export function threadOrigin(source: { origin?: unknown }): ThreadOrigin | undef
 export function threadReply(message: { reply?: unknown }): ThreadReply | 'unknown' | undefined {
   if (message.reply === undefined) return undefined;
   const posted = PostedReply.safeParse(message.reply);
-  if (posted.success) return { commentId: posted.data.commentId, postedAt: posted.data.postedAt };
+  if (posted.success) {
+    const { commentId, postedAt, parts, chars, hash, final } = posted.data;
+    // Progress this release cannot read in full is a settled reply, never a reason to post again.
+    const progress = chars !== undefined && hash !== undefined && parts !== undefined;
+    return {
+      commentId,
+      postedAt,
+      ...(parts !== undefined ? { parts } : {}),
+      ...(progress ? { chars, hash } : {}),
+      ...(final ? { final } : {}),
+    };
+  }
   const dropped = DroppedReply.safeParse(message.reply);
   return dropped.success ? { dropped: dropped.data.dropped } : 'unknown';
 }

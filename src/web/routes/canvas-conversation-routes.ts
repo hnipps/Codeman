@@ -34,13 +34,24 @@ import {
   normalizePrompt,
   promptRefusal,
   SendBodySchema,
+  replyExtendable,
   threadOrigin,
   threadReply,
   type Conversation,
   type ConversationMessage,
+  type PostedThreadReply,
+  type ReplyDrop,
+  type ThreadOrigin,
   type ThreadReply,
 } from '../../canvas/conversation-schema.js';
-import { cutReply, extractReply, replyCommentId } from '../../canvas/thread-reply.js';
+import {
+  cutReply,
+  extractReply,
+  MAX_REPLY_PARTS,
+  REPLY_MORE_NOTE,
+  REPLY_SHARED_NOTE,
+  replyPartId,
+} from '../../canvas/thread-reply.js';
 import { commentCommand } from '../../canvas/commands.js';
 import {
   addConversation,
@@ -81,21 +92,27 @@ function sessionState(ctx: CanvasPort, req: FastifyRequest, sessionId: string): 
   if (!session || !canAccessOwned(getAuthUser(req), session.owner)) return 'ended';
   return session.paneExit ? 'ended' : 'live';
 }
-const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => ({
-  id: c.id,
-  sessionId: c.sessionId,
-  cliId: c.cliId,
-  cliLabel: getCli(c.cliId)?.label ?? c.cliId,
-  ...(c.model ? { model: c.model } : {}),
-  ...(c.title ? { title: c.title } : {}),
-  createdAt: c.createdAt,
-  createdBy: c.createdBy,
-  messageCount: c.messages.length,
-  session: sessionState(ctx, req, c.sessionId),
-  working: ctx.sessions.get(c.sessionId)?.hookTurnRunning === true,
-  ...(threadOrigin(c) ? { origin: threadOrigin(c) } : {}),
-  ...(threadRequests(c).length ? { requests: threadRequests(c) } : {}),
-});
+const sessionBusy = (session: { hookTurnRunning?: boolean; isWorking?: boolean } | undefined): boolean =>
+  session?.hookTurnRunning === true || session?.isWorking === true;
+const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => {
+  const origin = threadOrigin(c);
+  const requests = threadRequests(c);
+  return {
+    id: c.id,
+    sessionId: c.sessionId,
+    cliId: c.cliId,
+    cliLabel: getCli(c.cliId)?.label ?? c.cliId,
+    ...(c.model ? { model: c.model } : {}),
+    ...(c.title ? { title: c.title } : {}),
+    createdAt: c.createdAt,
+    createdBy: c.createdBy,
+    messageCount: c.messages.length,
+    session: sessionState(ctx, req, c.sessionId),
+    working: sessionBusy(ctx.sessions.get(c.sessionId)),
+    ...(origin ? { origin } : {}),
+    ...(requests.length ? { requests } : {}),
+  };
+};
 /** The requests a conversation took from comment threads: what a thread needs to show a request's state without the transcript. */
 const threadRequests = (c: Conversation) =>
   c.messages.flatMap((m) => {
@@ -108,7 +125,14 @@ const threadRequests = (c: Conversation) =>
         objectId: origin.objectId,
         commentId: origin.commentId,
         state: messageState(m),
-        ...(reply && reply !== 'unknown' ? { reply } : {}),
+        ...(reply && reply !== 'unknown'
+          ? {
+              reply:
+                'commentId' in reply
+                  ? { commentId: reply.commentId, postedAt: reply.postedAt, parts: reply.parts ?? 1 }
+                  : reply,
+            }
+          : {}),
       },
     ];
   });
@@ -126,92 +150,262 @@ export function readConversation(ctx: CanvasPort, req: FastifyRequest, workspace
   return ok({ conversation: { ...summary(ctx, req, conversation), messages: conversation.messages } });
 }
 
-const awaitsReply = (m: ConversationMessage): boolean =>
-  threadOrigin(m) !== undefined && threadReply(m) === undefined && messageState(m) === 'delivered';
+const awaitsReply = (m: ConversationMessage): boolean => {
+  if (threadOrigin(m) === undefined || messageState(m) !== 'delivered') return false;
+  const reply = threadReply(m);
+  return reply === undefined || replyExtendable(reply);
+};
+const textHash = (text: string): string => sha256(text).slice(0, 32);
+/** Timing of reply routing; a test shortens it. */
+export const replyRouting = {
+  /** The transcript is read twice this far apart and a reply is posted only when both reads agree. */
+  settleDelayMs: 1_500,
+  /** After a stop that found the session still working, routing is tried again this long after each try. */
+  retryDelaysMs: [1_500, 4_000, 10_000, 30_000],
+  /** A request whose prompt never appears in the transcript is given up after this long. */
+  maxAgeMs: 24 * 60 * 60 * 1000,
+};
 /** Reply routing of one workspace runs one conversation at a time, so two signals for the same turn post once. */
 const replyChains = new Map<string, Promise<void>>();
+const replyRetries = new Set<Promise<void>>();
+/** What the last pass over a conversation saw when it settled nothing; an identical state is not read again. */
+const idlePasses = new Map<string, string>();
+const MAX_IDLE_PASSES = 500;
+const rememberIdlePass = (conversationId: string, key: string): void => {
+  idlePasses.delete(conversationId);
+  idlePasses.set(conversationId, key);
+  for (const oldest of idlePasses.keys()) {
+    if (idlePasses.size <= MAX_IDLE_PASSES) break;
+    idlePasses.delete(oldest);
+  }
+};
 /** Resolves when every reply being routed has been (tests). */
 export const settleReplies = async (): Promise<void> => {
-  while (replyChains.size) await Promise.all([...replyChains.values()]);
+  while (replyChains.size || replyRetries.size) await Promise.all([...replyChains.values(), ...replyRetries]);
 };
+/** Forgets every remembered pass, as a restarted process has (tests). */
+export const forgetReplyPasses = (): void => idlePasses.clear();
 /**
- * Posts the reply of every thread request of this conversation whose turn is over into the thread it was asked from.
- * Called when the session's stop hook fires and again whenever the conversation is read, so a stop missed across a
- * restart is still routed. Only the recorded origin decides where a reply goes.
+ * Posts the reply of every thread request of this conversation whose turn is provably over into the thread it was
+ * asked from. Called when the session's stop hook fires and again whenever the conversation is read. Only the
+ * recorded origin decides where a reply goes. A stop that finds the session still working tries again a few times,
+ * because idle detection lags the hook and nothing else would run with no browser open.
  */
-function reconcileReplies(ctx: CanvasPort, workspaceId: string, conversation: Conversation, turnEnded = false): void {
-  if (!deployRole.allows('persist') || !ctx.transcriptRows) return;
-  if (!conversation.messages.some(awaitsReply)) return;
-  const run = () => routeReplies(ctx, workspaceId, conversation.id, turnEnded).catch(() => undefined);
-  const job = (replyChains.get(workspaceId) ?? Promise.resolve()).then(run, run);
-  replyChains.set(workspaceId, job);
-  void job.then(() => {
-    if (replyChains.get(workspaceId) === job) replyChains.delete(workspaceId);
-  });
-}
-async function routeReplies(
+function reconcileReplies(
   ctx: CanvasPort,
   workspaceId: string,
-  conversationId: string,
-  turnEnded: boolean
-): Promise<void> {
+  conversation: Conversation,
+  retries: number[] = []
+): void {
+  if (!deployRole.allows('persist') || !ctx.transcriptRows) return;
+  if (!conversation.messages.some(awaitsReply)) return;
+  const run = () => routeReplies(ctx, workspaceId, conversation.id).catch(() => 'done' as const);
+  const job = (replyChains.get(workspaceId) ?? Promise.resolve()).then(run, run);
+  const settled = job.then(() => undefined);
+  replyChains.set(workspaceId, settled);
+  void settled.then(() => {
+    if (replyChains.get(workspaceId) === settled) replyChains.delete(workspaceId);
+  });
+  const [delay, ...later] = retries;
+  if (delay === undefined) return;
+  const retry: Promise<void> = job.then(async (outcome) => {
+    if (outcome !== 'working') return;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, delay).unref?.();
+    });
+    const current = findConversation(workspaceId, conversation.id);
+    if (current) reconcileReplies(ctx, workspaceId, current, later);
+  });
+  replyRetries.add(retry);
+  void retry.finally(() => replyRetries.delete(retry));
+}
+type Candidate = {
+  message: ConversationMessage;
+  origin: ThreadOrigin;
+  text: string;
+  shared: boolean;
+  prior: PostedThreadReply | undefined;
+};
+/**
+ * `working`: something may settle soon with no further signal (the session is still working, the two reads did not
+ * agree, or a reply was posted into a turn that can still add text), so the stop path tries again.
+ */
+async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId: string): Promise<'done' | 'working'> {
   const conversation = findConversation(workspaceId, conversationId);
   const waiting = conversation?.messages.filter(awaitsReply) ?? [];
-  const session = conversation ? ctx.sessions.get(conversation.sessionId) : undefined;
-  if (!conversation || !waiting.length || !session) return;
-  const rows = await ctx.transcriptRows?.(conversation.sessionId);
-  if (!rows || !deployRole.allows('persist')) return;
-  // Read after the transcript: a prompt submitted meanwhile means the last request's turn is running again.
-  const idle = !session.hookTurnRunning && (turnEnded || !session.isWorking);
+  if (!conversation || !waiting.length) return 'done';
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const owner = readWorkspaces().find((w) => w.id === workspaceId)?.owner;
+  const now = Date.now();
+  const expired = (m: ConversationMessage): boolean => now - m.sentAt > replyRouting.maxAgeMs;
+  const priorOf = (m: ConversationMessage): PostedThreadReply | undefined => {
+    const reply = threadReply(m);
+    return replyExtendable(reply) ? reply : undefined;
+  };
   let changed = false;
-  for (const message of waiting) {
-    const origin = threadOrigin(message);
-    const found = extractReply(rows, message.messageId);
-    if (!origin || !found.found || (!found.closed && !idle)) continue;
-    let reply: ThreadReply;
-    if (!found.text) {
-      // An open turn with no text yet may still be flushing its last row; a closed one will never have any.
-      if (!found.closed) continue;
-      reply = { dropped: 'no-reply' };
-    } else
-      reply = await postReply(ctx, workspaceId, owner, conversation.sessionId, origin.objectId, message, found.text);
+  const record = (message: ConversationMessage, reply: ThreadReply): void => {
     try {
       changed = setMessageReply(workspaceId, conversationId, message.messageId, reply) || changed;
     } catch {
       /* The comment id is derived from the message id, so the next pass finds the comment and records it then. */
     }
+  };
+  /** Nothing more is posted for this request: a reply already posted stays as it is, otherwise the reason is kept. */
+  const close = (message: ConversationMessage, drop: ReplyDrop): void => {
+    const prior = priorOf(message);
+    record(message, prior ? { ...prior, final: true } : { dropped: drop });
+  };
+  const finish = (outcome: 'done' | 'working'): 'done' | 'working' => {
+    if (changed) {
+      idlePasses.delete(conversationId);
+      ctx.broadcast(SseEvent.CanvasConversation, { workspaceId, conversationId, change: 'message', owner });
+    }
+    return outcome;
+  };
+  const session = ctx.sessions.get(conversation.sessionId);
+  if (!session) {
+    // A session this process does not hold may only be late to restore, so nothing is read and only age gives up.
+    for (const message of waiting) if (expired(message)) close(message, 'session-ended');
+    return finish('done');
   }
-  if (changed) ctx.broadcast(SseEvent.CanvasConversation, { workspaceId, conversationId, change: 'message', owner });
+  const ended = !!session.paneExit;
+  const observedAt = ctx.turnEndObservedAt?.(session.id) ?? 0;
+  const busy = (): boolean => sessionBusy(session);
+  const stamp = (await ctx.transcriptStamp?.(session.id)) ?? null;
+  const key = [
+    stamp,
+    ended,
+    observedAt,
+    busy(),
+    ...waiting.map((m) => `${m.messageId}:${expired(m)}:${priorOf(m)?.chars ?? ''}`),
+  ].join('|');
+  if (stamp !== null && idlePasses.get(conversationId) === key) return 'done';
+  const rows = await ctx.transcriptRows?.(session.id);
+  if (!rows || !deployRole.allows('persist')) return 'done';
+  const candidates: Candidate[] = [];
+  let again = false;
+  for (const message of waiting) {
+    const origin = threadOrigin(message);
+    if (!origin) continue;
+    const prior = priorOf(message);
+    const found = extractReply(rows, message.messageId);
+    if (!found.found) {
+      if (ended) close(message, 'session-ended');
+      else if (expired(message)) close(message, 'timed-out');
+      continue;
+    }
+    const over = found.closed || ended;
+    if (prior) {
+      const posted = prior.chars ?? 0;
+      // Text that no longer starts with what was posted cannot be continued without guessing.
+      const continues = found.text.length >= posted && textHash(found.text.slice(0, posted)) === prior.hash;
+      if (!continues || found.text.length === posted) {
+        if (over || expired(message)) close(message, 'no-reply');
+        continue;
+      }
+    }
+    if (!over) {
+      // An open turn is over only on what this process saw after the message went in: never on a flag that is false after a restart.
+      if (observedAt <= (message.deliveredAt ?? Infinity)) continue;
+      if (busy()) {
+        again = true;
+        continue;
+      }
+      // Text may still be on its way to the file; a turn that wrote none is left to the prompt that closes it.
+      if (!found.text) continue;
+    }
+    if (!found.text) {
+      close(message, ended && !found.closed ? 'session-ended' : 'no-reply');
+      continue;
+    }
+    candidates.push({ message, origin, text: found.text, shared: found.shared, prior });
+  }
+  if (!candidates.length) {
+    if (!changed && stamp !== null && !again) rememberIdlePass(conversationId, key);
+    return finish(again ? 'working' : 'done');
+  }
+  // The stop hook can fire before the last row reaches the file: post only what a second read still says.
+  await new Promise<void>((resolve) => setTimeout(resolve, replyRouting.settleDelayMs));
+  const second = await ctx.transcriptRows?.(session.id);
+  if (!second || !deployRole.allows('persist')) return finish('done');
+  for (const { message, origin, text, shared, prior } of candidates) {
+    const reread = extractReply(second, message.messageId);
+    if (!reread.found || reread.text !== text || reread.shared !== shared) {
+      again = true;
+      continue;
+    }
+    const over = reread.closed || !!session.paneExit;
+    if (!over && busy()) {
+      again = true;
+      continue;
+    }
+    const part = (prior?.parts ?? 0) + 1;
+    const last = over || part >= MAX_REPLY_PARTS;
+    const added = text.slice(prior?.chars ?? 0).trim();
+    const body = added + (shared ? REPLY_SHARED_NOTE : '') + (last && !over ? REPLY_MORE_NOTE : '');
+    const progress = { parts: part, chars: text.length, hash: textHash(text), ...(last ? { final: true } : {}) };
+    const reply = added
+      ? await postReply(
+          ctx,
+          workspaceId,
+          owner,
+          conversation.sessionId,
+          origin,
+          replyPartId(message.messageId, part),
+          body
+        )
+      : null;
+    if (!reply) continue;
+    if (!prior) record(message, 'commentId' in reply ? { ...reply, ...progress } : reply);
+    // A further part that cannot be posted ends the reply where it stands; the first part is still the reply.
+    else
+      record(
+        message,
+        'commentId' in reply
+          ? { commentId: prior.commentId, postedAt: prior.postedAt, ...progress }
+          : { ...prior, final: true }
+      );
+    // A turn that is still open can add text with no further stop to say so.
+    if (!last && 'commentId' in reply) again = true;
+  }
+  return finish(again ? 'working' : 'done');
 }
-/** One ordinary `comment` operation authored by the conversation's session; a comment already there under this request's id is the reply. */
+/**
+ * One ordinary `comment` operation authored by the conversation's session. A comment already under this request's id
+ * is the reply only when it is on the asked object and written by that session; anything else under the id is not
+ * ours and nothing is posted beside it. Null means the attempt failed in passing and a later pass tries again.
+ */
 async function postReply(
   ctx: CanvasPort,
   workspaceId: string,
   owner: string | undefined,
   sessionId: string,
-  objectId: string,
-  message: ConversationMessage,
+  origin: ThreadOrigin,
+  commentId: string,
   text: string
-): Promise<ThreadReply> {
-  const commentId = replyCommentId(message.messageId);
+): Promise<{ commentId: string; postedAt: number } | { dropped: ReplyDrop } | null> {
   try {
     const store = (await ctx.canvasStores()).get(workspaceId);
     const state = store.read();
     const existing = state.comments.find((c) => c.id === commentId);
-    if (existing) return { commentId, postedAt: existing.createdAt };
-    const object = state.objects[objectId];
+    if (existing) {
+      const ours =
+        existing.objectId === origin.objectId &&
+        existing.author.kind === 'agent' &&
+        existing.author.sessionId === sessionId;
+      return ours ? { commentId, postedAt: existing.createdAt } : { dropped: 'refused' };
+    }
+    const object = state.objects[origin.objectId];
     if (!object || object.deletedAt !== null) return { dropped: 'object-removed' };
-    const result = store.appendExpanded([commentCommand({ objectId, text: cutReply(text), commentId })], {
-      kind: 'agent',
-      sessionId,
-    });
+    const result = store.appendExpanded(
+      [commentCommand({ objectId: origin.objectId, text: cutReply(text), commentId })],
+      { kind: 'agent', sessionId }
+    );
     if (!result.ok) return { dropped: result.reasons[0]?.code === 'NOT_FOUND' ? 'object-removed' : 'refused' };
     ctx.broadcast(SseEvent.CanvasChanged, { workspaceId, seq: result.seq, owner });
     return { commentId, postedAt: Date.now() };
   } catch {
-    return { dropped: 'refused' };
+    return null;
   }
 }
 /** The session's stop hook fired: route the replies of every conversation that session is. */
@@ -221,7 +415,8 @@ export async function conversationTurnEnded(ctx: CanvasPort, sessionId: string):
   for (const workspace of readWorkspaces()) {
     const file = readConversations(workspace.id);
     if (!file.ok) continue;
-    for (const c of file.conversations) if (c.sessionId === sessionId) reconcileReplies(ctx, workspace.id, c, true);
+    for (const c of file.conversations)
+      if (c.sessionId === sessionId) reconcileReplies(ctx, workspace.id, c, replyRouting.retryDelaysMs);
   }
 }
 
