@@ -2,6 +2,61 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — An agent's view command only steers the view (PC13 audit fix round 1)
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/full-view.ts`, `packages/canvas/src/entry.ts`, `packages/canvas/src/view-sync.ts`, `packages/canvas/src/shell-view.ts`, `src/canvas/view-schema.ts`, `src/web/public/app.js`, `src/web/routes/canvas-shell-routes.ts`, `src/canvas/commands.ts`, `src/mcp-server.ts`
+**Why:** The audit of PC13 found that an agent's `canvas_view full-view` framed the session page, whose automatic reattach starts a stopped session and can raise the breaker's confirm, and that the frame swallowed the keys of a person typing on the canvas.
+**Links:** [Intent, "Audit fix round 1"](../intent/2026-11-13-canvas-pc13-shell.md#audit-fix-round-1), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+The rule is now stated and enforced where the write happens: an agent-issued view command never starts a CLI, never raises a dialog and never takes a keystroke. An agent's open frames the session page with `passive=1`, and that page shows a stopped session as stopped until the person presses Start session. The open is refused for an unlisted or ended session, on a phone, and while the person's focus is in an editable field. The command route cannot know the browser's focus, so a refusal is published by the view (`refused: { commandId, reason }`) and read with `canvas_view read`. Also in this round: the session list refetch is throttled to one per 2 s and stops while the page is hidden, the list route drops `pastCap` and leaves remote sessions out, and the agent-facing text says what a full view does and that a read can be a few seconds stale.
+
+## 2026-11-13 — A session's terminal as a full view over the canvas (PC13 part 3)
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/full-view.ts`, `packages/canvas/src/entry.ts`, `src/canvas/view-schema.ts`, `src/web/public/app.js`, `src/web/public/terminal-ui.js`, `src/web/public/canvas.html`
+**Why:** The intent fixed frame or navigate; it left how the session page learns its origin, where the back chord is listed, and what a notification for another workspace does.
+**Links:** [Intent, "Decisions"](../intent/2026-11-13-canvas-pc13-shell.md#decisions), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+The full view is the existing single-session page: one unsandboxed same-origin frame over an inert canvas on a laptop, a window navigation with a one-use return ticket on a phone. The canvas gained no terminal code and no write to a pane; it hears two messages from the frame it opened and sends none. The session page turns on its Canvas button and back chord from `from=canvas` on its own address, so it still reads no setting, and the chord is a registry entry that exists only on such a page, which keeps Ctrl+Shift+Backspace and the Shortcuts list unchanged everywhere else. A notification for a session outside the open workspace goes to the classic view after one ownership-checked read, since the canvas lists only its own workspace's sessions.
+
+## 2026-11-13 — Workspaces, sessions and Go to in the canvas outline (PC13 part 2)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/shell-sessions.ts`, `src/web/routes/canvas-shell-routes.ts`, `packages/canvas/src/shell-view.ts`, `packages/canvas/src/home.ts`, `src/web/public/canvas.html`, `src/web/public/app.js`
+**Why:** The brief left the wording of states, the update line and the Settings link to the builder, and one requested line could not be built as asked.
+**Links:** [Intent, "Decisions"](../intent/2026-11-13-canvas-pc13-shell.md#decisions), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+Sessions are rows derived per request and never canvas content. The order is a port of the dashboard's comparator with a parity test, because the canvas bundle cannot load the classic script. An idle prompt somebody already looked at reads Idle, not Waiting, which is what the dashboard's alert does. An "Update available" line was asked for; the server holds no such fact without asking GitHub, so the line says "Codeman was updated" from the release notes file and the browser's own seen version, and the canvas makes no update check. Settings (classic) is a real deep link, `classic?open=settings`, honoured only with the shell on. A terminal row opens the session's own page by navigation in this part; part 3 puts that page in a frame on a laptop.
+
+## 2026-11-13 — The canvas shell's routes, setting and fallback (PC13 part 1)
+
+**Type:** intent-refinement
+**Touches:** `src/web/shell-landing.ts`, `src/web/server.ts`, `src/web/public/canvas.html`, `packages/canvas/src/shell.ts`, `src/web/public/app.js`, `src/web/public/settings-ui.js`, `docs/architecture-invariants.md`
+**Why:** The intent left four points to the builder, and two of its sentences did not survive the code.
+**Links:** [Intent, "Decisions"](../intent/2026-11-13-canvas-pc13-shell.md#decisions), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+`/` serves the canvas document itself and the page names its workspace with `replaceState`: no redirect, so the lost-frame and auth rules see the same request as before. The dashboard gets its shell flag only while both settings are on, which keeps a shell-off `/` byte-identical even when the query asks for a notice; the intent had the flag appear whenever a notice applied. `/classic` does read the settings, for the Canvas link, where the intent said it would not. The workspace memory is a cookie the page writes, because the server must choose before any script runs. The first-run page is a second small entry (`canvas-home.js`). Without scripts there is only the plain classic link, since the dashboard needs scripts too. The Settings page sends the new key only when its box changed, and saves the rest when a rolled-back server refuses it.
+
+## 2026-11-13 — The canvas shell is shaped and PC13 is scoped
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/canvas-ui-ux-brief.md`, `docs/agentic-canvas/initial-version-plan.md`, `intent/2026-11-13-canvas-pc13-shell.md`
+**Why:** The plan requires a shape pass and a surface inventory before PC13 code, and its two open questions (synced or per-device setting, the classic route's name) had no answer.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc13-shell.md), [Brief, "Canvas shell (PC13)"](agentic-canvas/canvas-ui-ux-brief.md#canvas-shell-pc13), [earlier intent](../intent/2026-11-12-canvas-first-shell.md)
+
+Documents only; no code. The owner delegated design decisions for this program, so shape's interview was answered from the source documents and the assumptions are listed in the brief.
+
+Decisions. With the shell on, `/` answers with the canvas document for the workspace last used on that device, never with a redirect, because the service worker precaches `/`. The classic dashboard's route is `classic`. The shell setting is `canvasShellEnabled`, synced, off by default and independent of `canvasEnabled`; the shell needs both. Last-used workspace is per device, held in a cookie the server validates, so no `GET` writes settings.
+
+Sessions are rows in a Sessions section of the outline, one row per live session in the workspace's case, ordered by state. No session is placed on the board and none writes to the operation log. Every session has one full view, its terminal, and that view is Codeman's existing single-session page. On a laptop it opens in a same-origin frame over the canvas, so the canvas document is never unloaded and the camera, selection and rail are unchanged by construction. On a phone or a touch-first device the window navigates to the session page and back with a one-use return ticket, because the dashboard reads the software keyboard from `visualViewport`, which a framed page does not see. Hosting the whole dashboard in a frame was rejected: the session page already exists, is a registered route the lost-frame rule never answers, and shows one session.
+
+The fallback has three parts: the server answers `/` with the classic view when a canvas file is missing; an inline guard in the canvas document navigates to the classic view when the bundle does not load or does not start; and a plain link works with no script. The automatic target is `/?view=classic`, which a pre-PC13 release ignores and answers with the dashboard, so a rollback in mid-load still lands on a working page. The guard never navigates when the address already asks for the classic view, which is what prevents a loop when the service worker serves a cached canvas document offline.
+
+The inventory has 65 surfaces: Canvas 5, Outline 8, Rail 1, Full view 8, Classic 42, Server page 1. Classic-only is a deliberate home for deep or rare surfaces, including all of App Settings and Deploys, so recovery never depends on the canvas. The plan's verification line was reworded to match: surfaces not marked classic-only are reachable without the classic view, and classic-only surfaces through the classic link. The first PC13 box is ticked.
+
+Not determined from the code and left to the builder, with a test named for each in the intent: whether a previous release's Settings save echoes an unknown synced key into the strict schema; which of the inventory's Full view surfaces the single-session page really draws; and whether Ctrl+Shift+Backspace is free on every platform.
+
 ## 2026-11-13 — Background tasks: what a cancel, a crash and a restart leave (PC12 fix round 1)
 
 **Type:** intent-refinement

@@ -30,7 +30,18 @@ export const PublishedViewSchema = z
     phone: z.boolean(),
     /** The provider and model the next new conversation starts on; absent from a page of an earlier release. */
     choice: AssistantChoiceSchema.optional(),
+    /** The session whose terminal covers this canvas as a full view (PC13); absent from an earlier page. */
+    fullView: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,128}$/)
+      .nullable()
+      .optional(),
     appliedCommands: z.array(z.uuid()).max(20),
+    /** The latest command this view refused, and why in plain words; absent when the latest one was applied. */
+    refused: z
+      .object({ commandId: z.uuid(), reason: z.string().min(1).max(200) })
+      .strict()
+      .optional(),
   })
   .strict();
 export type PublishedView = z.infer<typeof PublishedViewSchema>;
@@ -45,6 +56,16 @@ export const ViewActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('context-add'), targetIds: Ids }).strict(),
   z.object({ action: z.literal('context-remove'), targetIds: Ids }).strict(),
   z.object({ action: z.literal('assistant-choice'), ...AssistantChoiceSchema.shape }).strict(),
+  /** Open a listed session's terminal over the canvas, or close it with `sessionId: null`. Shell pages only. */
+  z
+    .object({
+      action: z.literal('full-view'),
+      sessionId: z
+        .string()
+        .regex(/^[a-zA-Z0-9_-]{1,128}$/)
+        .nullable(),
+    })
+    .strict(),
 ]);
 export type ViewAction = z.infer<typeof ViewActionSchema>;
 /** What the server broadcasts to the tab that owns `viewId`. */

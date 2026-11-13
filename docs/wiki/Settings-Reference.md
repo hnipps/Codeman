@@ -125,6 +125,17 @@ the canvas tools of `codeman mcp` work. Off, those entries are hidden and the ca
 answer as disabled; saved canvases stay on disk. In multi-user mode only an admin can
 change it.
 
+**Open on the canvas** (under **Cross-session features**, synced, off by default, beta)
+makes Codeman open on the canvas of the workspace you last used, on every device. It needs
+**Canvas** to be on. The tab dashboard stays available as the classic view, from the
+canvas's **Open classic view** link or at `/classic`, and has a **Canvas** link back. If the
+canvas cannot load, Codeman shows the classic view with a short notice and does not retry
+by itself. The canvas's outline lists the workspace's sessions; opening one shows its
+terminal over the canvas on a laptop (**Canvas** in its header, or Ctrl+Shift+Backspace,
+returns) and opens the session page on a phone, where **Canvas** leads back to the same
+view. Off, nothing about how Codeman opens changes. In multi-user mode only an admin
+can change it, and each person opens only their own workspaces.
+
 **Keep agent inbox across restarts** (under **Cross-session features**, synced, off by
 default) saves the pending `codeman agent post` messages to `agent-inbox.json` in the data
 dir, readable by you only, so they survive a server restart. Off, the agent inbox lives in

@@ -582,6 +582,19 @@ const DEFAULT_SHORTCUTS = [
     bindings: [{ modifiers: ['alt'], key: 'b', code: 'KeyB' }],
     action: 'toggleSessionSidebar',
   },
+  // Canvas shell (PC13): leave a session page the canvas opened. Listed, matched
+  // and swallowed only on such a page (`shellOnly`, shouldGoBackToCanvasFromShortcut),
+  // so everywhere else the chord reaches the terminal as it always did. Absent
+  // from SHORTCUT_ACTIONS for that reason. Ctrl+Shift+Backspace has no meaning in
+  // a shell or an agent CLI and no browser default.
+  {
+    id: 'back-to-canvas',
+    group: 'Session',
+    label: 'Back to Canvas',
+    shellOnly: true,
+    bindings: [{ modifiers: ['ctrl', 'shift'], key: 'Backspace', code: 'Backspace' }],
+    action: 'backToCanvas',
+  },
   // Tile grid (tile-grid.js). Dispatched by tileShortcutFor()/runTileShortcut()
   // and deliberately absent from SHORTCUT_ACTIONS: each applies only in some
   // states (the focus chords only while the grid is open), and outside them the
@@ -820,6 +833,9 @@ class CodemanApp {
     // service-worker shell loads), with the server-injected global as a fallback.
     this.soloSessionId = this._detectSoloSessionId();
     this.isSoloWindow = !!this.soloSessionId;
+    // Canvas shell (PC13): a session page the canvas opened (`?from=canvas`).
+    this._canvasReturn = this.isSoloWindow ? this._detectCanvasReturn() : null;
+    if (this._canvasReturn?.passive) this._holdPassiveFocus();
     // A session another page asked for with a `#session=<id>` link. It waits
     // here until the session list has that id (see _selectUrlSession).
     this._urlSessionId = this.isSoloWindow ? null : this._takeUrlSession();
@@ -1240,6 +1256,8 @@ class CodemanApp {
     // strip never flashes before handleInit selects the target session.
     this._initWindowChannel();
     if (this.isSoloWindow) document.body.classList.add('solo-mode');
+    // Canvas shell (PC13): the link back to the canvas and the fallback notice.
+    this._initCanvasShell();
     // A page holding this window switches its tab by changing only the
     // fragment, which keeps the page loaded (see sessionIdFromFragment).
     if (!this.isSoloWindow) {
@@ -1340,6 +1358,9 @@ class CodemanApp {
     this.setupOnlineDetection();
     // Load server-stored settings (async, re-applies visibility after load)
     this.loadAppSettingsFromServer(settingsPromise).then(() => {
+      // Canvas shell (PC13): `classic?open=settings` opens App Settings once the
+      // server's values are in the form's source, never before.
+      this._takeShellOpenRequest();
       this.applyHeaderVisibilitySettings();
       this.applySkin();
       this.applyLocalization();
@@ -1555,6 +1576,13 @@ class CodemanApp {
           }
           return;
         }
+      }
+
+      // Canvas shell (PC13): back to the canvas, only on a page it opened.
+      if (this.shouldGoBackToCanvasFromShortcut(e)) {
+        e.preventDefault();
+        this._backToCanvas();
+        return;
       }
 
       // Tile grid chords: only where they apply (tile-grid.js tileShortcutFor),
@@ -2053,6 +2081,9 @@ class CodemanApp {
     if (this._soloReleased) return;
     this._soloReleased = true;
     this._postWindowMessage({ type: 'redocked', id: this.soloSessionId });
+    // Opened by the canvas: the session went back to a dashboard, so the full
+    // view closes (framed) or the window returns to the canvas (phone).
+    if (this._canvasReturn) { this._backToCanvas(); return; }
     this._closeSoloWindow();
     setTimeout(() => {
       if (!window.closed) this._showSoloReleased();
@@ -2082,6 +2113,7 @@ class CodemanApp {
     document.body.classList.add('solo-mode');
     const session = this.sessions.get(this.soloSessionId);
     if (!session) { this._showSoloSessionGone(); return; }
+    this._announceFullViewReady();
     // Force re-select (handleInit cleared terminal state above). `auto`: the
     // window is opening its own target, which is not a human checking on it.
     this.activeSessionId = null;
@@ -2090,7 +2122,9 @@ class CodemanApp {
     const titleEl = document.getElementById('soloSessionTitle');
     if (titleEl) { titleEl.textContent = name; titleEl.style.display = ''; }
     const redock = document.getElementById('soloRedockBtn');
-    if (redock) redock.style.display = '';
+    // Opened by the canvas: **Canvas** takes the re-dock button's place.
+    if (this._canvasReturn) this._showSoloCanvasButton(redock);
+    else if (redock) redock.style.display = '';
     // Detach Tiles: the title drags onto a dashboard's tiles to dock there.
     this._installSoloTileHandle?.();
     document.title = name + ' — ' + (window.CodemanI18n?.displayName || 'Codeman');
@@ -2109,10 +2143,217 @@ class CodemanApp {
     el.className = 'solo-gone-overlay';
     el.innerHTML = '<h2>Session unavailable</h2>'
       + '<p>This session has ended or is no longer available.</p>'
-      + '<button class="btn-primary" onclick="app._closeSoloWindow()">Close window</button>';
+      + (this._canvasReturn
+        ? '<button class="btn-primary" id="soloGoneCanvasBtn" onclick="app._backToCanvas()">Back to canvas</button>'
+        : '<button class="btn-primary" onclick="app._closeSoloWindow()">Close window</button>');
     document.body.appendChild(el);
+    this._announceFullViewReady();
     document.title = (window.codemanT?.('Session ended') || 'Session ended')
       + ' — ' + (window.CodemanI18n?.displayName || 'Codeman');
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Session page opened by the canvas (PC13)
+  // The canvas shows a session's terminal by opening THIS page, in a
+  // same-origin frame over itself on a laptop and by navigating the window on a
+  // phone, with `?from=canvas&ws=<workspace>` on the address. Such a page shows
+  // a Canvas button where the re-dock button is, answers one chord, and tells
+  // its parent two things by postMessage to its own origin: that it has loaded,
+  // and that it wants to be closed. It reads nothing from the parent.
+  // ══════════════════════════════════════════════════════════════════════
+
+  /** `{ ws, passive }` when the address says the canvas opened this page, else null. `ws` is '' when absent or
+   *  malformed. `passive` (exactly `passive=1`) marks an agent's `canvas_view` open: see _showSoloStoppedNotice. */
+  _detectCanvasReturn() {
+    try {
+      const params = new URLSearchParams(location.search);
+      if (params.get('from') !== 'canvas') return null;
+      const ws = params.get('ws') || '';
+      return { ws: /^[a-zA-Z0-9_-]{1,128}$/.test(ws) ? ws : '', passive: params.get('passive') === '1' };
+    } catch { return null; }
+  }
+
+  /** A page an agent opened is shown, not handed over. This page focuses its terminal from many places as it
+   *  loads, and a frame that focuses itself takes the person's next keys into the pane; marking the frame
+   *  `inert` in the parent does not stop that (measured in Chromium). So while the canvas holds this frame
+   *  inert, no element here and not the window itself takes focus. The rule is read each time, never latched,
+   *  so a reload of a frame the person already took, or a take before this ran, leaves nothing stuck. */
+  _holdPassiveFocus() {
+    const held = () => {
+      try { return window.frameElement?.inert === true; } catch { return false; }
+    };
+    const focusElement = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (...args) {
+      if (!held()) focusElement.apply(this, args);
+    };
+    const focusWindow = window.focus.bind(window);
+    window.focus = () => {
+      if (!held()) focusWindow();
+    };
+    // The canvas un-inerts the frame and focuses it when the person takes the terminal.
+    const taken = () => {
+      if (held()) return;
+      window.removeEventListener('focus', taken);
+      this.terminal?.focus();
+    };
+    window.addEventListener('focus', taken);
+  }
+
+  /** True while this page was opened by an agent and no person has asked it to start the session. */
+  _passiveFullView(sessionId) {
+    return !!this._canvasReturn?.passive && sessionId === this.soloSessionId;
+  }
+
+  /** An agent's view command only steers the view: it must never start a CLI or raise a dialog. So a page it
+   *  opened shows a stopped session as stopped, and only the person's own click here starts it. */
+  _showSoloStoppedNotice() {
+    if (document.getElementById('soloStoppedNotice')) return;
+    const notice = document.createElement('div');
+    notice.id = 'soloStoppedNotice';
+    notice.className = 'canvas-shell-notice';
+    notice.setAttribute('role', 'status');
+    const message = document.createElement('span');
+    message.textContent = 'This session is stopped.';
+    const start = document.createElement('button');
+    start.type = 'button';
+    start.id = 'soloStartBtn';
+    start.textContent = 'Start session';
+    start.addEventListener('click', () => {
+      this._canvasReturn.passive = false;
+      notice.remove();
+      this.activeSessionId = null;
+      this.selectSession(this.soloSessionId);
+    });
+    notice.append(message, start);
+    document.body.appendChild(notice);
+  }
+
+  /** The canvas page this one is framed by, or null: only a parent of this same origin counts. */
+  _canvasParent() {
+    try {
+      if (window.parent === window) return null;
+      return window.parent.location.origin === location.origin ? window.parent : null;
+    } catch { return null; }
+  }
+
+  _postToCanvas(type) {
+    const parent = this._canvasReturn ? this._canvasParent() : null;
+    if (!parent) return false;
+    try { parent.postMessage({ type, sessionId: this.soloSessionId }, location.origin); } catch { return false; }
+    return true;
+  }
+
+  /** Once the session list has loaded (the session shown, or the unavailable state). */
+  _announceFullViewReady() {
+    this._postToCanvas('codeman:full-view-ready');
+  }
+
+  /** The Canvas button, the chord, and a dashboard taking the session back all end here. */
+  _backToCanvas() {
+    if (!this._canvasReturn) return;
+    if (this._postToCanvas('codeman:full-view-close')) return;
+    const ws = this._canvasReturn.ws;
+    const path = ws ? `/canvas/${ws}` : '/';
+    try { location.assign(window.CodemanBase?.url(path) || path); } catch {}
+  }
+
+  _showSoloCanvasButton(redock) {
+    if (document.getElementById('soloCanvasBtn')) return;
+    const host = redock?.parentNode || document.getElementById('headerRight');
+    if (!host) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'soloCanvasBtn';
+    btn.className = 'btn-solo-canvas';
+    btn.textContent = 'Canvas';
+    btn.title = 'Back to the canvas (Ctrl+Shift+Backspace)';
+    btn.addEventListener('click', () => this._backToCanvas());
+    host.insertBefore(btn, redock || host.firstChild);
+  }
+
+  /**
+   * True for the back-to-canvas chord on a session page the canvas opened.
+   * Registry-aware, so a rebound or disabled entry restores the key to the
+   * terminal; xterm's key handlers ask too, so no byte reaches the pane.
+   */
+  shouldGoBackToCanvasFromShortcut(e) {
+    if (!e || !this._canvasReturn) return false;
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) return false;
+    const shortcut = this.getShortcutRegistry().find((s) => s.id === 'back-to-canvas');
+    if (!shortcut || shortcut.disabled) return false;
+    return this.matchesShortcutEvent(e, shortcut);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Canvas shell (PC13)
+  // The server writes `window.__CODEMAN_SHELL__ = { on, notice }` into this page
+  // only while both canvas settings are on. `on` draws a Canvas link back to `/`
+  // (off phones: the phone overview's Canvases section is the phone's link).
+  // `notice` says this view was reached because the canvas did not load. The
+  // dashboard never navigates by itself: both controls are plain links.
+  // Every string is fixed here; nothing from the address reaches the DOM.
+  // ══════════════════════════════════════════════════════════════════════
+
+  /**
+   * `?open=settings`, the address of the canvas's **Settings (classic)** link:
+   * open App Settings and drop the parameter, so a reload does not open it
+   * again. Honoured only while the shell is on, on the dashboard itself.
+   */
+  _takeShellOpenRequest() {
+    const shell = typeof window !== 'undefined' ? window.__CODEMAN_SHELL__ : null;
+    if (!shell || shell.on !== true || this.isSoloWindow) return;
+    let params;
+    try { params = new URLSearchParams(location.search); } catch { return; }
+    if (params.get('open') !== 'settings') return;
+    params.delete('open');
+    const rest = params.toString();
+    try { history.replaceState(history.state, '', location.pathname + (rest ? `?${rest}` : '') + location.hash); } catch {}
+    if (typeof this.openAppSettings === 'function') this.openAppSettings();
+  }
+
+  _initCanvasShell() {
+    const shell = typeof window !== 'undefined' ? window.__CODEMAN_SHELL__ : null;
+    if (!shell || shell.on !== true || this.isSoloWindow) return;
+    const home = window.CodemanBase?.url('/') || '/';
+    const headerRight = document.getElementById('headerRight');
+    if (headerRight && !document.getElementById('canvasShellLink')) {
+      const link = document.createElement('a');
+      link.id = 'canvasShellLink';
+      link.className = 'btn-canvas-shell';
+      link.href = home;
+      link.textContent = 'Canvas';
+      link.title = 'Back to the canvas';
+      headerRight.insertBefore(link, headerRight.firstChild);
+    }
+    const reasons = {
+      missing: 'The canvas files are missing on the server, so the classic view is shown.',
+      load: 'The canvas did not load, so the classic view is shown.',
+      boot: 'The canvas did not start, so the classic view is shown.',
+    };
+    const text = Object.prototype.hasOwnProperty.call(reasons, shell.notice) ? reasons[shell.notice] : null;
+    if (!text || document.getElementById('canvasShellNotice')) return;
+    const notice = document.createElement('div');
+    notice.id = 'canvasShellNotice';
+    notice.className = 'canvas-shell-notice';
+    notice.setAttribute('role', 'status');
+    notice.dataset.reason = shell.notice;
+    const message = document.createElement('span');
+    message.textContent = text;
+    const retry = document.createElement('a');
+    retry.className = 'canvas-shell-notice-retry';
+    retry.href = home;
+    retry.textContent = 'Try the canvas again';
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'canvas-shell-notice-dismiss';
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      notice.remove();
+      // The address still names the failure; a reload would show the notice again.
+      try { history.replaceState(history.state, '', window.CodemanBase?.url('/classic') || '/classic'); } catch {}
+    });
+    notice.append(message, retry, dismiss);
+    document.body.appendChild(notice);
   }
 
   connectSSE() {
@@ -2496,6 +2737,7 @@ class CodemanApp {
     const claudeSessionIdJustSet = session.claudeSessionId && (!oldSession || !oldSession.claudeSessionId);
     this.sessions.set(session.id, session);
     if (this._chatView?.sessionId === session.id && !this._canShowChatView(session.id)) this.closeChatView();
+    if (session.id === this.soloSessionId && typeof session.pid === 'number') document.getElementById('soloStoppedNotice')?.remove();
     this.renderSessionTabs();
     this.updateCost();
     // Update tokens display if this is the active session
@@ -10208,7 +10450,9 @@ class CodemanApp {
 
     // Track working directory for path normalization in Project Insights
     this.currentSessionWorkingDir = session?.workingDir || null;
-    if (session && session.pid === null) {
+    const passive = this._passiveFullView(sessionId);
+    if (passive && session?.pid === null) this._showSoloStoppedNotice();
+    if (session && session.pid === null && !passive) {
       if (session.respawnBlocked) {
         // COD-118: the PTY-exit circuit breaker tripped for this session — the
         // automatic re-attach must NOT silently clear it (that would re-arm the
@@ -11418,7 +11662,9 @@ class CodemanApp {
   getShortcutRegistry() {
     const settings = this.loadAppSettingsFromStorage();
     const shortcutOverrides = settings.shortcutOverrides || {};
-    return DEFAULT_SHORTCUTS.map((shortcut) => {
+    // A `shellOnly` entry exists only on a session page the canvas opened.
+    const listed = this._canvasReturn ? DEFAULT_SHORTCUTS : DEFAULT_SHORTCUTS.filter((s) => !s.shellOnly);
+    return listed.map((shortcut) => {
       const override = shortcutOverrides[shortcut.id];
       if (!override) return shortcut;
       // Only binding-shaped fields may come from storage — id/label/group/action

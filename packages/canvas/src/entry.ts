@@ -5,7 +5,7 @@ import { command, initialView, subcanvasIndex, viewPath, type ViewCommand, type 
 import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
-import { shortcutAllowed, shortcuts, editShortcuts } from './shortcuts.js';
+import { shortcutAllowed, shortcuts, editShortcuts, shellShortcuts } from './shortcuts.js';
 import { outline, siblings, worldBounds } from './tree.js';
 import { hit, union, type Point, type Rect } from './viewport.js';
 import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } from './mobile.js';
@@ -19,6 +19,22 @@ import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
 import type { ViewAction } from '../../../src/canvas/view-schema.js';
+import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
+import { ShellView } from './shell-view.js';
+import type { SessionViewRow } from './sessions.js';
+import {
+  FullView,
+  agentCloseRefusal,
+  agentOpenRefusal,
+  fullViewMode,
+  fullViewPath,
+  makeTicket,
+  sessionFromNotification,
+  sessionFromSearch,
+  takeTicket,
+  type ReturnTicket,
+  typingIn,
+} from './full-view.js';
 
 declare global {
   interface Window {
@@ -40,7 +56,9 @@ const board = node('board'),
   tree = node('tree');
 const base = new URL(document.baseURI).pathname.replace(/\/$/, '');
 const url = (path: string): string => joinBasePath(base, path);
-const workspaceId = location.pathname.split('/').filter(Boolean).at(-1) ?? '';
+const workspaceId = pageWorkspaceId();
+const shell = shellOn();
+if (shell) rememberWorkspace(workspaceId, base);
 let state = initialView(),
   objects: ViewObject[] = [],
   keyboard = false,
@@ -322,6 +340,12 @@ function choose(id: string, toggle: boolean, bring: boolean): void {
   if (read) dispatch({ kind: 'rail', view: 'reader' });
 }
 function dispatch(action: ViewCommand): void {
+  // A full view is a frame as well as a field: the command goes through the functions that own both.
+  if (action.kind === 'full-view' && !settingFullView) {
+    if (action.sessionId === null) closeFullView(true);
+    else openFullView(action.sessionId, null, true);
+    return;
+  }
   if (action.kind === 'rail' && state.rail.at(-1) !== action.view) railOrigins.set(action.view, opener());
   const closing = state.rail.at(-1);
   const previous = state.rail.length;
@@ -572,7 +596,11 @@ const keyNames: Record<string, string> = {
   '↓': 'Down arrow',
   '⌘': 'Command',
 };
-for (const [action, alternatives, later] of [...shortcuts, ...(mobile.matches ? [] : editShortcuts)]) {
+for (const [action, alternatives, later] of [
+  ...shortcuts,
+  ...(shell && !mobile.matches ? shellShortcuts : []),
+  ...(mobile.matches ? [] : editShortcuts),
+]) {
   const row = document.createElement('div'),
     title = document.createElement('span'),
     hints = document.createElement('span');
@@ -700,8 +728,8 @@ function toggleTasks(): void {
 button('tasksTool').onclick = toggleTasks;
 button('tasksOpen').onclick = toggleTasks;
 button('addToChat').onclick = addSelectionToChat;
-/** An agent's request to this view. It never moves the human's keyboard focus. */
-function applyViewAction(action: ViewAction): void {
+/** An agent's request to this view. It never moves the human's keyboard focus. A refusal answers its reason. */
+function applyViewAction(action: ViewAction): string | void {
   // An agent acts only on what this person can see: ids outside the open view are dropped.
   const visible = new Set(inView().map((o) => o.id));
   const seen = (ids: string[]): string[] => ids.filter((id) => visible.has(id));
@@ -745,6 +773,24 @@ function applyViewAction(action: ViewAction): void {
         dispatch({ kind: 'assistant-choice', choice: { cliId: action.cliId, model: action.model } });
         break;
       }
+      case 'full-view':
+        // An agent's open shows a listed session to the person: it starts nothing and takes no keystroke.
+        if (action.sessionId === null) {
+          const refusal = agentCloseRefusal(typingIn(document.activeElement));
+          if (refusal) return refusal;
+          closeFullView(false);
+        } else {
+          const sessionId = action.sessionId;
+          const refusal = agentOpenRefusal({
+            shell: !!fullView,
+            state: shellView?.read().find((r) => r.id === sessionId)?.state,
+            navigates: fullViewMode({ phone: mobile.matches, touch: mobile.touch }) === 'navigate',
+            typing: typingIn(document.activeElement),
+          });
+          if (refusal) return refusal;
+          openFullView(sessionId, null, false);
+        }
+        break;
     }
   } finally {
     keyboard = was;
@@ -766,6 +812,7 @@ const views = new ViewSync({
     draftBytes: assistant.draftBytes(),
     phone: mobile.matches,
     choice: state.choice ?? { cliId: null, model: '' },
+    ...(shell ? { fullView: state.fullView } : {}),
   }),
 });
 new ContextCapture({
@@ -854,6 +901,22 @@ document.addEventListener('keydown', (e) => {
     toggleTasks();
     return;
   }
+  // Go to: from anywhere on the page except a field other than the outline's search.
+  if (
+    shellView &&
+    e.key.toLowerCase() === 'k' &&
+    !e.shiftKey &&
+    ((e.altKey && !e.metaKey && !e.ctrlKey) || (!e.altKey && (e.metaKey || e.ctrlKey))) &&
+    !(
+      e.target instanceof Element &&
+      e.target !== input('search') &&
+      e.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')
+    )
+  ) {
+    e.preventDefault();
+    if (!e.repeat) shellView.openGoto();
+    return;
+  }
   if (!scope(e)) return;
   if (e.key === 'Escape') {
     // Escape clears the selection first; with nothing selected it leaves an open sub-canvas.
@@ -937,6 +1000,10 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       openAssistant(false);
       requestAnimationFrame(() => assistant.focusChoice(e.shiftKey ? 'model' : 'provider'));
+    } else if (shellView && (key === 's' || key === 'w') && !e.shiftKey && !e.repeat) {
+      e.preventDefault();
+      if (key === 's') shellView.focusSessions();
+      else shellView.toggleWorkspaces();
     } else if (key === 'v' || key === 'h') dispatch({ kind: 'tool', tool: key === 'v' ? 'select' : 'pan' });
   }
 });
@@ -1053,6 +1120,34 @@ board.addEventListener(
   },
   { passive: false }
 );
+/** The one-use ticket a phone leaves behind when its window goes to a session page. */
+const ticketKey = canvasStorageKeys(viewer, workspaceId).returnTicket;
+let pendingTicket = shell ? takeTicket(sessionStorage, ticketKey, workspaceId, Date.now()) : null;
+// A notification opened this page for one session (`?session=<id>`); the address is cleaned at once.
+let pendingSession = shell ? sessionFromSearch(location.search) : null;
+if (pendingSession) {
+  const params = new URLSearchParams(location.search);
+  params.delete('session');
+  const rest = params.toString();
+  window.history.replaceState(window.history.state, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
+}
+/** Puts back what the window had when it left for a session page. Ids that are gone are dropped. */
+function applyTicket(ticket: ReturnTicket): void {
+  const was = keyboard;
+  keyboard = false;
+  try {
+    dispatch({ kind: 'outline', open: ticket.outlineOpen });
+    dispatch({ kind: 'selection', ids: ticket.selected });
+    if (ticket.focusId && objects.some((o) => o.id === ticket.focusId)) dispatch({ kind: 'focus', id: ticket.focusId });
+    for (const view of ticket.rail) dispatch({ kind: 'rail', view });
+    state = { ...state, viewport: ticket.viewport };
+  } finally {
+    keyboard = was;
+  }
+  // Focus returns to the row that opened the session once the list has drawn it.
+  returnTo = ticket.sessionId;
+}
+let returnTo: string | null = null;
 const editor = new DesktopEditor({
   url,
   workspace: workspaceId,
@@ -1068,6 +1163,9 @@ const editor = new DesktopEditor({
   assetUrl,
   display: (displayed) => {
     objects = displayed;
+    // A returning phone reopens the sub-canvas it left, before the view is first drawn.
+    if (initial && pendingTicket?.root && objects.some((o) => o.id === pendingTicket?.root && o.type === 'subcanvas'))
+      state = { ...state, root: pendingTicket.root };
     // A sub-canvas that was deleted while open returns the view to the workspace.
     while (state.root !== null && !objects.some((o) => o.id === state.root)) state = { ...state, root: null };
     const lostFocus =
@@ -1085,7 +1183,10 @@ const editor = new DesktopEditor({
     const restoredChoice = initial ? assistant.restoredChoice() : null;
     if (initial) {
       initial = false;
-      if (mobile.matches) firstPhoneView();
+      const ticket = pendingTicket;
+      pendingTicket = null;
+      if (ticket) applyTicket(ticket);
+      else if (mobile.matches) firstPhoneView();
       else fit();
     }
     node('state').hidden = !!objects.length;
@@ -1112,6 +1213,141 @@ window.canvasComments = {
     return comments.post();
   },
 };
+/**
+ * What a Sessions row opens. A conversation opens in the assistant and a task in the task list, as the rail built
+ * them; a terminal, and Open terminal on any row, is the session's own page. The canvas sends that page nothing.
+ */
+let settingFullView = false;
+function setFullView(sessionId: string | null): void {
+  settingFullView = true;
+  try {
+    dispatch({ kind: 'full-view', sessionId });
+  } finally {
+    settingFullView = false;
+  }
+}
+function openSessionRow(row: SessionViewRow, how: 'row' | 'terminal', opener: HTMLElement | null): void {
+  if (how === 'row' && row.kind === 'conversation' && row.conversationId) {
+    openAssistant(false);
+    assistant.showConversation(row.conversationId);
+    return;
+  }
+  if (how === 'row' && row.kind === 'task') {
+    if (state.rail.at(-1) !== 'tasks') toggleTasks();
+    return;
+  }
+  openFullView(row.id, opener, true);
+}
+const fullView = shell
+  ? new FullView({
+      url,
+      workspaceId,
+      conceal: () => voice.conceal(),
+      closed: () => {
+        setFullView(null);
+      },
+    })
+  : null;
+/**
+ * Shows a session's terminal: Codeman's own session page, in a frame over the canvas with a hardware keyboard,
+ * by navigating the window on a phone or a touch-first device. Only a session this view lists opens, and the
+ * canvas sends the page nothing. `focus: false` is an agent's open; it never navigates a person's window away.
+ */
+function openFullView(sessionId: string, opener: HTMLElement | null, focus: boolean): void {
+  const row = shellView?.read().find((r) => r.id === sessionId);
+  if (!fullView || !row) return;
+  if (fullViewMode({ phone: mobile.matches, touch: mobile.touch }) === 'navigate') {
+    if (!focus) return;
+    voice.conceal();
+    try {
+      sessionStorage.setItem(
+        ticketKey,
+        makeTicket(
+          {
+            workspaceId,
+            sessionId,
+            viewport: state.viewport,
+            selected: state.selected,
+            focusId: state.focusId,
+            rail: state.rail,
+            outlineOpen: state.outlineOpen,
+            root: state.root,
+          },
+          Date.now()
+        )
+      );
+    } catch {
+      /* Without storage the canvas opens as it would on a first visit. */
+    }
+    location.assign(url(fullViewPath(sessionId, workspaceId)));
+    return;
+  }
+  fullView.open(
+    sessionId,
+    row.name,
+    opener ??
+      (document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+        ? document.activeElement
+        : null),
+    focus
+  );
+  setFullView(sessionId);
+}
+function closeFullView(focus: boolean): void {
+  if (!fullView || fullView.current() === null) return;
+  fullView.close(focus);
+  setFullView(null);
+}
+/**
+ * A notification named a session. One this workspace lists opens as a full view. Any other session the person
+ * may open belongs to another workspace or to none: the classic view shows it. An id the server does not
+ * answer for opens nothing.
+ */
+function openNotified(sessionId: string): void {
+  if (shellView?.read().some((r) => r.id === sessionId)) {
+    openFullView(sessionId, null, true);
+    return;
+  }
+  void fetch(url(`/api/sessions/${encodeURIComponent(sessionId)}`))
+    .then((r) => {
+      if (r.ok) location.assign(`${url('/classic')}#session=${encodeURIComponent(sessionId)}`);
+    })
+    .catch(() => {});
+}
+navigator.serviceWorker?.addEventListener('message', (event) => {
+  const id = sessionFromNotification(event.data);
+  if (id && shell) openNotified(id);
+});
+const shellView = shell
+  ? new ShellView({
+      url,
+      workspaceId,
+      objects: () => inView().map((o) => ({ id: o.id, label: label(o) })),
+      focusObject: (id) => choose(id, false, true),
+      openOutline: () => {
+        if (!state.outlineOpen) dispatch({ kind: 'outline', open: true });
+      },
+      openSession: (row, how, opener) => openSessionRow(row, how, opener),
+      listed: () => {
+        // A session that ended while its full view was open is the session page's own state to show.
+        const wanted = pendingSession;
+        pendingSession = null;
+        const back = returnTo;
+        returnTo = null;
+        if (back && !wanted)
+          [...node('sessionRows').querySelectorAll<HTMLElement>('button.session-row')]
+            .find((b) => b.dataset.sessionId === back)
+            ?.focus({ preventScroll: true });
+        if (wanted) openNotified(wanted);
+      },
+      navigate: (href) => location.assign(new URL(href, document.baseURI).href),
+      named: (name) => {
+        node('workspaceName').textContent = name;
+        document.title = `${name} · Canvas`;
+        paintViewPath();
+      },
+    })
+  : null;
 const sync = new CanvasSync(
   url,
   workspaceId,
@@ -1124,6 +1360,7 @@ const sync = new CanvasSync(
   },
   (status) => {
     editor.online(status === 'ready');
+    shellView?.setOnline(status !== 'offline');
     node('notice').hidden = status !== 'offline';
     node('notice').textContent = 'Connection lost. Your canvas is still here; reconnecting…';
     if (status === 'error' || status === 'loading') {
@@ -1155,22 +1392,38 @@ for (const name of [
   sync.on(name, (data) => {
     assistant.event(name, data);
     tasks.event(name, data);
+    shellView?.event();
   });
-button('retry').onclick = () => void sync.start();
-void sync.start();
-void fetch(url('/api/canvas/workspaces'))
-  .then((r) => r.json())
-  .then((data: unknown) => {
-    if (typeof data !== 'object' || data === null || !('data' in data)) return;
-    // Workspace names are optional presentation data; object loading remains independent.
-    const parsed = workspaceNames.safeParse(data);
-    const name = parsed.success ? parsed.data.data.workspaces.find((w) => w.id === workspaceId)?.caseName : undefined;
-    if (name) {
-      node('workspaceName').textContent = name;
-      document.title = `${name} · Canvas`;
-    }
-  })
-  .catch(() => {});
+// The Sessions section also hears a session being made or changed; the rail views do not need those.
+if (shellView) for (const name of ['session:created', 'session:updated']) sync.on(name, () => shellView.event());
+// A saved copy of this page, served while the server could not be reached for an address that asks for the
+// classic view: say so and wait for the person. The boot guard never navigates from here.
+if (shellStale()) {
+  node('state').querySelector('h1')!.textContent = 'Codeman cannot be reached';
+  node('state').querySelector('p')!.textContent =
+    'This is a saved copy of the canvas page. Check the connection, then try again.';
+  button('retry').hidden = false;
+  button('retry').onclick = () => location.reload();
+} else {
+  button('retry').onclick = () => void sync.start();
+  void sync.start();
+  shellView?.start();
+}
+// On a shell page the workspace list names the workspace itself (`ShellView.loadWorkspaces`).
+if (!shellView)
+  void fetch(url('/api/canvas/workspaces'))
+    .then((r) => r.json())
+    .then((data: unknown) => {
+      if (typeof data !== 'object' || data === null || !('data' in data)) return;
+      // Workspace names are optional presentation data; object loading remains independent.
+      const parsed = workspaceNames.safeParse(data);
+      const name = parsed.success ? parsed.data.data.workspaces.find((w) => w.id === workspaceId)?.caseName : undefined;
+      if (name) {
+        node('workspaceName').textContent = name;
+        document.title = `${name} · Canvas`;
+      }
+    })
+    .catch(() => {});
 import { z } from 'zod';
 const workspaceNames = z.object({
   data: z.object({ workspaces: z.array(z.object({ id: z.string(), caseName: z.string() })) }),
@@ -1179,6 +1432,7 @@ window.addEventListener(
   'pagehide',
   () => {
     sync.stop();
+    shellView?.stop();
     views.stop();
     assistant.stop();
     tasks.stop();
@@ -1187,3 +1441,5 @@ window.addEventListener(
 );
 board.focus({ preventScroll: true });
 dispatch({ kind: 'viewport', viewport: state.viewport });
+// The loading state is drawn and every listener is attached: from here a failure is the canvas's own to show.
+bootReady();

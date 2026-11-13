@@ -551,6 +551,7 @@ describe('voice wiring', () => {
     const publicMethods = [...view.matchAll(/^ {2}([a-zA-Z]+)\(/gm)].map((m) => m[1]).sort();
     expect(publicMethods).toEqual([
       'cancelPending',
+      'conceal',
       'constructor',
       'escape',
       'pending',
@@ -559,6 +560,8 @@ describe('voice wiring', () => {
       'thread',
       'turnEnded',
     ]);
+    // `conceal` (PC13: a session's full view is about to cover the page) can only end a capture, as hiding the page does.
+    expect(view).toMatch(/conceal\(\): void \{\s*this\.dispatch\(\{ type: 'hidden' \}\);\s*\}/);
     const entry = source('entry.ts');
     expect(entry).not.toMatch(/window\.\w*[vV]oice/);
     // The view-command layers never reach the voice view.

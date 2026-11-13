@@ -1,6 +1,6 @@
 # Canvas and ambient assistant UI/UX brief
 
-Status: Revised to the owner's latest direction. The thin right-hand assistant rail supersedes the floating conversation-card and context-picker designs. This is a design prototype, not a live model, microphone or background-agent implementation.
+Status: Revised to the owner's latest direction. The thin right-hand assistant rail supersedes the floating conversation-card and context-picker designs. This is a design prototype, not a live model, microphone or background-agent implementation. The last section, Canvas shell (PC13), shapes the canvas as Codeman's landing page; it is a brief and is not built.
 
 ## Product and current scope
 
@@ -154,3 +154,279 @@ Keep the existing data compatibility and supervised release guarantees. Self-bui
 The owner-selected direction directly supersedes prior composition choices; no new random concept round is necessary. An independent interaction review checked input scope, lasso cancellation, separate voice modes and child-task identity. This is design review, not implementation verification.
 
 Acceptance requires the full [foundations and parity matrix](canvas-foundations.md), keyboard-only context selection and submission, no modal context flow, camera-stable rail dismissal, lossless lasso cancellation, truthful voice states, isolated background tasks, provider/model attribution and continuity through the self-building path. The real adapters, model catalogs, audio transport, touch/keyboard behavior, durable operations and performance must still be implemented and verified.
+
+## Canvas shell (PC13)
+
+Status: shaped on 2026-11-13 for PC13. This section is a design brief. Nothing in it is built yet. The owner delegated design decisions for this program to the agent, so the discovery interview below was answered from the source documents and its assumptions are listed. Implementation scope is in `intent/2026-11-13-canvas-pc13-shell.md`.
+
+### Job and outcome
+
+One person runs coding agents from a laptop and a phone. Until PC13 they open Codeman on a tab dashboard and reach the canvas as one tab inside it. After PC13 they open Codeman on the canvas of the workspace they last used. Sessions, workspaces and the things they do every day are reached from the canvas. The tab dashboard stays as the classic view at its own address, on the same server and the same state.
+
+The shell is not a rebuild of the dashboard. A surface that is deep or rarely used keeps its home in the classic view, behind a visible link. The shell succeeds when a day of normal work (open a workspace, read and arrange the board, talk to an agent, check which sessions need attention, type into a terminal, come back) never needs the classic view, and when a broken canvas can never keep the owner out of Codeman.
+
+### Decisions
+
+1. **Landing.** With the shell on, `/` shows the canvas of the last-used workspace. Last-used is remembered per device. A device that has no memory yet opens the workspace of the case the server last started a session in, and failing that the first workspace the person can open. `/` answers with the canvas document itself and never with a redirect. The address bar then changes to `canvas/<workspace id>` without a second load, so a reload and a bookmark open the same workspace.
+2. **First run.** When the person has no workspace, `/` shows a first-run state, not an empty board. It says what a workspace is in one sentence, lists the existing cases with **Open canvas** beside each, offers one field to name a new case, and links to the classic view. It never creates a case or a workspace by itself.
+3. **Workspaces live in the outline.** The workspace name at the top of the outline is a button. It opens an inline list in the outline: the person's workspaces (each with a count of sessions that need them, shown only when the count is not zero), then **New workspace**. Choosing a workspace loads that workspace's canvas as a new page. **New workspace** shows, inline, the cases that have no canvas yet and a field for a new case name. There is no dialog and no tab.
+4. **Sessions are listed in the outline, never placed on the board.** The outline gains a **Sessions** section above the object tree. It lists every live session whose working folder is inside the workspace's case: terminals, assistant conversations and background tasks. Each session has exactly one row. A row shows the name, a kind label (Terminal, Conversation, Task) and a state as a glyph and a word: Needs you, Error, Waiting, Working, Idle, Ended. Rows are ordered by that state, with the dashboard's own ordering rule. PC13 creates no board object for a session, adds no object type and writes nothing to the operation log on a session's behalf. A session row has no author because it is not canvas content.
+5. **One full view per session: its terminal.** Every session, whatever its kind, has one full view, and it is the session's terminal. A Terminal row opens it with Enter or a click. A Conversation row opens the conversation in the assistant rail, and a Task row opens the task in the rail's task view, exactly as PC9 and PC12 built them; each of those rows also has **Open terminal**, which opens the same session's full view. The rail views are views of the same session and are not new.
+6. **The full view is Codeman's own session page.** The terminal full view shows the existing single-session page (`session/<id>`, the page a popped-out session window already uses). It is the dashboard's own terminal, with its own input path, local echo, paste, scrollback, links and phone keyboard. The canvas never writes to a pane and holds no terminal code.
+7. **How the full view is hosted.** On a laptop the session page opens in a same-origin frame that covers the canvas. The canvas document stays loaded underneath, so the camera, the selection and the rail are the same objects when the frame is removed. On a phone or any touch-first device the canvas navigates the whole window to the session page, and the session page's **Canvas** button navigates back; the canvas saves a one-use return ticket (camera, selection, focus, rail view, outline state) before it leaves and applies it when it loads again. The reasons are in "Terminal full view" below.
+8. **The classic view has its own address.** `classic` always shows the tab dashboard, whatever the settings say. It loads only dashboard files. With the shell on, the dashboard's header carries a **Canvas** link back to `/`; on a phone that link is the Canvases section the phone overview already has.
+9. **A broken canvas falls back to the classic view.** If the canvas files are missing on the server, `/` answers with the classic view and a notice. If the canvas document loads but its script does not load or does not start, the document sends the browser to the classic view with a notice. The canvas document also carries a plain **Open classic view** link that works with no script at all. Detection is described in "Fallback" below.
+10. **The shell has its own setting.** `canvasShellEnabled` is synced, off by default and independent of `canvasEnabled`. The shell needs both to be on. The switch sits beside the Canvas switch in App Settings, which is in the classic view, so the way to turn the shell off is always reachable.
+11. **The phone.** With the shell on, `/` on a phone is the canvas home: the board, the outline as a full-height view with Sessions first, the assistant and comments from PC6 and PC9. It replaces the phone overview as the landing screen. A session row opens the session page with the phone keyboard, toolbar and composer the dashboard already has.
+12. **Cmd/Ctrl+K is Go to.** On the canvas it opens the outline and focuses its search field in Go to mode. Results are grouped: Sessions in this workspace, Workspaces, Objects on this canvas. Enter opens the result. Past sessions, pinning, resume and search across all sessions stay in the classic view, and the last row of the results says so with a link.
+
+### Surface inventory
+
+Homes: **Canvas** (an object or a control on the canvas page), **Outline**, **Rail** (a view in the assistant rail), **Full view** (opened from the canvas and closed back to it), **Classic** (reached through the classic view, with the reason), **Server page** (a page the server answers before either view, unchanged).
+
+"Full view" rows are surfaces the session page already draws. They need no new canvas code. "Classic" rows are reached by the **Classic view** link at the foot of the outline, and from a session's full view by that page's own link.
+
+| # | Surface | Today | Home under the shell | How reached | PC13 or classic-only |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Session tab strip, including the scrolling phone strip | Header (`app.js`, `index.html`) | Outline | Sessions section; `S` | PC13 |
+| 2 | Session sidebar and vertical tab rail, rail resize | `app.js`, `tab-rail-resize.js` | Outline | Sessions section | PC13 (layout choices stay classic) |
+| 3 | Tab groups, Focus section, tab layouts (state, case, ledger), drag order, Alt+1 to 9 | `tab-layout-browser.js`, `app.js` | Classic | Classic view link | Classic-only: grouping is a drawing layer over the tab strip, and the outline orders by state instead |
+| 4 | Session lineage lines | `session-lineage.js` | Classic | Classic view link | Classic-only: drawn between tabs, which the shell does not have |
+| 5 | Header stats, token and cost readout, plan-usage chip, token statistics | Header (`settings-ui.js`, `index.html`) | Classic | Classic view link | Classic-only: system telemetry, not workspace content |
+| 6 | Welcome screen and desktop home rail | `terminal-ui.js`, `home-sessions.js` | Canvas | `/` is the canvas; first-run state when there is no workspace | PC13 |
+| 7 | Resume Conversation list (past sessions) | Welcome screen (`terminal-ui.js`) | Classic | Go to results link; Classic view link | Classic-only: history across every case, outside one workspace |
+| 8 | Phone overview home screen | `mobile-overview.js` | Outline | Canvas home on the phone; outline Sessions | PC13 |
+| 9 | Session terminal: output, typing, local echo, paste, copy, scrollback, link taps | `terminal-ui.js`, `app.js` | Full view | Sessions row; Enter | PC13 |
+| 10 | Split pane | `terminal-split.js`, `terminal-tile.js` | Classic | Classic view link | Classic-only: two sessions side by side is a dashboard layout |
+| 11 | Tile grid | `tile-grid.js` | Classic | Classic view link | Classic-only: same reason |
+| 12 | Popped-out session window | `app.js` (`/session/:id`) | Full view | It is the page the full view shows | PC13 |
+| 13 | Session Options (name, colour, respawn, Ralph settings, prompt cache, context) | `session-ui.js`, `#sessionOptionsModal` | Classic | Classic view link | Classic-only: opened from a tab, which the session page hides |
+| 14 | Respawn banner, presets, run summary, timer banner | `respawn-ui.js` | Classic | Classic view link | Classic-only: loop control is rarely changed and has many states |
+| 15 | Ralph panel, Ralph wizard, plan versions | `ralph-panel.js`, `ralph-wizard.js` | Classic | Classic view link | Classic-only: same reason |
+| 16 | Orchestrator panel | `orchestrator-panel.js` | Classic | Classic view link | Classic-only: same reason |
+| 17 | Run button and run-mode menu (start a session) | `session-ui.js`, `#runModeMenu` | Outline | **New session** in the Sessions section | PC13 for the available agent CLIs and a shell; effort, model, custom endpoints and the other options stay classic |
+| 18 | Custom model picker and its swap and context warnings | `session-ui.js`, three modals | Classic | Classic view link | Classic-only: per-launch options |
+| 19 | Close session, Kill all sessions | Tab close, `#killAllModal` | Classic | Classic view link | Classic-only: destructive and confirmed by a dashboard dialog; a conversation or a task is still ended from the rail as today |
+| 20 | File preview: viewer, rendered Markdown, edit mode, document review, spreadsheets, media, folder grid, rendered HTML | `panels-ui.js`, `doc-review.js`, `spreadsheet-preview.js` | Full view | A file path printed in a terminal is a link inside the full view | PC13 by reuse; opening a file with no session is classic |
+| 21 | Files panel and file search | `panels-ui.js`, `#fileBrowserPanel` | Classic | Classic view link | Classic-only: a workspace file browser belongs to the documents phase |
+| 22 | Git status indicator, panel and Fetch | `git-status-ui.js` | Classic | Classic view link | Classic-only: Git records belong to a later phase |
+| 23 | Prompt uploads: paste, drop, Attach | `image-input.js` | Full view | In the terminal | PC13 by reuse |
+| 24 | Attachment history | `panels-ui.js`, header button | Classic | Classic view link | Classic-only: opt-in header panel |
+| 25 | Response viewer and chat view | `app.js`, `#responseViewer` | Classic | Classic view link | Classic-only: the rail already shows a conversation's transcript |
+| 26 | Filesystem path picker | `session-ui.js`, phone keyboard key | Full view | Phone keyboard Path key in the terminal | PC13 by reuse; the Link Existing browse is classic |
+| 27 | App Settings, every section: terminal, display, appearance, agents and CLIs, plugins and skills, MCP sync, notifications, webhook, voice, keyboard, diagnostics, paths, config backups, automation, remote access, updates | `settings-ui.js`, `#appSettingsModal` | Classic | **Settings (classic)** at the foot of the outline | Classic-only: about forty sections of server-wide settings; the shell switch itself is here |
+| 28 | Deploys section and rollback | `deploy-ui.js` | Classic | Settings (classic) | Classic-only on purpose: recovery must not depend on the canvas |
+| 29 | Admin panel, users, change password | `admin-ui.js` | Classic | Classic view link | Classic-only: administration |
+| 30 | Help and the dashboard shortcut overlay | `#helpModal`, `#shortcutOverlayModal` | Classic | In the classic view and in the full view | Classic-only; the canvas has its own Keys view (row 61) |
+| 31 | Session lifecycle log | `settings-ui.js` | Classic | Classic view link | Classic-only: audit log |
+| 32 | Approvals Inbox drawer | `approvals-ui.js` | Outline | A waiting session reads Needs you in Sessions and in the workspace list; it is answered in the rail (conversations and tasks) or in the full view (terminals) | PC13 for state and answering; the cross-session drawer stays classic |
+| 33 | In-page notifications and the notification drawer | `notification-manager.js` | Classic | Classic view link | Classic-only: the outline's Needs you state is the shell's signal |
+| 34 | Push notifications and their click | `sw.js`, `settings-ui.js` | Full view | A notification click opens that session's full view from the canvas | PC13; subscribing stays in Settings (classic) |
+| 35 | Away digest | `#awayDigestModal` | Classic | Classic view link | Classic-only: a report across every session |
+| 36 | Reboot-restore banner | `reboot-restore-ui.js` | Canvas | One notice line with a link to the classic view, where the rebuild is offered | PC13 for the notice; the rebuild stays classic |
+| 37 | Connection-loss overlay and banner | `app.js`, `constants.js` | Canvas | The canvas's own offline state (existing) | PC13 by reuse; the full view shows the dashboard's own |
+| 38 | What's new, update notice, security notices | `settings-ui.js`, `panels-ui.js` | Classic | Shown when the classic view is opened | Classic-only in PC13; see Risks in the intent |
+| 39 | Self-update | Settings | Classic | Settings (classic) | Classic-only |
+| 40 | Command palette and Session Manager (Cmd+K): live sessions | `app.js`, `#commandPaletteModal`, `#sessionManagerModal` | Outline | Cmd/Ctrl+K, Go to | PC13 |
+| 41 | Session Manager: past sessions, pinning, resume | `app.js`, `#sessionManagerModal` | Classic | Go to results link | Classic-only: history outside one workspace |
+| 42 | Search across sessions | `#searchPanel` | Classic | Go to results link | Classic-only: same reason |
+| 43 | Case picker (choose the case to work in) | `session-ui.js`, `#mobileCasePickerModal` | Outline | Workspace list; `W` | PC13 |
+| 44 | Add Case: create a new case | `#createCaseModal` | Outline | New workspace | PC13 |
+| 45 | Add Case: link an existing folder, clone a repository, manage agent-created cases | `#createCaseModal` | Classic | Link under New workspace | Classic-only: each has its own safety checks and forms |
+| 46 | Remote SSH cases and hosts, wake-on-LAN banner and settings | `session-ui.js`, `host-wake-ui.js` | Classic | Classic view link | Classic-only: host administration |
+| 47 | Docker cases, hosts, adoption, export and import | `session-ui.js` | Classic | Classic view link | Classic-only: host administration |
+| 48 | Rename case | `#renameCaseModal` | Classic | Classic view link | Classic-only: it can stop sessions and move a folder |
+| 49 | Git worktrees of a case | `#worktreeModal` | Classic | Classic view link | Classic-only: background tasks already make their own worktrees |
+| 50 | Cron jobs | `cron-ui.js` | Classic | Classic view link | Classic-only: recurring automation is outside the canvas scope |
+| 51 | Read My Mind | `readmymind-ui.js` | Classic | Classic view link | Classic-only: opt-in dashboard feature |
+| 52 | Web tabs (saved dashboard URLs) and Add URL | `webview-tabs.js`, `#webviewModal` | Classic | Classic view link | Classic-only: a page is shown on the canvas as an embed object (row 60) |
+| 53 | Session previews: badge, Terminal and Preview switch, stopped card | `session-ui.js`, `webview-tabs.js` | Classic | Classic view link | Classic-only: live previews are a later phase |
+| 54 | Subagent panel, floating subagent windows, monitor, project insights, agent teams | `panels-ui.js`, `subagent-windows.js` | Classic | Classic view link | Classic-only: tasks started from the canvas are in the rail's task view |
+| 55 | Ultracode panel and windows | `ultracode-panel.js`, `ultracode-windows.js` | Classic | Classic view link | Classic-only: opt-in visualisation |
+| 56 | Dashboard voice input | `voice-input.js` | Full view | Microphone control in the terminal | PC13 by reuse; canvas dictation and voice conversation are in the rail (row 61) |
+| 57 | Gesture control | `gesture/`, header | Classic | Classic view link | Classic-only: the server injects it into the dashboard only |
+| 58 | Phone keyboard handling, accessory bar, toolbar, Compose, CJK input | `mobile-handlers.js`, `keyboard-accessory.js`, `input-cjk.js` | Full view | A session row on the phone | PC13 by reuse; swiping between sessions is classic |
+| 59 | Theme, branding, language | Settings, `i18n.js` | Canvas | The canvas already follows the device's stored theme | PC13 by reuse; choosing a theme is in Settings (classic) |
+| 60 | The canvas itself: board, objects, embeds, sub-canvases, dock | `packages/canvas` | Canvas | `/` | Existing |
+| 61 | Rail views: assistant, comment thread, history, tasks, Keys, reader | `packages/canvas` | Rail | `C`, Enter, `G`, `?` | Existing |
+| 62 | The canvas as a tab in the dashboard | `session-ui.js` (`openCaseCanvas`) | Classic | Case picker, with the shell on or off | Unchanged |
+| 63 | DeepSeek web UI entry, multi-monitor button, entrance animations, header divider | `session-ui.js`, `header-divider.js`, `entrance-animations.js` | Classic | Classic view link | Classic-only: dashboard chrome |
+| 64 | Tunnel and QR sign-in buttons | `settings-ui.js` | Classic | Settings (classic) | Classic-only: remote access administration |
+| 65 | Sign-in challenge and the QR sign-in address | Server (`middleware/auth.ts`, `system-routes.ts`) | Server page | Before either view; a signed-in browser lands on `/` | Unchanged |
+
+No surface lacks a home. Counts: Canvas 5, Outline 8, Rail 1, Full view 8, Classic 42, Server page 1.
+
+### Flows
+
+**Open Codeman.** The person opens `/`. The canvas of the last-used workspace appears with the camera fitted to its content, the outline open on a laptop and closed on a phone, and the rail closed. Sessions that need them show at the top of the Sessions section.
+
+**Switch workspace.** `W`, or a click on the workspace name. The list opens inline in the outline with focus on the current workspace. Arrow keys move, Enter opens, Escape closes the list and returns focus to the name. Opening a workspace loads its canvas and records it as last-used on this device.
+
+**Create a workspace.** In the workspace list, **New workspace** shows the cases without a canvas and a name field. Choosing a case creates its workspace and opens it. Typing a name and pressing Enter creates the case, then its workspace, then opens it. A refused name shows the server's reason under the field and keeps the text. Link, clone, remote and Docker cases are one link away in the classic view.
+
+**Start a session.** **New session** in the Sessions section opens a short inline list: the agent CLIs this server can run, then Shell. Choosing one starts a session in the workspace's case through the route the Run button already uses, adds its row and opens its full view. A row is added once whether the answer or the server's event arrives first.
+
+**Open and close a terminal.** Enter on a Terminal row, or **Open terminal** on any row. On a laptop the session page covers the canvas and takes keyboard focus. **Canvas** in the session page's header, or Ctrl+Shift+Backspace, removes it. Focus returns to the row that opened it. The camera, the selection, the focused object, the open rail view, its scroll position and any draft are what they were. On a phone the same actions navigate to the session page and back, and the return ticket restores the camera, selection, focus, rail view and outline state.
+
+**Answer a session that needs you.** The row reads Needs you. For a conversation or a task the row opens the rail, where the approval or question already appears. For a terminal the row opens the full view, where the dialog is on the screen.
+
+**Go to.** Cmd/Ctrl+K. Type part of a session, workspace or object name. Enter opens it: a session as its row would, a workspace as the list would, an object by focusing it and fitting it in view.
+
+**Leave for the classic view and come back.** **Classic view** at the foot of the outline opens `classic`. **Canvas** in the dashboard's header opens `/`. Sessions, drafts in the dashboard, tab groups and the canvas's own queued edits and drafts are untouched, because both views read the same server state and each keeps its own browser storage.
+
+**The canvas is broken.** The person opens `/` and arrives in the classic view with a notice that says the canvas did not load and why. The notice has **Try the canvas again** and **Dismiss**. Nothing retries by itself.
+
+### Terminal full view
+
+Two ways to show a session's terminal were compared.
+
+| Question | Session page in a same-origin frame over the canvas | Navigate the window to the session page, with a link back |
+| --- | --- | --- |
+| Camera, selection and rail unchanged on return | True by construction: the canvas document is never unloaded | Only what the return ticket saves; a running voice capture ends and the canvas loads again |
+| Terminal geometry | The session page fits its terminal to the frame's box. The frame is removed on close, not hidden, so a hidden terminal never holds a size | The page fits to the window |
+| Phone keyboard | The dashboard reads the keyboard from `visualViewport` (`mobile-handlers.js`). A framed page does not see the keyboard there, so the toolbar and the held rows would be wrong | Works as today |
+| Existing frame rules | The frame shows Codeman's own page from a fixed prefix and a session id taken from the session list, never a URL from an object or from agent text. It needs the sign-in cookie, so it is not sandboxed. `session/<id>` is a registered route, so the lost-frame page never answers it | No frame |
+| Input path | The dashboard's own | The dashboard's own |
+
+The frame is chosen wherever a hardware keyboard is the expected input, because it is the only one of the two that keeps the canvas exactly as it was. Navigation is chosen on a phone and on any device whose primary pointer is coarse, because the frame breaks the software keyboard there. One rule decides, and it is the canvas's existing phone and touch test.
+
+Rules for the full view:
+
+- At most one full view is open. Opening another replaces it.
+- The session page is one more client of the session. It joins the existing popped-out window protocol, so an open classic dashboard marks that session as shown elsewhere and does not compete for the terminal's size.
+- While the frame is open the canvas underneath is inert: it takes no keys and no pointer, and it is hidden from assistive technology. Server changes still arrive and never move the camera.
+- Opening a full view ends an active microphone capture first and sends nothing, like hiding the page.
+- The session page tells the canvas it is ready. If it has not within ten seconds, the canvas shows an inline message in place of the frame with **Try again**, **Open in classic view** and **Back to canvas**. Escape closes the full view whenever focus is on the canvas page and not inside the terminal.
+- With the shell off, or when the canvas is itself a tab inside the dashboard, there is no Sessions section and no full view. The dashboard's tabs are beside it.
+
+### Fallback
+
+The classic view must be reachable whenever the server is. Three independent pieces give that.
+
+1. **The server checks before it answers.** For `/` with the shell on, the server looks for the canvas files. If one is missing it answers with the classic view and the notice. No redirect is involved.
+2. **The canvas document guards its own start.** A small inline script, which is part of the document and not of the canvas bundle, watches the bundle. It sends the browser to the classic view when the bundle's script fails to load, when the script loads but has not reported that it started, or when an uncaught error happens before that report. The bundle reports that it started only after it has drawn the board or one of its own designed states (loading, first run, error, offline). A failure to fetch workspace data is not a broken canvas: the canvas shows its own error state with **Try again**.
+3. **A link that needs no script.** The document's loading state carries **Open classic view** as a plain link from its first paint.
+
+The automatic fallback goes to `/?view=classic` with a reason, not to `classic`. The server honours `view=classic` before it reads the shell setting. A release from before PC13 ignores the query and answers `/` with the dashboard, so the fallback still lands on a working page if a rollback happens between loading the document and loading its script.
+
+It cannot loop. The only automatic navigation is from the canvas document to the classic view. The classic view never navigates by itself. The guard never navigates when the address already asks for the classic view, which covers a cached canvas document being served for that address while offline; in that case the document says the server cannot be reached.
+
+The guard acts only when the shell is on and the canvas is the top-level page. As a tab inside the dashboard, a canvas that fails shows its error text in place, as today.
+
+### The shell setting
+
+| `canvasEnabled` | `canvasShellEnabled` | `/` | `classic` | `canvas/<id>` |
+| --- | --- | --- | --- | --- |
+| off | off | Classic view | Classic view | Not found |
+| on | off | Classic view; the canvas is a tab, as today | Classic view | Canvas, no Sessions section |
+| off | on | Classic view. Settings says the shell needs the canvas turned on | Classic view | Not found |
+| on | on | Canvas shell | Classic view | Canvas with the shell's outline |
+
+The setting is read on every request for `/`, so switching it takes effect on the next load with no restart. In multi-user mode only an admin can change it, like every synced setting. Turning it on never turns `canvasEnabled` on.
+
+A blue-green deploy keeps the setting because both builds read the same settings file. A rollback to a release from before PC13 keeps the key in the file and ignores it: `/` is the dashboard again and the canvas is a tab. Deploying forward again brings the shell back with no step from the person.
+
+### States
+
+| State | What the person sees |
+| --- | --- |
+| Loading | "Opening your canvas", the workspace name when known, and the Open classic view link |
+| First run, no workspace | One sentence on what a workspace is, the cases with Open canvas, a new case field, the classic link |
+| No sessions in the workspace | The Sessions section shows "No sessions" and New session |
+| A session needs you | Its row moves to the top with a glyph and "Needs you"; the workspace list shows the count |
+| Session ended | The row reads Ended and stays until the session is removed; opening it shows the session page's own ended state |
+| Full view did not open | Inline message in place of the frame with Try again, Open in classic view, Back to canvas |
+| Session list could not load | "Sessions could not load" with Try again in the section; the board is unaffected |
+| Workspace list could not load | The same pattern in the workspace list; the current workspace stays open |
+| Create refused | The server's reason under the field; the text is kept |
+| Offline | The board and the last session list stay readable and are marked as last known; New session, New workspace and Open terminal are unavailable with a reason; the classic link stays |
+| Canvas fallback | The classic view with a notice naming the reason, Try the canvas again and Dismiss |
+| Shell on, canvas off | The classic view; the Shell row in Settings says the canvas must be on |
+
+### Phone
+
+- `/` opens the canvas home. The outline is a full-height view opened from its control, with Sessions first, then the workspace name and the object tree. Rows are at least 44 pixels high.
+- Reading, navigation, comments and the assistant behave as PC6 and PC9 left them. The phone still makes no canvas edits.
+- A session row opens the session page in the whole window. The dashboard's keyboard handling, accessory bar, toolbar and composer run there unchanged. **Canvas** in its header returns.
+- New session and New workspace work on the phone. They start sessions and create cases, which are not canvas edits.
+- The phone overview remains in the classic view.
+- Nothing depends on hover or a hardware key. Go to is the outline's search field.
+
+### Key bindings
+
+Additions to the table above. Each was checked against the canvas bindings in `packages/canvas/src/shortcuts.ts` (J, K, X, V, H, C, Q, P, B, G and M are taken) and against the dashboard registry in `app.js`.
+
+| Action | Default | Scope and pointer alternative |
+| --- | --- | --- |
+| Go to a session, workspace or object | Cmd/Ctrl+K; Alt+K | Canvas page, not while typing in a field other than the search field; outline search field |
+| Focus the Sessions section | `S` | Canvas only; opens the outline if it is closed |
+| Open the workspace list | `W` | Canvas only; the workspace name |
+| Open the focused session | Enter | Session row; click or tap |
+| Back to the canvas from a terminal | Ctrl+Shift+Backspace | Session page opened from the canvas only; the Canvas button. Rebindable in the dashboard's registry |
+| Close a full view that did not open | Escape | Focus on the canvas page; Back to canvas |
+
+Conflicts considered. Cmd/Ctrl+K and Alt+K are the dashboard's palette keys; inside a full view the terminal page has focus and its own palette answers, which is correct there. Plain `S` and `W` run only with canvas focus and never while typing; Ctrl+W stays unbound everywhere, as the dashboard requires. Escape inside a terminal belongs to the terminal, so it never closes a full view that has focus. Ctrl+Shift+Backspace is not in either table and has no meaning in a shell; the terminal must swallow it so no byte reaches the pane. It is a default: the build must check it on macOS, Windows and Linux browsers and remap it if a platform reserves it.
+
+### Accessibility
+
+- The Sessions section is a labelled list. Each row is a button whose name reads the session name, its kind and its state. State is a glyph and a word, never colour alone.
+- A change to Needs you is announced once, politely. Other state changes are not announced.
+- The workspace list and New session are disclosures with `aria-expanded`, not dialogs. Focus is not trapped. Escape closes them and returns focus to the control that opened them.
+- The full-view frame has a title naming the session. Focus moves into it on open and back to the opening row on close. The canvas underneath is inert while it is open.
+- The fallback notice in the classic view is a status region that stays until dismissed. It is not a toast.
+- Every new control is reachable by Tab, has a visible focus outline in the focus colour, and is at least 32 pixels high on a laptop and 44 by 44 on touch.
+- Nothing new animates. Opening and closing a full view is immediate.
+- Session names and case names reach the page as text only.
+
+### Assumptions and the simulated-user record
+
+Shape asks for a discovery interview. The owner delegated design decisions for this program, so the questions were answered from `PRODUCT.md`, the plan's PC13 section, this brief and the code.
+
+| Question | Answer taken | Source |
+| --- | --- | --- |
+| What is the shell for? | Opening Codeman on the canvas and reaching sessions from it, with the dashboard as a fallback | Plan, PC13 |
+| Who uses it and how? | One person, laptop browser and phone, keyboard first | `PRODUCT.md` |
+| What must stay untouched? | The dashboard's code, a session's single input path, the operation log's author rule, the deploy and rollback rules | Plan, PC13; `PRODUCT.md` |
+| What would make it wrong even if it looked right? | Being locked out by a broken canvas; a second way to write to a pane; session rows written to the board without an author; a navbar | Plan, PC13; this brief |
+| How much of the dashboard moves? | Daily surfaces only. Deep and rare surfaces stay classic behind a link | Owner's instruction for this pass |
+| Which states matter? | First run, a session that needs the person, a broken canvas, offline, rollback | Plan, PC13 |
+
+Assumptions made where the sources were silent:
+
+1. Last-used workspace is per device. A phone and a laptop are often on different work, and a per-device memory needs no write to server settings.
+2. A workspace's sessions are the live sessions whose working folder is inside its case. This is the rule the server already uses to find an agent's workspace.
+3. The outline can carry a Sessions section at 192 pixels. Names are cut with an ellipsis and the full name is in the row's accessible name and tooltip.
+4. A person does not need to place a session on the board in PC13. A placeable session object would be a new object type with its own log operations and belongs to a later change.
+5. Ending a session, session options and loop control are rare enough to stay classic for now.
+6. The session page shows enough for daily terminal work. What it lacks is one link away in the classic view.
+
+### Acceptance criteria
+
+Each item can be checked by a script against a throwaway instance. "Shell on" means both settings are on.
+
+1. Shell off: `GET /` returns the dashboard document and contains no reference to the canvas bundle. The response is the same as before PC13 apart from the header link container.
+2. Shell on, one workspace: `GET /` returns status 200 with the canvas document, not a redirect. After load the address path ends in `canvas/<that workspace's id>`.
+3. Shell on, no workspace: `/` shows the first-run state. No case and no workspace exists afterwards unless the person acted.
+4. `GET classic` returns the dashboard document for all four setting combinations, and that document requests no canvas file.
+5. `GET /?view=classic` returns the dashboard document with the shell on.
+6. Shell on, canvas bundle file removed: `GET /` returns the dashboard document, and the fallback notice is visible in it.
+7. Shell on, canvas bundle replaced by a script that throws: loading `/` ends on the classic view with the notice visible, after exactly one navigation. Loading that address again does not navigate.
+8. Shell on, canvas bundle request blocked: same result as 7.
+9. With scripts disabled, the canvas document shows a link whose target is the classic view.
+10. The Sessions section lists exactly the live sessions whose working folder is inside the workspace's case, one row each, and a session created or ended elsewhere appears or changes within five seconds.
+11. Starting a session from New session creates exactly one session and one row.
+12. Laptop: read the canvas view state, open a terminal's full view, type a command that prints a marker, confirm the marker in the pane, close the full view, read the view state again. Camera, selection, focus and rail view are equal, and the rail's draft text is unchanged.
+13. Laptop: while a full view is open, pressing a canvas shortcut key changes nothing on the canvas.
+14. Laptop: the operation log's last sequence is the same before and after 10 to 13.
+15. No request from the canvas page writes to a pane: during 10 to 13 the canvas page itself sends no request to a session input route and opens no terminal socket. Only the session page does.
+16. Phone: `/` shows the canvas home. Opening a session row lands on the session page at the top level; typing with the on-screen keyboard reaches the pane; **Canvas** returns, and the camera and rail view are equal to before.
+17. A session is visible, with the same id and state, in the outline and in the classic view's tab list at the same time.
+18. Switching from canvas to classic and back loses no session, no dashboard tab group and no canvas draft.
+19. The workspace list shows every workspace the person can open and no other person's in multi-user mode. Choosing one opens it, and the next `GET /` from that browser opens the same one.
+20. New workspace with a new name creates one case and one workspace and opens it. A name the server refuses creates nothing.
+21. Cmd/Ctrl+K focuses the search field and Enter on a session result opens what that session's row opens.
+22. In multi-user mode a non-admin's attempt to change `canvasShellEnabled` is refused with 403 and the file is unchanged.
+23. With the shell on, the settings file is still read by the previous release: its `/` returns the dashboard and its settings save succeeds.
+24. Every row of the surface inventory marked PC13 is reachable with the shell on without opening `classic`. Every row marked classic-only is reachable from the canvas in at most two activations: the classic link, then the surface's own control.
+25. Keyboard only: open `/`, move to a session, open its terminal, return, switch workspace, with no pointer event.
+26. No new control fails the contrast pairs in `design/contrast-report.json`, and each has an accessible name.

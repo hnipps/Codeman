@@ -17,6 +17,8 @@ export type CanvasStorageKeys = {
   taskOutbox: string;
   taskSent: string;
   tasksSeen: string;
+  /** sessionStorage, not localStorage: the one-use ticket a phone takes to a session page and back. */
+  returnTicket: string;
 };
 export function canvasStorageKeys(viewer: string, workspace: string): CanvasStorageKeys {
   const scope = `codeman:canvas:user:${encodeURIComponent(viewer)}`;
@@ -34,6 +36,7 @@ export function canvasStorageKeys(viewer: string, workspace: string): CanvasStor
     taskOutbox: `${scope}:${workspace}:task:outbox`,
     taskSent: `${scope}:${workspace}:task:sent`,
     tasksSeen: `${scope}:${workspace}:task:seen`,
+    returnTicket: `${scope}:${workspace}:shell:return`,
   };
 }
 /**

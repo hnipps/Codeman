@@ -115,6 +115,7 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import { decideLanding, shellActive, cookieValue, LAST_WORKSPACE_COOKIE, type ShellNotice } from './shell-landing.js';
 import { resolveVoiceStatus } from './routes/voice-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
 import type { CanvasPort } from './ports/canvas-port.js';
@@ -1088,7 +1089,7 @@ export class WebServer extends EventEmitter {
 
     // Security headers + CORS
     registerSecurityHeaders(this.app, this.https, this.basePath);
-    this.app.get('/', async (req, reply) => {
+    this.app.get<{ Querystring: Record<string, unknown> }>('/', async (req, reply) => {
       // A web-tab frame that reloaded on its dashboard's landing page. The proxy's
       // runtime shim maps `/webview/<cap>/` to exactly `/`, so that reload asks for
       // Codeman's own root as an iframe navigation, and it used to get the app
@@ -1096,6 +1097,50 @@ export class WebServer extends EventEmitter {
       // (nothing in Codeman frames its root; the sandboxed frame has no cookie and
       // no Authorization); under a password the auth hook has answered it already.
       if (isLostWebviewRootFrame(req)) return sendLostWebviewFramePage(reply);
+      // Canvas shell (PC13): with BOTH settings on, `/` is the canvas of the workspace this device last
+      // used. Every other combination takes the next return untouched, so the dashboard's answer is
+      // what it always was. Never a redirect: the service worker precaches `/`, and a redirected
+      // response cannot be served to a navigation.
+      const settings = await this.readSettings(true);
+      if (!shellActive(settings)) {
+        return reply
+          .header('Cache-Control', 'no-cache')
+          .type('text/html; charset=utf-8')
+          .send(await this.renderIndexHtml());
+      }
+      const { readWorkspaces } = await import('../canvas/workspace-registry.js');
+      const { canAccessOwned, getAuthUser } = await import('./route-helpers.js');
+      const user = getAuthUser(req);
+      let workspaces: { id: string; caseName: string }[] = [];
+      let registryReadable = true;
+      try {
+        workspaces = readWorkspaces().filter((w) => canAccessOwned(user, w.owner));
+      } catch {
+        // A registry that does not parse must not keep anyone out of Codeman.
+        registryReadable = false;
+      }
+      const landing = decideLanding({
+        canvasEnabled: true,
+        shellEnabled: true,
+        query: req.query ?? {},
+        bundlePresent: registryReadable && this.canvasFilesPresent(),
+        workspaces,
+        cookieWorkspaceId: cookieValue(req.headers.cookie, LAST_WORKSPACE_COOKIE),
+        // `lastUsedCase` is server-wide; in multi-user mode it only ever matches the caller's own workspace list.
+        lastUsedCase: typeof settings.lastUsedCase === 'string' ? settings.lastUsedCase : undefined,
+      });
+      reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8');
+      if (landing.kind === 'classic') return reply.send(await this.renderIndexHtml(undefined, landing.notice));
+      return reply.send(
+        this.renderCanvasHtml({
+          workspaceId: landing.kind === 'canvas' ? landing.workspaceId : null,
+          shell: true,
+          viewer: isMultiUserMode() ? user.username : '@single',
+        })
+      );
+    });
+    // The tab dashboard at its own address, whatever the settings say (PC13). It loads only dashboard files.
+    this.app.get('/classic', async (_req, reply) => {
       return reply
         .header('Cache-Control', 'no-cache')
         .type('text/html; charset=utf-8')
@@ -1103,28 +1148,32 @@ export class WebServer extends EventEmitter {
     });
     this.app.get('/canvas.html', async (_req, reply) => reply.code(404).send());
     this.app.get<{ Params: { workspaceId: string } }>('/canvas/:workspaceId', async (req, reply) => {
-      if ((await this.readSettings(true)).canvasEnabled !== true) return reply.code(404).send();
+      const settings = await this.readSettings(true);
+      if (settings.canvasEnabled !== true) return reply.code(404).send();
       const { readWorkspaces } = await import('../canvas/workspace-registry.js');
       const { canAccessOwned, getAuthUser } = await import('./route-helpers.js');
       const workspace = readWorkspaces().find((w) => w.id === req.params.workspaceId);
       if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner)) return reply.code(404).send();
-      if (!existsSync(join(__dirname, 'public', 'canvas.js')))
+      if (!this.canvasFilesPresent()) {
+        // The shell writes this address into the bar, so a reload lands here: send it to `/`, which answers
+        // the dashboard with the notice. Off the shell the canvas is a tab and keeps its plain answer.
+        if (shellActive(settings)) return reply.redirect('/');
         return reply
           .code(503)
           .type('text/plain; charset=utf-8')
           .send('Canvas bundle is missing. Run npm run build:canvas, then reload this page.');
-      let html = readFileSync(join(__dirname, 'public', 'canvas.html'), 'utf8');
-      html = html.replace('<base href="/" />', `<base href="${escapeHtmlText(joinBasePath(this.basePath, '/'))}" />`);
-      // The canvas scopes its local queue, drafts and clipboard to this viewer.
-      const viewer = isMultiUserMode() ? getAuthUser(req).username : '@single';
-      html = html.replace(
-        '<meta charset="utf-8" />',
-        `<meta charset="utf-8" />\n    <meta name="codeman-canvas-viewer" content="${escapeHtmlText(viewer).replaceAll('"', '&quot;')}" />`
-      );
+      }
       return reply
         .header('Cache-Control', 'no-cache')
         .type('text/html; charset=utf-8')
-        .send(this.cacheBustAssets(html));
+        .send(
+          this.renderCanvasHtml({
+            workspaceId: workspace.id,
+            shell: shellActive(settings),
+            // The canvas scopes its local queue, drafts and clipboard to this viewer.
+            viewer: isMultiUserMode() ? getAuthUser(req).username : '@single',
+          })
+        );
     });
     this.app.get('/index.html', async (_req, reply) => {
       return reply
@@ -1953,7 +2002,46 @@ export class WebServer extends EventEmitter {
     return run;
   }
 
-  private async renderIndexHtml(soloSessionId?: string): Promise<string> {
+  /**
+   * True when every file the canvas document needs is on disk. `/` asks before it answers with the canvas, so a
+   * missing bundle shows the classic view with a notice instead of a page that cannot start. A member, not a
+   * free function, so a test can make a file "missing" without touching the tree.
+   */
+  canvasFilesPresent(): boolean {
+    const dir = join(__dirname, 'public');
+    return ['canvas.html', 'canvas.js', 'canvas-home.js', 'canvas.css'].every((name) => existsSync(join(dir, name)));
+  }
+
+  /**
+   * The canvas document for one workspace, or for the first-run page (`workspaceId` null, shell only). Read from
+   * disk on every request. Each injection passes a replacer FUNCTION (see `renderIndexHtml`): the viewer is a
+   * username.
+   */
+  private renderCanvasHtml(options: { workspaceId: string | null; shell: boolean; viewer: string }): string {
+    const attr = (value: string): string => escapeHtmlText(value).replaceAll('"', '&quot;');
+    let html = readFileSync(join(__dirname, 'public', 'canvas.html'), 'utf8');
+    html = html.replace('<base href="/" />', () => `<base href="${attr(joinBasePath(this.basePath, '/'))}" />`);
+    const metas = [`<meta name="codeman-canvas-viewer" content="${attr(options.viewer)}" />`];
+    if (options.shell) {
+      // Only a shell page carries these, so a canvas opened as a dashboard tab is the document it always was
+      // apart from the inert boot guard. The guard and the bundle read them; the root attribute lets CSS show
+      // the classic link with no script at all.
+      metas.push(
+        `<meta name="codeman-canvas-shell" content="on" />`,
+        `<meta name="codeman-canvas-workspace" content="${attr(options.workspaceId ?? '')}" />`
+      );
+      html = html.replace('<html lang="en" data-canvas>', () => '<html lang="en" data-canvas data-shell>');
+      if (options.workspaceId === null)
+        html = html.replace(
+          '<script type="module" src="canvas.js">',
+          () => '<script type="module" src="canvas-home.js">'
+        );
+    }
+    html = html.replace('<meta charset="utf-8" />', () => ['<meta charset="utf-8" />', ...metas].join('\n    '));
+    return this.cacheBustAssets(html);
+  }
+
+  private async renderIndexHtml(soloSessionId?: string, shellNotice: ShellNotice | null = null): Promise<string> {
     // Detached-session windows intentionally skip App Settings during server
     // rendering (their client bootstrap loads the synced name moments later).
     const persistedSettings: Record<string, unknown> = soloSessionId ? {} : await this.readSettings(true);
@@ -2025,6 +2113,13 @@ export class WebServer extends EventEmitter {
     if (soloSessionId) {
       const safeId = JSON.stringify(soloSessionId).replace(/</g, '\\u003c');
       html = html.replace('</head>', () => `<script>window.__CODEMAN_SOLO__=${safeId};</script>\n</head>`);
+    }
+    // Canvas shell (PC13): the dashboard learns two facts, and only while the shell is on, so the page is
+    // byte-identical otherwise. `on` draws the Canvas link back to `/`; `notice` names why the canvas was
+    // not shown, from a fixed list (nothing from the request is echoed). Solo pages read no settings.
+    if (!soloSessionId && shellActive(settings)) {
+      const fact = JSON.stringify({ on: true, notice: shellNotice });
+      html = html.replace('</head>', () => `<script>window.__CODEMAN_SHELL__=${fact};</script>\n</head>`);
     }
     // Gesture-control overlay (Phase 5): dashboard only (not solo popups, which
     // have no tab strip). `CODEMAN_GESTURE=1` makes the feature *available* on

@@ -36,13 +36,16 @@ export class ViewSync {
   private lastSentAt = Date.now();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private applied: string[] = [];
+  private seen: string[] = [];
+  private refused: { commandId: string; reason: string } | null = null;
   private beat: ReturnType<typeof setInterval> | undefined;
   constructor(
     private options: {
       url: (path: string) => string;
       workspace: string;
       read: () => ViewReport;
-      apply: (action: ViewAction) => void;
+      /** Returns a plain reason when the view refused the command and changed nothing. */
+      apply: (action: ViewAction) => string | void;
     }
   ) {
     this.beat = setInterval(() => this.schedule(true), HEARTBEAT_MS);
@@ -59,9 +62,13 @@ export class ViewSync {
       return;
     }
     if (event.viewId !== this.viewId || event.workspaceId !== this.options.workspace) return;
-    if (this.applied.includes(event.commandId)) return;
-    this.options.apply(event.command);
-    this.applied = [...this.applied, event.commandId].slice(-20);
+    if (this.seen.includes(event.commandId)) return;
+    this.seen = [...this.seen, event.commandId].slice(-40);
+    // Only the latest command's refusal is reported: the next command replaces or clears it. A refused command
+    // is never listed as applied.
+    const reason = this.options.apply(event.command);
+    this.refused = reason ? { commandId: event.commandId, reason } : null;
+    if (!reason) this.applied = [...this.applied, event.commandId].slice(-20);
     this.schedule(true);
   }
   private schedule(force: boolean): void {
@@ -75,7 +82,11 @@ export class ViewSync {
     );
   }
   private async send(force: boolean): Promise<void> {
-    const body = JSON.stringify({ ...this.options.read(), appliedCommands: this.applied });
+    const body = JSON.stringify({
+      ...this.options.read(),
+      appliedCommands: this.applied,
+      ...(this.refused ? { refused: this.refused } : {}),
+    });
     if (!force && body === this.last) return;
     if (!PublishedViewSchema.safeParse(JSON.parse(body)).success) return;
     this.lastSentAt = Date.now();
