@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The canvas program is built and gated, and stays open on 50 boxes
+
+**Type:** status-transition
+**Touches:** `docs/agentic-canvas/initial-version-plan.md`
+**Why:** PC1 to PC13 are merged and deployed, and the closing phase gate passes on the deployed build. The plan closes only when every box is checked, and a reconciliation of the plan against the merged work left 50 boxes open.
+**Links:** [Plan, "Open at close (2026-11-13)"](agentic-canvas/initial-version-plan.md#open-at-close-2026-11-13)
+
+Decision. The plan was reconciled against the repository in one pass: 306 boxes ticked with evidence and 50 left open, each with an `Open:` note. Most ticks rest on test titles and spot reads of the code, not on a fresh run of every test. The program is not declared complete. The default-on change waits in its own PR for the owner, because merging it turns the shell on for an install whose settings file has no shell key.
+
+What stays open. Seven items are not built or not built in full (human export, tool result rows and a Sources used surface in the conversation, release outcomes in the conversation, canvas writes to the UI event stream, the agent-side start of conversations and tasks, and the defaults). Some built behaviour was never exercised live, such as voice with real audio and multi-user mode. One defect stands: reordering an unlocked object is refused when a sibling is locked. The rest are process boxes whose evidence was not kept and cannot be recovered.
+
 ## 2026-11-13 — Undo compares what an edit left, not the revision number
 
 **Type:** drift
