@@ -127,7 +127,15 @@ export function setMessageState(
     const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
     if (!message) return;
     message.state = state;
+    if (state === 'sending' && message.submittedAt === undefined) message.submittedAt = Date.now();
     if (state === 'delivered' && message.deliveredAt === null) message.deliveredAt = at ?? Date.now();
+  });
+}
+/** A retry wrote the message to the pane again: the turn it starts is no earlier than this write. */
+export function setMessageSubmitted(workspaceId: string, conversationId: string, messageId: string, at: number): void {
+  mutate(workspaceId, (list) => {
+    const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
+    if (message) message.submittedAt = at;
   });
 }
 /** Records what became of a thread request's reply. A record is replaced only by further progress of the same posted reply. */

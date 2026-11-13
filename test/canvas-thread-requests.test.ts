@@ -102,6 +102,7 @@ async function harness() {
       payload,
     });
     await settleDeliveries();
+    await settleReplies();
     return response;
   };
   /** Posts the comment and asks the conversation about it, as Ask agent does. */
@@ -359,6 +360,68 @@ describe('canvas thread requests', () => {
       h.transcripts.set(conversation.sessionId, [prompt(asked.messageId, 'q?'), said('the whole answer')]);
       await h.read(conversation.id);
       expect(h.thread('note1').map((c) => c.text)).toEqual(['q?', 'the whole answer']);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('a turn that ends before its delivery is confirmed settles by itself, with no later prompt and no read by a client', async () => {
+    const h = await harness();
+    try {
+      const conversation = await h.start();
+      const commentId = await h.comment('note1', 'quick?');
+      const messageId = uuid();
+      const session = h.sessions.get(conversation.sessionId)!;
+      // The agent answers and stops while the server is still confirming the submit.
+      session.writeViaMux = vi.fn(async () => {
+        await pause(3);
+        h.transcripts.set(conversation.sessionId, [prompt(messageId, 'quick?'), said('Yes.')]);
+        h.stops.set(conversation.sessionId, Date.now());
+        expect(h.message(messageId)).toMatchObject({ state: 'sending', deliveredAt: null });
+        void conversationTurnEnded(h.port as never, conversation.sessionId);
+        await pause(3);
+        return true;
+      });
+      const origin = { kind: 'thread', objectId: 'note1', commentId };
+      expect((await h.send(conversation.id, { messageId, text: 'quick?', refIds: ['note1'], origin })).statusCode).toBe(
+        200
+      );
+      const sent = h.message(messageId)!;
+      expect(sent.submittedAt).toEqual(expect.any(Number));
+      expect(h.stops.get(conversation.sessionId)!).toBeGreaterThan(sent.submittedAt!);
+      expect(h.stops.get(conversation.sessionId)!).toBeLessThanOrEqual(sent.deliveredAt!);
+      await settleReplies();
+      expect(h.thread('note1').map((c) => c.text)).toEqual(['quick?', 'Yes.']);
+      expect(h.message(messageId)?.reply).toMatchObject({ commentId: replyCommentId(messageId), parts: 1 });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("a message sent behind another is not settled by the earlier turn's stop", async () => {
+    const h = await harness();
+    try {
+      const conversation = await h.start();
+      const first = await h.ask(conversation.id, 'note1', 'one?');
+      const second = await h.ask(conversation.id, 'note2', 'two?');
+      const rows = [prompt(first.messageId, 'one?'), said('a1')];
+      h.transcripts.set(conversation.sessionId, rows);
+      // The first turn's stop is later than the second message's write, and the second prompt is not in the transcript yet.
+      await h.stop(conversation.sessionId);
+      expect(h.thread('note1').map((c) => c.text)).toEqual(['one?', 'a1']);
+      expect(h.message(second.messageId)?.reply).toBeUndefined();
+      // Its own turn has started and written nothing: the earlier stop still says nothing about it.
+      rows.push(prompt(second.messageId, 'two?'));
+      await h.list();
+      expect(h.message(second.messageId)?.reply).toBeUndefined();
+      rows.push(said('a2 so far'));
+      h.sessions.get(conversation.sessionId)!.isWorking = true;
+      await h.list();
+      expect(h.thread('note2')).toHaveLength(1);
+      h.sessions.get(conversation.sessionId)!.isWorking = false;
+      rows.push(said('a2 done'));
+      await h.stop(conversation.sessionId);
+      expect(h.thread('note2').map((c) => c.text)).toEqual(['two?', 'a2 so far\n\na2 done']);
     } finally {
       await h.app.close();
     }
@@ -718,6 +781,7 @@ describe('canvas thread requests', () => {
       const asked = await h.ask(conversation.id, 'note1', 'q?');
       h.transcripts.set(conversation.sessionId, [{ role: 'user', text: 'something else' }, said('unrelated')]);
       h.stamps.set(conversation.sessionId, 'file:1:100');
+      h.port.transcriptRows.mockClear();
       await h.list();
       await h.list();
       await h.read(conversation.id);
@@ -823,6 +887,7 @@ describe('canvas thread requests', () => {
       const conversation = await h.start();
       const asked = await h.ask(conversation.id, 'note1', 'q?');
       h.transcripts.set(conversation.sessionId, [prompt(asked.messageId, 'q?'), said('answer')]);
+      h.port.transcriptRows.mockClear();
       deployRole.enter('retired');
       await h.stop(conversation.sessionId);
       await h.read(conversation.id);
@@ -860,6 +925,9 @@ describe('canvas thread requests', () => {
       });
       expect(retried.statusCode).toBe(200);
       expect(h.message(failed.messageId)?.state).toBe('delivered');
+      // The stop above was seen before this write, so it says nothing about the turn the retry starts.
+      expect(h.thread('note1')).toHaveLength(1);
+      h.port.transcriptRows.mockClear();
       h.sessions.delete(conversation.sessionId);
       await h.read(conversation.id);
       expect(h.thread('note1')).toHaveLength(1);

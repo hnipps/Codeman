@@ -58,6 +58,7 @@ import {
   findConversation,
   messageState,
   setMessageState,
+  setMessageSubmitted,
   namedHash,
   readConversations,
   recordMessage,
@@ -155,6 +156,9 @@ const awaitsReply = (m: ConversationMessage): boolean => {
   const reply = threadReply(m);
   return reply === undefined || replyExtendable(reply);
 };
+/** Asked from a thread and still on its way into the pane: its turn can end before the delivery is confirmed. */
+const beingDelivered = (m: ConversationMessage): boolean =>
+  threadOrigin(m) !== undefined && threadReply(m) === undefined && ['queued', 'sending'].includes(messageState(m));
 const textHash = (text: string): string => sha256(text).slice(0, 32);
 /** Timing of reply routing; a test shortens it. */
 export const replyRouting = {
@@ -198,7 +202,7 @@ function reconcileReplies(
   retries: number[] = []
 ): void {
   if (!deployRole.allows('persist') || !ctx.transcriptRows) return;
-  if (!conversation.messages.some(awaitsReply)) return;
+  if (!conversation.messages.some((m) => awaitsReply(m) || beingDelivered(m))) return;
   const run = () => routeReplies(ctx, workspaceId, conversation.id).catch(() => 'done' as const);
   const job = (replyChains.get(workspaceId) ?? Promise.resolve()).then(run, run);
   const settled = job.then(() => undefined);
@@ -233,7 +237,9 @@ type Candidate = {
 async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId: string): Promise<'done' | 'working'> {
   const conversation = findConversation(workspaceId, conversationId);
   const waiting = conversation?.messages.filter(awaitsReply) ?? [];
-  if (!conversation || !waiting.length) return 'done';
+  if (!conversation) return 'done';
+  // A stop that came before the delivery was confirmed is looked at again once it is.
+  if (!waiting.length) return conversation.messages.some(beingDelivered) ? 'working' : 'done';
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const owner = readWorkspaces().find((w) => w.id === workspaceId)?.owner;
   const now = Date.now();
@@ -305,8 +311,9 @@ async function routeReplies(ctx: CanvasPort, workspaceId: string, conversationId
       }
     }
     if (!over) {
-      // An open turn is over only on what this process saw after the message went in: never on a flag that is false after a restart.
-      if (observedAt <= (message.deliveredAt ?? Infinity)) continue;
+      // An open turn is over only on a turn end this process saw after it began writing this message to the pane:
+      // never on a flag that is false after a restart, and not on the confirmation, which a quick turn can precede.
+      if (observedAt <= (message.submittedAt ?? message.deliveredAt ?? Infinity)) continue;
       if (busy()) {
         again = true;
         continue;
@@ -612,6 +619,9 @@ function enqueue(
     let result: DeliveryResult;
     try {
       const plan = retry ? retryPlan(deps.snapshot(), deps.glyph, deps.hookAt(), message.sentAt) : ('paste' as const);
+      // A retry that writes again starts its turn now; one the pane already took keeps the time of the first write.
+      if (retry && plan !== 'confirmed')
+        setMessageSubmitted(workspace.id, conversation.id, message.messageId, Date.now());
       result =
         plan === 'confirmed'
           ? 'confirmed'
@@ -621,7 +631,11 @@ function enqueue(
     }
     if (result === 'confirmed' || result === 'unverified') {
       stuck.delete(key);
-      return set('delivered', Date.now());
+      set('delivered', Date.now());
+      // The turn may already be over: a quick one ends before its delivery is confirmed.
+      const current = findConversation(workspace.id, conversation.id);
+      if (current) reconcileReplies(ctx, workspace.id, current, replyRouting.retryDelaysMs);
+      return;
     }
     // Only a paste that was written and never taken leaves text behind; a refused or never-ready one wrote nothing.
     if (result === 'timeout') stuck.add(key);

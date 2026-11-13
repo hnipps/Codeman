@@ -362,7 +362,7 @@ describe('canvas thread requests', () => {
       (firstTry[0].arguments as { commentId: string }).commentId
     );
     expect(posts[1].body.messageId).toBe(firstTry[1].messageId);
-    expect((await comments('n2')).filter((c) => c.text === 'Does this hold?')).toHaveLength(1);
+    await expect.poll(async () => (await comments('n2')).filter((c) => c.text === 'Does this hold?').length).toBe(1);
     const [conversation] = await conversations();
     expect(conversation.requests!.filter((r) => r.objectId === 'n2')).toHaveLength(1);
   });
@@ -381,7 +381,9 @@ describe('canvas thread requests', () => {
     expect(commands).toHaveLength(2);
     expect(commands[1].requestId).toBe(commands[0].requestId);
     expect(commands[1].arguments).toEqual(commands[0].arguments);
-    expect((await comments('n2')).filter((c) => c.text === 'Only a note after all')).toHaveLength(1);
+    await expect
+      .poll(async () => (await comments('n2')).filter((c) => c.text === 'Only a note after all').length)
+      .toBe(1);
     expect(await page.locator('#retryComment').isVisible()).toBe(false);
     expect(
       await page.evaluate(() =>
@@ -464,7 +466,8 @@ describe('canvas thread requests', () => {
     expect(await page.locator('#postComment').isVisible()).toBe(true);
     await page.locator('#commentDraft').press('Control+Enter');
     await page.waitForFunction(() => (document.getElementById('commentDraft') as HTMLTextAreaElement).value === '');
-    expect((await comments('n2')).filter((c) => c.text === 'half a thought')).toHaveLength(1);
+    // The page learns of its own comment from the change event, a moment after the post answers.
+    await expect.poll(async () => (await comments('n2')).filter((c) => c.text === 'half a thought').length).toBe(1);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.canvasView && !!document.querySelector('[data-object-id="n2"]'));
     await openThread('n2', 'Reference notes');

@@ -44,7 +44,7 @@ Settled while building; none changes the outcome above.
 - The reply comment id is `reply-<messageId>`. The existing comment under that id is the dedupe, and reply work is one chain per workspace.
 - The reply is appended by the server with the agent session as author. The stop hook carries no person's credentials, so the HTTP command route is not called; the operation and the change notice are the same.
 - The transcript is read with the reader behind the session's last-response route, handed to the canvas port.
-- Routing runs when the stop hook fires and whenever the conversations are listed or read, in the background. An open turn is settled only on a turn end this process observed after the message was delivered, with the session not working, and after a second read of the transcript gives the same text. A turn closed by a later submitted prompt, or an exited agent, settles on any pass. Accepted cost: a turn whose stop this process never saw stays "Waiting for a reply" until a later prompt closes it or 24 hours pass.
+- Routing runs when the stop hook fires and whenever the conversations are listed or read, in the background. An open turn is settled only on a turn end this process observed after it began writing the message to the pane (`submittedAt`), with the session not working, and after a second read of the transcript gives the same text. A turn closed by a later submitted prompt, or an exited agent, settles on any pass. Accepted cost: a turn whose stop this process never saw stays "Waiting for a reply" until a later prompt closes it or 24 hours pass.
 - A prompt the CLI queued during a turn does not close that turn. A turn that absorbed a queued prompt gives every thread request in it the turn's whole text, with a line saying the turn answered more than one message; otherwise the reply is the text after the request's own prompt.
 - An agent that exited before a reply records `session-ended`. A request whose prompt is not in the transcript after 24 hours records `timed-out`; one whose session the server no longer holds records `session-ended` after the same bound. A closed turn with no text records `no-reply`. An append the command path refuses records `refused`; a throw records nothing and is tried again.
 - A comment already under the reply id counts as the reply only on the origin object and by that conversation's agent session. Any other records `refused`.
@@ -77,6 +77,12 @@ A run on a real agent added these:
 11. The list's `working` is a hook turn or the session's working state, and the list is read again shortly after an ask, so phone and desktop agree.
 12. An unposted thread draft is kept per object across a reload.
 13. F1 while typing opens Keys in the rail composer too, so the thread composer was left the same.
+
+## Fix round 2
+
+A turn that ended before its delivery was confirmed never settled on its own, because the stop was compared with `deliveredAt`. The message now records `submittedAt`, the time the server began writing it to the pane, and an open turn settles on a turn end observed after that. The other guards stay: the session is not working, two reads agree, and the prompt row with this message's id is in the transcript with the text after it. A retry that writes the message again stamps the time again, so a stop seen before that write does not count. A confirmed delivery routes replies itself, and a stop that arrives while the message is still being delivered is looked at again.
+
+In the "Your comment is posted. The agent was not asked" state only Retry is shown and Post is reached with Cmd/Ctrl+Enter. No hint or Keys text names a Post button there, so nothing changed.
 
 ## MCP parity
 

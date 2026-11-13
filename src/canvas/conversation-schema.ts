@@ -37,6 +37,8 @@ export const ConversationMessageSchema = z
     messageId: z.uuid(),
     sentAt: z.number().int().nonnegative(),
     deliveredAt: z.number().int().nonnegative().nullable(),
+    /** When the server first began writing this message to the pane: earlier than any turn it starts, unlike `deliveredAt`, which is stamped once the submit is confirmed. */
+    submittedAt: z.number().int().nonnegative().optional().catch(undefined),
     /** queued behind another message, being written and confirmed, submitted (delivered), or not delivered. A row from an earlier release has none: delivered when it has a time, else not delivered. */
     state: z.enum(['queued', 'sending', 'delivered', 'failed']).optional(),
     author: MessageAuthor,
