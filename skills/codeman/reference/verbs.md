@@ -925,7 +925,9 @@ structured reasons so an agent can unlock, refresh a revision or fix a bad ID.
 `canvas_screenshot` returns a PNG of one container or object as image content.
 The workspace still comes from the server. The page has no network except image
 bytes the server already stored. Pass `objectId` and an optional `theme` of
-`dark` (the default) or `light`.
+`dark` (the default) or `light`. Omit `objectId` for the top level of the
+workspace, with each sub-canvas drawn closed. A person saves the same PNG, and
+the `canvas_read` answer as JSON, from the canvas Export menu.
 
 `canvas_prototype` shows a page you built as a working prototype people can use.
 Codeman stores the files and serves them itself, sandboxed, so the page needs no

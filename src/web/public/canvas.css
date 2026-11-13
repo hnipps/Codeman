@@ -944,6 +944,31 @@ textarea[readonly] {
 .action-menu button[aria-disabled='true'] svg {
   opacity: 0.5;
 }
+#exportMenu {
+  z-index: 40;
+  max-width: calc(100vw - 32px);
+}
+.menu-heading {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#exportMenu button[aria-disabled='true'] {
+  opacity: 0.5;
+}
+#exportStatus {
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+#exportStatus:empty {
+  display: none;
+}
 #actionMessage {
   position: fixed;
   z-index: 15;
@@ -1459,6 +1484,7 @@ textarea[readonly] {
 }
 .outline-foot {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 .primary {

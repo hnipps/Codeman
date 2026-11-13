@@ -855,42 +855,52 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           return { success: true, data: opened };
         }
       );
+      /** One render path for every screenshot; `id` null is the top level of the workspace. */
+      const sendScreenshot = async (
+        req: FastifyRequest,
+        reply: FastifyReply,
+        workspaceId: string,
+        id: string | null
+      ) => {
+        const { theme } = z.object({ theme: z.enum(['dark', 'light']).optional() }).parse(req.query);
+        const hangup = abortOnClientHangUp(reply);
+        try {
+          const state = (await ctx.canvasStores()).get(workspaceId).read();
+          const { findAsset } = await import('../../canvas/canvas-assets.js');
+          // Asynchronous and bounded: an asset larger than what the screenshot may still embed is
+          // never read at all.
+          const readAsset = async (assetId: string, maxBytes: number) => {
+            const asset = findAsset(workspaceId, assetId);
+            if (!asset || asset.size > maxBytes) return null;
+            const bytes = await readFile(asset.path);
+            return bytes.length > maxBytes ? null : { mime: asset.mime, bytes };
+          };
+          const rendered = await renderContainer(state, id, {
+            theme,
+            signal: hangup.signal,
+            readAsset,
+            readPrototypeFile: (address, path) => readPrototypeFile(workspaceId, address.id, address.version, path),
+          });
+          return reply
+            .header('Cache-Control', 'no-store')
+            .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))
+            .type('image/png')
+            .send(rendered.png);
+        } catch (error) {
+          if (hangup.signal.aborted || reply.sent) return;
+          const failure = screenshotFailure(error);
+          if (failure.status >= 500) return canvasFailure(req, reply, failure.status, error, failure.message);
+          return reply.code(failure.status).send(createErrorResponse(ApiErrorCode.NOT_FOUND, failure.message));
+        }
+      };
       workspaceScope.get<{ Params: { workspaceId: string; id: string } }>(
         '/api/canvas/:workspaceId/objects/:id/screenshot',
-        async (req, reply) => {
-          const { id } = z.object({ id: IdSchema }).parse(req.params);
-          const { theme } = z.object({ theme: z.enum(['dark', 'light']).optional() }).parse(req.query);
-          const hangup = abortOnClientHangUp(reply);
-          try {
-            const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
-            const { findAsset } = await import('../../canvas/canvas-assets.js');
-            // Asynchronous and bounded: an asset larger than what the screenshot may still embed is
-            // never read at all.
-            const readAsset = async (assetId: string, maxBytes: number) => {
-              const asset = findAsset(req.params.workspaceId, assetId);
-              if (!asset || asset.size > maxBytes) return null;
-              const bytes = await readFile(asset.path);
-              return bytes.length > maxBytes ? null : { mime: asset.mime, bytes };
-            };
-            const rendered = await renderContainer(state, id, {
-              theme,
-              signal: hangup.signal,
-              readAsset,
-              readPrototypeFile: (address, path) =>
-                readPrototypeFile(req.params.workspaceId, address.id, address.version, path),
-            });
-            return reply
-              .header('Cache-Control', 'no-store')
-              .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))
-              .type('image/png')
-              .send(rendered.png);
-          } catch (error) {
-            if (hangup.signal.aborted || reply.sent) return;
-            const failure = screenshotFailure(error);
-            if (failure.status >= 500) return canvasFailure(req, reply, failure.status, error, failure.message);
-            return reply.code(failure.status).send(createErrorResponse(ApiErrorCode.NOT_FOUND, failure.message));
-          }
-        }
+        async (req, reply) =>
+          sendScreenshot(req, reply, req.params.workspaceId, z.object({ id: IdSchema }).parse(req.params).id)
+      );
+      workspaceScope.get<{ Params: { workspaceId: string } }>(
+        '/api/canvas/:workspaceId/screenshot',
+        async (req, reply) => sendScreenshot(req, reply, req.params.workspaceId, null)
       );
       workspaceScope.get<{ Params: { workspaceId: string } }>('/api/canvas/:workspaceId/objects', async (req) => {
         const { root, includeDeleted } = z

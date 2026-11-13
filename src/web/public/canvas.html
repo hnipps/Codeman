@@ -167,7 +167,8 @@
       <nav id="tree" aria-label="Canvas objects"></nav>
       <p id="shellLine" class="shell-only" hidden><a id="shellLineLink" href="classic"></a></p>
       <div class="outline-foot">
-        <button id="outlineHistory">History</button><button id="outlineKeys">Keys <kbd>?</kbd></button>
+        <button id="outlineHistory">History</button><button id="outlineExport" data-export-open>Export</button
+        ><button id="outlineKeys">Keys <kbd>?</kbd></button>
         <a id="classicView" class="shell-only" href="classic">Classic view</a
         ><a id="classicSettings" class="shell-only" href="classic?open=settings">Settings (classic)</a>
       </div>
@@ -276,6 +277,25 @@
         ><button id="backgroundLock" role="menuitem">Lock background only</button>
       </div>
     </div>
+    <div id="exportMenu" class="action-menu" role="menu" aria-label="Export" hidden>
+      <div class="menu-rows">
+        <p class="menu-heading">Selection · <span data-export-heading="selection"></span></p>
+        <button role="menuitem" data-export-scope="selection" data-export-format="png">
+          <span>Image</span><span class="secondary">PNG</span></button
+        ><button role="menuitem" data-export-scope="selection" data-export-format="json">
+          <span>Objects</span><span class="secondary">JSON</span>
+        </button>
+      </div>
+      <div class="menu-rows">
+        <p class="menu-heading">Canvas · <span data-export-heading="canvas"></span></p>
+        <button role="menuitem" data-export-scope="canvas" data-export-format="png">
+          <span>Image</span><span class="secondary">PNG</span></button
+        ><button role="menuitem" data-export-scope="canvas" data-export-format="json">
+          <span>Objects</span><span class="secondary">JSON</span>
+        </button>
+      </div>
+      <p id="exportStatus" role="status"></p>
+    </div>
     <p id="actionMessage" class="edit-control" role="status" hidden></p>
     <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
     <span id="dropName" class="edit-control" hidden></span>
@@ -367,7 +387,8 @@
       <p id="sheetMeta" class="secondary"></p>
       <div class="sheet-actions">
         <button id="sheetRead" class="quiet">Read</button><button id="sheetComments" class="quiet">Comments</button
-        ><button id="sheetParent" class="quiet">Focus parent</button>
+        ><button id="sheetParent" class="quiet">Focus parent</button
+        ><button id="sheetExport" class="quiet" data-export-open>Export</button>
       </div>
     </section>
     <aside

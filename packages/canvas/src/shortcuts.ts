@@ -14,6 +14,7 @@ export const shortcuts: Shortcut[] = [
   ['Open sub-canvas', [['Alt', '↓']]],
   ['Leave sub-canvas', [['Alt', '↑'], ['Esc']]],
   ['Search canvas', [['/']]],
+  ['Export the canvas or the selected object', [['E']]],
   ['Show Keys', [['?'], ['F1']]],
   ['Select / pan tool', [['V'], ['H']]],
   ['Temporary pan (hold and drag)', [['Space']]],

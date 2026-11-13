@@ -23,6 +23,8 @@ export function paint(payload: {
   assets?: string[];
   /** Prototype embeds the server will answer for: a frame is mounted over each one's card. */
   prototypes?: { objectId: string; src: string }[];
+  /** The sub-canvas drawn open, or null for the level the objects sit on. */
+  root: string | null;
 }): void {
   const layer = document.getElementById('layer');
   const tree = document.getElementById('tree');
@@ -33,9 +35,7 @@ export function paint(payload: {
     embedNote: SHOT_EMBED_NOTE,
   });
   renderer.objects(payload.objects);
-  // A screenshot of a sub-canvas shows what is inside it, as if it were open.
-  const top = payload.objects.find((o) => o.parentId === null);
-  renderer.root(top?.type === 'subcanvas' ? top.id : null);
+  renderer.root(payload.root);
   renderer.view({ ...initialView(), outlineOpen: false, selected: [], focusId: null, rail: [] }, false);
   layer.style.transformOrigin = '0 0';
   layer.style.transform = payload.transform;

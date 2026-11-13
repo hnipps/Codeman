@@ -258,7 +258,7 @@ export function capabilities() {
         name: 'canvas_screenshot',
         available: true,
         objectTypes: types,
-        note: 'PNG of one container or object via GET screenshot. The page has no network. A stored prototype is drawn as it renders; any other embed is a card.',
+        note: 'PNG of one container or object, or of the top level without objectId, via GET screenshot. The page has no network. A stored prototype is drawn as it renders; any other embed is a card.',
       },
     ],
     compoundCommands: ArrangeSchema.options.flatMap((s) => {

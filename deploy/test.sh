@@ -15,6 +15,7 @@ export CODEMAN_NO_AUTOSTART=1
 tests=(
   test/canvas-commands.test.ts
   test/canvas-screenshot.test.ts
+  test/canvas-export.test.ts
   test/mcp-canvas-tools.test.ts
   test/canvas-edit-queue.test.ts
   test/canvas-viewport.test.ts

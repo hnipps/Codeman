@@ -242,6 +242,23 @@ Decisions. Activity is a separate canvas read (`.../conversations/:id/activity`,
 
 Release outcomes. A release is recognised as the conversation's own agent running `codeman-deploy`, which is the only sense in which a conversation "asked for" one. The outcome is the supervisor's record, found by the deploy id the command printed or by action, commit and start time; when the supervisor's five recent runs no longer list it, the row shows the command's own `outcome:` line and says so, because that line is the agent's output and can be forged. No release control was built. The plan's note "no release was started from the canvas" is a verification item (a person asking a canvas conversation to release, on the live install), not a missing control: the plan itself says not to make the canvas a second deployment control plane, and a trigger would let an agent-steerable page start a deploy. That run remains for the owner or coordinator.
 
+## 2026-11-13 — A person exports what an agent reads, and flip stays unsupported
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/export.ts`, `packages/canvas/src/shot.ts`, `src/canvas/canvas-screenshot.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`, `src/web/public/canvas.html`, `docs/architecture-invariants.md`
+**Why:** The foundations matrix asks that a person can capture or export a view or group. It was the one required control with no human side, and the plan's "Open at close" list named it. The owner asked for the open items to be built.
+**Links:** [intent/2026-11-13-canvas-export.md](../intent/2026-11-13-canvas-export.md), [architecture-invariants, "Canvas agent commands"](architecture-invariants.md#canvas-agent-commands), [canvas-foundations.md](agentic-canvas/canvas-foundations.md)
+
+Decision. The Export menu saves two existing answers as files: the screenshot route's PNG and the `data` of a `canvas_read` command. It has no renderer and no serializer of its own, so the program rule of one command path holds by construction, and a browser test compares the person's file with the agent's answer byte for byte. The foundations document names no format. An image plus the typed objects is the smallest reading of "capture/export", and it matches the agent column's "request equivalent renders/exports without using screenshots as the data model".
+
+A view is the canvas that is open, whole. It is not the camera rectangle. An agent has no camera, so a crop that depends on a window size is a target only one side can name, and on a phone it would be a few hundred pixels. The top level of a workspace had no screenshot because the route took one object id, so the route and `canvas_screenshot` now accept no object. That is the one new capability, and both sides got it in the same change.
+
+A group is exactly one selected object. Several selected objects are refused with the reason and the remedy (group them), because the shared path renders one object. Rendering an arbitrary set would need a second target shape on the agent side too, and nothing in the matrix asks for it.
+
+Consequences accepted. The objects file carries `canvas_read`'s 60,000 byte cap, so a large canvas exports cut short and the menu says so. A person who wants every byte has the object list route, which is not what an agent's tool reads. The key is the plain letter E, which follows the Letters switch like the other letter keys. The outline's Export button and the phone sheet's Export button reach the menu without it.
+
+Flip. It stays unsupported, and `canvas_capabilities` keeps saying so. An object stores a position, a size and a rotation. Mirroring the positions of a selection is expressible with moves, but the content would not mirror, so a single image would "flip" and look the same. A real flip needs a stored mirror flag. `MutableSchema` and the operation patch schema are strict, so the previous release would reject a patch that carries a new field while both releases read one operation log during a blue-green deploy. It would also need the renderer, hit testing, resize handles and the screenshot page to draw mirrored content and mirrored children. That is a two-release change to stored data, not a small addition on the command path. The matrix asks for flip "where the element type supports" it and for unsupported operations to be reported, and both hold today.
+
 ## 2026-11-13 — The canvas and its shell are on by default, by absence
 
 **Type:** status-transition

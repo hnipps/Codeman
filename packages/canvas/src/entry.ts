@@ -21,6 +21,7 @@ import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } fr
 import { CommentsView, commentCounts } from './comments.js';
 import { ElementComments } from './element-comments.js';
 import { HistoryView } from './history.js';
+import { ExportView } from './export.js';
 import { snapshotComments } from './sync.js';
 import { AssistantView } from './assistant.js';
 import { VoiceView } from './voice-view.js';
@@ -190,6 +191,14 @@ const comments: CommentsView = new CommentsView({
   },
 });
 const history = new HistoryView({ url, workspace: workspaceId, phone: mobile, objects: () => objects });
+const exporter = new ExportView({
+  url,
+  workspace: workspaceId,
+  workspaceName: () => node('workspaceName').textContent || 'Canvas',
+  view: () => state,
+  objects: () => objects,
+  rest: () => board.focus({ preventScroll: true }),
+});
 const assistant: AssistantView = new AssistantView({
   url,
   phone: () => mobile.matches,
@@ -1161,6 +1170,9 @@ document.addEventListener('keydown', (e) => {
     } else if (key === 'x' && state.focusId && !e.repeat) {
       e.preventDefault();
       dispatch({ kind: 'toggle', id: state.focusId });
+    } else if (key === 'e' && !e.repeat) {
+      e.preventDefault();
+      exporter.toggle();
     } else if (key === 'c' && !e.repeat && !mobile.matches) {
       e.preventDefault();
       toggleAssistant();

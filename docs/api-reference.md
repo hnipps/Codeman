@@ -1645,6 +1645,11 @@ is not a command. `GET /api/canvas/:workspaceId/objects/:id/screenshot` returns
 and `X-Canvas-Screenshot-Meta`. Unknown or deleted objects are 404. The canvas off is
 404. No Chromium, or a missing canvas bundle, is 503. The MCP tool of the same name
 returns that PNG as image content.
+`GET /api/canvas/:workspaceId/screenshot` takes the same `theme` and returns the top
+level of the workspace the same way, with each sub-canvas drawn closed; the MCP tool
+calls it when `objectId` is omitted. A workspace with nothing on its top level is 404
+`Canvas has nothing to capture`. The canvas page's Export menu saves these two answers
+and the `data` of a `canvas_read` command as files, and adds no route of its own.
 
 ### Canvas conversations
 
