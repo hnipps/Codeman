@@ -12,6 +12,29 @@ Newest entries first. After an entry is on the default branch, correct it with a
 Decision. Both settings are tri-state by absence: a key absent from `settings.json` reads as on, `true` is on, and only an explicit `false` is off. Nothing writes the key to make it so. The server reads through `canvasOn()` and `shellActive()`, the browser through `canvasSettingOn()`, and no other code compares either key. A Settings save still sends `canvasShellEnabled` only when its box changed, so opening and saving Settings flips nothing and unticking the box stores `false`. The browser drops its stored copy of a key the server does not have.
 
 Consequences accepted. An install that already stores `canvasEnabled: false` stays off until someone ticks the box. The previous release reads an absent key as off, so a rollback returns `/` to the dashboard and hides the canvas until the keys are explicit; stored data is unchanged. The fallback is as it was: a missing canvas file or an unreadable registry answers the dashboard with the notice, and `/classic` depends on no canvas file.
+## 2026-11-13 — The canvas program is built and gated, and stays open on 50 boxes
+
+**Type:** status-transition
+**Touches:** `docs/agentic-canvas/initial-version-plan.md`
+**Why:** PC1 to PC13 are merged and deployed, and the closing phase gate passes on the deployed build. The plan closes only when every box is checked, and a reconciliation of the plan against the merged work left 50 boxes open.
+**Links:** [Plan, "Open at close (2026-11-13)"](agentic-canvas/initial-version-plan.md#open-at-close-2026-11-13)
+
+Decision. The plan was reconciled against the repository in one pass: 306 boxes ticked with evidence and 50 left open, each with an `Open:` note. Most ticks rest on test titles and spot reads of the code, not on a fresh run of every test. The program is not declared complete. The default-on change waits in its own PR for the owner, because merging it turns the shell on for an install whose settings file has no shell key.
+
+What stays open. Seven items are not built or not built in full (human export, tool result rows and a Sources used surface in the conversation, release outcomes in the conversation, canvas writes to the UI event stream, the agent-side start of conversations and tasks, and the defaults). Some built behaviour was never exercised live, such as voice with real audio and multi-user mode. One defect stands: reordering an unlocked object is refused when a sibling is locked. The rest are process boxes whose evidence was not kept and cannot be recovered.
+
+## 2026-11-13 — Undo compares what an edit left, not the revision number
+
+**Type:** drift
+**Touches:** `src/canvas/commands.ts`, `src/canvas/operations.ts`, `packages/canvas/src/entry.ts`, `docs/agentic-canvas/canvas-foundations.md`
+**Why:** The closing check of the canvas program found that a second Ctrl+Z on the same object was refused with `REVISION`. The server required the object's revision to equal the revision the undone edit produced, and the first undo had already bumped it.
+**Links:** [Intent](../intent/2026-11-13-canvas-repeated-undo.md), [canvas foundations, "History contract"](agentic-canvas/canvas-foundations.md#history-contract)
+
+The revision number was a stand-in for the real question, which is whether the inverse still restores exactly what the edit replaced. A history step is now accepted while every object it touches holds the fields the edit left, ignoring `revision` and `updatedAt`. A person's own undo or redo in between passes; any other later edit changes a field and is refused as before. Two alternatives were set aside. Recording on each undo which revision it restores would add a field to the stored operation record, which the previous release must keep reading. Letting the browser send the expected revision would fix people and leave agents broken, and the server would trust a number it cannot check.
+
+One consequence is accepted on purpose: if someone changes an object and then puts every field back, an older undo runs, because nothing of theirs is lost. Inverse operation ids now include the sequence the step is built on. Without that, undoing one edit a second time after its redo repeated the first undo's id and was answered as a duplicate that wrote nothing.
+
+The same change makes `S` and `W` answer from the outline's buttons in the canvas shell, and Escape return the keyboard to the board. The shell's own flows left focus there, where no shell key was heard.
 ## 2026-11-13 — A canvas fault is diagnosable from telemetry (closing gate fix)
 
 **Type:** propagated-discovery

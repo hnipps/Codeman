@@ -273,7 +273,7 @@ describe('canvas direct context and the view registry', () => {
       expect((await view()).rail).toEqual(i % 2 === 0 ? ['assistant'] : []);
     }
     await page.keyboard.press('c');
-    expect(await page.locator('#rail').evaluate((el) => el.getBoundingClientRect().width)).toBe(0);
+    await expect.poll(() => page.locator('#rail').evaluate((el) => el.getBoundingClientRect().width)).toBe(0);
     const after = await view();
     expect({ viewport: after.viewport, selected: after.selected, focusId: after.focusId }).toEqual({
       viewport: before.viewport,

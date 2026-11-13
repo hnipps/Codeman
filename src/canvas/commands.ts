@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ViewActionSchema } from './view-schema.js';
 import { ConversationToolSchema } from './conversation-schema.js';
 import { randomUUID, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   AuthorSchema,
   IdSchema,
@@ -602,6 +603,14 @@ export function transform(state: CanvasState, input: z.infer<typeof TransformSch
   }
   return commands;
 }
+/** An inverse restores what an edit replaced only while the object still holds what that edit left: a history
+ * step bumps the revision yet leaves an older edit's fields in place, and any other later edit does not. */
+function sameFields(current: CanvasObject | undefined, left: CanvasObject): boolean {
+  if (!current) return false;
+  const { revision: _r, updatedAt: _u, ...now } = current;
+  const { revision: _lr, updatedAt: _lu, ...then } = left;
+  return isDeepStrictEqual(now, then);
+}
 export function historyCommands(
   state: CanvasState,
   log: Pick<Operation, 'seq' | 'kind' | 'opId'>[],
@@ -619,14 +628,14 @@ export function historyCommands(
     })
     .reverse();
   if (chosen.length !== wanted.size) return refuse('', 'NOT_FOUND', 'Unknown history sequence');
-  const latest = new Map<string, number>();
+  const latest = new Map<string, CanvasObject>();
   for (const operation of [...chosen].reverse()) {
     if (!sameAuthor(operation.author, author))
       return refuse(operation.objectId, 'INVALID', 'History may only undo the caller author');
-    for (const c of operation.prev) latest.set(c.objectId, c.after.revision);
+    for (const c of operation.prev) latest.set(c.objectId, c.after);
   }
-  for (const [id, revision] of latest)
-    if (state.objects[id]?.revision !== revision) return refuse(id, 'REVISION', 'Object revision changed');
+  for (const [id, left] of latest)
+    if (!sameFields(state.objects[id], left)) return refuse(id, 'REVISION', 'Object revision changed');
   const historyRemovals = new Set(
     chosen.flatMap((operation) =>
       operation.prev
@@ -647,7 +656,7 @@ export function historyCommands(
       comments.delete(operation.comment.id);
     }
     if (operation.removedComment) comments.set(operation.removedComment.id, { ...operation.removedComment, author });
-    return invertOperation(operation).map((inverse) => {
+    return invertOperation(operation, state.seq).map((inverse) => {
       // Intermediate revision preconditions are derived from the validated batch below.
       const { expectedRevision: _expectedRevision, ...command } = inverse;
       return command;

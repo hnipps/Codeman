@@ -378,7 +378,7 @@ Canvas edits use `packages/canvas/src/edit-queue.ts`: persist operation IDs befo
 
 Desktop Add, soft delete and focused plain-text/name editing use the queue. Reader drafts persist separately, retain concurrent same-field changes for explicit resolution, and show inline save state. Phone layouts omit edit controls.
 
-Canvas undo records this browser’s acknowledged sequence IDs and submits server history commands. The server refuses changed revisions and later dependent children, including later changes to other fields; redo inverts the returned undo sequences. Text entry and composition keep native undo.
+Canvas undo records this browser’s acknowledged sequence IDs and submits server history commands. The server refuses a step unless each object still holds the fields the edit left (everything but `revision` and `updatedAt`), and refuses later dependent children; a later change to any other field refuses too, while the person's own undo or redo in between does not, so consecutive edits of one object undo one step at a time. Redo inverts the returned undo sequences. Text entry and composition keep native undo.
 
 Desktop selection supports enclosed marquee and Alt-drag freehand lasso (center hit testing) among immediate objects in the active container. Escape, pointer cancellation, capture loss, blur and tab suspension cancel without writes. Selection commands normalize parent/child overlap.
 
