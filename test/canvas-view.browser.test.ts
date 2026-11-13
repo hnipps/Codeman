@@ -173,11 +173,11 @@ describe('read-only canvas document', () => {
   it('never earns a 429 from its own view publishes while a person clicks about', async () => {
     await open();
     const limited: string[] = [];
-    const published: number[] = [];
+    const published: string[][] = [];
     page.on('response', (response) => {
       if (!/\/api\/canvas\/[^/]+\/views\//.test(response.url()) || response.request().method() !== 'PUT') return;
-      published.push(response.status());
       if (response.status() === 429) limited.push(response.url());
+      else published.push((response.request().postDataJSON() as { selected: string[] }).selected);
     });
     for (let round = 0; round < 6; round++) {
       await page.locator('[data-object-id="brief"]').click();
@@ -185,7 +185,12 @@ describe('read-only canvas document', () => {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(120);
     }
-    await page.waitForTimeout(1200);
+    // A publish carries the state at the moment it is sent, and one equal to the last is skipped, so how many
+    // the rounds above produce depends on timing. Two states held until each is published do not.
+    await page.locator('[data-object-id="brief"]').click();
+    await expect.poll(() => published.at(-1), { timeout: 10000 }).toEqual(['brief']);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => published.at(-1), { timeout: 10000 }).toEqual([]);
     expect(published.length).toBeGreaterThan(1);
     expect(limited).toEqual([]);
   });

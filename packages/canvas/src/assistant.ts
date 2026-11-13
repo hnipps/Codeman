@@ -44,6 +44,8 @@ type Summary = {
   sessionId: string;
   createdAt: number;
   session: 'live' | 'ended';
+  /** The session was deleted: the conversation record is all that is left, and its transcript cannot be read. */
+  sessionGone?: boolean;
   cliId: string;
   cliLabel?: string;
   model?: string;
@@ -689,6 +691,7 @@ export class AssistantView {
     }
   }
   private async loadTranscript(c: Summary): Promise<void> {
+    if (c.sessionGone) return;
     try {
       const { body } = await this.json(`/api/sessions/${encodeURIComponent(c.sessionId)}/last-response?context=full`);
       const data = this.data(body);

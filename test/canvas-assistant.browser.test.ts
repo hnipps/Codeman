@@ -296,8 +296,17 @@ describe('canvas assistant conversations', () => {
   it('a session that ended says so inline and offers a new conversation, keeping the draft', async () => {
     const [c] = await conversations();
     await page.request.delete(api(`/sessions/${c.sessionId}`));
+    // A deleted session has no transcript route: the rail must not ask for one and log a 404 in the console.
+    const missing: string[] = [];
+    const note = (response: { status(): number; url(): string }) => {
+      if (response.status() === 404) missing.push(new URL(response.url()).pathname);
+    };
+    page.on('response', note);
     await open(false);
     await page.waitForSelector('#threadEnded:not([hidden])');
+    page.off('response', note);
+    expect(missing).toEqual([]);
+    expect((await conversations())[0]).toMatchObject({ session: 'ended', sessionGone: true });
     expect(await page.locator('#threadState').textContent()).toContain('Session ended');
     await page.locator('#assistantDraft').fill('still here');
     await page.locator('#assistantSend').click();

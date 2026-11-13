@@ -136,6 +136,8 @@ export const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) =
     messageCount: c.messages.length,
     session: sessionState(ctx, req, c.sessionId),
     working: sessionBusy(ctx.sessions.get(c.sessionId)),
+    // The session is no longer on the server (or not this caller's): its transcript route would answer 404.
+    ...(ctx.sessions.get(c.sessionId) && visible ? {} : { sessionGone: true }),
     ...(origin ? { origin } : {}),
     ...(requests.length ? { requests } : {}),
     ...(task

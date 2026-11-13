@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The assistant rail does not ask for the transcript of a deleted session
+
+**Type:** drift
+**Touches:** `src/web/routes/canvas-conversation-routes.ts`, `packages/canvas/src/assistant.ts`, `test/canvas-view.browser.test.ts`
+**Why:** Opening a conversation whose session had been deleted logged a 404 in the browser console for `last-response?context=full`. The record outlives its session, and the rail asked the session's transcript route anyway. A session with no answer yet answers 200, so the 404 only ever meant a missing session.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md)
+
+Decision. The conversation summary carries an optional `sessionGone: true` when the session is not on the server or not the caller's, and the rail skips the transcript read for it. The route's 404 is unchanged: it is the stable answer for a missing session. A page from before this release ignores the field and keeps logging the 404, which is what it did before.
+
+The same slice changes one browser test. "never earns a 429 from its own view publishes" counted the publishes made during six rounds of clicks. A publish carries the state at the moment it is sent and one equal to the last is skipped, so under load every send could land on the round's resting state and the count stayed at one. The test now holds two states until each is published. The 429 check is unchanged.
+
 ## 2026-11-13 — An unnamed session has one name in the outline and the tab strip
 
 **Type:** drift
