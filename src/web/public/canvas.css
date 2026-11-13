@@ -80,7 +80,8 @@ button[aria-disabled='true']:active {
 }
 button:focus-visible,
 input:focus-visible,
-select:focus-visible {
+select:focus-visible,
+summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1929,6 +1930,13 @@ textarea[readonly] {
 .turn:first-child {
   border-top: 0;
 }
+.thread-activity {
+  padding: 0 0 10px;
+}
+.thread-activity[data-who='release'] {
+  padding: 12px 0;
+  border-top: 1px solid var(--divider);
+}
 .turn-who {
   color: var(--muted);
   font-size: 12px;
@@ -1950,6 +1958,107 @@ textarea[readonly] {
   color: var(--secondary);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+.turn-note {
+  margin: 2px 0 0;
+  color: var(--secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.thread-activity[data-who='release'] .release-outcome {
+  padding-left: 8px;
+  border-left: 2px solid var(--divider);
+}
+.thread-activity[data-who='release'][data-state='failed'] .release-outcome,
+.thread-activity[data-who='release'][data-state='rejected'] .release-outcome {
+  border-left-color: var(--critical);
+}
+.tool-row,
+.turn-sources {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+.tool-row > summary,
+.turn-sources > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--secondary);
+  cursor: pointer;
+  list-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.tool-row > summary::-webkit-details-marker,
+.turn-sources > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-row > summary::before,
+.turn-sources > summary::before {
+  content: '▸';
+  flex: none;
+  color: var(--muted);
+}
+.tool-row[open] > summary::before,
+.turn-sources[open] > summary::before {
+  content: '▾';
+}
+.tool-name {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-input {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  font:
+    12px/1.45 ui-monospace,
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-row[open] .tool-input {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.tool-state {
+  flex: none;
+}
+.tool-row[data-status='error'] .tool-state {
+  color: var(--critical);
+}
+.tool-result {
+  max-height: 240px;
+  margin: 4px 0 6px 14px;
+  padding: 6px 8px;
+  overflow: auto;
+  border-left: 2px solid var(--divider);
+  color: var(--secondary);
+  font:
+    12px/1.45 ui-monospace,
+    monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.turn-sources ul {
+  margin: 0 0 4px 14px;
+  padding: 0;
+  list-style: none;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+.sources-heading {
+  margin: 4px 0 2px 14px;
+  color: var(--muted);
+}
+:root[data-phone] .tool-row > summary,
+:root[data-phone] .turn-sources > summary {
+  align-items: center;
+  min-height: 44px;
 }
 .thread-state {
   flex-shrink: 0;
