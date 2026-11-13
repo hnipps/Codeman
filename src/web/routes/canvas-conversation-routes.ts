@@ -34,9 +34,14 @@ import {
   normalizePrompt,
   promptRefusal,
   SendBodySchema,
+  threadOrigin,
+  threadReply,
   type Conversation,
   type ConversationMessage,
+  type ThreadReply,
 } from '../../canvas/conversation-schema.js';
+import { cutReply, extractReply, replyCommentId } from '../../canvas/thread-reply.js';
+import { commentCommand } from '../../canvas/commands.js';
 import {
   addConversation,
   findConversation,
@@ -45,6 +50,7 @@ import {
   namedHash,
   readConversations,
   recordMessage,
+  setMessageReply,
   sha256,
 } from '../../canvas/conversations.js';
 import type { Author } from '../../canvas/model.js';
@@ -87,17 +93,136 @@ const summary = (ctx: CanvasPort, req: FastifyRequest, c: Conversation) => ({
   messageCount: c.messages.length,
   session: sessionState(ctx, req, c.sessionId),
   working: ctx.sessions.get(c.sessionId)?.hookTurnRunning === true,
+  ...(threadOrigin(c) ? { origin: threadOrigin(c) } : {}),
+  ...(threadRequests(c).length ? { requests: threadRequests(c) } : {}),
 });
+/** The requests a conversation took from comment threads: what a thread needs to show a request's state without the transcript. */
+const threadRequests = (c: Conversation) =>
+  c.messages.flatMap((m) => {
+    const origin = threadOrigin(m);
+    if (!origin) return [];
+    const reply = threadReply(m);
+    return [
+      {
+        messageId: m.messageId,
+        objectId: origin.objectId,
+        commentId: origin.commentId,
+        state: messageState(m),
+        ...(reply && reply !== 'unknown' ? { reply } : {}),
+      },
+    ];
+  });
 
 export function listConversations(ctx: CanvasPort, req: FastifyRequest, workspaceId: string): Outcome {
   const file = readConversations(workspaceId);
   if (!file.ok) return ok({ conversations: [], unreadable: file.reason });
+  for (const c of file.conversations) reconcileReplies(ctx, workspaceId, c);
   return ok({ conversations: file.conversations.map((c) => summary(ctx, req, c)) });
 }
 export function readConversation(ctx: CanvasPort, req: FastifyRequest, workspaceId: string, id: string): Outcome {
   const conversation = findConversation(workspaceId, id);
   if (!conversation) return notFound('Conversation not found');
+  reconcileReplies(ctx, workspaceId, conversation);
   return ok({ conversation: { ...summary(ctx, req, conversation), messages: conversation.messages } });
+}
+
+const awaitsReply = (m: ConversationMessage): boolean =>
+  threadOrigin(m) !== undefined && threadReply(m) === undefined && messageState(m) === 'delivered';
+/** Reply routing of one workspace runs one conversation at a time, so two signals for the same turn post once. */
+const replyChains = new Map<string, Promise<void>>();
+/** Resolves when every reply being routed has been (tests). */
+export const settleReplies = async (): Promise<void> => {
+  while (replyChains.size) await Promise.all([...replyChains.values()]);
+};
+/**
+ * Posts the reply of every thread request of this conversation whose turn is over into the thread it was asked from.
+ * Called when the session's stop hook fires and again whenever the conversation is read, so a stop missed across a
+ * restart is still routed. Only the recorded origin decides where a reply goes.
+ */
+function reconcileReplies(ctx: CanvasPort, workspaceId: string, conversation: Conversation, turnEnded = false): void {
+  if (!deployRole.allows('persist') || !ctx.transcriptRows) return;
+  if (!conversation.messages.some(awaitsReply)) return;
+  const run = () => routeReplies(ctx, workspaceId, conversation.id, turnEnded).catch(() => undefined);
+  const job = (replyChains.get(workspaceId) ?? Promise.resolve()).then(run, run);
+  replyChains.set(workspaceId, job);
+  void job.then(() => {
+    if (replyChains.get(workspaceId) === job) replyChains.delete(workspaceId);
+  });
+}
+async function routeReplies(
+  ctx: CanvasPort,
+  workspaceId: string,
+  conversationId: string,
+  turnEnded: boolean
+): Promise<void> {
+  const conversation = findConversation(workspaceId, conversationId);
+  const waiting = conversation?.messages.filter(awaitsReply) ?? [];
+  const session = conversation ? ctx.sessions.get(conversation.sessionId) : undefined;
+  if (!conversation || !waiting.length || !session) return;
+  const rows = await ctx.transcriptRows?.(conversation.sessionId);
+  if (!rows || !deployRole.allows('persist')) return;
+  // Read after the transcript: a prompt submitted meanwhile means the last request's turn is running again.
+  const idle = !session.hookTurnRunning && (turnEnded || !session.isWorking);
+  const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+  const owner = readWorkspaces().find((w) => w.id === workspaceId)?.owner;
+  let changed = false;
+  for (const message of waiting) {
+    const origin = threadOrigin(message);
+    const found = extractReply(rows, message.messageId);
+    if (!origin || !found.found || (!found.closed && !idle)) continue;
+    let reply: ThreadReply;
+    if (!found.text) {
+      // An open turn with no text yet may still be flushing its last row; a closed one will never have any.
+      if (!found.closed) continue;
+      reply = { dropped: 'no-reply' };
+    } else
+      reply = await postReply(ctx, workspaceId, owner, conversation.sessionId, origin.objectId, message, found.text);
+    try {
+      changed = setMessageReply(workspaceId, conversationId, message.messageId, reply) || changed;
+    } catch {
+      /* The comment id is derived from the message id, so the next pass finds the comment and records it then. */
+    }
+  }
+  if (changed) ctx.broadcast(SseEvent.CanvasConversation, { workspaceId, conversationId, change: 'message', owner });
+}
+/** One ordinary `comment` operation authored by the conversation's session; a comment already there under this request's id is the reply. */
+async function postReply(
+  ctx: CanvasPort,
+  workspaceId: string,
+  owner: string | undefined,
+  sessionId: string,
+  objectId: string,
+  message: ConversationMessage,
+  text: string
+): Promise<ThreadReply> {
+  const commentId = replyCommentId(message.messageId);
+  try {
+    const store = (await ctx.canvasStores()).get(workspaceId);
+    const state = store.read();
+    const existing = state.comments.find((c) => c.id === commentId);
+    if (existing) return { commentId, postedAt: existing.createdAt };
+    const object = state.objects[objectId];
+    if (!object || object.deletedAt !== null) return { dropped: 'object-removed' };
+    const result = store.appendExpanded([commentCommand({ objectId, text: cutReply(text), commentId })], {
+      kind: 'agent',
+      sessionId,
+    });
+    if (!result.ok) return { dropped: result.reasons[0]?.code === 'NOT_FOUND' ? 'object-removed' : 'refused' };
+    ctx.broadcast(SseEvent.CanvasChanged, { workspaceId, seq: result.seq, owner });
+    return { commentId, postedAt: Date.now() };
+  } catch {
+    return { dropped: 'refused' };
+  }
+}
+/** The session's stop hook fired: route the replies of every conversation that session is. */
+export async function conversationTurnEnded(ctx: CanvasPort, sessionId: string): Promise<void> {
+  if (!deployRole.allows('persist') || !ctx.transcriptRows || !(await ctx.canvasEnabled())) return;
+  const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+  for (const workspace of readWorkspaces()) {
+    const file = readConversations(workspace.id);
+    if (!file.ok) continue;
+    for (const c of file.conversations) if (c.sessionId === sessionId) reconcileReplies(ctx, workspace.id, c, true);
+  }
 }
 
 /** Creates in one workspace run one at a time, so the cap check and the add are one step and a retry finds the first's conversation. */
@@ -180,7 +305,7 @@ async function start(
   ctx: CanvasPort,
   req: FastifyRequest,
   workspace: Workspace,
-  body: { requestId: string; cliId?: string; model?: string }
+  body: z.infer<typeof CreateConversationBodySchema>
 ): Promise<Outcome> {
   const { requestId } = body;
   const file = readConversations(workspace.id);
@@ -211,6 +336,7 @@ async function start(
         sessionId: started.sessionId,
         cliId: launch.entryId,
         ...(launch.model ? { model: launch.model } : {}),
+        ...(body.origin ? { origin: body.origin } : {}),
         createdAt: Date.now(),
         createdBy: ownerFor(req) ?? '@single',
       }),
@@ -355,6 +481,13 @@ export async function sendMessage(
     if (!same) return conflict('MESSAGE_CHANGED: this message id was already used for different text');
     return accepted(body.messageId, known, resolved.missing, true);
   }
+  if (!known && body.origin) {
+    const { objectId, commentId } = body.origin;
+    const object = state.objects[objectId];
+    const asked = state.comments.some((c) => c.id === commentId && c.objectId === objectId);
+    if (!object || object.deletedAt !== null || !asked)
+      return conflict('ORIGIN_GONE: the comment this request was asked from is no longer on the canvas');
+  }
   if (!known && !limiter.take(`${workspaceId}:${conversationId}`, author.kind === 'agent'))
     return refuse(
       429,
@@ -376,6 +509,7 @@ export async function sendMessage(
       namedSha256: namedHash(body.refIds),
       refs: resolved.refs,
       seq: state.seq,
+      ...(body.origin ? { origin: body.origin } : {}),
     },
     body.refIds
   );

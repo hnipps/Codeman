@@ -9,6 +9,7 @@ import {
   MAX_MESSAGES_PER_CONVERSATION,
   type Conversation,
   type ConversationMessage,
+  type ThreadReply,
 } from './conversation-schema.js';
 
 export type ConversationFile =
@@ -64,7 +65,7 @@ export type CreateResult = { ok: true; conversation: Conversation; duplicate: bo
 export function addConversation(
   workspaceId: string,
   make: () => Pick<Conversation, 'id' | 'sessionId' | 'cliId' | 'createdAt' | 'createdBy'> &
-    Pick<Partial<Conversation>, 'model'>,
+    Pick<Partial<Conversation>, 'model' | 'origin'>,
   requestId: string
 ): CreateResult {
   const existing = readConversations(workspaceId);
@@ -125,5 +126,19 @@ export function setMessageState(
     if (!message) return;
     message.state = state;
     if (state === 'delivered' && message.deliveredAt === null) message.deliveredAt = at ?? Date.now();
+  });
+}
+/** Records what became of a thread request's reply, once: a second record for the same message changes nothing. */
+export function setMessageReply(
+  workspaceId: string,
+  conversationId: string,
+  messageId: string,
+  reply: ThreadReply
+): boolean {
+  return mutate(workspaceId, (list) => {
+    const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
+    if (!message || message.reply !== undefined) return false;
+    message.reply = reply;
+    return true;
   });
 }

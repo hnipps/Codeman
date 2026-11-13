@@ -14,6 +14,7 @@ export interface CanvasSession {
   /** When the CLI's own prompt-submitted hook last fired, and whether a hook-reported turn is running. */
   readonly hookPromptSubmittedAt?: number;
   readonly hookTurnRunning?: boolean;
+  readonly isWorking?: boolean;
 }
 export type StartedConversationSession = { ok: true; sessionId: string } | { ok: false; message: string };
 export interface CanvasPort {
@@ -35,6 +36,8 @@ export interface CanvasPort {
     headers: Readonly<Record<string, string | string[] | undefined>>,
     sessionId: string
   ): Promise<void>;
+  /** The session's transcript as prompt and reply rows, the way `last-response?context=full` reports it; null when it cannot be read. */
+  transcriptRows?(sessionId: string): Promise<{ role: string; text: string }[] | null>;
   /** Reverse-proxy base path for embed frame URLs; '' at the root. */
   readonly basePath?: string;
 }

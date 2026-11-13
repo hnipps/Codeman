@@ -674,7 +674,7 @@ describe('per-viewer canvas storage', () => {
     const { canvasStorageKeys } = await import('../packages/canvas/src/storage-keys.js');
     const a = canvasStorageKeys('user-a', 'ws');
     const b = canvasStorageKeys('user-b', 'ws');
-    expect(new Set([...Object.values(a), ...Object.values(b)]).size).toBe(16);
+    expect(new Set([...Object.values(a), ...Object.values(b)]).size).toBe(18);
     expect(canvasStorageKeys('user-a', 'other').clipboard).toBe(a.clipboard);
     expect(a.edits).not.toBe(canvasStorageKeys('user-a', 'other').edits);
   });

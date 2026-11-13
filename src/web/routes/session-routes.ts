@@ -1034,7 +1034,11 @@ export function registerSessionRoutes(
   app: FastifyInstance,
   ctx: SessionPort & EventPort & ConfigPort & InfraPort & AuthPort & TabLayoutPort & KeepWarmPort,
   /** Test seam: inject a registry with fake IO instead of the real TCP/WoL probes. */
-  options: { remoteWake?: RemoteWakeRegistry } = {}
+  options: {
+    remoteWake?: RemoteWakeRegistry;
+    /** Handed the reader behind `last-response?context=full`, for callers that hold a session id and no request. */
+    transcriptReader?: (read: (sessionId: string) => Promise<{ role: string; text: string }[] | null>) => void;
+  } = {}
 ): RemoteWakeRegistry {
   // Wake-on-LAN for sleeping remote hosts (see remote-wake.ts). One registry per
   // route registration (= one web server) — the same shape as the process-wide
@@ -2878,12 +2882,24 @@ export function registerSessionRoutes(
   app.get('/api/sessions/:id/last-response', async (req) => {
     const { id } = req.params as { id: string };
     const session = findSessionOrFail(ctx, id, req);
+    return lastResponse(session, (req.query as { context?: string }).context);
+  });
+  options.transcriptReader?.(async (sessionId) => {
+    const session = ctx.sessions.get(sessionId);
+    if (!session) return null;
+    const answer = (await lastResponse(session, 'full')) as { messages?: unknown };
+    if (!Array.isArray(answer.messages)) return null;
+    return answer.messages.flatMap((m: { role?: unknown; text?: unknown }) =>
+      typeof m?.role === 'string' && typeof m.text === 'string' ? [{ role: m.role, text: m.text }] : []
+    );
+  });
 
+  async function lastResponse(session: ReturnType<typeof findSessionOrFail>, context: string | undefined) {
     // Codex sessions don't write to ~/.claude/projects — their transcripts
     // live in ~/.codex/sessions/**. Branch to a Codex-specific reader so the
     // response-viewer works for Codex panes too.
     if (getCli(session.mode)?.capabilities.transcript === 'codex-rollout' && !session.docker && !session.remote) {
-      const codexQuery = req.query as { context?: string };
+      const codexQuery = { context };
       return await readCodexLastResponse(session, codexQuery.context === 'full');
     }
 
@@ -2891,7 +2907,7 @@ export function registerSessionRoutes(
       const ompSessionId = session.claudeSessionId || session.id;
       const messages = readOmpConversation(ompSessionId, session.workingDir);
       const lastMessage = [...messages].reverse().find((message) => message.role === 'assistant');
-      const ompQuery = req.query as { context?: string };
+      const ompQuery = { context };
       return {
         text: lastMessage?.text ?? '',
         timestamp: '',
@@ -2916,7 +2932,7 @@ export function registerSessionRoutes(
     // would starve on an answer that exists. Those configurations keep the
     // pane segmenter below: coarse, but the real conversation.
     if (getCli(session.mode)?.capabilities.transcript === 'deepseek-zstd' && !session.docker && !session.remote) {
-      const deepSeekQuery = req.query as { context?: string };
+      const deepSeekQuery = { context };
       const full = deepSeekQuery.context === 'full';
       const transcript = await readDeepSeekLastResponse(session, { blocks: full });
       if (transcript) {
@@ -2935,7 +2951,7 @@ export function registerSessionRoutes(
     // the pane IS the transcript for these CLIs. Codex is already handled above,
     // where a real rollout file is the better source.
     if (isExternalCliTranscriptMode(session.mode)) {
-      const externalQuery = req.query as { context?: string };
+      const externalQuery = { context };
       // Repainting full-screen TUIs stream absolute cursor moves, not lines, so the
       // buffer cannot be segmented; read the pane's visible screen instead, and fall back to the
       // buffer when there is no tmux pane to ask (direct PTY, tests).
@@ -2977,7 +2993,7 @@ export function registerSessionRoutes(
       }
     }
 
-    const query = req.query as { context?: string };
+    const query = { context };
     // `turn` is the brief view's context: the last ANSWERED turn's assistant
     // messages, so a multi-row answer is not reduced to its final row. `text`
     // stays the last assistant row in every mode (agent pollers hash it).
@@ -3013,7 +3029,7 @@ export function registerSessionRoutes(
     } catch {
       return wantsMessages ? { text: '', timestamp: '', messages: [] } : { text: '', timestamp: '' };
     }
-  });
+  }
 
   function isCodexInjectedContext(text: string): boolean {
     return (

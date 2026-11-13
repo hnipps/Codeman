@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Ask an agent from a comment thread (PC10)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{conversation-schema,conversations,thread-reply}.ts`, `src/web/routes/{canvas-conversation-routes,hook-event-routes,session-routes}.ts`, `src/web/ports/canvas-port.ts`, `src/web/server.ts`, `packages/canvas/src/{ask,comments,assistant,conversation,entry,storage-keys}.ts`, `src/web/public/{canvas.html,canvas.css}`
+**Why:** A comment was only a note; a person could not ask an agent about an object from its thread, and an answer never came back to where the question was asked.
+**Links:** [Intent](../intent/2026-11-12-canvas-pc10-threads.md)
+
+Decisions the intent did not settle. `origin` and `reply` are stored as unknown values behind lenient readers, so a later shape can neither make `conversations.json` unreadable nor cause a second post. The reply comment id is `reply-<messageId>` and the existing comment is the dedupe, with one chain per workspace. The reply is appended in-process with the agent session as author, because the stop hook carries no person's credentials; the transcript is read through the `last-response` reader handed to the canvas port. Routing runs on the stop hook and on every conversations list or read; the newest prompt is settled only when no hook turn is running, which leaves one known limit (a reconcile after a restart mid-turn can post the text so far). A session that ended before a reply leaves the request waiting and the thread says so; a closed turn with no text records `no-reply`. A send whose comment or object is gone is refused (`ORIGIN_GONE`). The prompt is the comment text alone. The chooser is a native select defaulting to the rail's live conversation, else the newest live one, else New; ended conversations are not offered. Ask agent has no shortcut, because Cmd/Ctrl+Enter already posts and the brief names none. `origin` is kept out of the tool's create shape to hold the capabilities answer under its byte budget. MCP parity was checked and nothing was missing. The route test's mock session gained `markHookStop`, which nine hook-event route tests needed on the default branch too.
+
 ## 2026-11-12 — Provider and model choice, the phone assistant and Keys (PC9c)
 
 **Type:** intent-refinement

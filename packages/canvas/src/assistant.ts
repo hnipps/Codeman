@@ -4,6 +4,8 @@ import { chips, type Chip } from './context.js';
 import type { ViewCommand, ViewState } from './commands.js';
 import type { ViewObject } from './model.js';
 import type { ConversationMessage } from '../../../src/canvas/conversation-schema.js';
+import type { ThreadRequest } from './ask.js';
+import { label } from './model.js';
 import { canvasStorageKeys, type CanvasStorageKeys } from './storage-keys.js';
 import {
   buildThread,
@@ -33,7 +35,11 @@ type Summary = {
   cliId: string;
   cliLabel?: string;
   model?: string;
+  working?: boolean;
+  requests?: Omit<ThreadRequest, 'conversationId' | 'working' | 'ended'>[];
 };
+/** Where a request from a comment thread goes when it starts a new conversation, or why it cannot. */
+export type FreshTarget = { ok: true; cliId?: string; model?: string; label: string } | { ok: false; reason: string };
 type Approval = {
   id: string;
   sessionId: string;
@@ -58,6 +64,10 @@ type Options = {
   view: () => ViewState;
   remove: (id: string) => void;
   choose: (id: string) => void;
+  /** Selects an object and opens its comment thread (a thread-origin prompt's backlink). */
+  openThread: (objectId: string) => void;
+  /** The conversation list was read again: thread request states may have changed. */
+  listed: () => void;
 };
 const node = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -133,6 +143,7 @@ export class AssistantView {
   private attempt: Attempt | null;
   private loaded: string | null = null;
   private transcriptTimer: ReturnType<typeof setTimeout> | undefined;
+  private listTimer: ReturnType<typeof setTimeout> | undefined;
   private threadSignature = '';
   private stopped = false;
   /** The thread was at its end when it last changed, so a resize or new row keeps it there. */
@@ -258,6 +269,61 @@ export class AssistantView {
     this.stopped = true;
     window.removeEventListener('focus', this.onFocus);
     clearTimeout(this.transcriptTimer);
+    clearTimeout(this.listTimer);
+  }
+  /** Live conversations a thread request can go to, newest first, named as the picker names them. */
+  targets(): { id: string; label: string }[] {
+    const sorted = [...this.conversations].sort((a, b) => b.createdAt - a.createdAt);
+    return sorted.flatMap((c, index) =>
+      c.session === 'ended' ? [] : [{ id: c.id, label: `Conversation ${sorted.length - index}` }]
+    );
+  }
+  /** The conversation a thread request goes to unless the person picks another: the one the rail is on, if it is live. */
+  preferredTarget(): string | null {
+    const bound = this.current;
+    return bound && bound.session !== 'ended' ? bound.id : null;
+  }
+  /** The provider and model a new conversation would start on, from the rail's current choice. */
+  freshTarget(): FreshTarget {
+    const choice = this.options.view().choice;
+    const sel = selection(this.providers, choice);
+    if (!this.providersLoaded || !sel.row) return { ok: true, label: 'New conversation' };
+    if (!sel.row.available)
+      return { ok: false, reason: `${sel.row.reason ?? `${sel.row.label} cannot start a conversation.`}` };
+    const model = choice?.model ?? '';
+    const field = modelField(sel.row, model);
+    if (field.invalid) return { ok: false, reason: field.reason };
+    return {
+      ok: true,
+      cliId: sel.row.id,
+      ...(model ? { model } : {}),
+      label: `New conversation · ${sel.row.label}${model ? ` ${model}` : ''}`,
+    };
+  }
+  /** Every request this canvas's conversations took from comment threads. */
+  requests(): ThreadRequest[] {
+    return this.conversations.flatMap((c) =>
+      (c.requests ?? []).map((r) => ({
+        ...r,
+        conversationId: c.id,
+        working: c.working === true,
+        ended: c.session === 'ended',
+      }))
+    );
+  }
+  /** A thread asked a conversation: keep the text so the rail can show the message before the transcript does. */
+  noteAsked(message: SentMessage): void {
+    this.sent = [...this.sent.filter((m) => m.messageId !== message.messageId), message].slice(-10);
+    this.persistSent();
+    void this.refreshList();
+  }
+  /** Binds the rail to one conversation, as the picker does; the caller opens the rail. */
+  showConversation(id: string): void {
+    this.agentChose = false;
+    this.options.dispatch({ kind: 'conversation', id });
+    this.options.dispatch({ kind: 'assistant-choice', choice: null });
+    this.paintPicker();
+    void this.open();
   }
   private say(text: string, state: 'failed' | 'sending' | '' = ''): void {
     const status = node('assistantStatus');
@@ -299,6 +365,7 @@ export class AssistantView {
       if (newest && !this.sending) this.options.dispatch({ kind: 'conversation', id: newest.id });
     }
     this.paintPicker();
+    this.options.listed();
     await this.open();
   }
   /** Loads the bound conversation's record, transcript and pending question; the view never moves for it. */
@@ -402,11 +469,15 @@ export class AssistantView {
       if (data.workspaceId === this.options.workspace) void this.refreshList();
       return;
     }
-    const conversation = this.current;
-    if (!conversation) return;
     const session = (data.session as { id?: unknown } | undefined)?.id;
     const id = data.id ?? data.sessionId ?? session;
-    if (id !== conversation.sessionId) return;
+    const conversation = this.current;
+    // A request asked from a thread shows its state there, whichever conversation the rail is on.
+    if (name !== 'transcript:update' && this.conversations.some((c) => c.sessionId === id && c.requests?.length)) {
+      clearTimeout(this.listTimer);
+      this.listTimer = setTimeout(() => void this.refreshList(), TRANSCRIPT_DEBOUNCE_MS);
+    }
+    if (!conversation || id !== conversation.sessionId) return;
     switch (name) {
       case 'session:working':
       case 'hook:prompt_submitted':
@@ -572,7 +643,11 @@ export class AssistantView {
       waiting: !!this.approval,
       working: this.working,
     });
-    const signature = JSON.stringify([turns, status, this.approval, conversation?.id ?? null]);
+    const origins = turns.flatMap((t) => {
+      const object = t.origin ? this.options.objects().find((o) => o.id === t.origin?.objectId) : undefined;
+      return t.origin ? [object ? label(object) : null] : [];
+    });
+    const signature = JSON.stringify([turns, status, this.approval, conversation?.id ?? null, origins]);
     if (signature === this.threadSignature) return;
     this.threadSignature = signature;
     const list = node('thread');
@@ -595,6 +670,18 @@ export class AssistantView {
         refs.textContent = turn.refs.join(' · ');
         refs.setAttribute('aria-label', 'Context sent with this message');
         item.append(refs);
+      }
+      if (turn.origin) {
+        const { objectId } = turn.origin;
+        const object = this.options.objects().find((o) => o.id === objectId);
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'quiet turn-origin';
+        back.textContent = object ? `From a comment on ${label(object)}` : 'From a comment on a removed object';
+        back.title = 'Open the comment thread';
+        back.toggleAttribute('disabled', !object);
+        back.addEventListener('click', () => this.options.openThread(objectId));
+        item.append(back);
       }
       if (
         turn.pending === 'failed' &&

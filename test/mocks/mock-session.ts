@@ -121,6 +121,12 @@ export class MockSession extends EventEmitter {
     this.lastSubmitAt = Date.now();
   }
 
+  /** Mirrors Session.markHookStop; counts the stop hooks it was told about. */
+  hookStops = 0;
+  markHookStop(): void {
+    this.hookStops++;
+  }
+
   /** Mirrors Session.trackUserInput (the send-key route feeds it around the write path). */
   trackUserInput(_data: string): void {}
 
