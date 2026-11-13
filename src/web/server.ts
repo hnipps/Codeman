@@ -159,7 +159,13 @@ import {
 } from './respawn-event-wiring.js';
 
 import { reconcileUpdateOnBoot } from './self-update.js';
-import { createTelemetryFromEnv, currentBuildId, requestPath, type Telemetry } from '../telemetry.js';
+import {
+  createRequestIdGenerator,
+  createTelemetryFromEnv,
+  currentBuildId,
+  requestPath,
+  type Telemetry,
+} from '../telemetry.js';
 
 // Load version from package.json
 const require = createRequire(import.meta.url);
@@ -597,16 +603,24 @@ export class WebServer extends EventEmitter {
     // bridge — all hitting the raw port) pass through unchanged. Then apply the
     // existing /api/v1 alias rewrite.
     const rewriteUrl = (req: { url?: string }): string => rewriteApiV1Url(stripBasePath(this.basePath, req.url || ''));
+    // Unique across restarts, so the id in an error answer finds one line in the logs.
+    const genReqId = createRequestIdGenerator();
     if (https) {
       const { key, cert } = getOrCreateSelfSignedCert();
       this.app = Fastify({
         logger: false,
         https: { key, cert },
         rewriteUrl,
+        genReqId,
         routerOptions: { maxParamLength: MAX_ROUTE_PARAM_LENGTH },
       });
     } else {
-      this.app = Fastify({ logger: false, rewriteUrl, routerOptions: { maxParamLength: MAX_ROUTE_PARAM_LENGTH } });
+      this.app = Fastify({
+        logger: false,
+        rewriteUrl,
+        genReqId,
+        routerOptions: { maxParamLength: MAX_ROUTE_PARAM_LENGTH },
+      });
     }
     this.mux = createMultiplexer();
     this.sse = new SseStreamManager(

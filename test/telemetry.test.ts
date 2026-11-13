@@ -10,12 +10,14 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Telemetry,
+  createRequestIdGenerator,
   createTelemetryFromEnv,
   installConsoleMirror,
   requestPath,
   resolveBuildId,
   resolveMaxBytes,
 } from '../src/telemetry.js';
+import { redactLogLine } from '../src/telemetry-redact.js';
 
 let dir: string;
 const open: Telemetry[] = [];
@@ -42,6 +44,32 @@ beforeEach(() => {
 afterEach(async () => {
   await Promise.all(open.splice(0).map((t) => t.close()));
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe('request ids', () => {
+  it('count up within one process and never repeat across two', () => {
+    const first = createRequestIdGenerator();
+    const second = createRequestIdGenerator();
+    const a = [first(), first(), first()];
+    const b = [second(), second(), second()];
+    expect(new Set([...a, ...b]).size).toBe(6);
+    for (const id of [...a, ...b]) expect(id).toMatch(/^req-[0-9a-f]{8}-[0-9a-z]+$/);
+    expect(a.map((id) => id.split('-')[1])).toEqual(Array(3).fill(a[0].split('-')[1]));
+    expect(createRequestIdGenerator('tag')()).toBe('req-tag-1');
+  });
+
+  it('survive the redactor in a request line and in a canvas error line', () => {
+    for (let i = 0; i < 200; i++) {
+      const id = createRequestIdGenerator()();
+      const request = JSON.stringify({ reqId: id, method: 'GET', path: '/api/status', status: 500, ms: 1 });
+      const server = JSON.stringify({
+        level: 'error',
+        msg: `[canvas] GET /api/canvas/:workspaceId failed 500 reqId=${id}`,
+      });
+      expect(redactLogLine(request)).toBe(request);
+      expect(redactLogLine(server)).toBe(server);
+    }
+  });
 });
 
 describe('build id', () => {

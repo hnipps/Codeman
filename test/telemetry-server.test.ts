@@ -142,7 +142,10 @@ describe('telemetry files', () => {
     for (const line of logLines('requests.jsonl')) {
       expect(Object.keys(line).sort()).toEqual(['buildId', 'method', 'ms', 'path', 'pid', 'reqId', 'status', 'ts']);
       expect(line.ms).toEqual(expect.any(Number));
+      expect(line.reqId).toMatch(/^req-[0-9a-f]{8}-[0-9a-z]+$/);
     }
+    const ids = logLines('requests.jsonl').map((l) => l.reqId);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it('records a posted client error with the build id and user agent', async () => {

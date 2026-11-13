@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A request id names one request across restarts
+
+**Type:** drift
+**Touches:** `src/telemetry.ts`, `src/web/server.ts`
+**Why:** A canvas 5xx answer carries `requestId`, and the logs join on it. Fastify's default id is a counter per process, so `req-6` named a new request after every restart and during a deploy both colours used the same ids.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md)
+
+Decision. The id itself is unique: `req-<tag>-<n>`, with eight random hex characters chosen once per process. The other option was to keep the counter and have readers join on `pid` or `buildId` as well, which the error answer does not carry. Two things read `req.id`: the `requests.jsonl` hook and `canvasFailure()`. Neither parses it, and no client does. A test runs 200 generated ids through the redactor, since a new token-like shape in a log line could have been masked.
+
 ## 2026-11-13 — The canvas and the tab strip write UI events, as tokens in batches
 
 **Type:** intent-refinement
