@@ -206,7 +206,13 @@ describe('canvas shell: the session full view', () => {
     expect(pageSockets.filter((u) => u.includes(`/ws/sessions/${id}/terminal`))).toHaveLength(1);
     expect(canvasRequests.filter((r) => /\/input\b|\/ws\//.test(r))).toEqual([]);
     expect(
-      canvasRequests.filter((r) => /^(POST|PUT|DELETE|PATCH) /.test(r) && !/\/api\/canvas\/[^/]+\/views\//.test(r))
+      canvasRequests.filter(
+        // UI events go to the telemetry intake; they are not a write of canvas or session state.
+        (r) =>
+          /^(POST|PUT|DELETE|PATCH) /.test(r) &&
+          !/\/api\/canvas\/[^/]+\/views\//.test(r) &&
+          !r.endsWith('/api/client-errors')
+      )
     ).toEqual([]);
   }, 60000);
 

@@ -74,7 +74,13 @@ describe('canvas direct context and the view registry', () => {
     });
     page = await desktop.newPage();
     page.on('request', (r) => {
-      if (r.method() !== 'GET' && !r.url().includes('/views/') && !r.url().includes('/api/events'))
+      // UI events go to the telemetry intake on a timer; they are not a write of canvas state.
+      if (
+        r.method() !== 'GET' &&
+        !r.url().includes('/views/') &&
+        !r.url().includes('/api/events') &&
+        !r.url().endsWith('/api/client-errors')
+      )
         writes.push(`${r.method()} ${r.url()}`);
     });
     mkdirSync(MEDIA, { recursive: true });
