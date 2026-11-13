@@ -273,7 +273,7 @@ export class FullView {
   private failed(): void {
     this.timer = undefined;
     const hadFocus = document.activeElement === this.frame;
-    this.frame?.remove();
+    this.slot.replaceChildren();
     this.frame = null;
     const classic = element('fullViewClassic', HTMLAnchorElement);
     classic.href = `${this.options.url('/classic')}#session=${encodeURIComponent(this.sessionId ?? '')}`;
@@ -293,7 +293,7 @@ export class FullView {
     if (this.sessionId === null) return;
     clearTimeout(this.timer);
     this.timer = undefined;
-    this.frame?.remove();
+    this.slot.replaceChildren();
     this.frame = null;
     this.sessionId = null;
     this.error.hidden = true;

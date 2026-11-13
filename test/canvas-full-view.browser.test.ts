@@ -341,7 +341,17 @@ describe('canvas shell: the session full view', () => {
     expect(await pane(id)).not.toContain('zqx');
     expect((await call({ action: 'full-view', viewId, sessionId: null })).success).toBe(true);
     await frames().waitFor({ state: 'detached' });
+    expect(await page.locator('.full-view-take').count()).toBe(0);
     expect((await call({ action: 'full-view', viewId, sessionId: '../etc' })).success).toBe(false);
+
+    // The person takes an agent-opened terminal with one click, and from then on their keys reach the pane.
+    expect((await call({ action: 'full-view', viewId, sessionId: id })).success).toBe(true);
+    await (await sessionPage(id)).waitForSelector('.xterm-helper-textarea');
+    await page.locator('.full-view-take').click();
+    expect(await page.locator('.full-view-take').count()).toBe(0);
+    await page.keyboard.type('echo taken-$((40+2))');
+    await page.keyboard.press('Enter');
+    await vi.waitFor(async () => expect(await pane(id)).toContain('taken-'), { timeout: 10000 });
   }, 60000);
 
   /** A session that exists and has no process: what a restart leaves, and what the session page would reattach. */
@@ -489,6 +499,7 @@ describe('canvas shell: the session full view', () => {
         async () => {
           const state = (await call({ action: 'read', viewId })).data.state;
           expect(state.refused?.commandId).toBe(commandId);
+          expect(state.appliedCommands).not.toContain(commandId);
           reason = state.refused.reason;
         },
         { timeout: 10000 }

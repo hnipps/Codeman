@@ -322,6 +322,7 @@ describe('canvas shell: the outline', () => {
     await page.locator('#board').focus();
     await page.keyboard.press('Control+k');
     await page.locator('#gotoResults').waitFor({ state: 'visible' });
+    await page.waitForFunction(() => document.activeElement?.id === 'search');
     await page.keyboard.press('Escape');
     expect(await page.locator('#gotoResults').isVisible()).toBe(false);
     await page.locator('#board').focus();

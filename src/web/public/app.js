@@ -2174,16 +2174,29 @@ class CodemanApp {
   }
 
   /** A page an agent opened is shown, not handed over. This page focuses its terminal from many places as it
-   *  loads, and a frame that focuses itself takes the person's next keys into the pane. So nothing here takes
-   *  focus until the person takes the terminal: the canvas then focuses this frame, which is the window
-   *  `focus` awaited here. Marking the frame `inert` in the parent does not stop it (measured in Chromium). */
+   *  loads, and a frame that focuses itself takes the person's next keys into the pane; marking the frame
+   *  `inert` in the parent does not stop that (measured in Chromium). So while the canvas holds this frame
+   *  inert, no element here and not the window itself takes focus. The rule is read each time, never latched,
+   *  so a reload of a frame the person already took, or a take before this ran, leaves nothing stuck. */
   _holdPassiveFocus() {
-    const focus = HTMLElement.prototype.focus;
-    HTMLElement.prototype.focus = function () {};
-    window.addEventListener('focus', () => {
-      HTMLElement.prototype.focus = focus;
+    const held = () => {
+      try { return window.frameElement?.inert === true; } catch { return false; }
+    };
+    const focusElement = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (...args) {
+      if (!held()) focusElement.apply(this, args);
+    };
+    const focusWindow = window.focus.bind(window);
+    window.focus = () => {
+      if (!held()) focusWindow();
+    };
+    // The canvas un-inerts the frame and focuses it when the person takes the terminal.
+    const taken = () => {
+      if (held()) return;
+      window.removeEventListener('focus', taken);
       this.terminal?.focus();
-    }, { once: true });
+    };
+    window.addEventListener('focus', taken);
   }
 
   /** True while this page was opened by an agent and no person has asked it to start the session. */

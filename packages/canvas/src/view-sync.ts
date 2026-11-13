@@ -36,6 +36,7 @@ export class ViewSync {
   private lastSentAt = Date.now();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private applied: string[] = [];
+  private seen: string[] = [];
   private refused: { commandId: string; reason: string } | null = null;
   private beat: ReturnType<typeof setInterval> | undefined;
   constructor(
@@ -61,11 +62,13 @@ export class ViewSync {
       return;
     }
     if (event.viewId !== this.viewId || event.workspaceId !== this.options.workspace) return;
-    if (this.applied.includes(event.commandId)) return;
-    // Only the latest command's refusal is reported: the next command replaces or clears it.
+    if (this.seen.includes(event.commandId)) return;
+    this.seen = [...this.seen, event.commandId].slice(-40);
+    // Only the latest command's refusal is reported: the next command replaces or clears it. A refused command
+    // is never listed as applied.
     const reason = this.options.apply(event.command);
     this.refused = reason ? { commandId: event.commandId, reason } : null;
-    this.applied = [...this.applied, event.commandId].slice(-20);
+    if (!reason) this.applied = [...this.applied, event.commandId].slice(-20);
     this.schedule(true);
   }
   private schedule(force: boolean): void {
