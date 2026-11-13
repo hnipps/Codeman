@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The deploy gate runs four more canvas and telemetry tests
+
+**Type:** intent-refinement
+**Touches:** `deploy/test.sh`
+**Why:** The plan's box "add each new test file that guards stored data to `deploy/test.sh`" was open for `test/canvas-shell-compat.test.ts`, and the tests added with the canvas failure work were never considered for the gate.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md), [self-building, rule 7](self-building.md#follow-these-rules)
+
+Decision. Added: `canvas-shell-compat` (the shell setting across a rollback), `canvas-failure-routes` (a canvas 5xx leaves a log line an agent can diagnose a bad deploy from, and no path in the body), `canvas-client-errors` (the canvas pages report browser errors and the boot guard still falls back to the classic view) and `ui-events` (the reporter's body is one the intake accepts). Left out: `canvas-view-sync`, which guards the page's publish pacing. A regression there costs a 429 on a view publish, which a later deploy fixes and no stored data or fallback depends on. Rule 7 of `docs/self-building.md` allows the gate to check more.
+
 ## 2026-11-13 — A request id names one request across restarts
 
 **Type:** drift
