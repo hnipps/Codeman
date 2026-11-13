@@ -8,6 +8,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import puppeteer from 'puppeteer';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { RUN_INTERRUPTED } from '../packages/canvas/src/task.js';
 import { resolve, join } from 'node:path';
 import { WebServer } from '../src/web/server.js';
 import { dataPath } from '../src/config/instance.js';
@@ -17,6 +18,7 @@ import { CanvasStores } from '../src/canvas/canvas-store.js';
 import { CommandSchema } from '../src/canvas/operations.js';
 import { CONTEXT_NOTICE } from '../src/canvas/conversation-schema.js';
 import { replyRouting } from '../src/web/routes/canvas-conversation-routes.js';
+import { forgetLeftBehind } from '../src/web/routes/canvas-task-routes.js';
 import { approvalInbox } from '../src/web/approval-inbox.js';
 import type { TaskRow } from '../src/canvas/tasks.js';
 
@@ -523,5 +525,161 @@ describe('canvas background tasks', () => {
     } finally {
       await other.close();
     }
+  });
+
+  describe('fix round 1', () => {
+    const ready = async () => {
+      await page.waitForFunction(() => !!window.canvasView);
+      await page.waitForFunction(
+        () => document.querySelectorAll('#providerSelect option[value="claude"]').length === 1
+      );
+    };
+    const draft = () => page.locator('#assistantDraft').inputValue();
+
+    it('while a run is on its way Send is off, a second press starts nothing, and a reload in between is said', async () => {
+      await load(page, workspace);
+      await openAssistant();
+      await page.locator('#assistantDraft').click();
+      await page.keyboard.type('Draft the outline');
+      const before = (await tasks()).length;
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      await page.route('**/api/canvas/*/tasks', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        await held;
+        await route.continue().catch(() => undefined);
+      });
+      await page.keyboard.press('Control+Shift+Enter');
+      await page.waitForFunction(() => document.getElementById('assistantSend')!.hasAttribute('disabled'));
+      expect(await page.locator('#runBackground').isDisabled()).toBe(true);
+      await page.locator('#assistantDraft').press('Enter');
+      await page.locator('#assistantDraft').press('Control+Shift+Enter');
+      await page.waitForTimeout(300);
+      expect(posts.filter((p) => p.path.startsWith('/conversations'))).toEqual([]);
+      expect(posts.filter((p) => p.path === '/tasks')).toHaveLength(1);
+      // The page goes away before any answer: the request never reached the server.
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      release();
+      await page.unroute('**/api/canvas/*/tasks');
+      await ready();
+      await openAssistant();
+      await page.waitForSelector('#backgroundNote:not([hidden])');
+      expect(await page.locator('#backgroundNote').textContent()).toBe(RUN_INTERRUPTED);
+      expect(await draft()).toContain('Draft the outline');
+      expect(await tasks()).toHaveLength(before);
+      // Pressing again is the same request, and one task.
+      await page.locator('#assistantDraft').fill('Draft the outline');
+      await page.locator('#assistantDraft').press('Control+Shift+Enter');
+      await page.waitForFunction(() => (document.getElementById('assistantDraft') as HTMLTextAreaElement).value === '');
+      const sent = posts.filter((p) => p.path === '/tasks');
+      expect(sent.at(-1)!.body.requestId).toBe(sent[0].body.requestId);
+      expect(await tasks()).toHaveLength(before + 1);
+      expect(await page.locator('#backgroundNote').isVisible()).toBe(false);
+    });
+
+    it('a reload after the server started the task settles by itself: the text leaves the composer and nothing runs twice', async () => {
+      await openAssistant();
+      await page.locator('#assistantDraft').click();
+      await page.keyboard.type('Collect the references');
+      const before = (await tasks()).length;
+      let started!: () => void;
+      const reached = new Promise<void>((r) => (started = r));
+      await page.route('**/api/canvas/*/tasks', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        // The server takes the request; its answer never reaches the page.
+        await route.fetch().catch(() => undefined);
+        started();
+      });
+      await page.keyboard.press('Control+Shift+Enter');
+      await reached;
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.unroute('**/api/canvas/*/tasks');
+      await ready();
+      await page.waitForFunction(
+        () => (document.getElementById('assistantDraft') as HTMLTextAreaElement).value === '',
+        undefined,
+        { timeout: 15_000 }
+      );
+      await openAssistant();
+      expect(await page.locator('#backgroundNote').isVisible()).toBe(false);
+      const all = await tasks();
+      expect(all).toHaveLength(before + 1);
+      expect(all.filter((t) => t.name === 'Collect the references')).toHaveLength(1);
+    });
+
+    it('a cancelled task says its session is kept for inspection only, takes no message, and leaves the picker when the rail moves on', async () => {
+      const task = (await tasks()).find((t) => t.name === 'Collect the references')!;
+      await openTasks();
+      await page.locator(`.task-row[data-task-id="${task.id}"] [data-task-control$=":cancel"]`).click();
+      await page.waitForFunction(
+        (id) => document.querySelector(`.task-row[data-task-id="${id}"] .task-state`)?.textContent === 'Cancelled',
+        task.id
+      );
+      expect(await page.locator(`.task-row[data-task-id="${task.id}"] .task-kept`).first().textContent()).toContain(
+        'kept for inspection only and takes no more messages'
+      );
+      await page.locator(`.task-row[data-task-id="${task.id}"] [data-task-control$=":inspect"]`).click();
+      await page.waitForSelector('#assistantView:not([hidden])');
+      await page.waitForFunction((id) => window.canvasView.read().conversationId === id, task.id);
+      const options = () =>
+        page.locator('#conversationPicker option').evaluateAll((els) => els.map((e) => e.textContent ?? ''));
+      expect((await options()).filter((text) => text.startsWith('Task ·'))).toHaveLength(1);
+      posts.length = 0;
+      await page.locator('#assistantDraft').fill('One more thing');
+      await page.locator('#assistantDraft').press('Enter');
+      await page.waitForFunction(() =>
+        (document.getElementById('assistantView')!.textContent ?? '').includes(
+          'This task was cancelled. Start a new one.'
+        )
+      );
+      expect(posts).toEqual([]);
+      expect(await draft()).toBe('One more thing');
+      await page.locator('#assistantDraft').fill('');
+      // Choosing another entry in the picker drops the task from it.
+      await page.locator('#conversationPicker').selectOption({ index: 0 });
+      await page.waitForFunction((id) => window.canvasView.read().conversationId !== id, task.id);
+      expect((await options()).filter((text) => text.startsWith('Task ·'))).toEqual([]);
+      await closeRail();
+    });
+
+    it('G pressed inside the task list closes it', async () => {
+      await closeRail();
+      await openTasks();
+      await page.locator('#taskList [data-task-control]').first().focus();
+      await page.keyboard.press('g');
+      await page.waitForSelector('#tasksView', { state: 'hidden' });
+      expect(await page.locator('#rail').isVisible()).toBe(false);
+      await page.locator('#board').focus();
+      await page.keyboard.press('g');
+      await page.waitForSelector('#tasksView:not([hidden])');
+      await closeRail();
+    });
+
+    it('a worktree a failed start left behind is listed and removed only when it is clean', async () => {
+      const run = (...args: string[]) => execFileSync('git', args, { cwd: casePath, encoding: 'utf8' });
+      run('worktree', 'add', '-q', '-b', 'worktree-task-0badc0de', join('.claude', 'worktrees', 'task-0badc0de'));
+      forgetLeftBehind();
+      await openTasks();
+      const row = page.locator('.task-row[data-left-behind="task-0badc0de"]');
+      await row.waitFor();
+      expect(await row.locator('.task-meta').textContent()).toBe(
+        '.claude/worktrees/task-0badc0de · worktree-task-0badc0de'
+      );
+      expect((await page.locator('#tasksView').textContent()) ?? '').not.toContain(casePath);
+      writeFileSync(join(casePath, '.claude', 'worktrees', 'task-0badc0de', 'work.txt'), 'kept\n');
+      await row.locator('[data-task-control$=":remove"]').click();
+      await row.locator('[data-task-control$=":confirm"]').click();
+      await page.waitForFunction(() => (document.getElementById('tasksStatus')!.textContent ?? '').includes('kept'));
+      expect(await page.locator('#tasksStatus').textContent()).toBe(
+        'The worktree .claude/worktrees/task-0badc0de has changes, so it was kept.'
+      );
+      execFileSync('rm', [join(casePath, '.claude', 'worktrees', 'task-0badc0de', 'work.txt')]);
+      await row.locator('[data-task-control$=":remove"]').click();
+      await row.locator('[data-task-control$=":confirm"]').click();
+      await row.waitFor({ state: 'detached' });
+      expect(await page.locator('#tasksStatus').textContent()).toBe('Worktree removed.');
+      expect(existsSync(join(casePath, '.claude', 'worktrees', 'task-0badc0de'))).toBe(false);
+      await closeRail();
+    });
   });
 });

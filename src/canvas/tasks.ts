@@ -11,8 +11,12 @@ export const MAX_TASK_RESULT_CHARS = 4000;
 export const DEFAULT_TASK_NAME = 'Background task';
 
 export type TaskIsolation = { kind: 'worktree'; name: string; branch: string } | { kind: 'shared' };
-/** Why a removed task's worktree is still there: git found changes, a session still runs in it, or the removal failed. */
-export type TaskKept = 'changes' | 'in-use' | 'failed';
+/**
+ * Why a removed task is still listed: git found changes in its worktree, a session still runs in it, git has it
+ * locked, its folder is still there though git no longer knows it, its session could not be closed, or the removal failed.
+ */
+export const TASK_KEPT = ['changes', 'in-use', 'locked', 'leftover', 'session', 'failed'] as const;
+export type TaskKept = (typeof TASK_KEPT)[number];
 export type TaskPart = {
   name: string;
   /** The request that created the task; also the conversation's own `requestId`. */
@@ -26,6 +30,12 @@ export type TaskPart = {
   completedAt?: number;
   removedAt?: number;
   kept?: TaskKept;
+  /** The cancel found the request pasted but not submitted, and could not see the composer empty afterwards. */
+  unsubmitted?: true;
+  /** git could not be told to ignore the files Codeman writes into the worktree, so it reads as changed. */
+  excludeWarning?: true;
+  /** The result as last read, kept when Remove ends the session: a task whose worktree is kept still shows it. */
+  result?: { text: string; truncated: boolean; partial?: true };
 };
 export type TaskState = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
@@ -44,7 +54,17 @@ const StoredTask = z
     cancelledAt: at,
     completedAt: at,
     removedAt: at,
-    kept: z.enum(['changes', 'in-use', 'failed']).optional().catch(undefined),
+    kept: z.enum(TASK_KEPT).optional().catch(undefined),
+    unsubmitted: z.literal(true).optional().catch(undefined),
+    excludeWarning: z.literal(true).optional().catch(undefined),
+    result: z
+      .object({
+        text: z.string().max(MAX_TASK_RESULT_CHARS),
+        truncated: z.boolean(),
+        partial: z.literal(true).optional(),
+      })
+      .optional()
+      .catch(undefined),
   })
   .passthrough();
 /** The task a conversation is, or undefined for an ordinary conversation and for a shape this release cannot read. */
@@ -53,6 +73,7 @@ export function taskPart(source: { task?: unknown }): TaskPart | undefined {
   if (!parsed.success) return undefined;
   const { name, requestId, messageId, parentConversationId, isolation, cancelledAt, completedAt, removedAt, kept } =
     parsed.data;
+  const { unsubmitted, excludeWarning, result } = parsed.data;
   return {
     name,
     requestId,
@@ -66,6 +87,17 @@ export function taskPart(source: { task?: unknown }): TaskPart | undefined {
     ...(completedAt !== undefined ? { completedAt } : {}),
     ...(removedAt !== undefined ? { removedAt } : {}),
     ...(kept ? { kept } : {}),
+    ...(unsubmitted ? { unsubmitted } : {}),
+    ...(excludeWarning ? { excludeWarning } : {}),
+    ...(result
+      ? {
+          result: {
+            text: result.text,
+            truncated: result.truncated,
+            ...(result.partial ? { partial: true as const } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -89,6 +121,8 @@ export const CreateTaskBodySchema = z
     shared: z.literal(true).optional(),
     origin: ThreadOriginSchema.optional(),
     parentConversationId: z.uuid().optional(),
+    /** The person asked to send again a request that was accepted and never delivered; honoured only for that. */
+    retry: z.literal(true).optional(),
   })
   .strict();
 export type CreateTaskBody = z.infer<typeof CreateTaskBodySchema>;
@@ -118,14 +152,22 @@ export type TaskEvidence = {
   session: 'live' | 'exited' | 'gone';
   /** A permission or question dialog is pending for the session. */
   approval: boolean;
+  /** The session is working now (a hook-reported turn, or idle detection says so). */
+  working: boolean;
 };
 /**
- * One state from what the server holds, first match wins: a recorded cancel, a recorded turn end, then evidence of
- * failure (the message was not delivered or never recorded, the agent exited, the session is gone), then a pending
- * question, then a message still on its way in, and otherwise a delivered request whose turn has not ended.
+ * One state from what the server holds, first match wins: a recorded cancel; then what a live session with a
+ * delivered request is doing NOW (a pending question, or work, which is how a turn that resumed by itself after its
+ * end was recorded reads as running again); then a recorded turn end; then evidence of failure (the message was not
+ * delivered or never recorded, the agent exited, the session is gone); then a pending question, a message still on
+ * its way in, and otherwise a delivered request whose turn has not ended.
  */
 export function deriveTaskState(e: TaskEvidence): TaskState {
   if (e.cancelledAt !== undefined) return 'cancelled';
+  if (e.session === 'live' && e.message === 'delivered') {
+    if (e.approval) return 'waiting';
+    if (e.working) return 'running';
+  }
   if (e.completedAt !== undefined) return 'completed';
   if (e.message === 'failed' || e.message === 'none') return 'failed';
   if (e.session !== 'live') return 'failed';
@@ -135,6 +177,18 @@ export function deriveTaskState(e: TaskEvidence): TaskState {
 }
 export const taskActive = (state: TaskState): boolean =>
   state === 'queued' || state === 'running' || state === 'waiting';
+
+/** Why a case folder cannot give a task a worktree of its own. */
+export const NO_ISOLATION = {
+  NOT_A_REPOSITORY: 'this case folder is not a git repository',
+  NO_COMMITS: 'this repository has no commits yet, so it cannot have worktrees',
+  REPOSITORY_SUBFOLDER: 'this case folder is a subfolder of a git repository, not the top of one',
+  BARE_REPOSITORY: 'this case folder is a bare git repository, which has no checkout to branch from',
+  DOCKER_WORKSPACE: 'this case folder is inside a Docker case workspace, where git is never run',
+} as const;
+export type NoIsolation = keyof typeof NO_ISOLATION;
+/** One row for a `task-*` worktree no task names: listed so it can be looked at and removed, never removed unasked. */
+export type LeftBehindRow = { name: string; label: string; branch?: string };
 
 /** Where a task runs, as a label inside the case folder; never a server path. */
 export const isolationLabel = (isolation: TaskIsolation): string =>
@@ -161,8 +215,17 @@ export type TaskRow = {
   createdAt: number;
   state: TaskState;
   isolation: { kind: TaskIsolation['kind']; label: string; branch?: string };
-  /** Present once the task completed and its transcript can still be read. */
-  result?: { text: string; truncated: boolean };
+  /**
+   * Present once the task completed and its transcript can still be read. `partial`: the agent exited before its
+   * turn ended, and this is what it had written by then.
+   */
+  result?: { text: string; truncated: boolean; partial?: true };
+  /** The request was accepted and never delivered, and the session can still take it: sending it again is offered. */
+  retryable?: true;
+  /** Cancelled with the request pasted but not submitted; it may still sit in that session's input. */
+  unsubmitted?: true;
+  /** git could not be told to ignore Codeman's own files in this worktree. */
+  excludeWarning?: true;
   /** The objects the request carried, as recorded when it was sent. */
   refs: { id: string; label: string }[];
   origin?: { objectId: string; commentId: string };

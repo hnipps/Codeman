@@ -474,6 +474,12 @@ export interface WorktreeOptions {
    * copy there, and `git worktree remove` would refuse that worktree forever.
    */
   agentSkillDirs?: readonly string[];
+  /**
+   * Write Codeman's exclude lines without first asking git whether it already ignores those files. That answer
+   * depends on the global excludes of whoever runs git (often a personal ignore of `settings.local.json`), so a
+   * worktree made for an agent, which must stay removable under any git configuration, does not rely on it.
+   */
+  excludeAlways?: boolean;
 }
 
 const realOr = async (p: string): Promise<string> => {
@@ -689,10 +695,11 @@ export async function resolveManagedWorktree(
 async function ensureExcluded(
   repo: CaseRepository,
   probes: Array<{ line: string; probe: string }>,
-  git: WorktreeGitRunner
+  git: WorktreeGitRunner,
+  always = false
 ): Promise<{ added: string[]; warning?: string }> {
-  const needed: string[] = [];
-  for (const { line, probe } of probes) {
+  const needed: string[] = always ? probes.map((p) => p.line) : [];
+  for (const { line, probe } of always ? [] : probes) {
     const run = await git(repo.repoRoot, [...READ_ONLY_GIT_OPTIONS, 'check-ignore', '-q', '--', probe], {
       timeoutMs: WORKTREE_READ_TIMEOUT_MS,
     });
@@ -836,7 +843,8 @@ export async function createCaseWorktree(
         { line: SETTINGS_LOCAL_EXCLUDE_LINE, probe: '.claude/settings.local.json' },
         ...skillProbes,
       ],
-      git
+      git,
+      opts.excludeAlways === true
     );
 
     // The resolved commit, not the ref text, after `--`: nothing here can be read as an option,

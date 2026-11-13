@@ -1,12 +1,18 @@
 import { readFileSync } from 'node:fs';
 import {
+  KEPT_REASON,
+  MAX_SENT_TASKS,
+  RUN_INTERRUPTED,
   STATE_LABEL,
+  attemptPending,
   nextTaskAttempt,
+  parseSentTasks,
   parseSeen,
   parseTaskAttempt,
   seenAfterOpen,
   sortTasks,
   taskActionFailure,
+  taskAsides,
   taskCount,
   taskFailure,
   taskMeta,
@@ -28,7 +34,7 @@ import {
 } from '../src/canvas/tasks.js';
 import { ConversationsFileSchema } from '../src/canvas/conversation-schema.js';
 
-const live: TaskEvidence = { message: 'delivered', session: 'live', approval: false };
+const live: TaskEvidence = { message: 'delivered', session: 'live', approval: false, working: false };
 
 describe('deriveTaskState', () => {
   const table: [string, Partial<TaskEvidence>, TaskState][] = [
@@ -43,7 +49,14 @@ describe('deriveTaskState', () => {
     ],
     ['a recorded turn end is completed', { completedAt: 5 }, 'completed'],
     ['completed stays completed when the session is later gone', { completedAt: 5, session: 'gone' }, 'completed'],
-    ['completed stays completed under a later question', { completedAt: 5, approval: true }, 'completed'],
+    ['a completed task whose session asks again is waiting', { completedAt: 5, approval: true }, 'waiting'],
+    ['a completed task whose turn resumed by itself is running again', { completedAt: 5, working: true }, 'running'],
+    [
+      'a completed task whose session exited stays completed',
+      { completedAt: 5, session: 'exited', working: true },
+      'completed',
+    ],
+    ['work does not make an undelivered request running', { message: 'queued', working: true }, 'queued'],
     ['a request that was not delivered is failed', { message: 'failed' }, 'failed'],
     ['a record without its request is failed', { message: 'none' }, 'failed'],
     ['an agent that exited before its turn ended is failed', { session: 'exited' }, 'failed'],
@@ -314,6 +327,63 @@ describe('the browser side of a run', () => {
     expect(
       taskMeta({ cliId: 'claude', cliLabel: '', isolation: { kind: 'shared', label: 'Case folder, shared' } })
     ).toBe('claude · Case folder, shared');
+  });
+  it("says why a folder cannot be isolated in the server's own words, and that a cancelled task takes nothing more", () => {
+    for (const code of ['NO_COMMITS', 'REPOSITORY_SUBFOLDER', 'BARE_REPOSITORY', 'DOCKER_WORKSPACE']) {
+      const said = taskFailure(`${code}: this repository has no commit yet`, 409);
+      expect(said).toMatchObject({ share: true, fresh: false });
+      expect(said.text).toContain('this repository has no commit yet');
+    }
+    expect(taskFailure('TASK_CANCELLED: x', 409)).toEqual({
+      text: 'This task was cancelled. Start a new one.',
+      share: false,
+      fresh: false,
+    });
+  });
+  it('keeps the requests it sent so one can be retried, bounded, and reads anything else as none', () => {
+    const sent = Array.from({ length: MAX_SENT_TASKS + 3 }, (_, n) => ({
+      id: `task-${n}`,
+      requestId: id(n % 10),
+      text: `Request ${n}`,
+      refIds: ['a'],
+    }));
+    const read = parseSentTasks(JSON.stringify(sent));
+    expect(read).toHaveLength(MAX_SENT_TASKS);
+    expect(read.at(-1)).toEqual(sent.at(-1));
+    expect(parseSentTasks(JSON.stringify([{ ...sent[0], id: 4 }, { id: 'x' }, 'no', sent[1]]))).toEqual([sent[1]]);
+    for (const raw of [null, '', '{', '{}']) expect(parseSentTasks(raw)).toEqual([]);
+    expect(RUN_INTERRUPTED).toContain('task list');
+  });
+  it('a row says what a cancel left, that a request was not delivered, and why a worktree will be kept', () => {
+    expect(taskAsides({ state: 'cancelled' })).toEqual([
+      'Cancelled. Its session is kept for inspection only and takes no more messages.',
+    ]);
+    expect(taskAsides({ state: 'cancelled', unsubmitted: true })[0]).toContain(
+      'may still be in this session’s input box'
+    );
+    expect(taskAsides({ state: 'cancelled', kept: { label: 'x', reason: 'changes' } })).toEqual([]);
+    expect(taskAsides({ state: 'failed', retryable: true })).toEqual(['The request was not delivered to the agent.']);
+    expect(taskAsides({ state: 'running', excludeWarning: true })[0]).toContain('kept on Remove');
+    expect(taskAsides({ state: 'completed' })).toEqual([]);
+    expect(Object.keys(KEPT_REASON).sort()).toEqual(['changes', 'failed', 'in-use', 'leftover', 'locked', 'session']);
+  });
+  it('a run and a send never carry the same text: each refuses while the other travels, and a spoken countdown is cancelled', () => {
+    const source = (name: string) => readFileSync(`packages/canvas/src/${name}`, 'utf8');
+    const assistant = source('assistant.ts');
+    // Run refuses while a send or a spoken send is on its way; Send refuses while a run is.
+    expect(assistant).toMatch(/if \(this\.sending \|\| this\.inflight\) return fail\(/);
+    expect(assistant).toMatch(/if \(this\.options\.voicePending\?\.\(\)\)\s+return fail\(/);
+    expect(assistant).toMatch(/if \(this\.runningTask\) return \{ ok: false, refusal:/);
+    expect(assistant).toMatch(
+      /node\('assistantSend'\)\.toggleAttribute\('disabled', this\.sending \|\| this\.runningTask !== null\)/
+    );
+    const entry = source('entry.ts');
+    expect(entry).toMatch(/voicePending: \(\) => voice\.pending\(\)/);
+    expect(entry).toMatch(/runStarting: \(\) => voice\.cancelPending\(\)/);
+    expect(entry).toMatch(/taskShown: \(\) => assistant\.showsTask\(\)/);
+    expect(attemptPending(JSON.stringify({ requestId: id(1), text: 'x', refIds: [], pending: true }))).toBe(true);
+    expect(attemptPending(JSON.stringify({ requestId: id(1), text: 'x', refIds: [] }))).toBe(false);
+    expect(attemptPending('{')).toBe(false);
   });
   it('a task cannot be started by voice or by a view command: only the assistant view calls the route', () => {
     const source = (name: string) => readFileSync(`packages/canvas/src/${name}`, 'utf8');

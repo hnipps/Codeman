@@ -144,6 +144,8 @@ const assistant: AssistantView = new AssistantView({
   turnEnded: (conversationId) => voice.turnEnded(conversationId),
   voiceRelay: (available) => voice.relayAvailable(available),
   taskStarted: () => void tasks.refresh(),
+  voicePending: () => voice.pending(),
+  runStarting: () => voice.cancelPending(),
 });
 const tasks: TasksView = new TasksView({
   url,
@@ -166,12 +168,16 @@ const tasks: TasksView = new TasksView({
     assistant.showConversation(conversationId);
     dispatch({ kind: 'rail', view: 'assistant' });
   },
+  listed: (rows) => assistant.tasksListed(rows),
+  canRetry: (id) => assistant.canRetryTask(id),
+  retry: (id) => assistant.retryTask(id),
 });
 const voice: VoiceView = new VoiceView({
   url,
   phone: () => mobile.matches,
   allowed: (event) => scope(event),
   letters: () => state.letters,
+  taskShown: () => assistant.showsTask(),
   draft: { read: () => assistant.draft.value, write: (text) => assistant.setDraft(text), element: assistant.draft },
   send: () => assistant.send(),
   target: () => assistant.sendTarget(),
@@ -826,6 +832,26 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.rail.length) {
     e.preventDefault();
     dispatch({ kind: 'escape' });
+    return;
+  }
+  // G closes the task list from inside it too: opening the list leaves the keyboard on its controls, none of which
+  // takes a letter, and the board's own G below only hears keys pressed on the board.
+  if (
+    state.letters &&
+    e.key.toLowerCase() === 'g' &&
+    !e.shiftKey &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.repeat &&
+    !mobile.matches &&
+    state.rail.at(-1) === 'tasks' &&
+    e.target instanceof Element &&
+    !!e.target.closest('#rail') &&
+    !e.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')
+  ) {
+    e.preventDefault();
+    toggleTasks();
     return;
   }
   if (!scope(e)) return;

@@ -5,8 +5,17 @@
  */
 import Fastify from 'fastify';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerCanvasRoutes } from '../src/web/routes/canvas-routes.js';
@@ -18,12 +27,12 @@ import {
   settleDeliveries,
   settleReplies,
 } from '../src/web/routes/canvas-conversation-routes.js';
-import { taskHooks } from '../src/web/routes/canvas-task-routes.js';
+import { forgetLeftBehind, taskHooks, taskTiming } from '../src/web/routes/canvas-task-routes.js';
 import { installRouteErrorHandler } from '../src/web/route-error-handler.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import { CanvasStores } from '../src/canvas/canvas-store.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
-import { conversationsPath, readConversations } from '../src/canvas/conversations.js';
+import { conversationsPath, readConversations, setMessageState, setTaskHint } from '../src/canvas/conversations.js';
 import { CONTEXT_NOTICE } from '../src/canvas/conversation-schema.js';
 import { MAX_ACTIVE_TASKS, taskPart, type TaskRow } from '../src/canvas/tasks.js';
 import { approvalInbox } from '../src/web/approval-inbox.js';
@@ -34,6 +43,7 @@ import { create, human } from './canvas-fixtures.js';
 let dir: string;
 const cases: string[] = [];
 const originalName = taskHooks.worktreeName;
+const homeLinkedCases = join(homedir(), '.codeman', 'linked-cases.json');
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const uuid = () => crypto.randomUUID();
 const git = (cwd: string, ...args: string[]) =>
@@ -46,14 +56,18 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'canvas-task-'));
   vi.stubEnv('CODEMAN_DATA_DIR', dir);
   Object.assign(replyRouting, { settleDelayMs: 2, retryDelaysMs: [], maxAgeMs: 24 * 60 * 60 * 1000 });
+  Object.assign(replyRouting, { quietMs: 30_000 });
+  Object.assign(taskTiming, { deliveryMs: 3_000, clearMs: 5, clearPresses: 3, leftBehindMs: 15_000 });
   forgetReplyPasses();
   forgetTaskResults();
+  forgetLeftBehind();
 });
 afterEach(() => {
   deployRole.enter('live');
   taskHooks.worktreeName = originalName;
   vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(homeLinkedCases, { force: true });
   for (const path of cases.splice(0)) safeRmHomeTree(path);
 });
 
@@ -64,16 +78,40 @@ const prompt = (id: string, text: string): Row => ({
 });
 const said = (text: string): Row => ({ role: 'assistant', text });
 
-async function harness(options: { repo?: boolean } = {}) {
+const rule = '─'.repeat(20);
+/** A claude pane with a ready composer holding `composer`. */
+const frame = (composer: string) =>
+  `some output\n${rule}\n❯ ${composer}\n${rule}\n  ⏵⏵ accept edits on (shift+tab to cycle)`;
+const commitFirst = (path: string) => {
+  writeFileSync(join(path, 'README.md'), 'hello\n');
+  git(path, 'add', 'README.md');
+  git(path, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'first');
+};
+
+/**
+ * `repo: 'empty'` is a repository with no commit. `linked` makes the case a linked one whose path is a symlink to a
+ * repository elsewhere; `linkedTo` links the case to a folder the test prepared instead.
+ */
+async function harness(options: { repo?: boolean | 'empty'; linked?: boolean; linkedTo?: string } = {}) {
   const caseName = `task-case-${uuid().slice(0, 8)}`;
-  const casePath = join(resolveCasesDir(), caseName);
-  mkdirSync(casePath, { recursive: true });
-  cases.push(casePath);
-  if (options.repo !== false) {
+  let casePath = join(resolveCasesDir(), caseName);
+  if (options.linked || options.linkedTo) {
+    const real = options.linkedTo ?? join(dir, `real-${caseName}`);
+    mkdirSync(real, { recursive: true });
+    casePath = options.linkedTo ?? join(dir, `link-${caseName}`);
+    if (!options.linkedTo) symlinkSync(real, casePath);
+    // The case routes fixed their registry path when they were imported, before this test chose a data folder.
+    for (const registry of [join(dir, 'linked-cases.json'), homeLinkedCases]) {
+      mkdirSync(join(registry, '..'), { recursive: true });
+      writeFileSync(registry, JSON.stringify({ [caseName]: casePath }));
+    }
+  } else {
+    mkdirSync(casePath, { recursive: true });
+    cases.push(casePath);
+  }
+  if (options.repo !== false && !options.linkedTo) {
     git(casePath, 'init', '-q', '-b', 'main');
-    writeFileSync(join(casePath, 'README.md'), 'hello\n');
-    git(casePath, 'add', 'README.md');
-    git(casePath, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'first');
+    if (options.repo !== 'empty') commitFirst(casePath);
   }
   const app = Fastify();
   app.addHook('onRequest', async (req) => {
@@ -82,6 +120,7 @@ async function harness(options: { repo?: boolean } = {}) {
   const sessions = new Map<string, Record<string, unknown>>();
   const transcripts = new Map<string, Row[]>();
   const stops = new Map<string, number>();
+  const modified = new Map<string, number>();
   const stores = new CanvasStores();
   let counter = 0;
   const port = {
@@ -91,6 +130,7 @@ async function harness(options: { repo?: boolean } = {}) {
     broadcast: vi.fn(),
     transcriptRows: vi.fn(async (sessionId: string) => transcripts.get(sessionId) ?? null),
     transcriptStamp: vi.fn(async () => null),
+    transcriptModifiedAt: vi.fn(async (sessionId: string) => modified.get(sessionId) ?? null),
     turnEndObservedAt: (sessionId: string) => stops.get(sessionId) ?? 0,
     startConversationSession: vi.fn(
       async (
@@ -164,6 +204,8 @@ async function harness(options: { repo?: boolean } = {}) {
     port,
     sessions,
     transcripts,
+    modified,
+    stops,
     workspace,
     base,
     store,
@@ -711,6 +753,578 @@ describe('remove', () => {
       await h.cancel(task.id);
       expect((await h.remove(task.id)).json().data).toEqual({ removed: true });
       expect(existsSync(join(h.casePath, 'kept.txt'))).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('fix round 1: cancel stops the request', () => {
+  /** A pane whose composer takes the paste and ignores Enter; `clearsAfter` Escapes empty it (never, when Infinity). */
+  const stubbornPane = (h: Awaited<ReturnType<typeof harness>>, clearsAfter: number) => {
+    const writes: string[] = [];
+    let pasted = false;
+    let escapes = 0;
+    const cancelPendingSubmit = vi.fn();
+    h.port.startConversationSession.mockImplementationOnce(async (_headers, request) => {
+      h.sessions.set('pane', {
+        id: 'pane',
+        mode: 'claude',
+        workingDir: request.workingDir,
+        cancelPendingSubmit,
+        paneSnapshot: () => frame(pasted && escapes < clearsAfter ? '[Pasted text #1 +4 lines]' : ''),
+        writeViaMux: vi.fn(async (data: string) => {
+          writes.push(data);
+          if (data === '\u001b') {
+            if (pasted) escapes++;
+          } else if (data !== '\r') pasted = true;
+          return true;
+        }),
+      });
+      return { ok: true, sessionId: 'pane' };
+    });
+    return { writes, cancelPendingSubmit, escapes: () => escapes };
+  };
+  const startAndPaste = async (h: Awaited<ReturnType<typeof harness>>, writes: string[]) => {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: `${h.base}/tasks`,
+      payload: { requestId: uuid(), text: 'Never run this' },
+    });
+    const { task } = response.json().data as { task: TaskRow };
+    for (let i = 0; i < 100 && !writes.length; i++) await pause(20);
+    expect(writes).toHaveLength(1);
+    return task;
+  };
+
+  it('no Enter follows a cancel, the pasted request is cleared from the composer, and the task takes no more messages', async () => {
+    const h = await harness();
+    try {
+      const pane = stubbornPane(h, 2);
+      const task = await startAndPaste(h, pane.writes);
+      const cancelled = await h.cancel(task.id);
+      expect(cancelled.json().data).toMatchObject({ interrupted: true, task: { state: 'cancelled' } });
+      expect(cancelled.json().data.task.unsubmitted).toBeUndefined();
+      expect(pane.cancelPendingSubmit).toHaveBeenCalled();
+      // Past the delivery's first Enter (2 s after the paste) and its next poll.
+      await pause(3_500);
+      await settleDeliveries();
+      expect(pane.writes.slice(1).every((w) => w === '\u001b')).toBe(true);
+      expect(pane.writes).not.toContain('\r');
+      // Escapes stop once the composer is seen empty: none goes to an empty composer.
+      expect(pane.escapes()).toBe(2);
+      const more = await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/conversations/${task.id}/messages`,
+        payload: { messageId: uuid(), text: 'And another thing' },
+      });
+      expect(more.statusCode).toBe(409);
+      expect(more.json().error).toMatch(/^TASK_CANCELLED:/);
+      expect(pane.writes).toHaveLength(3);
+      expect((await h.list()).tasks[0].state).toBe('cancelled');
+    } finally {
+      await h.app.close();
+    }
+  }, 20_000);
+
+  it('a request that will not leave the composer is said to be there, after a bounded number of Escapes', async () => {
+    const h = await harness();
+    try {
+      const pane = stubbornPane(h, Infinity);
+      const task = await startAndPaste(h, pane.writes);
+      const cancelled = await h.cancel(task.id);
+      expect(cancelled.json().data.task).toMatchObject({ state: 'cancelled', unsubmitted: true });
+      // The interrupt, then at most `clearPresses` more.
+      expect(pane.writes.slice(1)).toEqual(Array(1 + taskTiming.clearPresses).fill('\u001b'));
+      await pause(3_500);
+      await settleDeliveries();
+      expect(pane.writes).not.toContain('\r');
+      expect((await h.list()).tasks[0]).toMatchObject({ state: 'cancelled', unsubmitted: true });
+    } finally {
+      await h.app.close();
+    }
+  }, 20_000);
+});
+
+describe('fix round 1: an agent that exits, and what a restart leaves', () => {
+  it('an agent that exits mid-turn with a failure is failed with the text it had written; a clean exit completes', async () => {
+    const h = await harness();
+    try {
+      const crashed = ((await h.run()).json().data as { task: TaskRow }).task;
+      h.answer(crashed, 'Half way there');
+      h.sessions.get(crashed.sessionId)!.paneExit = { status: 1, at: Date.now() };
+      await h.list();
+      const row = (await h.list()).tasks.find((r) => r.id === crashed.id)!;
+      expect(row.state).toBe('failed');
+      expect(row.result).toEqual({ text: 'Half way there', truncated: false, partial: true });
+      expect(row.retryable).toBeUndefined();
+      // No exit status at all is not a clean exit either.
+      const killed = ((await h.run()).json().data as { task: TaskRow }).task;
+      h.answer(killed, 'Some of it');
+      h.sessions.get(killed.sessionId)!.paneExit = { at: Date.now() };
+      await h.list();
+      expect((await h.list()).tasks.find((r) => r.id === killed.id)).toMatchObject({
+        state: 'failed',
+        result: { text: 'Some of it', partial: true },
+      });
+      const clean = ((await h.run()).json().data as { task: TaskRow }).task;
+      h.answer(clean, 'All done');
+      h.sessions.get(clean.sessionId)!.paneExit = { status: 0, at: Date.now() };
+      await h.list();
+      expect((await h.list()).tasks.find((r) => r.id === clean.id)).toMatchObject({
+        state: 'completed',
+        result: { text: 'All done', truncated: false },
+      });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('live evidence wins over a recorded turn end', async () => {
+    const h = await harness();
+    try {
+      const { task } = (await h.run()).json().data as { task: TaskRow };
+      h.answer(task, 'First answer');
+      await h.stop(task.sessionId);
+      expect((await h.list()).tasks[0].state).toBe('completed');
+      h.sessions.get(task.sessionId)!.isWorking = true;
+      expect((await h.list()).tasks[0].state).toBe('running');
+      expect((await h.list()).tasks[0].result).toBeUndefined();
+      h.sessions.get(task.sessionId)!.isWorking = false;
+      approvalInbox.notePrompt({ sessionId: task.sessionId, sessionName: 't', kind: 'permission' });
+      expect((await h.list()).tasks[0].state).toBe('waiting');
+      approvalInbox.resolveForSession(task.sessionId, 'answered');
+      expect((await h.list()).tasks[0].state).toBe('completed');
+    } finally {
+      approvalInbox.resolveForSession('session-1', 'answered');
+      await h.app.close();
+    }
+  });
+
+  it('a turn end nobody saw settles only from a quiet screen and a quiet transcript', async () => {
+    const h = await harness();
+    try {
+      const { task } = (await h.run()).json().data as { task: TaskRow };
+      const session = h.sessions.get(task.sessionId)!;
+      h.answer(task, 'Finished while nobody watched');
+      const settled = async () => {
+        forgetReplyPasses();
+        await h.list();
+        return (await h.list()).tasks[0].state;
+      };
+      // No screen to read: nothing is inferred.
+      h.modified.set(task.sessionId, Date.now() - 60_000);
+      expect(await settled()).toBe('running');
+      // The transcript was written a moment ago.
+      session.paneShowsWork = () => false;
+      h.modified.set(task.sessionId, Date.now() - 1_000);
+      expect(await settled()).toBe('running');
+      // The screen still shows work.
+      h.modified.set(task.sessionId, Date.now() - 60_000);
+      session.paneShowsWork = () => true;
+      expect(await settled()).toBe('running');
+      // A question is pending.
+      session.paneShowsWork = () => false;
+      approvalInbox.notePrompt({ sessionId: task.sessionId, sessionName: 't', kind: 'permission' });
+      expect(await settled()).toBe('waiting');
+      approvalInbox.resolveForSession(task.sessionId, 'answered');
+      // The request never reached the transcript.
+      const rows = h.transcripts.get(task.sessionId)!;
+      h.transcripts.set(task.sessionId, []);
+      expect(await settled()).toBe('running');
+      h.transcripts.set(task.sessionId, rows);
+      expect(await settled()).toBe('completed');
+      expect((await h.list()).tasks[0].result?.text).toBe('Finished while nobody watched');
+    } finally {
+      approvalInbox.resolveForSession('session-1', 'answered');
+      await h.app.close();
+    }
+  });
+
+  it('an inferred turn end never posts into a thread', async () => {
+    const h = await harness();
+    try {
+      const commentId = uuid();
+      await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/command`,
+        payload: {
+          tool: 'canvas_comment',
+          requestId: uuid(),
+          arguments: { objectId: 'note1', text: 'Look', commentId },
+        },
+      });
+      const origin = { kind: 'thread', objectId: 'note1', commentId };
+      const { task } = (await h.run({ refIds: ['note1'], origin })).json().data as { task: TaskRow };
+      h.answer(task, 'An answer nobody saw end');
+      h.sessions.get(task.sessionId)!.paneShowsWork = () => false;
+      h.modified.set(task.sessionId, Date.now() - 60_000);
+      await h.list();
+      expect((await h.list()).tasks[0].state).toBe('completed');
+      expect(h.store.read().comments.filter((c) => c.author.kind === 'agent')).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('a request a process that is gone left on its way is settled from the transcript, and Retry sends it again once', async () => {
+    const h = await harness();
+    try {
+      const requestId = uuid();
+      const { task } = (await h.run({ requestId })).json().data as { task: TaskRow };
+      const messageId = taskPart(h.file()[0])!.messageId;
+      const write = h.sessions.get(task.sessionId)!.writeViaMux as ReturnType<typeof vi.fn>;
+      // What a restart finds: the message recorded on its way, and no delivery carrying it.
+      setMessageState(h.workspace.id, task.id, messageId, 'sending');
+      await h.list();
+      const [failed] = (await h.list()).tasks;
+      expect(failed).toMatchObject({ state: 'failed', retryable: true });
+      expect(write).toHaveBeenCalledTimes(1);
+      // The same request id without `retry` only reads.
+      expect((await h.run({ requestId })).json().data).toMatchObject({ duplicate: true, task: { state: 'failed' } });
+      expect(write).toHaveBeenCalledTimes(1);
+      const retried = await h.run({ requestId, retry: true });
+      expect(retried.json().data).toMatchObject({ duplicate: true, retried: true });
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(write.mock.calls[1][0]).toMatch(/Tidy the README\r$/);
+      expect((await h.list()).tasks[0].state).toBe('running');
+      expect(h.port.startConversationSession).toHaveBeenCalledTimes(1);
+      expect(h.worktrees()).toHaveLength(1);
+      // An agent cannot retry.
+      h.sessions.set('agent-1', { id: 'agent-1', workingDir: h.casePath });
+      const asAgent = await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/tasks`,
+        headers: { 'x-codeman-parent-session': 'agent-1' },
+        payload: { requestId, text: 'Tidy the README', retry: true },
+      });
+      expect(asAgent.statusCode).toBe(403);
+
+      // The agent did take it: the transcript holds the request, so it is recorded delivered.
+      const second = ((await h.run()).json().data as { task: TaskRow }).task;
+      const secondMessage = taskPart(h.file().find((c) => c.id === second.id)!)!.messageId;
+      h.transcripts.set(second.sessionId, [prompt(secondMessage, 'Tidy the README')]);
+      setMessageState(h.workspace.id, second.id, secondMessage, 'queued');
+      await h.list();
+      expect((await h.list()).tasks.find((r) => r.id === second.id)!.state).toBe('running');
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('a count for a closed list reads no transcript of a working task', async () => {
+    const h = await harness();
+    try {
+      const { task } = (await h.run()).json().data as { task: TaskRow };
+      h.answer(task, 'Working on it');
+      h.sessions.get(task.sessionId)!.isWorking = true;
+      await h.stop(task.sessionId);
+      h.port.transcriptRows.mockClear();
+      h.port.transcriptStamp.mockClear();
+      for (let i = 0; i < 5; i++) {
+        const brief = await h.app.inject({ method: 'GET', url: `${h.base}/tasks?brief=1` });
+        await settleReplies();
+        expect(brief.json().data).toEqual({
+          brief: true,
+          tasks: [
+            { id: task.id, requestId: task.requestId, name: task.name, createdAt: task.createdAt, state: 'running' },
+          ],
+          active: 1,
+          cap: MAX_ACTIVE_TASKS,
+        });
+      }
+      expect(h.port.transcriptRows).not.toHaveBeenCalled();
+      // A full list of a working task reads none either.
+      await h.list();
+      expect(h.port.transcriptRows).not.toHaveBeenCalled();
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('fix round 1: where a task runs', () => {
+  it('a linked case behind a symlink: the session folder is spelled through the case path and resolves to the workspace', async () => {
+    const h = await harness({ linked: true });
+    try {
+      const response = await h.run();
+      expect(response.statusCode).toBe(200);
+      const { task } = response.json().data as { task: TaskRow };
+      const [name] = h.worktrees();
+      const session = h.sessions.get(task.sessionId)!;
+      expect(session.workingDir).toBe(join(h.casePath, '.claude', 'worktrees', name));
+      // The task's own session, as an agent caller, lands on this workspace.
+      const own = await h.app.inject({
+        method: 'GET',
+        url: '/api/canvas/current/tasks',
+        headers: { 'x-codeman-parent-session': task.sessionId },
+      });
+      expect(own.statusCode).toBe(200);
+      expect(own.json().data.tasks.map((t: TaskRow) => t.id)).toEqual([task.id]);
+      expect(JSON.stringify(own.json())).not.toContain(dir);
+      // Its live session is seen inside its worktree whichever way the path is spelled.
+      const busy = await h.remove(task.id);
+      expect(busy.statusCode).toBe(409);
+      await h.cancel(task.id);
+      expect((await h.remove(task.id)).json().data).toEqual({ removed: true });
+      expect(h.worktrees()).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('says why no worktree can be made: no commit yet, a subfolder of a repository, a bare repository', async () => {
+    const empty = await harness({ repo: 'empty' });
+    try {
+      const requestId = uuid();
+      const refused = await empty.run({ requestId });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatch(/^NO_COMMITS: /);
+      expect(refused.json().error).not.toContain(empty.casePath);
+      expect(empty.port.startConversationSession).not.toHaveBeenCalled();
+      const shared = await empty.run({ requestId, shared: true });
+      expect(shared.statusCode).toBe(200);
+      expect(shared.json().data.task.isolation.kind).toBe('shared');
+    } finally {
+      await empty.app.close();
+    }
+    const outer = join(dir, 'outer');
+    mkdirSync(join(outer, 'inner'), { recursive: true });
+    git(outer, 'init', '-q', '-b', 'main');
+    commitFirst(outer);
+    const sub = await harness({ linkedTo: join(outer, 'inner') });
+    try {
+      const refused = await sub.run();
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatch(/^REPOSITORY_SUBFOLDER: /);
+      expect(refused.json().error).not.toContain(dir);
+    } finally {
+      await sub.app.close();
+    }
+    const bare = join(dir, 'bare.git');
+    mkdirSync(bare);
+    git(bare, 'init', '-q', '--bare');
+    const b = await harness({ linkedTo: bare });
+    try {
+      const refused = await b.run();
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatch(/^BARE_REPOSITORY: /);
+    } finally {
+      await b.app.close();
+    }
+  });
+
+  it('a session start that throws undoes the worktree it was for', async () => {
+    const h = await harness();
+    try {
+      h.port.startConversationSession.mockRejectedValueOnce(new Error(`spawn failed in ${h.casePath}`));
+      const response = await h.run();
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toBe('START_FAILED: the session could not be started');
+      expect(h.worktrees()).toEqual([]);
+      expect(h.branches()).toEqual([]);
+      expect(h.file()).toEqual([]);
+      expect((await h.list()) as unknown as { leftBehind?: unknown }).not.toHaveProperty('leftBehind');
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('a parent that is not a conversation of this workspace is not recorded', async () => {
+    const h = await harness();
+    try {
+      const stranger = ((await h.run({ parentConversationId: uuid() })).json().data as { task: TaskRow }).task;
+      expect(stranger.parentConversationId).toBeUndefined();
+      const made = await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/conversations`,
+        payload: { requestId: uuid() },
+      });
+      const parent = made.json().data.conversation.id as string;
+      const child = ((await h.run({ parentConversationId: parent })).json().data as { task: TaskRow }).task;
+      expect(child.parentConversationId).toBe(parent);
+      // A task is not a parent.
+      const grandchild = ((await h.run({ parentConversationId: child.id })).json().data as { task: TaskRow }).task;
+      expect(grandchild.parentConversationId).toBeUndefined();
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('fix round 1: left-behind worktrees', () => {
+  const leave = (h: Awaited<ReturnType<typeof harness>>, name: string) => {
+    git(h.casePath, 'worktree', 'add', '-q', '-b', `worktree-${name}`, join('.claude', 'worktrees', name));
+    forgetLeftBehind();
+  };
+  const left = async (h: Awaited<ReturnType<typeof harness>>) =>
+    ((await h.list()) as unknown as { leftBehind?: { name: string; label: string; branch?: string }[] }).leftBehind;
+  const removeLeft = (h: Awaited<ReturnType<typeof harness>>, name: string, headers = {}) =>
+    h.app.inject({ method: 'DELETE', url: `${h.base}/tasks/left-behind/${name}`, headers });
+
+  it('lists only task-named worktrees no task names and no session is inside, and removes one without force', async () => {
+    const h = await harness();
+    try {
+      const { task } = (await h.run()).json().data as { task: TaskRow };
+      const [own] = h.worktrees();
+      expect(await left(h)).toBeUndefined();
+      leave(h, 'task-0badc0de');
+      leave(h, 'task-feedf00d');
+      leave(h, 'mine');
+      expect(await left(h)).toEqual([
+        { name: 'task-0badc0de', label: '.claude/worktrees/task-0badc0de', branch: 'worktree-task-0badc0de' },
+        { name: 'task-feedf00d', label: '.claude/worktrees/task-feedf00d', branch: 'worktree-task-feedf00d' },
+      ]);
+      expect(JSON.stringify(await h.list())).not.toContain(h.casePath);
+      // A live session inside one means it is somebody's.
+      h.sessions.set('other', {
+        id: 'other',
+        workingDir: join(h.casePath, '.claude', 'worktrees', 'task-feedf00d', 'src'),
+      });
+      forgetLeftBehind();
+      expect((await left(h))!.map((r) => r.name)).toEqual(['task-0badc0de']);
+      h.sessions.delete('other');
+
+      h.sessions.set('agent-1', { id: 'agent-1', workingDir: h.casePath });
+      expect((await removeLeft(h, 'task-0badc0de', { 'x-codeman-parent-session': 'agent-1' })).statusCode).toBe(403);
+      h.sessions.delete('agent-1');
+      // Only names this subsystem makes, and never one a task still names.
+      expect((await removeLeft(h, 'mine')).statusCode).toBe(404);
+      const listed = await removeLeft(h, own);
+      expect(listed.statusCode).toBe(409);
+      expect(listed.json().error).toMatch(/^TASK_LISTED:/);
+
+      writeFileSync(join(h.casePath, '.claude', 'worktrees', 'task-feedf00d', 'work.txt'), 'kept\n');
+      const kept = await removeLeft(h, 'task-feedf00d');
+      expect(kept.json().data).toEqual({
+        removed: false,
+        kept: { label: '.claude/worktrees/task-feedf00d', reason: 'changes' },
+      });
+      expect(JSON.stringify(kept.json())).not.toContain(h.casePath);
+      expect((await removeLeft(h, 'task-0badc0de')).json().data).toEqual({ removed: true });
+      expect(h.worktrees().sort()).toEqual(['mine', own, 'task-feedf00d'].sort());
+      expect(h.branches()).not.toContain('worktree-task-0badc0de');
+      expect((await left(h))!.map((r) => r.name)).toEqual(['task-feedf00d']);
+      expect((await h.list()).tasks.map((t) => t.id)).toEqual([task.id]);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('fix round 1: remove says what it kept and why', () => {
+  it('a folder git no longer knows, a locked worktree, and a session still inside each keep the row with their reason', async () => {
+    const h = await harness();
+    try {
+      const tasks: TaskRow[] = [];
+      for (let i = 0; i < 3; i++) tasks.push(((await h.run()).json().data as { task: TaskRow }).task);
+      const nameOf = (t: TaskRow) => t.isolation.label.split('/').at(-1)!;
+      for (const t of tasks) await h.cancel(t.id);
+      // git's record is gone and the folder is still there.
+      rmSync(join(h.casePath, '.git', 'worktrees', nameOf(tasks[0])), { recursive: true, force: true });
+      expect((await h.remove(tasks[0].id)).json().data).toMatchObject({ removed: false, kept: { reason: 'leftover' } });
+      expect(existsSync(join(h.casePath, '.claude', 'worktrees', nameOf(tasks[0])))).toBe(true);
+      // Once the folder is gone too, there is nothing left to keep.
+      rmSync(join(h.casePath, '.claude', 'worktrees', nameOf(tasks[0])), { recursive: true, force: true });
+      expect((await h.remove(tasks[0].id)).json().data).toEqual({ removed: true });
+
+      git(h.casePath, 'worktree', 'lock', join('.claude', 'worktrees', nameOf(tasks[1])));
+      expect((await h.remove(tasks[1].id)).json().data).toMatchObject({ removed: false, kept: { reason: 'locked' } });
+      git(h.casePath, 'worktree', 'unlock', join('.claude', 'worktrees', nameOf(tasks[1])));
+      expect((await h.remove(tasks[1].id)).json().data).toEqual({ removed: true });
+
+      h.sessions.set('visitor', {
+        id: 'visitor',
+        workingDir: join(h.casePath, '.claude', 'worktrees', nameOf(tasks[2])),
+      });
+      expect((await h.remove(tasks[2].id)).json().data).toMatchObject({ removed: false, kept: { reason: 'in-use' } });
+      h.sessions.delete('visitor');
+      expect((await h.remove(tasks[2].id)).json().data).toEqual({ removed: true });
+      expect(h.file()).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('a session that will not close keeps the record, in a shared task too, and the kept row keeps its result', async () => {
+    const h = await harness({ repo: false });
+    try {
+      const { task } = (await h.run({ shared: true })).json().data as { task: TaskRow };
+      h.answer(task, 'The answer to keep');
+      await h.stop(task.sessionId);
+      expect((await h.list()).tasks[0].state).toBe('completed');
+      h.port.discardConversationSession.mockImplementationOnce(async () => undefined);
+      const kept = await h.remove(task.id);
+      expect(kept.json().data).toMatchObject({ removed: false, kept: { reason: 'session' } });
+      expect(h.file()).toHaveLength(1);
+      expect(taskPart(h.file()[0])!.result).toEqual({ text: 'The answer to keep', truncated: false });
+      expect((await h.remove(task.id)).json().data).toEqual({ removed: true });
+      expect(h.file()).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('a kept worktree row still shows the result after its session is gone, and an exclude warning rides the row', async () => {
+    const h = await harness();
+    try {
+      const { task } = (await h.run()).json().data as { task: TaskRow };
+      const [name] = h.worktrees();
+      h.answer(task, 'Wrote notes.txt');
+      await h.stop(task.sessionId);
+      writeFileSync(join(h.casePath, '.claude', 'worktrees', name, 'notes.txt'), 'work\n');
+      expect((await h.remove(task.id)).json().data).toMatchObject({ removed: false, kept: { reason: 'changes' } });
+      expect(h.sessions.has(task.sessionId)).toBe(false);
+      forgetTaskResults();
+      const [row] = (await h.list()).tasks;
+      expect(row.result).toEqual({ text: 'Wrote notes.txt', truncated: false });
+      expect(row.excludeWarning).toBeUndefined();
+      setTaskHint(h.workspace.id, task.id, { excludeWarning: true });
+      expect((await h.list()).tasks[0].excludeWarning).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('fix round 1: a reply-only task is always removable', () => {
+  const globalConfig = (name: string, ignores: string) => {
+    const excludes = join(dir, `${name}.ignore`);
+    writeFileSync(excludes, ignores);
+    const config = join(dir, `${name}.gitconfig`);
+    writeFileSync(config, `[core]\n\texcludesFile = ${excludes}\n`);
+    return config;
+  };
+  /** What a session start writes into its folder. */
+  const sessionFiles = (tree: string) => {
+    mkdirSync(join(tree, '.claude', 'skills', 'codeman'), { recursive: true });
+    writeFileSync(join(tree, '.claude', 'settings.local.json'), '{"hooks":{}}\n');
+    writeFileSync(join(tree, '.claude', 'skills', 'codeman', 'SKILL.md'), '# skill\n');
+  };
+
+  it("writes Codeman's own files into the repository's exclude whatever the machine ignores, so removal does not depend on it", async () => {
+    // The machine ignores the files when the worktree is made, and not when it is removed.
+    vi.stubEnv('GIT_CONFIG_SYSTEM', '/dev/null');
+    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig('covers', '.claude/settings.local.json\n.claude/skills/codeman/\n'));
+    const h = await harness();
+    try {
+      const reply = ((await h.run()).json().data as { task: TaskRow }).task;
+      const work = ((await h.run()).json().data as { task: TaskRow }).task;
+      const exclude = readFileSync(join(h.casePath, '.git', 'info', 'exclude'), 'utf8');
+      expect(exclude).toContain('.claude/settings.local.json');
+      expect(exclude).toContain('.claude/skills/codeman');
+      expect(reply.excludeWarning).toBeUndefined();
+      vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig('empty', ''));
+      const treeOf = (t: TaskRow) => join(h.casePath, t.isolation.label);
+      sessionFiles(treeOf(reply));
+      sessionFiles(treeOf(work));
+      writeFileSync(join(treeOf(work), 'report.md'), 'a real new file\n');
+      await h.cancel(reply.id);
+      await h.cancel(work.id);
+      expect((await h.remove(reply.id)).json().data).toEqual({ removed: true });
+      expect(existsSync(treeOf(reply))).toBe(false);
+      expect((await h.remove(work.id)).json().data).toMatchObject({ removed: false, kept: { reason: 'changes' } });
+      expect(existsSync(join(treeOf(work), 'report.md'))).toBe(true);
     } finally {
       await h.app.close();
     }

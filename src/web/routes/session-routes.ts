@@ -1040,6 +1040,7 @@ export function registerSessionRoutes(
     transcriptReader?: (reader: {
       rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
       stamp(sessionId: string): Promise<string | null>;
+      modifiedAt(sessionId: string): Promise<number | null>;
     }) => void;
   } = {}
 ): RemoteWakeRegistry {
@@ -2900,16 +2901,28 @@ export function registerSessionRoutes(
       );
     },
     stamp: async (sessionId) => {
-      const session = ctx.sessions.get(sessionId);
-      if (!session || session.remote || session.docker) return null;
-      if (getCli(session.mode)?.capabilities.transcript !== 'claude-jsonl') return null;
-      const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
-      const transcript = await findClaudeTranscript(projectsDir, session.claudeSessionId || session.id, session.id);
-      if (!transcript) return 'none';
-      const stat = await fs.stat(transcript.path).catch(() => null);
-      return stat ? `${transcript.sessionId}:${stat.mtimeMs}:${stat.size}` : null;
+      const found = await transcriptStat(sessionId);
+      if (found === null || found === 'none') return found;
+      return `${found.sessionId}:${found.mtimeMs}:${found.size}`;
+    },
+    modifiedAt: async (sessionId) => {
+      const found = await transcriptStat(sessionId);
+      return found === null || found === 'none' ? null : found.mtimeMs;
     },
   });
+  /** The claude transcript's identity, modified time and size; 'none' when no file exists yet, null when that cannot be told. */
+  async function transcriptStat(
+    sessionId: string
+  ): Promise<{ sessionId: string; mtimeMs: number; size: number } | 'none' | null> {
+    const session = ctx.sessions.get(sessionId);
+    if (!session || session.remote || session.docker) return null;
+    if (getCli(session.mode)?.capabilities.transcript !== 'claude-jsonl') return null;
+    const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
+    const transcript = await findClaudeTranscript(projectsDir, session.claudeSessionId || session.id, session.id);
+    if (!transcript) return 'none';
+    const stat = await fs.stat(transcript.path).catch(() => null);
+    return stat ? { sessionId: transcript.sessionId, mtimeMs: stat.mtimeMs, size: stat.size } : null;
+  }
 
   async function lastResponse(session: ReturnType<typeof findSessionOrFail>, context: string | undefined) {
     // Codex sessions don't write to ~/.claude/projects — their transcripts

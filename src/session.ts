@@ -5155,6 +5155,19 @@ export class Session extends EventEmitter {
     return this._mux.capturePaneText(this._muxSession.muxName, undefined, { styles }) ?? null;
   }
 
+  /**
+   * Whether the SCREEN shows the agent working (its working line, or a turn waiting for its own workers), read the way
+   * idle detection reads it; null when no pane can be read. Unlike `isWorking`, this holds after a server restart.
+   */
+  paneShowsWork(): boolean | null {
+    return this._isStopped ? null : this._probePaneWorking();
+  }
+
+  /** Stops re-pressing Enter for the last programmatic prompt: its sender no longer wants it submitted. */
+  cancelPendingSubmit(): void {
+    this._submitVerifier?.cancel();
+  }
+
   /** Every submit moves `lastSubmitAt`; only one outside a keep-alive turn moves `lastRealPromptAt`. */
   private _stampSubmit(): void {
     this._lastSubmitAt = Date.now();

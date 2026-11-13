@@ -62,10 +62,19 @@ export function taskFailure(message: string, status: number): { text: string; sh
   const kept = 'Your message is kept.';
   switch (code) {
     case 'NOT_A_REPOSITORY':
+    case 'NO_COMMITS':
+    case 'REPOSITORY_SUBFOLDER':
+    case 'BARE_REPOSITORY':
+    case 'DOCKER_WORKSPACE': {
+      // The server's own reason, which is one of a fixed set of sentences and never carries a path.
+      const reason = message.slice(code.length + 1).trim() || 'this case folder is not a git repository';
       return say(
-        'This case folder is not a git repository, so the task cannot get its own copy. It can run in the case folder itself, sharing it with your other sessions.',
+        `The task cannot be isolated here: ${reason}. It can run in the case folder itself, sharing it with your other sessions.`,
         true
       );
+    }
+    case 'TASK_CANCELLED':
+      return say('This task was cancelled. Start a new one.');
     case 'TOO_MANY_TASKS':
       return say(`Four background tasks are already running on this canvas. Cancel one or wait. ${kept}`);
     case 'TOO_MANY':
@@ -110,6 +119,9 @@ export function taskActionFailure(message: string, status: number): string {
 export const KEPT_REASON: Record<NonNullable<TaskRow['kept']>['reason'], string> = {
   changes: 'has changes, so it was kept',
   'in-use': 'is still in use by a session, so it was kept',
+  locked: 'is locked in git, so it was kept. Unlock it with git first',
+  leftover: 'is a folder git no longer knows as a worktree, so it was left as it is',
+  session: 'was kept because its session could not be closed',
   failed: 'could not be removed',
 };
 
@@ -120,6 +132,57 @@ export function taskCount(rows: readonly Pick<TaskRow, 'id' | 'state'>[], seen: 
 /** What opening the list marks as seen: every finished task now listed, and nothing that has gone. */
 export const seenAfterOpen = (rows: readonly Pick<TaskRow, 'id' | 'state'>[]): string[] =>
   rows.filter((r) => !taskActive(r.state)).map((r) => r.id);
+/** A started task's request, kept on this browser so a request that was never delivered can be sent again unchanged. */
+export type SentTask = { id: string; requestId: string; text: string; refIds: string[] };
+export const MAX_SENT_TASKS = 8;
+export function parseSentTasks(raw: string | null): SentTask[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v
+      .flatMap((entry: unknown): SentTask[] => {
+        if (typeof entry !== 'object' || entry === null) return [];
+        const o = entry as Record<string, unknown>;
+        const attempt = parseTaskAttempt(JSON.stringify(o));
+        return attempt && typeof o.id === 'string' ? [{ id: o.id, ...attempt }] : [];
+      })
+      .slice(-MAX_SENT_TASKS);
+  } catch {
+    return [];
+  }
+}
+/** The stored attempt was on its way to the server when the page went away: its answer was never seen. */
+export function attemptPending(raw: string | null): boolean {
+  if (!raw) return false;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return typeof v === 'object' && v !== null && (v as { pending?: unknown }).pending === true;
+  } catch {
+    return false;
+  }
+}
+/** What the composer says about a run a reload interrupted before the server's answer was seen. */
+export const RUN_INTERRUPTED =
+  'A background run was interrupted before it was confirmed. If it started it is in the task list; otherwise press Run in background again. Your message is kept.';
+/** One line under a task row for what the server reports beside its state. */
+export function taskAsides(
+  row: Pick<TaskRow, 'state' | 'unsubmitted' | 'excludeWarning' | 'retryable' | 'kept'>
+): string[] {
+  const lines: string[] = [];
+  if (row.state === 'cancelled' && !row.kept)
+    lines.push(
+      row.unsubmitted
+        ? 'Cancelled before the request was submitted. It may still be in this session’s input box, so the session is kept for inspection only and takes no more messages.'
+        : 'Cancelled. Its session is kept for inspection only and takes no more messages.'
+    );
+  if (row.retryable) lines.push('The request was not delivered to the agent.');
+  if (row.excludeWarning)
+    lines.push(
+      'Codeman could not tell git to ignore its own settings file in this repository, so this worktree reads as changed and is kept on Remove. Check it and remove it with git.'
+    );
+  return lines;
+}
 export function parseSeen(raw: string | null): string[] {
   if (!raw) return [];
   try {

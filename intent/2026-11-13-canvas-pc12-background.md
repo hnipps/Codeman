@@ -67,3 +67,29 @@ Settled while building; none changes the outcome above.
 ## Verification limits
 
 Sessions in every test are stand-ins and transcripts are written by the test. No real agent has run a task. Worktrees are made and removed by real git in a temporary repository, in the route tests and the browser tests. Cancel is checked as an Escape written to the task's session, not as an agent stopping.
+
+## Fix round 1
+
+A review of the first commit and a run on a real agent found the points below. None changes the outcome above; each is fixed in a second commit.
+
+- Cancel stops the request. The cancel is recorded first, and from then on the delivery writes nothing: no paste, and no Enter for a request already pasted. The session's own re-press of Enter is stopped too. A request left in the composer is cleared with Escape, pressed only while a fresh read of the screen shows text there and at most three times; when it will not clear, or the screen cannot be read, the row says the request may still be in that session's input box. A cancelled task refuses further messages, in the route and in the composer, and its row says the session is kept for inspection only.
+- An agent that leaves its pane with a failure, a signal or no status has not finished: the task is failed, and the text it had written by then is shown as a partial result. Only a clean exit, or a turn the transcript shows closed, completes a task.
+- A run and a send never carry the same text. Send is off and refused while a run is on its way, Run is refused while a send or a spoken send is on its way, and a spoken countdown is cancelled when a run starts.
+- A task's session folder is spelled through the case path, not the path git resolves, so a linked case behind a symlink still resolves to its canvas for the task's own session.
+- After a restart nothing in memory says a turn ended. What is live wins over what was recorded: a task whose session is working or asking is running or waiting whatever its record says. A turn end nobody saw is taken only from all of these together: the screen shows no work, no question is pending, the transcript holds the request, it has not been written for thirty seconds, and two reads agree. That settles the task's state and posts nothing into a thread. A request a stopped server left on its way is recorded delivered when the transcript holds it and not delivered otherwise, and Retry sends the same message again once.
+- The list is cheap. A working task's transcript is not read. A closed list asks only for each task's state, at most every two seconds, and that answer reads no result.
+- A session start that throws undoes the worktree like any other failed step. A `task-` worktree that no task names and no session is inside is listed as left behind, with a Remove that uses the same non-force rule; nothing removes one on its own.
+- The refusal says why no worktree can be made: not a repository, no commit yet, a subfolder of a repository, a bare repository, or a Docker workspace. Each offers the shared tick.
+- Remove says what it kept and why: changes, a session still inside, a git lock, a folder git no longer knows, a session that would not close, or a failure. A row kept after its session is gone still shows the result, which is stored on the record before the session is discarded.
+- The hooks file and the agent skill copy that a session start writes are always written into the repository's `info/exclude` when a task worktree is made, whatever the machine's own git ignores say, so a task that only replied is removable under any git configuration. A warning from that step rides the row.
+- A spoken turn is refused while the rail shows a task. A reload while a run was on its way is said in the composer, and settles by itself when the task turns out to be listed.
+- A parent conversation is recorded only when it is an ordinary conversation of the same workspace.
+- "Only a person" rests on the caller-declared agent header, as it does for conversations: a caller that does not declare itself an agent is treated as a person. It keeps agents that use Codeman's own tools from starting, cancelling, removing or retrying tasks. It is not a defence against a process that calls the HTTP API without the header.
+
+Left as they are, and why:
+
+- The question card's title, "Claude needs your permission", comes from the shared approvals code and is the same for every session. It is not task code and is not changed here.
+- Remove does not look inside a worktree to decide that only Codeman's own files changed. Telling those files from the agent's by content is not decidable in general, so git's own answer stands and the row explains it.
+- Retry needs the request text, which the server never stores. It is offered in the browser that started the task, for its last eight tasks.
+- Clearing a pasted request from the composer with Escape is checked against a stand-in pane. On a real agent the claim the row makes rests on reading an empty composer afterwards, not on what Escape is known to do.
+

@@ -4,6 +4,7 @@ import {
   MAX_SPOKEN_CHARS,
   capturing,
   draftText,
+  VOICE_TASK_SHOWN,
   initialVoice,
   replyToSpeak,
   spokenReply,
@@ -528,6 +529,15 @@ describe('voice wiring', () => {
     expect(later('[["G"]]')).toBeUndefined();
     expect(later('[["Mod","Shift","Enter"]]')).toBeUndefined();
   });
+  it('a spoken turn is refused while the rail shows a background task; dictation is not', () => {
+    const idle = initialVoice(full);
+    const refused = voice(idle, { ...press('conversation'), taskShown: true });
+    expect(refused.effects).toEqual([]);
+    expect(refused.state).toMatchObject({ phase: 'idle', message: VOICE_TASK_SHOWN });
+    const dictated = voice(idle, { ...press('dictation'), taskShown: true });
+    expect(dictated.state.phase).toBe('requesting-permission');
+    expect(voice(idle, { ...press('conversation'), taskShown: false }).state.phase).toBe('requesting-permission');
+  });
   it('capture can start only from a trusted press inside the voice view: nothing public, nothing on window', () => {
     const view = source('voice-view.ts');
     // One call site starts a capture, in the reducer's effect loop, and the method is private.
@@ -539,7 +549,16 @@ describe('voice wiring', () => {
     expect(view.match(/this\.toggle\(/g)).toHaveLength(2);
     expect(view.match(/isTrusted/g)).toHaveLength(2);
     const publicMethods = [...view.matchAll(/^ {2}([a-zA-Z]+)\(/gm)].map((m) => m[1]).sort();
-    expect(publicMethods).toEqual(['constructor', 'escape', 'relayAvailable', 'sent', 'thread', 'turnEnded']);
+    expect(publicMethods).toEqual([
+      'cancelPending',
+      'constructor',
+      'escape',
+      'pending',
+      'relayAvailable',
+      'sent',
+      'thread',
+      'turnEnded',
+    ]);
     const entry = source('entry.ts');
     expect(entry).not.toMatch(/window\.\w*[vV]oice/);
     // The view-command layers never reach the voice view.
