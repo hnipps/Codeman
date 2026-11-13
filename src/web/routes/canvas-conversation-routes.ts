@@ -67,6 +67,8 @@ import {
   sha256,
 } from '../../canvas/conversations.js';
 import { cutResult, deriveTaskState, isolationLabel, taskPart, type TaskState } from '../../canvas/tasks.js';
+import { joinRelease, type ReleaseRecord, type ReleaseView } from '../../canvas/release.js';
+import type { ToolRow } from '../../canvas/transcript-activity.js';
 import type { Author } from '../../canvas/model.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
 
@@ -198,6 +200,80 @@ export async function readConversation(
       messages: conversation.messages,
     },
   });
+}
+type Activity = { supported: boolean; tools: Omit<ToolRow, 'release'>[]; dropped: number; releases: ReleaseView[] };
+const NO_ACTIVITY: Activity = { supported: false, tools: [], dropped: 0, releases: [] };
+/** Tool rows already read, by conversation and transcript stamp, so a refresh of an unchanged transcript parses nothing. */
+const activities = new Map<string, { stamp: string; read: { tools: ToolRow[]; dropped: number } }>();
+/** Each entry can hold a few hundred cut rows, so few are kept. */
+const MAX_ACTIVITIES = 20;
+/** The supervisor's recent runs, kept briefly: its status command is a process start, and a rail refreshes often. */
+export const releaseReads = { ttlMs: 5_000, at: 0, records: null as ReleaseRecord[] | null };
+async function recentReleases(ctx: CanvasPort): Promise<ReleaseRecord[] | null> {
+  if (Date.now() - releaseReads.at < releaseReads.ttlMs) return releaseReads.records;
+  // A supervisor that does not answer is "no record", which the row then says; it is never an error for the thread.
+  releaseReads.records = (await ctx.releaseRecords?.().catch(() => null)) ?? null;
+  releaseReads.at = Date.now();
+  return releaseReads.records;
+}
+/**
+ * What the conversation's agent did between its replies: tool calls with their results, and any release it asked the
+ * deploy supervisor for, joined with the supervisor's own record. Read from the session's transcript on every call
+ * and never stored. A session the caller may not read, one this process does not hold, or a transcript that carries no
+ * tool calls answers `supported: false` with nothing in it.
+ */
+export async function conversationActivity(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  id: string
+): Promise<Outcome> {
+  const conversation = findConversation(workspaceId, id);
+  if (!conversation) return notFound('Conversation not found');
+  const session = ctx.sessions.get(conversation.sessionId);
+  if (!session || !ctx.transcriptActivity || !canAccessOwned(getAuthUser(req), session.owner)) {
+    return ok({ activity: NO_ACTIVITY });
+  }
+  const stamp = (await ctx.transcriptStamp?.(session.id).catch(() => null)) ?? null;
+  const cached = activities.get(conversation.id);
+  let read = stamp !== null && cached?.stamp === stamp ? cached.read : null;
+  if (!read) {
+    read = await ctx.transcriptActivity(session.id).catch(() => null);
+    if (!read) return ok({ activity: NO_ACTIVITY });
+    activities.delete(conversation.id);
+    if (stamp !== null) activities.set(conversation.id, { stamp, read });
+    for (const oldest of activities.keys()) {
+      if (activities.size <= MAX_ACTIVITIES) break;
+      activities.delete(oldest);
+    }
+  }
+  const asked = read.tools.filter((t) => t.release);
+  const records = asked.length ? await recentReleases(ctx) : null;
+  const releases = asked.flatMap((t) =>
+    t.release
+      ? [
+          joinRelease(
+            { toolId: t.id, ...t.release, at: t.at, pending: t.status === 'pending' && !session.paneExit },
+            records
+          ),
+        ]
+      : []
+  );
+  const tools = read.tools.map(({ release: _release, ...row }) => row);
+  return ok({ activity: { supported: true, tools, dropped: read.dropped, releases } satisfies Activity });
+}
+/** A tool answer is one bounded text, so an agent gets the newest calls that fit and a count of the rest. */
+export const MAX_TOOL_ACTIVITY_BYTES = 12_000;
+function fitForTool(activity: Activity): Activity {
+  let bytes = 0;
+  let from = activity.tools.length;
+  while (from > 0) {
+    const size = Buffer.byteLength(JSON.stringify(activity.tools[from - 1]));
+    if (bytes + size > MAX_TOOL_ACTIVITY_BYTES) break;
+    bytes += size;
+    from -= 1;
+  }
+  return { ...activity, tools: activity.tools.slice(from), dropped: activity.dropped + from };
 }
 /** Result texts already cut for the list, by conversation and by what they were read from, so an unchanged transcript is not read again. */
 const results = new Map<string, { stamp: string; result: TaskResultText }>();
@@ -1013,8 +1089,17 @@ export async function conversationTool(
   switch (input.action) {
     case 'list':
       return listConversations(ctx, req, workspaceId);
-    case 'read':
-      return readConversation(ctx, req, workspaceId, input.conversationId);
+    case 'read': {
+      const read = await readConversation(ctx, req, workspaceId, input.conversationId);
+      if (read.code !== 200) return read;
+      const activity = await conversationActivity(ctx, req, workspaceId, input.conversationId);
+      if (activity.code !== 200) return activity;
+      const { conversation } = (read.body as { data: { conversation: object } }).data;
+      return ok({
+        conversation,
+        activity: fitForTool((activity.body as { data: { activity: Activity } }).data.activity),
+      });
+    }
     case 'create':
       return createConversation(ctx, req, workspaceId, {
         requestId: input.requestId,
@@ -1038,6 +1123,11 @@ export function registerConversationRoutes(scope: FastifyInstance, ctx: CanvasPo
   scope.get('/api/canvas/:workspaceId/conversations/:conversationId', async (req, reply) => {
     const p = params.parse(req.params);
     const outcome = await readConversation(ctx, req, p.workspaceId, p.conversationId);
+    return reply.code(outcome.code).send(outcome.body);
+  });
+  scope.get('/api/canvas/:workspaceId/conversations/:conversationId/activity', async (req, reply) => {
+    const p = params.parse(req.params);
+    const outcome = await conversationActivity(ctx, req, p.workspaceId, p.conversationId);
     return reply.code(outcome.code).send(outcome.body);
   });
   scope.post<{ Params: { workspaceId: string } }>(
