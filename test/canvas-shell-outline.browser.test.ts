@@ -245,7 +245,8 @@ describe('canvas shell: the outline', () => {
     // A name the server refuses: its sentence, under the field, and the text stays.
     const posts: string[] = [];
     page.on('request', (r) => {
-      if (r.method() === 'POST') posts.push(new URL(r.url()).pathname);
+      // UI events go to the telemetry intake on a timer; only the case form's own posts count here.
+      if (r.method() === 'POST' && !r.url().endsWith('/api/client-errors')) posts.push(new URL(r.url()).pathname);
     });
     await page.locator('#newCaseName').fill('two words');
     await page.keyboard.press('Enter');

@@ -207,12 +207,15 @@ describe('canvas conversations', () => {
       expect((await send('a\u001b[31mred')).statusCode).toBe(400);
       expect((await send('x'.repeat(17 * 1024))).statusCode).toBe(400);
       expect((await send('two\nlines')).statusCode).toBe(200);
+      const live = (await h.app.inject({ method: 'GET', url: `${h.base}/conversations` })).json();
+      expect(live.data.conversations[0]).not.toHaveProperty('sessionGone');
       h.sessions.delete(conversation.sessionId);
       const ended = await send('late');
       expect(ended.statusCode).toBe(409);
       expect(ended.json().error).toMatch(/^SESSION_ENDED/);
       const list = (await h.app.inject({ method: 'GET', url: `${h.base}/conversations` })).json();
       expect(list.data.conversations[0].session).toBe('ended');
+      expect(list.data.conversations[0].sessionGone).toBe(true);
       deployRole.enter('retired');
       expect((await send('later')).statusCode).toBe(409);
       expect((await h.start()).success).toBe(false);

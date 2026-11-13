@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRouteTestHarness, type RouteTestHarness } from './_route-test-utils.js';
-import { registerTelemetryRoutes } from '../../src/web/routes/telemetry-routes.js';
+import { registerTelemetryRoutes, UI_EVENT_BATCH_MAX } from '../../src/web/routes/telemetry-routes.js';
 import { Telemetry } from '../../src/telemetry.js';
 
 const POLICY = { bindHost: '127.0.0.1', allowedHosts: [] };
@@ -195,6 +195,42 @@ describe('POST /api/client-errors', () => {
     const res = await post({ kind: 'ui', surface: 'canvas', action: 'Select' });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ success: false, errorCode: 'INVALID_INPUT' });
+    await telemetry!.flush();
+    expect(() => readFileSync(join(dir, 'ui-events.jsonl'), 'utf8')).toThrow();
+  });
+
+  it('writes one line per event of a batch, in order, and the log query returns them', async () => {
+    await setup();
+    const res = await post({
+      kind: 'ui',
+      events: [
+        { surface: 'tab-strip', action: 'tab.select', target: 'a1b2c3d4-0000-4000-8000-000000000001', agoMs: 1500 },
+        { surface: 'canvas', action: 'rail.open', target: 'assistant', n: 3, agoMs: 20 },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+    await telemetry!.flush();
+    const read = await harness.app.inject({ method: 'GET', url: '/api/logs?stream=ui-events&text=rail.open' });
+    const parse = (res: typeof read) => (res.json().data.lines as string[]).map((l) => JSON.parse(l));
+    expect(parse(read)).toEqual([
+      expect.objectContaining({ surface: 'canvas', action: 'rail.open', target: 'assistant', n: 3, agoMs: 20 }),
+    ]);
+    const all = await harness.app.inject({ method: 'GET', url: '/api/logs?stream=ui-events' });
+    expect(parse(all).map((l: { action: string }) => l.action)).toEqual(['tab.select', 'rail.open']);
+  });
+
+  it('refuses a target that is prose, a batch over the cap, and an empty batch, and writes nothing', async () => {
+    await setup();
+    const event = { surface: 'canvas', action: 'tool', target: 'pan' };
+    for (const body of [
+      { kind: 'ui', surface: 'canvas', action: 'edit', target: 'fix the login bug' },
+      { kind: 'ui', events: [event, { ...event, target: 'two words' }] },
+      { kind: 'ui', events: Array.from({ length: UI_EVENT_BATCH_MAX + 1 }, () => event) },
+      { kind: 'ui', events: [] },
+      { kind: 'ui', events: [{ ...event, text: 'typed' }] },
+    ]) {
+      expect((await post(body)).statusCode).toBe(400);
+    }
     await telemetry!.flush();
     expect(() => readFileSync(join(dir, 'ui-events.jsonl'), 'utf8')).toThrow();
   });

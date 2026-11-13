@@ -140,6 +140,30 @@ describe('phone canvas shell', () => {
       sessionId
     );
     const canvasButton = (await page.locator('#soloCanvasBtn').boundingBox())!;
+    // The drawn box is inset from the header's edges like the glyphs beside it; the tap target is still 44px.
+    const header = (await page.locator('.header').boundingBox())!;
+    expect(canvasButton.y - header.y).toBeGreaterThanOrEqual(5);
+    expect(header.y + header.height - (canvasButton.y + canvasButton.height)).toBeGreaterThanOrEqual(5);
+    const hit = (y: number) =>
+      page.evaluate(
+        ([x, at]) => document.elementFromPoint(x, at)?.id ?? null,
+        [canvasButton.x + canvasButton.width / 2, y]
+      );
+    expect(await hit(canvasButton.y + canvasButton.height / 2 - 21)).toBe('soloCanvasBtn');
+    expect(await hit(canvasButton.y + canvasButton.height / 2 + 21)).toBe('soloCanvasBtn');
+    // A notch: the header pads itself by the safe area, and the button stays below it by the same inset.
+    await page.evaluate(() => {
+      document.body.classList.add('ios-device');
+      document.documentElement.style.setProperty('--safe-area-top', '47px');
+    });
+    const notched = (await page.locator('#soloCanvasBtn').boundingBox())!;
+    expect(notched.y).toBeGreaterThanOrEqual(47 + 5);
+    if (process.env.CANVAS_PHONE_SHOT) await page.screenshot({ path: `${process.env.CANVAS_PHONE_SHOT}-notch.png` });
+    await page.evaluate(() => {
+      document.body.classList.remove('ios-device');
+      document.documentElement.style.removeProperty('--safe-area-top');
+    });
+    if (process.env.CANVAS_PHONE_SHOT) await page.screenshot({ path: `${process.env.CANVAS_PHONE_SHOT}.png` });
     expect(canvasButton.x + canvasButton.width).toBeLessThanOrEqual(WIDTH);
     expect(await page.locator('#soloRedockBtn').isVisible()).toBe(false);
     // No header button was added for phones in the dashboard document; this one is built for this address only.

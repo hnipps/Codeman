@@ -19,6 +19,7 @@ import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
 import { reportClientErrors } from './client-errors.js';
+import { reportClassicLinks, uiEvent, viewEvent } from './ui-events.js';
 import type { ViewAction } from '../../../src/canvas/view-schema.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
@@ -47,6 +48,7 @@ declare global {
 const base = new URL(document.baseURI).pathname.replace(/\/$/, '');
 const url = (path: string): string => joinBasePath(base, path);
 reportClientErrors(url);
+reportClassicLinks();
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const el = document.getElementById(id);
   if (!(el instanceof type)) throw new Error(`Missing canvas element: ${id}`);
@@ -82,8 +84,10 @@ function opener(): HTMLElement {
 }
 let initial = true,
   pendingFocus: HTMLElement | null = null,
-  railDepth = 0;
+  railDepth = 0,
+  agentActing = false;
 const mobile = phoneMode();
+uiEvent('page.open', mobile.matches ? 'phone' : 'desktop');
 trackKeyboard();
 state = command(state, { kind: 'outline', open: !mobile.matches }, objects);
 const assetUrl = (assetId: string): string | null =>
@@ -349,6 +353,9 @@ function dispatch(action: ViewCommand): void {
     return;
   }
   if (action.kind === 'rail' && state.rail.at(-1) !== action.view) railOrigins.set(action.view, opener());
+  // An agent's view command already leaves a request line; this stream is what the person did.
+  const event = agentActing ? null : viewEvent(action, state.rail.at(-1));
+  if (event) uiEvent(...event);
   const closing = state.rail.at(-1);
   const previous = state.rail.length;
   const root = state.root;
@@ -737,6 +744,7 @@ function applyViewAction(action: ViewAction): string | void {
   const seen = (ids: string[]): string[] => ids.filter((id) => visible.has(id));
   const was = keyboard;
   keyboard = false;
+  agentActing = true;
   try {
     switch (action.action) {
       case 'set-viewport':
@@ -796,6 +804,7 @@ function applyViewAction(action: ViewAction): string | void {
     }
   } finally {
     keyboard = was;
+    agentActing = false;
   }
 }
 const views = new ViewSync({
@@ -1310,6 +1319,7 @@ function openFullView(sessionId: string, opener: HTMLElement | null, focus: bool
     } catch {
       /* Without storage the canvas opens as it would on a first visit. */
     }
+    uiEvent('full-view.open', sessionId);
     location.assign(url(fullViewPath(sessionId, workspaceId)));
     return;
   }

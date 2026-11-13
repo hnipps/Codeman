@@ -2,6 +2,63 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The assistant rail does not ask for the transcript of a deleted session
+
+**Type:** drift
+**Touches:** `src/web/routes/canvas-conversation-routes.ts`, `packages/canvas/src/assistant.ts`, `test/canvas-view.browser.test.ts`
+**Why:** Opening a conversation whose session had been deleted logged a 404 in the browser console for `last-response?context=full`. The record outlives its session, and the rail asked the session's transcript route anyway. A session with no answer yet answers 200, so the 404 only ever meant a missing session.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md)
+
+Decision. The conversation summary carries an optional `sessionGone: true` when the session is not on the server or not the caller's, and the rail skips the transcript read for it. The route's 404 is unchanged: it is the stable answer for a missing session. A page from before this release ignores the field and keeps logging the 404, which is what it did before.
+
+The same slice changes one browser test. "never earns a 429 from its own view publishes" counted the publishes made during six rounds of clicks. A publish carries the state at the moment it is sent and one equal to the last is skipped, so under load every send could land on the round's resting state and the count stayed at one. The test now holds two states until each is published. The 429 check is unchanged.
+
+## 2026-11-13 — An unnamed session has one name in the outline and the tab strip
+
+**Type:** drift
+**Touches:** `src/canvas/shell-sessions.ts`, `src/web/routes/canvas-shell-routes.ts`
+**Why:** The classic view names an unnamed session after its folder and falls back to the short id. The canvas outline's row used the short id straight away, so the same session read `myapp` in one view and `a1b2c3d4` in the other.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md)
+
+Decision. The outline uses the classic rule through `sessionDisplayName()`. The classic view's `getSessionName()` is browser script and the outline's row is built on the server, and no module is loaded by both, so the rule exists once in each runtime. `test/canvas-shell-sessions.test.ts` cuts `getSessionName()` out of `app.js`, runs it as written and compares it with `sessionDisplayName()` over the cases, the way that file already pins the session order against the dashboard's. A change to either side fails the test.
+
+## 2026-11-13 — A stalled case folder is logged per state change on the polled sessions route
+
+**Type:** drift
+**Touches:** `src/web/routes/canvas-failure.ts`, `src/web/routes/canvas-shell-routes.ts`
+**Why:** Every canvas 5xx writes one error line. The sessions route is asked by the page on a timer, so one folder on a mount that stopped answering wrote an error line every few seconds for as long as a canvas page stayed open.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md), [architecture-invariants, "Canvas failures and telemetry"](architecture-invariants.md#canvas-failures-and-telemetry)
+
+Decision. The rule "every canvas 5xx writes a line" now has one stated exception: a polled route writes the line when a folder stops answering and one `recovered` line when it answers again. Each 503 still has its `requests.jsonl` line and its `requestId`, so a single answer can still be found. Workspace creation is a person's own request and keeps a line per answer. The memory is in the process and capped. It is lost on restart, which costs one repeated line.
+
+## 2026-11-13 — The deploy gate runs four more canvas and telemetry tests
+
+**Type:** intent-refinement
+**Touches:** `deploy/test.sh`
+**Why:** The plan's box "add each new test file that guards stored data to `deploy/test.sh`" was open for `test/canvas-shell-compat.test.ts`, and the tests added with the canvas failure work were never considered for the gate.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md), [self-building, rule 7](self-building.md#follow-these-rules)
+
+Decision. Added: `canvas-shell-compat` (the shell setting across a rollback), `canvas-failure-routes` (a canvas 5xx leaves a log line an agent can diagnose a bad deploy from, and no path in the body), `canvas-client-errors` (the canvas pages report browser errors and the boot guard still falls back to the classic view) and `ui-events` (the reporter's body is one the intake accepts). Left out: `canvas-view-sync`, which guards the page's publish pacing. A regression there costs a 429 on a view publish, which a later deploy fixes and no stored data or fallback depends on. Rule 7 of `docs/self-building.md` allows the gate to check more.
+
+## 2026-11-13 — A request id names one request across restarts
+
+**Type:** drift
+**Touches:** `src/telemetry.ts`, `src/web/server.ts`
+**Why:** A canvas 5xx answer carries `requestId`, and the logs join on it. Fastify's default id is a counter per process, so `req-6` named a new request after every restart and during a deploy both colours used the same ids.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md)
+
+Decision. The id itself is unique: `req-<tag>-<n>`, with eight random hex characters chosen once per process. The other option was to keep the counter and have readers join on `pid` or `buildId` as well, which the error answer does not carry. Two things read `req.id`: the `requests.jsonl` hook and `canvasFailure()`. Neither parses it, and no client does. A test runs 200 generated ids through the redactor, since a new token-like shape in a log line could have been masked.
+
+## 2026-11-13 — The canvas and the tab strip write UI events, as tokens in batches
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/ui-events.js`, `packages/canvas/src/ui-events.ts`, `src/web/routes/telemetry-routes.ts`, `src/web/public/app.js`, `packages/canvas/src/entry.ts`
+**Why:** PC8 built the `ui-events.jsonl` stream and its intake, and nothing wrote to it. The plan names the two surfaces and no event list, body shape or limits.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md), [architecture-invariants, "Canvas failures and telemetry"](architecture-invariants.md#canvas-failures-and-telemetry)
+
+Decision. One reporter script serves both pages, because the dashboard is plain script and the canvas is a bundle, and two copies of the batching would drift. The intake keeps the one-event body and gains a batch body of at most 25 events, with optional `n` and `agoMs` on a line. A `target` is now a token on both sides (no whitespace), which is how "no typed text, prompt or object content" is enforced by structure instead of by review. The stream records what a person did: an agent's view command is left out because its request already has a line. Only discrete actions are recorded. Camera, focus and selection commands are left out because they run per frame or per key and the view registry holds their result.
+
+Consequences accepted. A release that does not know the batch body answers 400, so events are lost while two colours overlap during a deploy; nothing is retried. Sends, comments and background runs are not separate events: each is a request with its own `requests.jsonl` line. `docs/self-building.md` still describes the one-event line without `n` and `agoMs`; rule 11 there reserves that file for the owner.
 ## 2026-11-13 — Agents may start canvas conversations and background tasks, within bounds (reverses PC9b and PC12)
 
 **Type:** retraction

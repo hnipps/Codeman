@@ -17,9 +17,15 @@ import { approvalInbox } from '../approval-inbox.js';
 import { readConversations } from '../../canvas/conversations.js';
 import { taskPart } from '../../canvas/tasks.js';
 import { probePathKind } from '../../utils/bounded-path-probe.js';
-import { caseFolderUnavailable } from './canvas-failure.js';
+import { caseFolderAnswered, caseFolderUnavailable } from './canvas-failure.js';
 import { MAX_CONCURRENT_SESSIONS_CEILING } from '../../config/map-limits.js';
-import { deriveSessionState, needsYou, sortSessions, type ShellSessionRow } from '../../canvas/shell-sessions.js';
+import {
+  deriveSessionState,
+  needsYou,
+  sessionDisplayName,
+  sortSessions,
+  type ShellSessionRow,
+} from '../../canvas/shell-sessions.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
 
 /** True when `dir` is `folder` or below it: the rule that resolves an agent's `current` workspace. */
@@ -61,7 +67,7 @@ function row(
   const carried = kinds.get(session.id);
   return {
     id: session.id,
-    name: (typeof session.name === 'string' && session.name) || session.id.slice(0, 8),
+    name: sessionDisplayName(session),
     mode: session.mode ?? 'claude',
     kind: carried?.kind ?? 'terminal',
     state,
@@ -121,7 +127,8 @@ export function registerShellRoutes(scope: FastifyInstance, ctx: CanvasPort): vo
       const folder = await workspaceFolder(workspace, user);
       // The page asks on a timer and on events, not because a person named this folder: the stall cap applies.
       const kind = await probePathKind(folder);
-      if (kind === 'unknown') return caseFolderUnavailable(req, reply, folder);
+      if (kind === 'unknown') return caseFolderUnavailable(req, reply, folder, { polled: true });
+      caseFolderAnswered(req, folder);
       return { success: true, data: { sessions: sessionsInside(ctx, user, workspace.id, folder) } };
     }
   );

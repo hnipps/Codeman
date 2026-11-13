@@ -84,3 +84,15 @@ export function sortSessions<T extends Ordered>(rows: readonly T[]): T[] {
 }
 
 export const needsYou = (rows: readonly { state: string }[]): number => rows.filter((r) => r.state === 'needs').length;
+
+/**
+ * The name a session is shown under: its own name, else its folder's name, else the first eight characters of
+ * its id. This is the classic view's rule (`getSessionName()` in `app.js`), kept equal to it by a parity test,
+ * so an unnamed session reads the same in the outline and in the tab strip.
+ */
+export function sessionDisplayName(session: { id: string; name?: unknown; workingDir?: unknown }): string {
+  if (typeof session.name === 'string' && session.name) return session.name;
+  if (typeof session.workingDir === 'string' && session.workingDir)
+    return session.workingDir.split('/').pop() || session.workingDir;
+  return session.id.slice(0, 8);
+}

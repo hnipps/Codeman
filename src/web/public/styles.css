@@ -3385,8 +3385,11 @@ body.solo-mode .btn-lifecycle-log {
 }
 .btn-solo-canvas:hover { background: var(--bg-hover); }
 .btn-solo-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Touch: the drawn box is 32px, so it sits inside the 44px phone header like the glyphs beside it and, on
+   iOS, below the safe-area padding the header adds. The pseudo-element keeps the tap target at 44px. */
 @media (pointer: coarse) {
-  .btn-solo-canvas { min-height: 44px; padding: 0 12px; font-size: 14px; }
+  .btn-solo-canvas { position: relative; height: 32px; padding: 0 12px; font-size: 14px; }
+  .btn-solo-canvas::after { content: ''; position: absolute; inset: -7px -1px; } /* from the padding box: 32 - 2 + 14 = 44 */
 }
 .btn-canvas-shell {
   display: inline-flex;

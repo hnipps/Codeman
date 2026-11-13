@@ -14,6 +14,7 @@ import {
   deriveSessionState,
   needsYou,
   sessionAnchor,
+  sessionDisplayName,
   sortSessions,
   type ShellSessionRow,
 } from '../src/canvas/shell-sessions.js';
@@ -66,6 +67,44 @@ describe('session state', () => {
   });
   it('counts only the sessions that wait on a person', () => {
     expect(needsYou([{ state: 'needs' }, { state: 'waiting' }, { state: 'needs' }, { state: 'error' }])).toBe(2);
+  });
+});
+
+describe('session name: parity with the dashboard', () => {
+  /** The classic view's own `getSessionName()` and `getShortId()`, cut out of `app.js` and run as written. */
+  function dashboardName(): (session: { id: string; name?: string; workingDir?: string }) => string {
+    const app = readFileSync(resolve(import.meta.dirname, '../src/web/public/app.js'), 'utf8');
+    const method = (name: string): string => {
+      const start = app.indexOf(`\n  ${name}(`);
+      expect(start).toBeGreaterThan(-1);
+      return app.slice(start, app.indexOf('\n  }\n', start) + 5);
+    };
+    const host = vm.runInNewContext(
+      `({ _shortIdCache: new Map(), ${method('getShortId').trim()}, ${method('getSessionName').trim()} })`
+    ) as { getSessionName(session: object): string };
+    return (session) => host.getSessionName(session);
+  }
+
+  it('names a session as the tab strip does: its name, else its folder, else its short id', () => {
+    const classic = dashboardName();
+    const id = 'a1b2c3d4-0000-4000-8000-000000000001';
+    const sessions = [
+      { id, name: 'w3-myapp', workingDir: '/cases/myapp' },
+      { id, name: '', workingDir: '/cases/myapp' },
+      { id, workingDir: '/cases/my app/sub' },
+      { id, name: '', workingDir: '/cases/trailing/' },
+      { id, name: '', workingDir: '' },
+      { id },
+    ];
+    expect(sessions.map(sessionDisplayName)).toEqual([
+      'w3-myapp',
+      'myapp',
+      'sub',
+      '/cases/trailing/',
+      'a1b2c3d4',
+      'a1b2c3d4',
+    ]);
+    for (const session of sessions) expect(sessionDisplayName(session)).toBe(classic(session));
   });
 });
 
@@ -316,6 +355,46 @@ describe('GET /api/canvas/:workspaceId/sessions', () => {
     expect(response.json().data).toBeUndefined();
     // The page asks by itself, so the probe keeps the stall cap: `pastCap` is for a folder a person named.
     expect(vi.mocked(probePathKind).mock.lastCall).toEqual([h.casePath]);
+  });
+
+  it('lists an unnamed session under its folder name, as the classic view shows it', async () => {
+    const h = await harness();
+    h.sessions.set('s-term', { id: 's-term', name: '', workingDir: join(h.casePath, 'api') });
+    const rows = (await h.list()).json().data.sessions as { id: string; name: string }[];
+    expect(rows.find((r) => r.id === 's-term')?.name).toBe('api');
+  });
+
+  it('logs a stalled case folder once, and once more when it answers again, however often the page asks', async () => {
+    const h = await harness();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const infos = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const count = (spy: typeof errors, text: string) =>
+      spy.mock.calls.filter((c) => String(c[0]).includes(text)).length;
+    try {
+      await h.list();
+      vi.mocked(probePathKind).mockResolvedValue('unknown');
+      for (let i = 0; i < 5; i++) {
+        const response = await h.list();
+        expect(response.statusCode).toBe(503);
+        expect(response.json().requestId).toBeTruthy();
+      }
+      expect(count(errors, 'sessions failed 503')).toBe(1);
+      expect(count(infos, 'recovered')).toBe(0);
+
+      vi.mocked(probePathKind).mockResolvedValue('directory');
+      for (let i = 0; i < 3; i++) expect((await h.list()).statusCode).toBe(200);
+      expect(count(infos, 'GET /api/canvas/:workspaceId/sessions recovered')).toBe(1);
+      expect(String(infos.mock.calls.find((c) => String(c[0]).includes('recovered'))?.[0])).not.toContain(h.casePath);
+
+      vi.mocked(probePathKind).mockResolvedValue('unknown');
+      await h.list();
+      await h.list();
+      expect(count(errors, 'sessions failed 503')).toBe(2);
+    } finally {
+      vi.mocked(probePathKind).mockReset();
+      errors.mockRestore();
+      infos.mockRestore();
+    }
   });
 
   it('leaves out a remote session whose path on the other machine sits under the local case folder', async () => {

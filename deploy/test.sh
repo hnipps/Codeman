@@ -41,12 +41,16 @@ tests=(
   test/canvas-thread-requests.test.ts
   test/canvas-tasks.test.ts
   test/canvas-task-routes.test.ts
+  test/canvas-shell-compat.test.ts
+  test/canvas-failure-routes.test.ts
+  test/canvas-client-errors.test.ts
   test/canvas-agent-start.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts
   test/telemetry-redact.test.ts
   test/telemetry-query.test.ts
+  test/ui-events.test.ts
   test/build-reload.test.ts
   test/deploy-healthcheck.test.ts
   test/deploy-role.test.ts

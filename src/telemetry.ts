@@ -27,6 +27,7 @@
 
 import { accessSync, appendFileSync, closeSync, constants, lstatSync, mkdirSync, openSync, readSync } from 'node:fs';
 import { appendFile, rename, stat } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { format } from 'node:util';
@@ -79,6 +80,8 @@ interface UiEventLogLine {
   surface: 'canvas' | 'tab-strip';
   action: string;
   target?: string | null;
+  n?: number | null;
+  agoMs?: number | null;
 }
 
 interface StreamRecords {
@@ -86,6 +89,17 @@ interface StreamRecords {
   requests: RequestLogLine;
   'client-errors': ClientErrorLogLine;
   'ui-events': UiEventLogLine;
+}
+
+/**
+ * Request ids for one server process: `req-<process tag>-<n>`. Fastify's own ids are a bare
+ * counter that starts again with every process, so the `req-6` in an error answer named a
+ * different request after each restart. The tag is random per process, which also tells the
+ * two colours of a deploy apart.
+ */
+export function createRequestIdGenerator(tag: string = randomBytes(4).toString('hex')): () => string {
+  let n = 0;
+  return () => `req-${tag}-${(++n).toString(36)}`;
 }
 
 let cachedHookSecret: string | undefined;
