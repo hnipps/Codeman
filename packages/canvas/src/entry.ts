@@ -859,6 +859,21 @@ function scope(event: KeyboardEvent): boolean {
     canvas: target instanceof Element && !!target.closest('#board'),
   });
 }
+const editableField = 'input,textarea,select,[contenteditable]:not([contenteditable="false"])';
+function inOutline(event: KeyboardEvent): boolean {
+  const target = event.target;
+  return target instanceof Element && !!target.closest('#outline') && !target.closest(editableField);
+}
+/** S and W, the shell's two letters. True when the key was one of them and has been acted on. */
+function shellLetter(e: KeyboardEvent): boolean {
+  const key = e.key.toLowerCase();
+  if (!shellView || !state.letters || (key !== 's' && key !== 'w')) return false;
+  if (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return false;
+  e.preventDefault();
+  if (key === 's') shellView.focusSessions();
+  else shellView.toggleWorkspaces();
+  return true;
+}
 document.addEventListener('keydown', (e) => {
   if (composing || e.isComposing || e.keyCode === 229) return;
   if (e.key === 'F1') {
@@ -916,6 +931,16 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (!e.repeat) shellView.openGoto();
     return;
+  }
+  // S and a closed full view leave the keyboard on an outline button, which the board's scope below excludes:
+  // the shell's own keys answer there too, and Escape hands the keyboard back to the board.
+  if (shellView && inOutline(e)) {
+    if (e.key === 'Escape' && !mobile.matches) {
+      e.preventDefault();
+      node('board').focus({ preventScroll: true });
+      return;
+    }
+    if (shellLetter(e)) return;
   }
   if (!scope(e)) return;
   if (e.key === 'Escape') {
@@ -1000,10 +1025,8 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       openAssistant(false);
       requestAnimationFrame(() => assistant.focusChoice(e.shiftKey ? 'model' : 'provider'));
-    } else if (shellView && (key === 's' || key === 'w') && !e.shiftKey && !e.repeat) {
-      e.preventDefault();
-      if (key === 's') shellView.focusSessions();
-      else shellView.toggleWorkspaces();
+    } else if (shellLetter(e)) {
+      return;
     } else if (key === 'v' || key === 'h') dispatch({ kind: 'tool', tool: key === 'v' ? 'select' : 'pan' });
   }
 });

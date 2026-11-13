@@ -1726,8 +1726,17 @@ whole subtree uniformly; fixed-container resize changes its bounds. Positive
 scales and rotation are supported; nonuniform scaling in rotated axes, affine
 shear and flips are unsupported. Ordering
 preserves unrelated relative order. Duplication allocates new IDs for the subtree.
-Undo takes explicit own-author sequence IDs and rejects changed revisions; redo
-inverts the undo result's sequence IDs. All inverses are an atomic native batch.
+Undo takes explicit own-author sequence IDs; redo inverts the undo result's
+sequence IDs. A step is accepted only while every object the chosen operations
+changed still holds the fields the latest of them left, compared on everything
+but `revision` and `updatedAt` (`sameFields()` in `src/canvas/commands.ts`).
+A history step bumps the revision and leaves an older edit's fields in place,
+so a person's consecutive edits of one object undo one at a time; any other
+later edit, by anyone, changes a field and is refused as `REVISION`. Inverse
+operation ids are derived from the sequence the step is built on, so undoing
+one edit again after its redo writes a new operation and is never answered as
+a repeat of the first undo. The stored record shape is unchanged
+(`test/canvas-history-compat.test.ts`). All inverses are an atomic native batch.
 Author revert remains the separate field-aware operation. Viewport, selection,
 focus, rail and context operations act on one open browser view by `viewId`
 through the in-memory view registry (see Canvas views and direct context).
@@ -1894,7 +1903,7 @@ The browser edit queue persists commands before sending and removes them only on
 
 The desktop reader edits text and container names without replacing an active textarea during SSE updates. Drafts persist separately from queued operations; a concurrent field change preserves the draft and requires explicit resolution. New writes are disabled offline and at phone widths. Container headings are selected by pointer-up, without an unreachable click handler. Wheel zoom normalizes pixel, line and page deltas. Removed focused articles return focus to the board.
 
-Canvas undo records this browser’s acknowledged sequence IDs and submits server history commands. The server refuses changed revisions and later dependent children, including later changes to other fields; redo inverts the returned undo sequences. Text entry and composition keep native undo.
+Canvas undo records this browser’s acknowledged sequence IDs and submits server history commands. The server refuses a step unless each object still holds the fields the edit left (everything but `revision` and `updatedAt`), and refuses later dependent children; a later change to any other field refuses too, while the person's own undo or redo in between does not, so consecutive edits of one object undo one step at a time. Redo inverts the returned undo sequences. Text entry and composition keep native undo.
 
 Desktop selection supports enclosed marquee and Alt-drag freehand lasso (center hit testing) among immediate objects in the active container. Escape, pointer cancellation, capture loss, blur and tab suspension cancel without writes. Selection commands normalize parent/child overlap.
 
