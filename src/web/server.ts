@@ -115,6 +115,7 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import { resolveVoiceStatus } from './routes/voice-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
 import type { CanvasPort } from './ports/canvas-port.js';
 import { stopScreenshotRenders } from '../canvas/canvas-screenshot.js';
@@ -1371,6 +1372,7 @@ export class WebServer extends EventEmitter {
           ? session.hookStopAt
           : session.turnEndedAt;
       },
+      voiceRelayAvailable: async () => (await resolveVoiceStatus(await this.getClaudeVoiceEnabled())).available,
       basePath: this.basePath,
     };
     registerPushRoutes(this.app, ctx);

@@ -219,7 +219,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
     });
     scope.get('/api/canvas/assistant/providers', async () => ({
       success: true,
-      data: { providers: await currentProviders() },
+      // `voice.relay` is the one fact the canvas needs about Claude voice: whether the relay would take a stream now.
+      data: { providers: await currentProviders(), voice: { relay: (await ctx.voiceRelayAvailable?.()) === true } },
     }));
     scope.post('/api/canvas/workspaces', async (req, reply) => {
       if (!deployRole.allows('persist'))

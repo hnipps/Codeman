@@ -13,6 +13,7 @@ import { CommentsView, commentCounts } from './comments.js';
 import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
 import { AssistantView } from './assistant.js';
+import { VoiceView } from './voice-view.js';
 import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
@@ -137,6 +138,19 @@ const assistant: AssistantView = new AssistantView({
     dispatch({ kind: 'rail', view: 'thread' });
   },
   listed: () => comments.requestsChanged(),
+  sent: (messageId, text) => voice.sent(messageId, text),
+  thread: (rows, status) => voice.thread(rows, status),
+  voiceRelay: (available) => voice.relayAvailable(available),
+});
+const voice: VoiceView = new VoiceView({
+  url,
+  phone: () => mobile.matches,
+  allowed: (event) => scope(event),
+  letters: () => state.letters,
+  draft: { read: () => assistant.draft.value, write: (text) => assistant.setDraft(text), element: assistant.draft },
+  send: () => assistant.send(),
+  // A turn started from the board shows its text where it will be sent from; keyboard focus stays on the board.
+  show: () => openAssistant(false),
 });
 const icons: Record<string, string> = {
   undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',
@@ -754,6 +768,11 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'F1') {
     e.preventDefault();
     if (!e.repeat) dispatch({ kind: 'rail', view: 'keys' });
+    return;
+  }
+  // Escape ends capture, a pending spoken send or playback first, and only that.
+  if (e.key === 'Escape' && voice.escape()) {
+    e.preventDefault();
     return;
   }
   // Escape from a page in use hands the keyboard back to the canvas before anything else.

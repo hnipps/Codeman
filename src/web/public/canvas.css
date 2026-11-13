@@ -2120,3 +2120,79 @@ textarea[readonly] {
 :root[data-phone] :is(input, textarea, select) {
   font-size: 16px !important;
 }
+
+/* Dictation and voice conversation (PC11): two small controls under the composer, each with its own state line. */
+.composer-gap {
+  flex: 1;
+}
+.composer-actions [aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.composer-actions [aria-disabled='true'] {
+  color: var(--muted);
+}
+.voice-state {
+  margin: 8px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.voice-state:is([data-phase='denied'], [data-phase='error']) {
+  color: var(--critical);
+}
+.voice-actions {
+  justify-content: flex-start;
+}
+/* The microphone is open, or a reply is being read: this stays on the canvas whether or not the rail is. */
+#micIndicator {
+  position: fixed;
+  z-index: 20;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  padding: 4px 4px 4px 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#notice:not([hidden]) ~ #micIndicator {
+  top: 56px;
+}
+.mic-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+#micIndicator[data-phase='listening'] .mic-dot {
+  animation: mic-live 1.6s ease-in-out infinite;
+}
+#micIndicator:is([data-phase='muted'], [data-phase='requesting-permission']) .mic-dot {
+  background: var(--muted);
+}
+@keyframes mic-live {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #micIndicator .mic-dot {
+    animation: none;
+  }
+}
+:root[data-phone] #micIndicator {
+  top: calc(var(--viewport-top, 0px) + env(safe-area-inset-top, 0px) + 4px);
+  font-size: 14px;
+}
+:root[data-phone]
+  :is(#voiceDictate, #voiceConversation, #voiceCancel, #voiceStopSpeaking, #micStop, #assistantSend, #assistantRetry) {
+  min-height: 44px;
+  min-width: 44px;
+}

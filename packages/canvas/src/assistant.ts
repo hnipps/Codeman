@@ -68,6 +68,12 @@ type Options = {
   openThread: (objectId: string) => void;
   /** The conversation list was read again: thread request states may have changed. */
   listed: () => void;
+  /** A message was accepted by the server, whichever control sent it. */
+  sent?: (messageId: string, text: string) => void;
+  /** The bound conversation's transcript and state, each time the thread is worked out. */
+  thread?: (rows: readonly TranscriptRow[], status: { working: boolean; waiting: boolean; ended: boolean }) => void;
+  /** Whether the server's Claude voice relay can transcribe, from the providers answer. */
+  voiceRelay?: (available: boolean) => void;
 };
 const node = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -248,6 +254,7 @@ export class AssistantView {
       const list = this.data(body).providers;
       if (status >= 400 || !Array.isArray(list)) return;
       this.providers = list as ProviderRow[];
+      this.options.voiceRelay?.((this.data(body).voice as { relay?: unknown } | undefined)?.relay === true);
       this.providersLoaded = true;
       this.choiceSignature = '';
       this.paintChoice();
@@ -260,6 +267,17 @@ export class AssistantView {
   }
   focusComposer(): void {
     this.draft.focus({ preventScroll: true });
+  }
+  /** Dictated text replaces the draft the way typing does: kept across a reload, and it clears a stale status line. */
+  setDraft(text: string): void {
+    this.draft.value = text;
+    write(this.keys.assistantDraft, text);
+    this.say('');
+    this.draft.scrollTop = this.draft.scrollHeight;
+  }
+  /** Sends the draft exactly as Send does; true once the server has accepted it. */
+  send(): Promise<boolean> {
+    return this.submit();
   }
   /** The stored list has been handed back to the view; from here the view is what gets stored. */
   restoreDone(): void {
@@ -503,14 +521,18 @@ export class AssistantView {
     this.transcriptTimer = setTimeout(() => void this.open(), TRANSCRIPT_DEBOUNCE_MS);
     this.paintThread();
   }
-  private async submit(): Promise<void> {
-    if (this.sending) return;
+  private refuse(text: string): false {
+    this.say(text, 'failed');
+    return false;
+  }
+  private async submit(): Promise<boolean> {
+    if (this.sending) return false;
     const text = this.draft.value;
     const refusal = promptRefusal(text);
-    if (refusal) return this.say(refusal, 'failed');
+    if (refusal) return this.refuse(refusal);
     const ids = chips(this.options.objects(), this.options.view().context).map((c) => c.id);
     if (typeof navigator !== 'undefined' && navigator.onLine === false)
-      return this.say('You are offline. Your message is kept; retry when the connection is back.', 'failed');
+      return this.refuse('You are offline. Your message is kept; retry when the connection is back.');
     const choice = this.options.view().choice;
     const sel = selection(this.providers, choice);
     // A choice that no longer matches the bound conversation starts a new one: the old conversation and its session are left as they are.
@@ -519,12 +541,9 @@ export class AssistantView {
     // With nothing listed (a probe that found none) the server starts its default exactly as it always did.
     if (target === null && this.providersLoaded && sel.row) {
       if (!sel.row.available)
-        return this.say(
-          `${sel.row.reason ?? 'That provider cannot start a conversation.'} Pick another provider.`,
-          'failed'
-        );
+        return this.refuse(`${sel.row.reason ?? 'That provider cannot start a conversation.'} Pick another provider.`);
       const field = modelField(sel.row, choice?.model ?? '');
-      if (field.invalid) return this.say(field.reason, 'failed');
+      if (field.invalid) return this.refuse(field.reason);
     }
     // A failed attempt against the bound conversation is not carried into the new one the choice now asks for.
     const stored = fresh && this.attempt?.conversationId === (this.current?.id ?? null) ? null : this.attempt;
@@ -576,7 +595,9 @@ export class AssistantView {
       write(this.keys.assistantDraft, this.draft.value || null);
       this.options.dispatch({ kind: 'context-clear-sent', ids });
       this.say('');
+      this.options.sent?.(attempt.messageId, text);
       void this.open();
+      return true;
     } catch (error) {
       const failure = error instanceof SendError ? sendFailure(error.message, error.status) : sendFailure('', 0);
       if (failure.fresh) {
@@ -592,6 +613,7 @@ export class AssistantView {
         error instanceof SendError ? failure.text : 'Could not reach the server. Your message is kept.',
         'failed'
       );
+      return false;
     } finally {
       this.sending = false;
       this.draft.readOnly = false;
@@ -646,6 +668,11 @@ export class AssistantView {
       ended: conversation?.session === 'ended',
       waiting: !!this.approval,
       working: this.working,
+    });
+    this.options.thread?.(this.rows, {
+      working: this.working,
+      waiting: !!this.approval,
+      ended: conversation?.session === 'ended',
     });
     const origins = turns.flatMap((t) => {
       const object = t.origin ? this.options.objects().find((o) => o.id === t.origin?.objectId) : undefined;

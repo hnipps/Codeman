@@ -48,6 +48,8 @@ export interface CanvasPort {
    * transition. 0 when it has seen none, which is the case for every session after a restart.
    */
   turnEndObservedAt?(sessionId: string): number;
+  /** Whether the Claude voice relay is switched on and has a usable login, as `GET /api/voice/status` reports `available`. */
+  voiceRelayAvailable?(): Promise<boolean>;
   /** Reverse-proxy base path for embed frame URLs; '' at the root. */
   readonly basePath?: string;
 }

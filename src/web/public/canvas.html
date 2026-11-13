@@ -8,6 +8,8 @@
     <title>Canvas</title>
     <link rel="stylesheet" href="canvas.css" />
     <script type="module" src="canvas.js"></script>
+    <!-- Fetches nothing: it carries the worklet's cache-bust version to the script that loads it for dictation. -->
+    <link rel="codeman-voice-worklet" href="voice-pcm-worklet.js" />
   </head>
   <body>
     <main id="board" tabindex="0" aria-label="Canvas workspace"><div id="layer"></div></main>
@@ -33,6 +35,10 @@
     </aside>
     <button id="openOutline" aria-label="Open outline" title="Open outline"></button>
     <div id="notice" role="status" hidden></div>
+    <div id="micIndicator" role="status" aria-label="Microphone" hidden>
+      <span class="mic-dot" aria-hidden="true"></span><span id="micIndicatorText"></span
+      ><button id="micStop" type="button" class="quiet" title="Stop · Esc">Stop</button>
+    </div>
     <section id="state" role="status">
       <h1>Opening your canvas</h1>
       <p>Loading the workspace…</p>
@@ -290,8 +296,39 @@
           <p id="newConversationNotice" class="secondary notice" role="status" hidden></p>
           <p id="assistantStatus" class="secondary" role="status"></p>
           <div class="composer-row composer-actions">
-            <button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
+            <button
+              id="voiceDictate"
+              type="button"
+              class="quiet"
+              aria-pressed="false"
+              title="Dictate into the message; nothing is sent · B"
+            >
+              Dictate</button
+            ><button
+              id="voiceConversation"
+              type="button"
+              class="quiet"
+              aria-pressed="false"
+              title="Voice conversation: speak a turn, press again to send it · Shift+B"
+            >
+              Voice</button
+            ><span class="composer-gap"></span
+            ><button id="assistantRetry" type="button" class="quiet" hidden>Retry</button
             ><button id="assistantSend" type="submit" class="primary">Send</button>
+          </div>
+          <p id="dictationState" class="secondary voice-state" role="status" aria-label="Dictation" hidden></p>
+          <p
+            id="conversationState"
+            class="secondary voice-state"
+            role="status"
+            aria-label="Voice conversation"
+            hidden
+          ></p>
+          <div id="voiceActions" class="composer-row voice-actions" hidden>
+            <button id="voiceCancel" type="button" class="quiet" title="Do not send · Esc" hidden>Cancel send</button
+            ><button id="voiceStopSpeaking" type="button" class="quiet" title="Stop speaking · Esc" hidden>
+              Stop speaking
+            </button>
           </div>
         </form>
       </div>

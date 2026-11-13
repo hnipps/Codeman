@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-12 — Dictation and voice conversation in the canvas assistant (PC11)
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/{voice,voice-capture,voice-view,assistant,entry,shortcuts}.ts`, `src/web/routes/canvas-routes.ts`, `src/web/ports/canvas-port.ts`, `src/web/server.ts`, `src/web/public/{canvas.html,canvas.css}`
+**Why:** The assistant took typed text only, and Keys listed `B` and Shift+B as not bound.
+**Links:** [Intent](../intent/2026-11-13-canvas-pc11-voice.md)
+
+Decisions the intent did not settle. The page learns whether the relay can be used from one boolean, `voice.relay`, on the providers GET; nothing else about voice is exposed. The capture worklet is the dashboard's file, referenced by a link the server already versions, not a copy. Voice text always goes into the composer draft, and a conversation turn is sent by the assistant's ordinary send, so there is one send path and one message id discipline. A turn is two presses of the same control followed by a three-second window with Cancel; Stop, Escape, a hidden page, an edit, composition and going offline end capture without sending and keep the text. The spoken reply is the agent's text for that turn, cut at about 600 characters at a sentence end, read once when the turn has settled.
+
+The microphone can be opened only by a trusted key press or click that the voice view itself listens for. The start is private to that class and is not a view command, so an agent that can drive the view cannot reach it; a browser test sends an `assistant` view command and a scripted click and checks that no microphone request follows.
+
+Limit: every test runs on fixtures (an oscillator stream, a scripted relay socket, recorders for recognition and synthesis). No real microphone, transcription or playback has been exercised.
+
 ## 2026-11-12 — Thread replies wait for evidence instead of guessing (PC10 fix round 1)
 
 **Type:** retraction
