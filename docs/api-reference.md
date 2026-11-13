@@ -1625,6 +1625,7 @@ do the same: check the HTTP status (or `body.success`), then read `body.data`.
 
 Canvas is opt-in (`canvasEnabled`, default false). Routes return 404 while disabled.
 Canvas shell (`canvasShellEnabled`, default false, needs `canvasEnabled`): while both are on, `GET /` answers the canvas document of the caller's last-used workspace (or a first-run page when the caller has none), `GET /classic` and `GET /?view=classic` answer the dashboard, and `GET /?view=classic&canvas=failed&reason=missing|load|boot` answers the dashboard with a notice. `GET /` is never a redirect. With either setting off `GET /` is unchanged and ignores these parameters; `GET /classic` answers the dashboard in every case.
+A canvas route that fails on the server (500 or above) answers `{ "success": false, "error": "<sentence>", "errorCode": "OPERATION_FAILED", "requestId": "<id>" }`. The body never carries a filesystem path. `requestId` is the `reqId` of that request's line in the `requests` log stream and appears as `reqId=<id>` in one `error` line of the `server` stream, which names the route template and the cause.
 `POST /api/v1/canvas/:workspaceId/command` accepts the strict envelope
 `{ "tool": "canvas_read", "arguments": { "root": "section-id" } }`.
 The sixteen command tool names are `canvas_read`, `canvas_search`, `canvas_create`,
