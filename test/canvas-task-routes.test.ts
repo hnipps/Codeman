@@ -135,13 +135,15 @@ async function harness(options: { repo?: boolean | 'empty'; linked?: boolean; li
     startConversationSession: vi.fn(
       async (
         _headers: unknown,
-        request: { workingDir: string; name: string }
+        request: { workingDir: string; name: string; parentSessionId?: string }
       ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> => {
         const id = `session-${++counter}`;
         sessions.set(id, {
           id,
           workingDir: request.workingDir,
           name: request.name,
+          // The create route stores the asking agent as the new session's spawn parent.
+          ...(request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}),
           writeViaMux: vi.fn(async () => true),
         });
         return { ok: true, sessionId: id };
@@ -312,19 +314,25 @@ describe('starting a task', () => {
     }
   });
 
-  it('refuses an agent caller, an empty request and anything the body does not declare', async () => {
+  it('holds an agent to a worktree and to its own tasks, and refuses an empty request and anything the body does not declare', async () => {
     const h = await harness();
     try {
       // An agent's own session is how the routes know an agent is asking.
       h.sessions.set('agent-1', { id: 'agent-1', workingDir: h.casePath });
-      const asAgent = await h.app.inject({
-        method: 'POST',
-        url: `${h.base}/tasks`,
-        headers: { 'x-codeman-parent-session': 'agent-1' },
-        payload: { requestId: uuid(), text: 'Do it for me' },
-      });
-      expect(asAgent.statusCode).toBe(403);
-      expect(asAgent.json().error).toContain('only a person');
+      for (const extra of [
+        { shared: true },
+        { parentConversationId: uuid() },
+        { origin: { kind: 'thread', objectId: 'note1', commentId: 'c1' } },
+      ]) {
+        const asAgent = await h.app.inject({
+          method: 'POST',
+          url: `${h.base}/tasks`,
+          headers: { 'x-codeman-parent-session': 'agent-1' },
+          payload: { requestId: uuid(), text: 'Do it for me', ...extra },
+        });
+        expect(asAgent.statusCode).toBe(400);
+      }
+      expect(h.port.startConversationSession).not.toHaveBeenCalled();
       const { task } = (await h.run()).json().data as { task: TaskRow };
       for (const [method, url] of [
         ['POST', `${h.base}/tasks/${task.id}/cancel`],
@@ -337,6 +345,7 @@ describe('starting a task', () => {
           ...(method === 'POST' ? { payload: {} } : {}),
         });
         expect(refused.statusCode).toBe(403);
+        expect(refused.json().error).toMatch(/^NOT_YOURS/);
       }
       const message = await h.app.inject({
         method: 'POST',
@@ -990,7 +999,7 @@ describe('fix round 1: an agent that exits, and what a restart leaves', () => {
       expect((await h.list()).tasks[0].state).toBe('running');
       expect(h.port.startConversationSession).toHaveBeenCalledTimes(1);
       expect(h.worktrees()).toHaveLength(1);
-      // An agent cannot retry.
+      // An agent retrying the person's task sends nothing: the task is on its way again, and it is not the agent's.
       h.sessions.set('agent-1', { id: 'agent-1', workingDir: h.casePath });
       const asAgent = await h.app.inject({
         method: 'POST',
@@ -998,7 +1007,9 @@ describe('fix round 1: an agent that exits, and what a restart leaves', () => {
         headers: { 'x-codeman-parent-session': 'agent-1' },
         payload: { requestId, text: 'Tidy the README', retry: true },
       });
-      expect(asAgent.statusCode).toBe(403);
+      expect(asAgent.json().data).toMatchObject({ duplicate: true });
+      expect(asAgent.json().data.retried).toBeUndefined();
+      expect(write).toHaveBeenCalledTimes(2);
 
       // The agent did take it: the transcript holds the request, so it is recorded delivered.
       const second = ((await h.run()).json().data as { task: TaskRow }).task;
@@ -1325,6 +1336,108 @@ describe('fix round 1: a reply-only task is always removable', () => {
       expect(existsSync(treeOf(reply))).toBe(false);
       expect((await h.remove(work.id)).json().data).toMatchObject({ removed: false, kept: { reason: 'changes' } });
       expect(existsSync(join(treeOf(work), 'report.md'))).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('an agent starts tasks within bounds (owner instruction 2026-11-13)', () => {
+  const tool = (h: Awaited<ReturnType<typeof harness>>, asSession: string, args: Record<string, unknown>) =>
+    h.app.inject({
+      method: 'POST',
+      url: `${h.base}/command`,
+      headers: { 'x-codeman-parent-session': asSession },
+      payload: { tool: 'canvas_task', arguments: args },
+    });
+  const start = (h: Awaited<ReturnType<typeof harness>>, asSession: string, text = 'Tidy the README') =>
+    tool(h, asSession, { action: 'start', requestId: uuid(), text }).then(async (response) => {
+      await settleDeliveries();
+      return response;
+    });
+
+  it('starts through canvas_task, marked as its own, one level deep and at most two at a time', async () => {
+    const h = await harness();
+    try {
+      h.sessions.set('agent-1', { id: 'agent-1', workingDir: h.casePath });
+      const first = await start(h, 'agent-1');
+      expect(first.statusCode).toBe(200);
+      const task = first.json().data.task as TaskRow;
+      expect(task.startedBy).toEqual({ kind: 'agent', sessionId: 'agent-1' });
+      expect(task.isolation.kind).toBe('worktree');
+      const request = h.port.startConversationSession.mock.calls[0][1] as Record<string, unknown>;
+      expect(Object.keys(request).sort()).toEqual(['launch', 'mode', 'name', 'parentSessionId', 'workingDir']);
+      expect(request.parentSessionId).toBe('agent-1');
+      // The request went into the task's own session once, authored by the agent that asked.
+      expect(h.sessions.get(task.sessionId)!.writeViaMux).toHaveBeenCalledTimes(1);
+      const record = h.file().find((c) => c.id === task.id)!;
+      expect(record.messages[0].author).toEqual({ kind: 'agent', sessionId: 'agent-1' });
+
+      // The task's own session, and a session spawned from it, cannot start more.
+      for (const nested of [task.sessionId, 'spawned']) {
+        if (nested === 'spawned')
+          h.sessions.set('spawned', { id: 'spawned', workingDir: h.casePath, parentSessionId: task.sessionId });
+        const refused = await start(h, nested);
+        expect(refused.statusCode).toBe(403);
+        expect(refused.json().error).toMatch(/^NESTED_AGENT/);
+      }
+
+      // Agents hold two of the four places; the person keeps the rest.
+      expect((await start(h, 'agent-1')).statusCode).toBe(200);
+      const capped = await start(h, 'agent-1');
+      expect(capped.statusCode).toBe(409);
+      expect(capped.json().error).toMatch(/^AGENT_CAP/);
+      expect((await h.run()).statusCode).toBe(200);
+      expect((await h.run()).statusCode).toBe(200);
+      expect((await h.run()).json().error).toMatch(/^TOO_MANY_TASKS/);
+      expect(h.port.startConversationSession).toHaveBeenCalledTimes(4);
+
+      // The agent cancels and removes its own; that frees its place.
+      const cancelled = await tool(h, 'agent-1', { action: 'cancel', taskId: task.id });
+      expect(cancelled.json().data.task.state).toBe('cancelled');
+      const removed = await tool(h, 'agent-1', { action: 'remove', taskId: task.id });
+      expect(removed.json().data).toEqual({ removed: true });
+      expect(h.file().some((c) => c.id === task.id)).toBe(false);
+      // A worker the removed task's session spawned is still below agent-started work.
+      h.sessions.set('orphan', { id: 'orphan', workingDir: h.casePath, parentSessionId: task.sessionId });
+      expect((await start(h, 'orphan')).json().error).toMatch(/^NESTED_AGENT/);
+      h.sessions.delete('orphan');
+      const listed = (await tool(h, 'agent-1', { action: 'list' })).json().data.tasks as TaskRow[];
+      expect(listed.filter((r) => r.startedBy)).toHaveLength(1);
+      // The person can cancel and remove what an agent started.
+      const theirs = listed.find((r) => r.startedBy)!;
+      expect((await h.cancel(theirs.id)).json().data.task.state).toBe('cancelled');
+      expect((await h.remove(theirs.id)).json().data).toEqual({ removed: true });
+      // The agent cannot touch the person's.
+      const persons = listed.find((r) => !r.startedBy)!;
+      const notYours = await tool(h, 'agent-1', { action: 'cancel', taskId: persons.id });
+      expect(notYours.statusCode).toBe(403);
+      expect(notYours.json().error).toMatch(/^NOT_YOURS/);
+      const messageId = taskPart(h.file().find((c) => c.id === persons.id)!)!.messageId;
+      setMessageState(h.workspace.id, persons.id, messageId, 'failed');
+      const retry = await h.app.inject({
+        method: 'POST',
+        url: `${h.base}/tasks`,
+        headers: { 'x-codeman-parent-session': 'agent-1' },
+        payload: { requestId: persons.requestId, text: 'Tidy the README', retry: true },
+      });
+      expect(retry.statusCode).toBe(403);
+      expect(retry.json().error).toMatch(/^NOT_YOURS/);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('has no shared folder to offer an agent in a case that is not a repository', async () => {
+    const h = await harness({ repo: false });
+    try {
+      h.sessions.set('agent-1', { id: 'agent-1', workingDir: h.casePath });
+      const refused = await start(h, 'agent-1');
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatch(/^NOT_A_REPOSITORY/);
+      const shared = await tool(h, 'agent-1', { action: 'start', requestId: uuid(), text: 'x', shared: true });
+      expect(shared.statusCode).toBe(400);
+      expect(h.port.startConversationSession).not.toHaveBeenCalled();
     } finally {
       await h.app.close();
     }

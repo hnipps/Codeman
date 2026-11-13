@@ -681,5 +681,51 @@ describe('canvas background tasks', () => {
       expect(existsSync(join(casePath, '.claude', 'worktrees', 'task-0badc0de'))).toBe(false);
       await closeRail();
     });
+
+    it('an agent starts a task and a conversation through the command path; both say so, and the person removes the task', async () => {
+      const made = await page.request.post(api('/sessions'), {
+        data: { workingDir: casePath, mode: 'claude', name: 'Helper agent' },
+      });
+      const agent = (await made.json()).data.session.id as string;
+      const command = (tool: string, args: Record<string, unknown>) =>
+        page.request.post(api('/canvas/current/command'), {
+          headers: { 'x-codeman-parent-session': agent },
+          data: { tool, arguments: args },
+        });
+      const started = await command('canvas_task', {
+        action: 'start',
+        requestId: crypto.randomUUID(),
+        text: 'Check the reference notes',
+        refIds: ['n2'],
+      });
+      expect(started.status()).toBe(200);
+      const task = (await started.json()).data.task as TaskRow;
+      expect(task.startedBy).toEqual({ kind: 'agent', sessionId: agent });
+      const conversation = await command('canvas_conversation', { action: 'create', requestId: crypto.randomUUID() });
+      expect(conversation.status()).toBe(200);
+
+      await openTasks();
+      const meta = rowText(task.id, 'meta').first();
+      await meta.waitFor();
+      expect(await meta.textContent()).toContain('Started by an agent');
+      await shot('agent-started');
+      await page.locator(`.task-row[data-task-id="${task.id}"] [data-task-control$=":cancel"]`).click();
+      await page.waitForFunction(
+        (id) => document.querySelector(`.task-row[data-task-id="${id}"] .task-state`)?.textContent === 'Cancelled',
+        task.id
+      );
+      await page.locator(`.task-row[data-task-id="${task.id}"] [data-task-control$=":remove"]`).click();
+      await page.locator('[data-task-control$=":confirm"]').click();
+      await page.waitForSelector(`.task-row[data-task-id="${task.id}"]`, { state: 'detached' });
+      expect((await tasks()).some((t) => t.id === task.id)).toBe(false);
+
+      await openAssistant();
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll('#conversationPicker option')].some((o) =>
+          (o.textContent ?? '').includes('started by an agent')
+        )
+      );
+      await closeRail();
+    });
   });
 });

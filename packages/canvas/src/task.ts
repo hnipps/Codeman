@@ -198,6 +198,8 @@ export function sortTasks<T extends Pick<TaskRow, 'state' | 'createdAt'>>(rows: 
     (a, b) => Number(taskActive(b.state)) - Number(taskActive(a.state)) || b.createdAt - a.createdAt
   );
 }
-/** Provider, model and where the task runs, on one line. */
-export const taskMeta = (row: Pick<TaskRow, 'cliLabel' | 'cliId' | 'model' | 'isolation'>): string =>
-  [row.cliLabel || row.cliId, row.model ?? '', row.isolation.label].filter(Boolean).join(' · ');
+/** Provider, model, where the task runs and, for an agent's task, who started it, on one line. */
+export const taskMeta = (row: Pick<TaskRow, 'cliLabel' | 'cliId' | 'model' | 'isolation' | 'startedBy'>): string =>
+  [row.cliLabel || row.cliId, row.model ?? '', row.isolation.label, row.startedBy ? 'Started by an agent' : '']
+    .filter(Boolean)
+    .join(' · ');

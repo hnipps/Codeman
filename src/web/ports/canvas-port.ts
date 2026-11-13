@@ -17,6 +17,8 @@ export interface CanvasSession {
   readonly status?: string;
   readonly lastActivityAt?: number;
   readonly lastSubmitAt?: number;
+  /** The session that spawned this one, as recorded at create time. The canvas reads it only to refuse a start. */
+  readonly parentSessionId?: string;
   writeViaMux?(data: string, options?: { fromUser?: boolean }): Promise<boolean>;
   /** The rendered pane (styled when asked), or null when there is none to read. */
   paneSnapshot?(styles?: boolean): string | null;
@@ -39,10 +41,17 @@ export interface CanvasPort {
    * Starts one agent session in `workingDir` through the ordinary create and start routes, with the caller's own
    * credentials, so ownership, caps and launch rules are exactly those of a session the person starts themselves.
    * `mode` is the CLI id; `launch` holds only the fields that carry a chosen model (never `modelOverride`).
+   * `parentSessionId` names the agent that asked, so the tab strip draws the lineage line from it.
    */
   startConversationSession?(
     headers: Readonly<Record<string, string | string[] | undefined>>,
-    request: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
+    request: {
+      workingDir: string;
+      name: string;
+      mode: string;
+      launch: Record<string, unknown>;
+      parentSessionId?: string;
+    }
   ): Promise<StartedConversationSession>;
   /** Deletes a session this subsystem started and could not record, the way a failed start is cleaned up. */
   discardConversationSession?(

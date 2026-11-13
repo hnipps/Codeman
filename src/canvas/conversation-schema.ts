@@ -69,6 +69,8 @@ export const ConversationSchema = z
     origin: z.unknown().optional(),
     /** Set when the conversation is a background task (`taskPart()` in tasks.ts reads it); an earlier release sees an ordinary conversation. */
     task: z.unknown().optional(),
+    /** Set when an agent started the conversation or task (`startedBy()` in agent-start.ts reads it); absent for a person's. */
+    startedBy: z.unknown().optional(),
     requestId: z.uuid().optional(),
     createdAt: z.number().int().nonnegative(),
     createdBy: z.string().min(1).max(128),
@@ -157,7 +159,7 @@ const CreateShape = {
   cliId: z.string().min(1).max(64).optional(),
   model: z.string().max(100).optional(),
 };
-/** `origin` is the route's alone: an agent cannot create a conversation, so the tool's create does not carry it. */
+/** `origin` is the route's alone (a thread asks through it); the tool's create, an agent's way in, does not carry it. */
 export const CreateConversationBodySchema = z
   .object({ ...CreateShape, origin: ThreadOriginSchema.optional() })
   .strict();
