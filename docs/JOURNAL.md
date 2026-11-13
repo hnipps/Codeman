@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — An unnamed session has one name in the outline and the tab strip
+
+**Type:** drift
+**Touches:** `src/canvas/shell-sessions.ts`, `src/web/routes/canvas-shell-routes.ts`
+**Why:** The classic view names an unnamed session after its folder and falls back to the short id. The canvas outline's row used the short id straight away, so the same session read `myapp` in one view and `a1b2c3d4` in the other.
+**Links:** [intent/2026-11-13-canvas-open-events.md](../intent/2026-11-13-canvas-open-events.md)
+
+Decision. The outline uses the classic rule through `sessionDisplayName()`. The classic view's `getSessionName()` is browser script and the outline's row is built on the server, and no module is loaded by both, so the rule exists once in each runtime. `test/canvas-shell-sessions.test.ts` cuts `getSessionName()` out of `app.js`, runs it as written and compares it with `sessionDisplayName()` over the cases, the way that file already pins the session order against the dashboard's. A change to either side fails the test.
+
 ## 2026-11-13 — A stalled case folder is logged per state change on the polled sessions route
 
 **Type:** drift

@@ -19,7 +19,13 @@ import { taskPart } from '../../canvas/tasks.js';
 import { probePathKind } from '../../utils/bounded-path-probe.js';
 import { caseFolderAnswered, caseFolderUnavailable } from './canvas-failure.js';
 import { MAX_CONCURRENT_SESSIONS_CEILING } from '../../config/map-limits.js';
-import { deriveSessionState, needsYou, sortSessions, type ShellSessionRow } from '../../canvas/shell-sessions.js';
+import {
+  deriveSessionState,
+  needsYou,
+  sessionDisplayName,
+  sortSessions,
+  type ShellSessionRow,
+} from '../../canvas/shell-sessions.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
 
 /** True when `dir` is `folder` or below it: the rule that resolves an agent's `current` workspace. */
@@ -61,7 +67,7 @@ function row(
   const carried = kinds.get(session.id);
   return {
     id: session.id,
-    name: (typeof session.name === 'string' && session.name) || session.id.slice(0, 8),
+    name: sessionDisplayName(session),
     mode: session.mode ?? 'claude',
     kind: carried?.kind ?? 'terminal',
     state,
