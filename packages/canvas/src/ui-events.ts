@@ -13,9 +13,10 @@ export function uiEvent(action: string, target: string | null = null, win: Windo
 
 /**
  * The event a view command leaves, or null. Camera, focus, selection and context commands are left out: they
- * run per frame or per key, and the view registry already holds their result.
+ * run per frame or per key, and the view registry already holds their result. `top` is the rail view on top
+ * before the command: Escape and the rail's close button pop it without naming it.
  */
-export function viewEvent(action: ViewCommand): [action: string, target: string | null] | null {
+export function viewEvent(action: ViewCommand, top?: string): [action: string, target: string | null] | null {
   switch (action.kind) {
     case 'tool':
       return ['tool', action.tool];
@@ -25,6 +26,8 @@ export function viewEvent(action: ViewCommand): [action: string, target: string 
       return ['rail.open', action.view];
     case 'rail-close':
       return ['rail.close', action.view];
+    case 'escape':
+      return top ? ['rail.close', top] : null;
     case 'conversation':
       return ['conversation.show', action.id];
     case 'full-view':

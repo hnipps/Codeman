@@ -354,7 +354,7 @@ function dispatch(action: ViewCommand): void {
   }
   if (action.kind === 'rail' && state.rail.at(-1) !== action.view) railOrigins.set(action.view, opener());
   // An agent's view command already leaves a request line; this stream is what the person did.
-  const event = agentActing ? null : viewEvent(action);
+  const event = agentActing ? null : viewEvent(action, state.rail.at(-1));
   if (event) uiEvent(...event);
   const closing = state.rail.at(-1);
   const previous = state.rail.length;

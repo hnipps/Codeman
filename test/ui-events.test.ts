@@ -200,6 +200,8 @@ describe('what the canvas records', () => {
     ] satisfies ViewCommand[]) {
       expect(viewEvent(quiet)).toBeNull();
     }
+    // Escape and the rail's close button pop the top rail view without naming it.
+    expect(viewEvent({ kind: 'escape' }, 'assistant')).toEqual(['rail.close', 'assistant']);
   });
 
   it('every named view command is accepted by the reporter', () => {
