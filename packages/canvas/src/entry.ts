@@ -24,6 +24,7 @@ import { ShellView } from './shell-view.js';
 import type { SessionViewRow } from './sessions.js';
 import {
   FullView,
+  agentCloseRefusal,
   agentOpenRefusal,
   fullViewMode,
   fullViewPath,
@@ -774,8 +775,11 @@ function applyViewAction(action: ViewAction): string | void {
       }
       case 'full-view':
         // An agent's open shows a listed session to the person: it starts nothing and takes no keystroke.
-        if (action.sessionId === null) closeFullView(false);
-        else {
+        if (action.sessionId === null) {
+          const refusal = agentCloseRefusal(typingIn(document.activeElement));
+          if (refusal) return refusal;
+          closeFullView(false);
+        } else {
           const sessionId = action.sessionId;
           const refusal = agentOpenRefusal({
             shell: !!fullView,

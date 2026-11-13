@@ -835,6 +835,7 @@ class CodemanApp {
     this.isSoloWindow = !!this.soloSessionId;
     // Canvas shell (PC13): a session page the canvas opened (`?from=canvas`).
     this._canvasReturn = this.isSoloWindow ? this._detectCanvasReturn() : null;
+    if (this._canvasReturn?.passive) this._holdPassiveFocus();
     // A session another page asked for with a `#session=<id>` link. It waits
     // here until the session list has that id (see _selectUrlSession).
     this._urlSessionId = this.isSoloWindow ? null : this._takeUrlSession();
@@ -2170,6 +2171,19 @@ class CodemanApp {
       const ws = params.get('ws') || '';
       return { ws: /^[a-zA-Z0-9_-]{1,128}$/.test(ws) ? ws : '', passive: params.get('passive') === '1' };
     } catch { return null; }
+  }
+
+  /** A page an agent opened is shown, not handed over. This page focuses its terminal from many places as it
+   *  loads, and a frame that focuses itself takes the person's next keys into the pane. So nothing here takes
+   *  focus until the person takes the terminal: the canvas then focuses this frame, which is the window
+   *  `focus` awaited here. Marking the frame `inert` in the parent does not stop it (measured in Chromium). */
+  _holdPassiveFocus() {
+    const focus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function () {};
+    window.addEventListener('focus', () => {
+      HTMLElement.prototype.focus = focus;
+      this.terminal?.focus();
+    }, { once: true });
   }
 
   /** True while this page was opened by an agent and no person has asked it to start the session. */

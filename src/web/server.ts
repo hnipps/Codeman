@@ -1154,11 +1154,15 @@ export class WebServer extends EventEmitter {
       const { canAccessOwned, getAuthUser } = await import('./route-helpers.js');
       const workspace = readWorkspaces().find((w) => w.id === req.params.workspaceId);
       if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner)) return reply.code(404).send();
-      if (!this.canvasFilesPresent())
+      if (!this.canvasFilesPresent()) {
+        // The shell writes this address into the bar, so a reload lands here: send it to `/`, which answers
+        // the dashboard with the notice. Off the shell the canvas is a tab and keeps its plain answer.
+        if (shellActive(settings)) return reply.redirect('/');
         return reply
           .code(503)
           .type('text/plain; charset=utf-8')
           .send('Canvas bundle is missing. Run npm run build:canvas, then reload this page.');
+      }
       return reply
         .header('Cache-Control', 'no-cache')
         .type('text/html; charset=utf-8')

@@ -184,9 +184,14 @@ for (const base of ['', '/x']) {
         expect(root.headers.location).toBeUndefined();
         expect(root.body).not.toContain('data-canvas');
         expect(root.body).toContain('window.__CODEMAN_SHELL__={"on":true,"notice":"missing"}');
-        // The canvas page itself keeps its plain answer; nothing navigates to it automatically.
-        expect((await get(`/canvas/${alpha}`)).statusCode).toBe(503);
+        // A reload of the address the shell wrote goes back to `/`, which is the dashboard with the notice.
+        const reload = await get(`/canvas/${alpha}`);
+        expect(reload.statusCode).toBe(302);
+        expect(reload.headers.location).toBe(`${base}/`);
         expect((await get('/classic')).statusCode).toBe(200);
+        // Off the shell the canvas is a tab in the dashboard and keeps its plain answer.
+        settings(COMBOS[1]);
+        expect((await get(`/canvas/${alpha}`)).statusCode).toBe(503);
       } finally {
         server.canvasFilesPresent = present;
       }

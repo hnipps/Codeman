@@ -47,10 +47,18 @@ export function agentOpenRefusal(view: {
   if (view.typing) return 'The person is typing on the canvas. Nothing was opened; try again later.';
   return null;
 }
-/** True while keyboard focus is somewhere a person types text. */
+/** Why an agent's close leaves the full view open, or null when it may close. */
+export const agentCloseRefusal = (typing: boolean): string | null =>
+  typing ? 'The person is typing in that full view. It was left open; try again later.' : null;
+/** True while keyboard focus is somewhere a person types text. A focused frame is the terminal of a full view. */
 export function typingIn(active: Element | null): boolean {
   if (!(active instanceof HTMLElement)) return false;
-  if (active.isContentEditable || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)
+  if (
+    active.isContentEditable ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement ||
+    active instanceof HTMLIFrameElement
+  )
     return true;
   return (
     active instanceof HTMLInputElement &&
@@ -233,8 +241,27 @@ export class FullView {
     frame.src = this.options.url(fullViewPath(this.sessionId ?? '', this.options.workspaceId, this.passive));
     this.frame = frame;
     this.slot.replaceChildren(frame);
-    if (focus) frame.focus({ preventScroll: true });
+    if (this.passive) this.hold(frame);
+    else if (focus) frame.focus({ preventScroll: true });
     this.timer = setTimeout(() => this.failed(), FULL_VIEW_TIMEOUT_MS);
+  }
+
+  /**
+   * An agent's open is shown, not handed over. The `passive` page takes no focus by itself until this frame is
+   * focused; the frame is inert and covered so no click or Tab reaches it before the person takes it.
+   */
+  private hold(frame: HTMLIFrameElement): void {
+    frame.inert = true;
+    const take = document.createElement('button');
+    take.type = 'button';
+    take.className = 'full-view-take';
+    take.textContent = 'An agent opened this terminal. Click to use it, or press Escape to close.';
+    take.onclick = () => {
+      take.remove();
+      frame.inert = false;
+      frame.focus({ preventScroll: true });
+    };
+    this.slot.append(take);
   }
 
   private settle(): void {

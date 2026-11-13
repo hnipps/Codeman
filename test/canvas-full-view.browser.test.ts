@@ -331,6 +331,14 @@ describe('canvas shell: the session full view', () => {
     await vi.waitFor(async () => expect((await call({ action: 'read', viewId })).data.state.fullView).toBe(id), {
       timeout: 10000,
     });
+    // The framed page has loaded and drawn its terminal by now: it must not have taken focus by itself either.
+    await (await sessionPage(id)).waitForSelector('.xterm-helper-textarea');
+    await page.waitForTimeout(1500);
+    expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
+    // Keys pressed now go nowhere near the pane.
+    await page.keyboard.type('zqx-not-for-the-pane');
+    await page.waitForTimeout(500);
+    expect(await pane(id)).not.toContain('zqx');
     expect((await call({ action: 'full-view', viewId, sessionId: null })).success).toBe(true);
     await frames().waitFor({ state: 'detached' });
     expect((await call({ action: 'full-view', viewId, sessionId: '../etc' })).success).toBe(false);
@@ -425,6 +433,10 @@ describe('canvas shell: the session full view', () => {
         id
       );
       const frame = await sessionPage(id);
+      // Until the person takes the terminal, the frame is held: nothing in it can be focused or clicked.
+      expect(await frames().evaluate((f: HTMLIFrameElement) => f.inert)).toBe(true);
+      await page.locator('.full-view-take').click();
+      expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('IFRAME');
       await frame.locator('#soloStartBtn').click();
       await vi.waitFor(() => expect(seen.starts).toEqual([`/x/api/sessions/${id}/shell`]), { timeout: 10000 });
       await frame.waitForSelector('#soloStoppedNotice', { state: 'detached' });
@@ -515,6 +527,33 @@ describe('canvas shell: the session full view', () => {
       timeout: 10000,
     });
   }, 90000);
+
+  it("leaves a full view the person is typing in alone: an agent's open and close are both refused", async () => {
+    const first = await start('held');
+    const second = await start('other');
+    await open();
+    await row(first).waitFor();
+    await row(second).waitFor();
+    const { call, viewId } = await agent();
+    await row(first).click();
+    const frame = await sessionPage(first);
+    await frame.locator('.xterm-helper-textarea').focus();
+    for (const sessionId of [second, null]) {
+      const sent = await call({ action: 'full-view', viewId, sessionId });
+      expect(sent.success).toBe(true);
+      await vi.waitFor(
+        async () => {
+          const state = (await call({ action: 'read', viewId })).data.state;
+          expect(state.refused?.commandId).toBe(sent.data.commandId);
+          expect(state.refused.reason).toMatch(/typing/);
+        },
+        { timeout: 10000 }
+      );
+      expect(await frames().count()).toBe(1);
+      expect(await frames().getAttribute('src')).toContain(`/session/${first}?`);
+      expect((await view()).fullView).toBe(first);
+    }
+  }, 60000);
 
   it('is one more client of the session: the classic view marks it shown elsewhere, and the page draws its own surfaces', async () => {
     const id = await start('shared');

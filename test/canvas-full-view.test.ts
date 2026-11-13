@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import {
   FULL_VIEW_ALLOW,
   TICKET_MAX_AGE_MS,
+  agentCloseRefusal,
   agentOpenRefusal,
   fullViewMode,
   fullViewPath,
@@ -66,6 +67,11 @@ describe('full view: frame or navigate', () => {
       { ...ok, typing: true },
     ])
       expect(agentOpenRefusal(view)!.length).toBeLessThanOrEqual(200);
+  });
+  it("refuses an agent's close only while the person is typing in the full view", () => {
+    expect(agentCloseRefusal(false)).toBeNull();
+    expect(agentCloseRefusal(true)).toMatch(/left open/);
+    expect(agentCloseRefusal(true)!.length).toBeLessThanOrEqual(200);
   });
   it('lists only what the terminal page uses in the frame permissions', () => {
     expect(FULL_VIEW_ALLOW.split(';').map((s) => s.trim())).toEqual([
