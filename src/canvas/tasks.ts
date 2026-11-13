@@ -126,6 +126,18 @@ export const CreateTaskBodySchema = z
   })
   .strict();
 export type CreateTaskBody = z.infer<typeof CreateTaskBodySchema>;
+/**
+ * The `canvas_task` tool, for agents and people alike through the command route. `start` is the create route's body
+ * without what only a person may give: consent to the shared case folder, a thread origin, a parent conversation.
+ */
+export const TaskToolSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('list') }).strict(),
+  CreateTaskBodySchema.omit({ shared: true, origin: true, parentConversationId: true })
+    .extend({ action: z.literal('start') })
+    .strict(),
+  z.object({ action: z.literal('cancel'), taskId: z.uuid() }).strict(),
+  z.object({ action: z.literal('remove'), taskId: z.uuid() }).strict(),
+]);
 
 /** A task's name when the person gave none: the first words of the request, on one line, cut at a word. */
 export function deriveTaskName(text: string): string {
@@ -228,6 +240,8 @@ export type TaskRow = {
   excludeWarning?: true;
   /** The objects the request carried, as recorded when it was sent. */
   refs: { id: string; label: string }[];
+  /** An agent started this task (through `canvas_task start`); absent for a person's. */
+  startedBy?: { kind: 'agent'; sessionId: string };
   origin?: { objectId: string; commentId: string };
   parentConversationId?: string;
   /** The task was removed and its worktree is still there. */

@@ -2,6 +2,23 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Agents may start canvas conversations and background tasks, within bounds (reverses PC9b and PC12)
+
+**Type:** retraction
+**Touches:** `src/canvas/{agent-start,tasks,commands,conversation-schema}.ts`, `src/web/routes/{canvas-conversation-routes,canvas-task-routes,canvas-routes}.ts`, `src/web/ports/canvas-port.ts`, `src/web/server.ts`, `src/mcp-server.ts`, `src/types/session.ts`, `packages/canvas/src/{assistant,task}.ts`
+**Why:** The owner's instruction of 2026-11-13 overrides the earlier decision that starting a conversation, and starting, cancelling or removing a background task, are human-only (PC9b fix round 2026-11-12; PC12 intent and fix round 2026-11-13). The capability matrix asks for an agent counterpart to every human command.
+**Links:** [Intent](../intent/2026-11-13-canvas-agent-start.md), [architecture-invariants, "Canvas agent starts"](architecture-invariants.md#canvas-agent-starts)
+
+What the earlier decision guarded against. A start is an agent session on the person's own account, so it costs money and runs code without a click. Agents starting agents can fan out, or loop with no person in it (PC9b already refused a send from any conversation's session for the loop half). A person's canvas could fill with work they cannot tell from their own. And a task in a non-git case runs in the shared folder only on the person's consent.
+
+Decision. Agents get `canvas_conversation create` (previously a 403) and a new `canvas_task` tool (`list | start | cancel | remove`, the thirtieth MCP tool), answered by the same functions as a person's click, under bounds held in code: the workspace is the one the agent's own session sits in; no new spawn path, and the session is created with the agent as its spawn parent and no respawn, auto-resume, Ralph or keep-warm field; depth one, refusing a start from any session an agent started and from any session whose recorded spawn chain reaches one (`NESTED_AGENT`), which also closes the route through a worker spawned with `codeman agent spawn`; agents together hold at most two live conversations and two active tasks per canvas beside the existing caps (`AGENT_CAP`); the record carries `startedBy` and the rail and task list say so; an agent cancels, removes or retries only what it started (`NOT_YOURS`) while the person can act on anything; and an agent cannot give the person's consent to the shared folder, a thread origin or a parent conversation. Sessions of person-started conversations may start, because "ask my assistant to run this in the background" is the use the owner named, and the work they start may not start more.
+
+`parentSessionId` was decoration only. It is now also read to refuse, never to grant, which is why a caller-chosen value is acceptable there. Codeman's own spawn tools (`codeman agent spawn`, the MCP `start_session`) record it; a session started without it escapes the depth rule the same way a caller without the agent header escapes every agent rule.
+
+One change outside the slice: the capability answer was 49 bytes under its 60,000-byte bound, so adding any tool would have truncated it. Generated schemas now drop zod's uuid `pattern` beside `format: "uuid"`, about 5 KB.
+
+Not bounded: one agent working through a long turn can start, wait, remove and start again within the caps. No lifetime budget per agent session is built.
+
 ## 2026-11-13 — The canvas and its shell are on by default, by absence
 
 **Type:** status-transition

@@ -2544,7 +2544,13 @@ export class WebServer extends EventEmitter {
    */
   private async startConversationSession(
     headers: Readonly<Record<string, string | string[] | undefined>>,
-    request: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
+    request: {
+      workingDir: string;
+      name: string;
+      mode: string;
+      launch: Record<string, unknown>;
+      parentSessionId?: string;
+    }
   ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
     const forwarded: Record<string, string> = { 'content-type': 'application/json' };
     for (const name of ['authorization', 'cookie', 'host']) {
@@ -2566,6 +2572,7 @@ export class WebServer extends EventEmitter {
       mode: request.mode,
       name: request.name,
       ...request.launch,
+      ...(request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}),
     });
     const sessionId = created.body.data?.session?.id;
     if (created.status >= 400 || created.body.success === false || typeof sessionId !== 'string')

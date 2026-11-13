@@ -286,16 +286,23 @@ describe('starting a conversation on a chosen CLI and model', () => {
     }
   });
 
-  it('stays human-only: an agent cannot start a conversation on any CLI', async () => {
+  it("holds an agent's create to the same provider and model checks as a person's", async () => {
     const h = await harness();
     try {
       const { conversation } = (await h.create()).json().data;
-      const refused = await h.tool(
-        { action: 'create', requestId: uuid(), cliId: 'acme' },
-        { 'x-codeman-parent-session': conversation.sessionId }
-      );
-      expect(refused.statusCode).toBe(403);
-      expect(h.started).toHaveLength(1);
+      for (const choice of [{ cliId: 'acme' }, { cliId: 'claude', model: 'bad/model' }, { cliId: 'claude' }]) {
+        const asPerson = await h.create(choice);
+        const asAgent = await h.tool(
+          { action: 'create', requestId: uuid(), ...choice },
+          { 'x-codeman-parent-session': conversation.sessionId }
+        );
+        expect(asAgent.statusCode).toBe(asPerson.statusCode);
+        expect(asAgent.json().error).toBe(asPerson.json().error);
+      }
+      // Two choices start; each started once for the person and once for the agent, which is named as its parent.
+      expect(h.started).toHaveLength(5);
+      expect(h.started.filter((r) => 'parentSessionId' in r)).toHaveLength(2);
+      expect(h.started.at(-1)).toMatchObject({ mode: 'claude', parentSessionId: conversation.sessionId });
     } finally {
       await h.app.close();
     }

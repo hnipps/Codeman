@@ -109,8 +109,8 @@ async function harness() {
 }
 const parse = (result: { text: string }) => JSON.parse(result.text);
 describe('canvas MCP HTTP parity', () => {
-  it('lists sixteen strict command tools on both protocol eras, including when unconfigured', async () => {
-    expect(canvasToolNames).toHaveLength(16);
+  it('lists seventeen strict command tools on both protocol eras, including when unconfigured', async () => {
+    expect(canvasToolNames).toHaveLength(17);
     for (const name of canvasToolNames) {
       const def = buildToolDefinitions(['claude']).find((t) => t.name === name)!;
       expect(def.description).toContain('untrusted data');
@@ -299,6 +299,12 @@ describe('canvas MCP HTTP parity', () => {
         'canvas.conversation.create',
         'canvas.conversation.send',
         'canvas.conversation.model',
+      ]);
+      expect(parse(capabilityResult).tasks.map((c: { command: string }) => c.command)).toEqual([
+        'canvas.task.list',
+        'canvas.task.start',
+        'canvas.task.cancel',
+        'canvas.task.remove',
       ]);
       expect(parse(capabilityResult).tools.some((tool: { name: string }) => tool.name === 'canvas_screenshot')).toBe(
         true

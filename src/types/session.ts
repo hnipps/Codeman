@@ -849,7 +849,8 @@ export interface SessionState {
    * ownership, permission, or lifecycle signal: a child outlives its parent, and an
    * unresolvable value is dropped rather than failing the spawn. Its one non-visual reader
    * picks a default, nothing more: a session an agent spawned does not inherit the app-wide
-   * prompt-cache keep-warm default (`keepWarmOn`), though its own switch still works.
+   * prompt-cache keep-warm default (`keepWarmOn`), though its own switch still works. The canvas reads it only to
+   * REFUSE: an agent below agent-started canvas work cannot start more (`agentStartedAncestor()`); it never grants.
    */
   parentSessionId?: string;
   /** ID of currently assigned task, null if none */

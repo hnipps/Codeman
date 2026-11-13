@@ -51,6 +51,8 @@ type Summary = {
   requests?: Omit<ThreadRequest, 'conversationId' | 'working' | 'ended'>[];
   /** Present when the conversation is a background task: it is listed with the tasks, not in the picker. */
   task?: { name: string; state: string; isolation: string };
+  /** An agent started it rather than the person. */
+  startedBy?: { kind: 'agent'; sessionId: string };
 };
 /** Where a request from a comment thread goes when it starts a new conversation, or why it cannot. */
 export type FreshTarget = { ok: true; cliId?: string; model?: string; label: string } | { ok: false; reason: string };
@@ -910,7 +912,7 @@ export class AssistantView {
     sorted.forEach((c, index) => {
       const option = document.createElement('option');
       option.value = c.id;
-      option.textContent = `Conversation ${sorted.length - index}${c.session === 'ended' ? ' (ended)' : ''}`;
+      option.textContent = `Conversation ${sorted.length - index}${c.startedBy ? ' · started by an agent' : ''}${c.session === 'ended' ? ' (ended)' : ''}`;
       picker.append(option);
     });
     if (task?.task) {

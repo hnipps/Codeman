@@ -37,6 +37,7 @@ tests=(
   test/canvas-thread-requests.test.ts
   test/canvas-tasks.test.ts
   test/canvas-task-routes.test.ts
+  test/canvas-agent-start.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts
