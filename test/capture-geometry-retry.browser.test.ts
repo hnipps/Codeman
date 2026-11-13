@@ -28,6 +28,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 let baseUrl: string;
 
@@ -35,6 +36,7 @@ let server: WebServer;
 let browser: Browser;
 
 beforeAll(async () => {
+  openOnClassicDashboard();
   server = new WebServer(0, false, true); // testMode
   await server.start();
   baseUrl = `http://localhost:${server.boundPort}`;

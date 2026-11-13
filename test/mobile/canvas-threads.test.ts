@@ -34,7 +34,7 @@ describe('phone thread requests', () => {
 
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc10-phone');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'phone-threads'), { recursive: true });
     workspace = workspaceForCase('phone-threads').id;
     const stores = new CanvasStores();

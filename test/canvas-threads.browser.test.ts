@@ -107,7 +107,7 @@ describe('canvas thread requests', () => {
 
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc10-threads');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'Threadnotes'), { recursive: true });
     workspace = workspaceForCase('Threadnotes').id;
     const stores = new CanvasStores();

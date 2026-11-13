@@ -7,12 +7,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 describe('reverse-proxy base path: server wiring', () => {
   let server: WebServer;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let app: any;
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true, '127.0.0.1', undefined, false, '/codeman');
     await server.start();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

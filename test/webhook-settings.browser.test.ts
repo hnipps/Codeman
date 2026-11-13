@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 const SECRET = 'SUPERSECRET-topic-123';
 
@@ -29,6 +30,7 @@ describe('Webhook settings in a real browser', () => {
     await new Promise<void>((r) => receiver.listen(0, '127.0.0.1', r));
     receiverPort = (receiver.address() as AddressInfo).port;
 
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });

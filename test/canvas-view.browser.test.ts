@@ -43,7 +43,7 @@ describe('read-only canvas document', () => {
   const liveIds: string[] = [];
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc3-owner');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'Fieldnotes'), { recursive: true });
     workspace = workspaceForCase('Fieldnotes').id;
     const stores = new CanvasStores();

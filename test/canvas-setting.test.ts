@@ -1,8 +1,9 @@
 /**
- * @fileoverview The synced `canvasEnabled` setting (default OFF) has a real switch in App
- * Settings: the strict settings schema admits it, the form loads it only from an explicit
- * true and saves the checkbox by id (never a carried-over value), and its row reads in
- * Chinese (zh-CN). The route gate is pinned in the canvas route and store tests.
+ * @fileoverview The synced `canvasEnabled` and `canvasShellEnabled` settings have real switches
+ * in App Settings: the strict settings schema admits them, the form reads each as ON unless the
+ * stored value is an explicit false (`canvasSettingOn`, an absent key included) and saves the
+ * checkbox by id (never a carried-over value), and the rows read in Chinese (zh-CN). The route
+ * gate is pinned in the canvas route and store tests.
  *
  * Port: N/A.
  */
@@ -38,6 +39,99 @@ api.start();
 api.configure({ language: 'zh-CN' });
 const chinese = rowStrings(dom.window.document);
 
+type SettingsApp = {
+  cases: { name: string }[];
+  casePickerActions(): { id: string }[];
+  _buildMobileOverviewCanvasRows(): HTMLElement[];
+  canvasSettingOn(key: string, settings?: Record<string, unknown> | null): boolean;
+  loadAppSettingsFromStorage(): Record<string, unknown>;
+  loadAppSettingsFromServer(server: Promise<Record<string, unknown>>): Promise<Record<string, unknown>>;
+};
+
+/** The settings module and the two that draw canvas entries, in a vm, with `stored` as this device's saved settings. */
+function loadSettingsUi(stored: Record<string, unknown> | null): SettingsApp {
+  const storage = new Map<string, string>();
+  const CodemanApp = function CodemanApp(this: unknown) {};
+  const context = vm.createContext({
+    CodemanApp,
+    VoiceInput: {},
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+    },
+    document: source.window.document,
+    console,
+  });
+  for (const file of ['settings-ui.js', 'session-ui.js', 'mobile-overview.js'])
+    vm.runInContext(readFileSync(resolve(PUBLIC, file), 'utf8'), context, { filename: file });
+  const app = Object.create(CodemanApp.prototype) as SettingsApp & Record<string, unknown>;
+  app.getSettingsStorageKey = () => 'settings';
+  app.getDefaultSettings = () => ({});
+  app._settingsReadOnly = () => true;
+  app._applyOwnSettings = () => {};
+  if (stored) storage.set('settings', JSON.stringify(stored));
+  return app;
+}
+
+const KEYS = ['canvasEnabled', 'canvasShellEnabled'] as const;
+
+describe('canvasSettingOn', () => {
+  it.each(KEYS)('reads %s as on when the key is absent or true, and off only for an explicit false', (key) => {
+    const app = loadSettingsUi(null);
+    expect(app.canvasSettingOn(key, {})).toBe(true);
+    expect(app.canvasSettingOn(key, { [key]: true })).toBe(true);
+    expect(app.canvasSettingOn(key, { [key]: false })).toBe(false);
+    // Each key is read alone: the other one being off changes nothing here.
+    expect(app.canvasSettingOn(key, { [KEYS.find((k) => k !== key)!]: false })).toBe(true);
+  });
+
+  it.each(KEYS)("reads %s from this device's stored settings when none are passed", (key) => {
+    expect(loadSettingsUi(null).canvasSettingOn(key)).toBe(true);
+    expect(loadSettingsUi({ terminalFontSize: 14 }).canvasSettingOn(key)).toBe(true);
+    expect(loadSettingsUi({ [key]: false }).canvasSettingOn(key)).toBe(false);
+  });
+
+  it.each(KEYS)('lets a server that has no %s win over a value this device stored earlier', async (key) => {
+    const stale = loadSettingsUi({ [key]: false, terminalFontSize: 14 });
+    const merged = await stale.loadAppSettingsFromServer(Promise.resolve({ autoNameSessions: true }));
+    expect(key in merged).toBe(false);
+    expect(merged.terminalFontSize).toBe(14);
+    expect(stale.canvasSettingOn(key)).toBe(true);
+
+    const off = loadSettingsUi({ [key]: true });
+    await off.loadAppSettingsFromServer(Promise.resolve({ [key]: false }));
+    expect(off.canvasSettingOn(key)).toBe(false);
+  });
+
+  it('draws the case picker entry and the phone canvas rows unless Canvas is stored as off', () => {
+    for (const [stored, shown] of [
+      [null, true],
+      [{ canvasEnabled: true }, true],
+      [{ canvasShellEnabled: false }, true],
+      [{ canvasEnabled: false }, false],
+    ] as const) {
+      const app = loadSettingsUi(stored);
+      app.cases = [{ name: 'alpha' }];
+      const label = JSON.stringify(stored);
+      expect(
+        app.casePickerActions().some((a) => a.id === 'canvas'),
+        label
+      ).toBe(shown);
+      expect(
+        app._buildMobileOverviewCanvasRows().map((row) => row.dataset.moCase),
+        label
+      ).toEqual(shown ? ['alpha'] : []);
+    }
+  });
+
+  it('is the only place the browser compares either key', () => {
+    for (const file of ['settings-ui.js', 'session-ui.js', 'mobile-overview.js', 'app.js']) {
+      const text = readFileSync(resolve(PUBLIC, file), 'utf8');
+      expect(text.match(/canvas(Shell)?Enabled\s*[!=]==?/g) ?? [], file).toEqual([]);
+    }
+  });
+});
+
 afterAll(() => {
   source.window.close();
   dom.window.close();
@@ -50,12 +144,14 @@ describe('canvasEnabled', () => {
     expect(SettingsUpdateSchema.safeParse({ canvasEnabled: 'yes' }).success).toBe(false);
   });
 
-  it('has one checkbox in App Settings, off in the markup, loaded only from an explicit true and saved by id', () => {
+  it('has one checkbox in App Settings, off in the markup, loaded through canvasSettingOn and saved by id', () => {
     expect(INDEX.split(`id="${ID}"`)).toHaveLength(2);
     const box = source.window.document.getElementById(ID)!;
     expect(box.getAttribute('type')).toBe('checkbox');
     expect(box.hasAttribute('checked')).toBe(false);
-    expect(SETTINGS_UI).toContain(`document.getElementById('${ID}').checked = settings.canvasEnabled === true;`);
+    expect(SETTINGS_UI).toContain(
+      `document.getElementById('${ID}').checked = this.canvasSettingOn('canvasEnabled', settings);`
+    );
     expect(SETTINGS_UI).toContain(`canvasEnabled: document.getElementById('${ID}').checked,`);
     expect(SETTINGS_UI).not.toContain('_prev.canvasEnabled');
   });
@@ -87,14 +183,14 @@ describe('canvasShellEnabled (PC13)', () => {
     expect(SettingsUpdateSchema.safeParse({ canvasShellEnabled: 'on' }).success).toBe(false);
   });
 
-  it('has one checkbox beside the Canvas row, off in the markup, loaded only from an explicit true', () => {
+  it('has one checkbox beside the Canvas row, off in the markup, loaded through canvasSettingOn', () => {
     expect(INDEX.split(`id="${SHELL}"`)).toHaveLength(2);
     const box = source.window.document.getElementById(SHELL)!;
     expect(box.getAttribute('type')).toBe('checkbox');
     expect(box.hasAttribute('checked')).toBe(false);
     expect(row.previousElementSibling!.id).toBe('appSettingsCanvasItem');
     expect(SETTINGS_UI).toContain(
-      `document.getElementById('${SHELL}').checked = settings.canvasShellEnabled === true;`
+      `document.getElementById('${SHELL}').checked = this.canvasSettingOn('canvasShellEnabled', settings);`
     );
     expect(SETTINGS_UI).toContain(`canvasShellEnabled: document.getElementById('${SHELL}').checked,`);
   });
@@ -118,9 +214,11 @@ describe('canvasShellEnabled (PC13)', () => {
 
   it('is sent to the server only by a save that changes it', () => {
     // A page left open across a rollback talks to a server whose strict schema does not know the key.
+    // Compared with what this device resolved before, so a save with the box still ticked over an absent key
+    // sends nothing, and unticking it sends an explicit false.
     expect(SETTINGS_UI).toContain('canvasShellEnabled: _cse,');
     expect(SETTINGS_UI).toContain(
-      'const _shellFlip = _cse !== (_prev.canvasShellEnabled === true) ? { canvasShellEnabled: _cse } : {};'
+      "const _shellFlip = _cse !== this.canvasSettingOn('canvasShellEnabled', _prev) ? { canvasShellEnabled: _cse } : {};"
     );
     expect(SETTINGS_UI).toMatch(/\.\.\.serverSettings,\n\s+\.\.\.\(_chipFlip[^\n]+\n\s+\.\.\.shellFlip,/);
     expect(SETTINGS_UI).toContain('await _putSettings(_shellFlip);');

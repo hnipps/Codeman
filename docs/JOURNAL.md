@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — The canvas and its shell are on by default, by absence
+
+**Type:** status-transition
+**Touches:** `src/web/shell-landing.ts`, `src/web/server.ts`, `src/web/public/settings-ui.js`, `src/web/public/session-ui.js`, `src/web/public/mobile-overview.js`, `test/classic-dashboard.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** The program's last box is to turn `canvasEnabled` and the shell setting on by default once the gate passes. A default that had to be written into `settings.json` would need a migration, and a rollback could not read it back.
+**Links:** [intent/2026-11-13-canvas-default-on.md](../intent/2026-11-13-canvas-default-on.md), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+Decision. Both settings are tri-state by absence: a key absent from `settings.json` reads as on, `true` is on, and only an explicit `false` is off. Nothing writes the key to make it so. The server reads through `canvasOn()` and `shellActive()`, the browser through `canvasSettingOn()`, and no other code compares either key. A Settings save still sends `canvasShellEnabled` only when its box changed, so opening and saving Settings flips nothing and unticking the box stores `false`. The browser drops its stored copy of a key the server does not have.
+
+Consequences accepted. An install that already stores `canvasEnabled: false` stays off until someone ticks the box. The previous release reads an absent key as off, so a rollback returns `/` to the dashboard and hides the canvas until the keys are explicit; stored data is unchanged. The fallback is as it was: a missing canvas file or an unreadable registry answers the dashboard with the notice, and `/classic` depends on no canvas file.
+
 ## 2026-11-13 — An agent's view command only steers the view (PC13 audit fix round 1)
 
 **Type:** intent-refinement

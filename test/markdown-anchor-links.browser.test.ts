@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 const filler = (n: number) =>
   Array.from({ length: n }, (_, i) => `Paragraph ${i} of filler text so the document is taller than the viewer.`).join(
@@ -47,6 +48,7 @@ describe('in-document links in the markdown File Viewer', () => {
         filler(10),
       ].join('\n')
     );
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });

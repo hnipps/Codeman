@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 const lostFrame = { 'sec-fetch-dest': 'iframe', 'sec-fetch-mode': 'navigate', accept: 'text/html,*/*;q=0.8' };
 
@@ -24,6 +25,7 @@ describe('landing-page reload of a proxied dashboard, passwordless install', () 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let app: any;
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0);
     await server.start();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -888,8 +888,8 @@ claude mcp add codeman -- codeman mcp
 The MCP process inherits `CODEMAN_API_URL`, `CODEMAN_MUX` and
 `CODEMAN_SESSION_ID` from the pane. For a client outside that environment, configure
 the server URL explicitly with `--url`/`CODEMAN_API_URL` and use a Codeman case
-session for canvas calls. Enable the synced `canvasEnabled` setting and create the
-case's canvas workspace first. Registration is manual; launch does not rewrite
+session for canvas calls. The synced `canvasEnabled` setting must not be off (it is on
+unless stored as `false`), and the case's canvas workspace must exist first. Registration is manual; launch does not rewrite
 client configuration.
 
 Use `canvas_read` with a container's `root` ID for its complete nested hierarchy,

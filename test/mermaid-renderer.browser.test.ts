@@ -11,6 +11,7 @@ import puppeteer from 'puppeteer';
 import { PNG } from 'pngjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 import { safeRmHomeTree } from './mocks/index.js';
 
 const execute = promisify(execFile);
@@ -27,6 +28,7 @@ describe('Mermaid diagrams', () => {
     vi.stubEnv('CODEMAN_USERNAME', 'mermaid-browser-test');
     vi.stubEnv('CODEMAN_PASSWORD', 'mermaid-browser-test-password');
     root = await mkdtemp(join(homedir(), 'mermaid-'));
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({

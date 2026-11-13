@@ -71,7 +71,7 @@ describe('phone voice', () => {
   const micLive = () => page.evaluate(() => window.__voice.tracks.some((t) => t.readyState === 'live'));
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc11-phone');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'phone-voice'), { recursive: true });
     workspace = workspaceForCase('phone-voice').id;
     const stores = new CanvasStores();

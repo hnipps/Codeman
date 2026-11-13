@@ -1,8 +1,9 @@
 /**
  * @fileoverview Canvas shell routes (PC13): what `/`, `/classic`, `/?view=classic` and `/canvas/:id` answer for
- * each combination of the two settings, with and without a reverse-proxy base path. With either setting off the
- * root page is byte-identical to what it was; with both on it is the canvas document, never a redirect; a missing
- * canvas file gives the dashboard with the notice.
+ * each combination of the two settings, with and without a reverse-proxy base path. A key absent from
+ * `settings.json` reads as on. With either setting an explicit false the root page is byte-identical to the
+ * dashboard as it was; with both on it is the canvas document, never a redirect; a missing canvas file gives the
+ * dashboard with the notice.
  *
  * Port: 0 (app.inject, no listener is used).
  */
@@ -28,7 +29,19 @@ const COMBOS = [
   { canvasEnabled: false, canvasShellEnabled: true },
   { canvasEnabled: true, canvasShellEnabled: true },
 ] as const;
-const isShell = (c: (typeof COMBOS)[number]) => c.canvasEnabled && c.canvasShellEnabled;
+type Combo = { canvasEnabled?: boolean; canvasShellEnabled?: boolean };
+/** Every stored shape: the four explicit pairs, then each key absent beside every value of the other. */
+const ALL: Combo[] = [
+  ...COMBOS,
+  {},
+  { canvasEnabled: true },
+  { canvasShellEnabled: true },
+  { canvasEnabled: false },
+  { canvasShellEnabled: false },
+];
+const OFF = COMBOS[0];
+const canvasIsOn = (c: Combo) => c.canvasEnabled !== false;
+const isShell = (c: Combo) => canvasIsOn(c) && c.canvasShellEnabled !== false;
 const SHELL_MARKERS = [
   '__CODEMAN_SHELL__',
   'data-canvas',
@@ -71,8 +84,8 @@ for (const base of ['', '/x']) {
       beta = workspaceForCase('beta').id;
     });
 
-    it('leaves `/` byte-identical unless both settings are on, whatever the query says', async () => {
-      settings({});
+    it('leaves `/` byte-identical while either setting is an explicit false, whatever the query says', async () => {
+      settings(OFF);
       const plain = (await get('/')).body;
       expect(plain).toContain('<title>');
       // Nothing the shell adds to a document is in it.
@@ -105,7 +118,9 @@ for (const base of ['', '/x']) {
         { url: '/', headers: { accept: 'text/html', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate' } },
         { url: '/classic' },
       ];
-      for (const combo of [{}, ...COMBOS.filter((c) => !isShell(c))]) {
+      const off = ALL.filter((c) => !isShell(c));
+      expect(off).toHaveLength(5);
+      for (const combo of off) {
         settings(combo);
         for (const { url, headers } of shapes) {
           const label = `${JSON.stringify(combo)} ${url} ${JSON.stringify(headers ?? {})}`;
@@ -122,7 +137,8 @@ for (const base of ['', '/x']) {
     });
 
     it('follows the setting table for `/`, `/classic` and `/canvas/:id`, and never redirects `/`', async () => {
-      for (const combo of COMBOS) {
+      expect(ALL.filter(isShell)).toEqual([COMBOS[3], {}, { canvasEnabled: true }, { canvasShellEnabled: true }]);
+      for (const combo of ALL) {
         settings(combo);
         const root = await get('/');
         expect(root.statusCode).toBe(200);
@@ -134,8 +150,8 @@ for (const base of ['', '/x']) {
         expect(classic.body).not.toMatch(/canvas(-home)?\.js|canvas\.css/);
         expect(classic.body.includes('window.__CODEMAN_SHELL__={"on":true,"notice":null}')).toBe(isShell(combo));
         const page = await get(`/canvas/${alpha}`);
-        expect(page.statusCode).toBe(combo.canvasEnabled ? 200 : 404);
-        if (combo.canvasEnabled) {
+        expect(page.statusCode, JSON.stringify(combo)).toBe(canvasIsOn(combo) ? 200 : 404);
+        if (canvasIsOn(combo)) {
           expect(page.body.includes('<meta name="codeman-canvas-shell" content="on" />')).toBe(isShell(combo));
           expect(page.body.includes('data-shell>')).toBe(isShell(combo));
           expect(page.body).toContain('<meta name="codeman-canvas-viewer" content="@single" />');
@@ -226,7 +242,7 @@ for (const base of ['', '/x']) {
 
     it('still answers a framed, credential-free `/` with the lost-frame page, shell on or off', async () => {
       const framed = { 'sec-fetch-dest': 'iframe', 'sec-fetch-mode': 'navigate', accept: 'text/html' };
-      settings({});
+      settings(OFF);
       const before = await get('/', framed);
       settings(COMBOS[3]);
       const after = await get('/', framed);
@@ -246,22 +262,34 @@ for (const base of ['', '/x']) {
     });
 
     it('stores the shell switch through the settings route without touching the canvas switch', async () => {
-      settings({});
+      settings({ canvasEnabled: false });
       const put = (payload: unknown) => inject({ method: 'PUT', url: base + '/api/settings', payload });
       expect((await put({ canvasShellEnabled: true })).statusCode).toBe(200);
       const read = () => JSON.parse(readFileSync(dataPath('settings.json'), 'utf8'));
-      expect(read()).toEqual({ canvasShellEnabled: true });
+      expect(read()).toEqual({ canvasEnabled: false, canvasShellEnabled: true });
       expect((await get('/')).body).not.toContain('data-canvas');
       // A save from a browser that does not know the key (the previous release's page) leaves it stored.
       expect((await put({ canvasEnabled: true })).statusCode).toBe(200);
       expect(read()).toEqual({ canvasShellEnabled: true, canvasEnabled: true });
       expect((await get('/')).body).toContain('data-canvas');
+      // Turning the shell off stores an explicit false, which is what keeps `/` on the dashboard.
+      expect((await put({ canvasShellEnabled: false })).statusCode).toBe(200);
+      expect(read()).toEqual({ canvasShellEnabled: false, canvasEnabled: true });
+      expect((await get('/')).body).not.toContain('data-canvas');
       expect((await put({ canvasShellEnabled: 'yes' })).statusCode).toBe(400);
       // A read never writes.
       const before = readFileSync(dataPath('settings.json'), 'utf8');
       await inject({ method: 'GET', url: base + '/api/settings' });
       await get('/');
       expect(readFileSync(dataPath('settings.json'), 'utf8')).toBe(before);
+    });
+
+    it('opens on the canvas with neither key stored, and no read writes them', async () => {
+      settings({});
+      expect((await get('/')).body).toContain('data-canvas');
+      expect((await get(`/canvas/${alpha}`)).statusCode).toBe(200);
+      await inject({ method: 'GET', url: base + '/api/settings' });
+      expect(readFileSync(dataPath('settings.json'), 'utf8')).toBe('{}');
     });
   });
 }

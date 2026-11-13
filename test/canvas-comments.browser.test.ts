@@ -91,7 +91,7 @@ describe('canvas comments and author history', () => {
     });
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc6-comments');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'Fieldnotes'), { recursive: true });
     workspace = workspaceForCase('Fieldnotes').id;
     const stores = new CanvasStores();

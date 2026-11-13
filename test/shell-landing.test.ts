@@ -5,7 +5,7 @@
  * Port: N/A.
  */
 import { describe, expect, it } from 'vitest';
-import { cookieValue, decideLanding, shellActive, LAST_WORKSPACE_COOKIE } from '../src/web/shell-landing.js';
+import { canvasOn, cookieValue, decideLanding, shellActive, LAST_WORKSPACE_COOKIE } from '../src/web/shell-landing.js';
 
 const workspaces = [
   { id: 'ws-a', caseName: 'alpha' },
@@ -86,14 +86,33 @@ describe('decideLanding', () => {
   });
 });
 
+describe('canvasOn', () => {
+  it('is on when the key is absent or true, and off only for an explicit false', () => {
+    expect(canvasOn({})).toBe(true);
+    expect(canvasOn({ canvasEnabled: true })).toBe(true);
+    expect(canvasOn({ canvasEnabled: false })).toBe(false);
+    expect(canvasOn({ canvasShellEnabled: false })).toBe(true);
+  });
+});
+
 describe('shellActive', () => {
-  it('needs an explicit true for both keys', () => {
-    expect(shellActive({ canvasEnabled: true, canvasShellEnabled: true })).toBe(true);
+  it('is on when both keys are absent or true', () => {
     for (const s of [
       {},
       { canvasEnabled: true },
       { canvasShellEnabled: true },
-      { canvasEnabled: 'true', canvasShellEnabled: 1 },
+      { canvasEnabled: true, canvasShellEnabled: true },
+    ])
+      expect(shellActive(s)).toBe(true);
+  });
+
+  it('is off when either key is an explicit false, whatever the other says', () => {
+    for (const s of [
+      { canvasEnabled: false },
+      { canvasShellEnabled: false },
+      { canvasEnabled: false, canvasShellEnabled: true },
+      { canvasEnabled: true, canvasShellEnabled: false },
+      { canvasEnabled: false, canvasShellEnabled: false },
     ])
       expect(shellActive(s)).toBe(false);
   });

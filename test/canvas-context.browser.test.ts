@@ -41,7 +41,7 @@ describe('canvas direct context and the view registry', () => {
     p.screenshot({ animations: 'disabled', path: resolve(MEDIA, `pc9a-review-${stamp}-${name}.png`) });
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc9a-owner');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     mkdirSync(resolve(resolveCasesDir(), 'Fieldnotes'), { recursive: true });
     workspace = workspaceForCase('Fieldnotes').id;
     const stores = new CanvasStores();

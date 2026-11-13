@@ -15,6 +15,7 @@ import { execSync } from 'node:child_process';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 let baseUrl: string;
 
@@ -46,6 +47,7 @@ async function navigateAndWait(page: Page): Promise<void> {
 }
 
 beforeAll(async () => {
+  openOnClassicDashboard();
   server = new WebServer(0, false, true); // testMode
   await server.start();
   baseUrl = `http://localhost:${server.boundPort}`;

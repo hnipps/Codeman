@@ -28,6 +28,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 const PROBE_ID = 'touch-paging-probe';
 const UP = '\x1b[5~';
@@ -38,6 +39,7 @@ describe('touch paging of a hollow Codex pane in a real browser', () => {
   let page: Page;
 
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });

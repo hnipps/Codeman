@@ -4,8 +4,12 @@
  * Pure. The caller reads the settings, the query, the canvas files and the caller's own workspaces and
  * gets back one of three answers: the classic dashboard (with a notice when the canvas was wanted and
  * could not be shown), the canvas of one workspace, or the first-run page. With either setting off the
- * answer is always the plain dashboard, which is what keeps `/` unchanged for everyone who has not
- * turned the shell on.
+ * answer is always the plain dashboard, which is what keeps `/` unchanged for everyone who has turned
+ * the canvas or its shell off.
+ *
+ * Both settings are ON unless `settings.json` says `false`: an absent key reads as on, and nothing writes
+ * the key to make it so. `canvasOn()` and `shellActive()` are the only readers; never compare either key
+ * anywhere else. The browser's counterpart is `canvasSettingOn()` (settings-ui.js).
  */
 
 /** Why the classic view is being shown in place of the canvas. A fixed list: nothing from a request is echoed. */
@@ -34,9 +38,12 @@ export type Landing =
   | { kind: 'canvas'; workspaceId: string }
   | { kind: 'first-run' };
 
+/** True unless `canvasEnabled` is an explicit `false`: the canvas routes, tools and entries exist. */
+export const canvasOn = (settings: { canvasEnabled?: unknown }): boolean => settings.canvasEnabled !== false;
+
 /** True when both settings are on: the only combination in which anything about `/` changes. */
 export const shellActive = (settings: { canvasEnabled?: unknown; canvasShellEnabled?: unknown }): boolean =>
-  settings.canvasEnabled === true && settings.canvasShellEnabled === true;
+  canvasOn(settings) && settings.canvasShellEnabled !== false;
 
 const noticeFrom = (query: LandingInput['query']): ShellNotice | null => {
   if (query.canvas !== 'failed') return null;

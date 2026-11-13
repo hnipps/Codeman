@@ -5,6 +5,7 @@ import { basename, join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 declare const PathPicker: any; // evaluated inside the page, where it is a global
 
@@ -16,6 +17,7 @@ describe('Create a case in a custom folder', () => {
 
   beforeAll(async () => {
     parent = mkdtempSync(join(homedir(), 'custom-case-'));
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     browser = await chromium.launch({ headless: true });

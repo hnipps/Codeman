@@ -24,6 +24,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 let baseUrl: string;
 const MAIN_ID = 'shift-enter-probe-main';
@@ -44,6 +45,7 @@ describe('Shift/Ctrl+Enter through the shipped key handlers (keypress must be sw
   let page: Page;
 
   beforeAll(async () => {
+    openOnClassicDashboard();
     server = new WebServer(0, false, true);
     await server.start();
     baseUrl = `http://localhost:${server.boundPort}`;

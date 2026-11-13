@@ -42,7 +42,7 @@ describe('phone background tasks', () => {
   }
   beforeAll(async () => {
     vi.stubEnv('CODEMAN_INSTANCE', 'lane-pc12-phone');
-    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true }));
+    writeFileSync(dataPath('settings.json'), JSON.stringify({ canvasEnabled: true, canvasShellEnabled: false }));
     const casePath = resolve(resolveCasesDir(), 'phone-tasks');
     mkdirSync(casePath, { recursive: true });
     const git = (...args: string[]) => execFileSync('git', args, { cwd: casePath, encoding: 'utf8' });

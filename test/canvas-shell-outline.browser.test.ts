@@ -453,7 +453,7 @@ describe('canvas shell: the outline', () => {
     await fresh();
     const asked: string[] = [];
     page.on('request', (r) => asked.push(new URL(r.url()).pathname));
-    settings({ canvasEnabled: true });
+    settings({ canvasEnabled: true, canvasShellEnabled: false });
     await page.goto(`${origin}/x/canvas/${alpha}`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-object-id="n1"]');
     await page.waitForFunction(() => document.querySelector('#workspaceName')?.textContent === 'alpha');

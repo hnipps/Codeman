@@ -22,11 +22,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
 import { WebServer } from '../src/web/server.js';
+import { openOnClassicDashboard } from './classic-dashboard.js';
 
 let server: WebServer;
 let browser: Browser;
 
 beforeAll(async () => {
+  openOnClassicDashboard();
   server = new WebServer(0, false, true); // testMode
   await server.start();
   browser = await chromium.launch({ headless: true });

@@ -36,7 +36,7 @@ describe('the shell switch across a rollback', () => {
     const body = { canvasEnabled: true, approvalsInboxEnabled: false, autoNameSessions: false };
     expect(PreviousSettingsUpdateSchema.safeParse(body).success).toBe(true);
     expect(SETTINGS_UI).toContain(
-      'const _shellFlip = _cse !== (_prev.canvasShellEnabled === true) ? { canvasShellEnabled: _cse } : {};'
+      "const _shellFlip = _cse !== this.canvasSettingOn('canvasShellEnabled', _prev) ? { canvasShellEnabled: _cse } : {};"
     );
   });
 
@@ -46,7 +46,7 @@ describe('the shell switch across a rollback', () => {
     // The page then saves the rest without the key, puts the box back and says so.
     expect(SETTINGS_UI).toContain("if (res && res.status === 400 && 'canvasShellEnabled' in _shellFlip) {");
     expect(SETTINGS_UI).toContain('const retry = await _putSettings({});');
-    expect(SETTINGS_UI).toContain('settings.canvasShellEnabled = _prev.canvasShellEnabled === true;');
+    expect(SETTINGS_UI).toContain("settings.canvasShellEnabled = this.canvasSettingOn('canvasShellEnabled', _prev);");
     expect(SETTINGS_UI).toContain('this server does not have it. Reload the page.');
   });
 
@@ -71,6 +71,15 @@ describe('the shell switch across a rollback', () => {
     const stored = { canvasEnabled: true, canvasShellEnabled: true };
     expect(stored.canvasEnabled === true).toBe(true);
     expect(shellActive(stored)).toBe(true);
-    expect(shellActive({ canvasEnabled: true })).toBe(false);
+  });
+
+  it('a release that read an absent key as off shows the dashboard until the keys are explicit', () => {
+    // This release reads absent as on and writes nothing to make it so. The release before it needed an
+    // explicit true for both keys, so a rollback with the keys still absent returns `/` to the dashboard.
+    const previousShellActive = (s: Record<string, unknown>) =>
+      s.canvasEnabled === true && s.canvasShellEnabled === true;
+    expect(shellActive({})).toBe(true);
+    expect(previousShellActive({})).toBe(false);
+    expect(previousShellActive({ canvasEnabled: true, canvasShellEnabled: true })).toBe(true);
   });
 });
