@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import {
   FULL_VIEW_ALLOW,
   TICKET_MAX_AGE_MS,
+  agentOpenRefusal,
   fullViewMode,
   fullViewPath,
   fullViewSignal,
@@ -42,6 +43,29 @@ describe('full view: frame or navigate', () => {
   it('builds the session page address from the id and the workspace alone, encoded', () => {
     expect(fullViewPath('abc-1', 'ws_1')).toBe('/session/abc-1?from=canvas&ws=ws_1');
     expect(fullViewPath('a/b?c', 'w&x')).toBe('/session/a%2Fb%3Fc?from=canvas&ws=w%26x');
+    expect(fullViewPath('abc-1', 'ws_1', false)).toBe('/session/abc-1?from=canvas&ws=ws_1');
+  });
+  it("marks an agent's open in the address, so the session page starts nothing by itself", () => {
+    expect(fullViewPath('abc-1', 'ws_1', true)).toBe('/session/abc-1?from=canvas&ws=ws_1&passive=1');
+  });
+  it("refuses an agent's open with a plain reason, and only then", () => {
+    const ok = { shell: true, state: 'idle', navigates: false, typing: false };
+    expect(agentOpenRefusal(ok)).toBeNull();
+    for (const state of ['needs', 'error', 'waiting', 'working']) expect(agentOpenRefusal({ ...ok, state })).toBeNull();
+    expect(agentOpenRefusal({ ...ok, shell: false })).toMatch(/not a canvas shell page/);
+    expect(agentOpenRefusal({ ...ok, state: undefined })).toMatch(/does not list that session/);
+    expect(agentOpenRefusal({ ...ok, state: 'done' })).toMatch(/has ended/);
+    expect(agentOpenRefusal({ ...ok, navigates: true })).toMatch(/phone or touch/);
+    expect(agentOpenRefusal({ ...ok, typing: true })).toMatch(/typing on the canvas/);
+    // Every reason fits the field the view publishes it in.
+    for (const view of [
+      { ...ok, shell: false },
+      { ...ok, state: undefined },
+      { ...ok, state: 'done' },
+      { ...ok, navigates: true },
+      { ...ok, typing: true },
+    ])
+      expect(agentOpenRefusal(view)!.length).toBeLessThanOrEqual(200);
   });
   it('lists only what the terminal page uses in the frame permissions', () => {
     expect(FULL_VIEW_ALLOW.split(';').map((s) => s.trim())).toEqual([
@@ -178,6 +202,15 @@ describe('full view: the view command', () => {
     expect(PublishedViewSchema.safeParse({ ...base, fullView: 's1' }).success).toBe(true);
     expect(PublishedViewSchema.safeParse({ ...base, fullView: null }).success).toBe(true);
     expect(PublishedViewSchema.safeParse({ ...base, fullView: 'a b' }).success).toBe(false);
+    const commandId = '11111111-1111-4111-8111-111111111111';
+    expect(
+      PublishedViewSchema.safeParse({ ...base, refused: { commandId, reason: 'That session has ended.' } }).success
+    ).toBe(true);
+    expect(PublishedViewSchema.safeParse({ ...base, refused: { commandId, reason: '' } }).success).toBe(false);
+    expect(PublishedViewSchema.safeParse({ ...base, refused: { commandId, reason: 'x'.repeat(201) } }).success).toBe(
+      false
+    );
+    expect(PublishedViewSchema.safeParse({ ...base, refused: { commandId: 'c1', reason: 'no' } }).success).toBe(false);
   });
 });
 

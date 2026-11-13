@@ -29,6 +29,16 @@ const COMBOS = [
   { canvasEnabled: true, canvasShellEnabled: true },
 ] as const;
 const isShell = (c: (typeof COMBOS)[number]) => c.canvasEnabled && c.canvasShellEnabled;
+const SHELL_MARKERS = [
+  '__CODEMAN_SHELL__',
+  'data-canvas',
+  'data-shell',
+  'codeman-canvas-',
+  '__canvasBoot',
+  'canvas.js',
+  'canvas-home.js',
+  'canvas.css',
+];
 
 for (const base of ['', '/x']) {
   describe(`canvas shell routes${base ? ' under a base path' : ''}`, () => {
@@ -65,20 +75,47 @@ for (const base of ['', '/x']) {
       settings({});
       const plain = (await get('/')).body;
       expect(plain).toContain('<title>');
-      expect(plain).not.toContain('__CODEMAN_SHELL__');
-      expect(plain).not.toContain('canvas.js');
-      for (const combo of COMBOS.filter((c) => !isShell(c))) {
+      // Nothing the shell adds to a document is in it.
+      for (const marker of SHELL_MARKERS) expect(plain, marker).not.toContain(marker);
+      // The reference is the dashboard template on disk, not a second run of the code under test: the page is
+      // that file, line for line, plus only the one-line `window.__…` facts the dashboard has always injected.
+      const template = readFileSync(resolve(import.meta.dirname, '../src/web/public/index.html'), 'utf8');
+      const normal = (line: string) =>
+        line
+          .replace(/\?v=\d+/g, '')
+          .replace(/<title>[^<]*<\/title>/, '<title></title>')
+          .replace(/<base href="[^"]*">/, '<base href="/">');
+      const served = plain.split('\n').map(normal);
+      const added: string[] = [];
+      let at = 0;
+      for (const line of template.split('\n').map(normal)) {
+        while (at < served.length && served[at] !== line) added.push(served[at++]!);
+        expect(at, `template line missing from the page: ${line}`).toBeLessThan(served.length);
+        at++;
+      }
+      added.push(...served.slice(at));
+      for (const line of added) expect(line).toMatch(/^\s*<script>window\.__[A-Za-z]\w*\s*=.*<\/script>$/);
+      expect(added.length).toBeLessThanOrEqual(8);
+      const shapes: { url: string; headers?: Record<string, string> }[] = [
+        { url: '/' },
+        { url: '/?view=classic' },
+        { url: '/?view=classic&canvas=failed&reason=load' },
+        { url: '/?session=abc' },
+        { url: '/', headers: { cookie: `codeman_canvas_ws=${alpha}` } },
+        { url: '/', headers: { accept: 'text/html', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate' } },
+        { url: '/classic' },
+      ];
+      for (const combo of [{}, ...COMBOS.filter((c) => !isShell(c))]) {
         settings(combo);
-        for (const url of [
-          '/',
-          '/?view=classic',
-          '/?view=classic&canvas=failed&reason=load',
-          '/classic',
-          '/index.html',
-        ]) {
-          const r = await get(url);
-          expect(r.statusCode, `${JSON.stringify(combo)} ${url}`).toBe(200);
-          expect(r.body === plain, `${JSON.stringify(combo)} ${url}`).toBe(true);
+        for (const { url, headers } of shapes) {
+          const label = `${JSON.stringify(combo)} ${url} ${JSON.stringify(headers ?? {})}`;
+          const r = await get(url, headers);
+          // `/index.html` never took part in the landing decision: `/` answers what it answers for this request.
+          const index = await get('/index.html', headers);
+          expect(r.statusCode, label).toBe(200);
+          expect(index.statusCode, label).toBe(200);
+          expect(r.body === index.body, label).toBe(true);
+          expect(r.body === plain, label).toBe(true);
           expect(r.headers['cache-control']).toBe('no-cache');
         }
       }

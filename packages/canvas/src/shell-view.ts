@@ -13,6 +13,7 @@ import {
   launchChoices,
   newlyNeeding,
   parseSessions,
+  refreshDelay,
   sessionRows,
   withStarted,
   type GotoResult,
@@ -48,7 +49,6 @@ export type ShellHost = {
   listed(rows: SessionViewRow[]): void;
 };
 
-const REFRESH_DELAY_MS = 400;
 const OFFLINE_REASON = 'Unavailable while Codeman cannot be reached';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
@@ -96,6 +96,7 @@ export class ShellView {
   private fetching = false;
   private again = false;
   private timer = 0;
+  private refreshedAt = 0;
   private stopped = false;
   private starting = false;
   private making = false;
@@ -169,11 +170,19 @@ export class ShellView {
     document.removeEventListener('visibilitychange', this.visible);
   }
 
-  /** A server event that can change a session's row. The list is fetched again, shortly, once. */
+  /**
+   * A server event that can change a session's row. The list is fetched again shortly, and at most once per
+   * `REFRESH_GAP_MS` while events keep arriving. A hidden page fetches nothing: becoming visible fetches once.
+   */
   event(): void {
-    if (this.stopped) return;
-    clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => void this.refresh(), REFRESH_DELAY_MS);
+    if (this.stopped || this.timer || document.visibilityState === 'hidden') return;
+    this.timer = window.setTimeout(
+      () => {
+        this.timer = 0;
+        if (document.visibilityState !== 'hidden') void this.refresh();
+      },
+      refreshDelay(Date.now(), this.refreshedAt)
+    );
   }
   setOnline(online: boolean): void {
     if (this.online === online) return;
@@ -199,6 +208,7 @@ export class ShellView {
       return;
     }
     this.fetching = true;
+    this.refreshedAt = Date.now();
     try {
       const response = await fetch(this.host.url(`/api/canvas/${this.host.workspaceId}/sessions`));
       const rows = response.ok ? parseSessions(await response.json()) : null;

@@ -292,7 +292,13 @@ export function capabilities() {
         available: true,
         tool,
         // Repeated per command and counted against MAX_CANVAS_TEXT_BYTES: keep it short.
-        note: 'viewId from canvas_view list; a closed view answers VIEW_GONE.',
+        note:
+          'viewId from canvas_view list; ' +
+          (command.endsWith('.read') ? 'the view reports its state every few seconds; ' : '') +
+          'a closed view answers VIEW_GONE.' +
+          (command === 'canvas.fullView.set'
+            ? ' Shows a listed session to the person; starts nothing, sends it nothing; a refusal shows in read as refused.'
+            : ''),
       })),
     ],
     conversations: [
@@ -305,7 +311,7 @@ export function capabilities() {
       command,
       available: true,
       tool,
-      note: "A conversation is one real agent session in this case, on the CLI and model the person chose for the next new conversation (model read or set, with a viewId, reads or sets that open view's choice; it starts nothing). Send is accepted at once and delivered in the background (read the message state: queued, sending, delivered, failed); it carries the named objects as reference text, never answers a pending question, and is refused for an agent that is itself in a conversation. Create is for people only: an agent gets 403.",
+      note: "A conversation is one real agent session in this case, on the CLI and model the person chose for the next new one (model, with a viewId, reads or sets that open view's choice; it starts nothing). Send is accepted at once and delivered in the background (message state: queued, sending, delivered, failed); it carries the named objects as reference text, never answers a pending question, and is refused for an agent itself in a conversation. Create is for people only: agents get 403.",
     })),
     reserved: [],
     clipboard: {

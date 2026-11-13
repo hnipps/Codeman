@@ -210,6 +210,37 @@ describe('canvas shell: landing and fallback', () => {
     expect(navigations).toHaveLength(2);
   });
 
+  it('with scripts disabled, shows a plain link that opens the classic view document', async () => {
+    const plain = await browser.newContext({ javaScriptEnabled: false, serviceWorkers: 'block' });
+    try {
+      const still = await plain.newPage();
+      const visited: string[] = [];
+      still.on('framenavigated', (frame) => {
+        if (frame === still.mainFrame()) visited.push(new URL(frame.url()).pathname + new URL(frame.url()).search);
+      });
+      for (const address of ['/x/', `/x/canvas/${alpha}`]) {
+        visited.length = 0;
+        await still.goto(origin + address, { waitUntil: 'load' });
+        // No script ran: the address was not rewritten and the loading state is what the person sees.
+        expect(new URL(still.url()).pathname).toBe(address);
+        const link = still.locator('#classicLink');
+        await link.waitFor({ state: 'visible' });
+        expect(await link.innerText()).toBe('Open classic view');
+        const [response] = await Promise.all([still.waitForNavigation({ waitUntil: 'load' }), link.click()]);
+        expect(new URL(still.url()).pathname + new URL(still.url()).search).toBe('/x/?view=classic');
+        expect(response?.status()).toBe(200);
+        const body = (await response?.text()) ?? '';
+        expect(body).not.toContain('data-canvas');
+        expect(body).toContain('window.__CODEMAN_SHELL__={"on":true,"notice":null}');
+        expect(body).toContain('id="soloRedockBtn"');
+        // One navigation to the page and one the person asked for: nothing navigates by itself.
+        expect(visited).toEqual([address, '/x/?view=classic']);
+      }
+    } finally {
+      await plain.close();
+    }
+  });
+
   it('gets the classic view with the notice straight from the server when a canvas file is missing', async () => {
     await fresh();
     const present = server.canvasFilesPresent.bind(server);

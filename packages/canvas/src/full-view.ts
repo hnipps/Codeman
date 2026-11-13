@@ -22,9 +22,41 @@ export type FullViewMode = 'frame' | 'navigate';
 export const fullViewMode = (env: { phone: boolean; touch: boolean }): FullViewMode =>
   env.phone || env.touch ? 'navigate' : 'frame';
 
-/** The session page's address, relative to the server root. Built from a listed id and this page's workspace only. */
-export const fullViewPath = (sessionId: string, workspaceId: string): string =>
-  `/session/${encodeURIComponent(sessionId)}?from=canvas&ws=${encodeURIComponent(workspaceId)}`;
+/**
+ * The session page's address, relative to the server root. Built from a listed id and this page's workspace only.
+ * `passive` marks an agent's open: that page shows the session and starts nothing by itself.
+ */
+export const fullViewPath = (sessionId: string, workspaceId: string, passive = false): string =>
+  `/session/${encodeURIComponent(sessionId)}?from=canvas&ws=${encodeURIComponent(workspaceId)}${passive ? '&passive=1' : ''}`;
+
+/**
+ * Why an agent's open changes nothing in this view, or null when it may open. An agent's command only steers
+ * the view: it never takes the page a person is typing on, navigates their window or opens what has ended.
+ */
+export function agentOpenRefusal(view: {
+  shell: boolean;
+  /** The listed row's state, or undefined when this view does not list the session. */
+  state: string | undefined;
+  navigates: boolean;
+  typing: boolean;
+}): string | null {
+  if (!view.shell) return 'This view is not a canvas shell page, so it has no full view.';
+  if (view.state === undefined) return 'This view does not list that session.';
+  if (view.state === 'done') return 'That session has ended. A person can start it again from its own page.';
+  if (view.navigates) return 'This view is on a phone or touch device, where a full view would take the page away.';
+  if (view.typing) return 'The person is typing on the canvas. Nothing was opened; try again later.';
+  return null;
+}
+/** True while keyboard focus is somewhere a person types text. */
+export function typingIn(active: Element | null): boolean {
+  if (!(active instanceof HTMLElement)) return false;
+  if (active.isContentEditable || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)
+    return true;
+  return (
+    active instanceof HTMLInputElement &&
+    !['button', 'checkbox', 'radio', 'range', 'color', 'file', 'submit', 'reset', 'image'].includes(active.type)
+  );
+}
 
 /** The session id of a `?session=<id>` address (a notification opened this page), or null. */
 export function sessionFromSearch(search: string): string | null {
@@ -133,6 +165,7 @@ export class FullView {
   private frame: HTMLIFrameElement | null = null;
   private sessionId: string | null = null;
   private name = '';
+  private passive = false;
   private opener: HTMLElement | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private inerted: HTMLElement[] = [];
@@ -183,6 +216,7 @@ export class FullView {
     }
     this.sessionId = sessionId;
     this.name = name;
+    this.passive = !focus;
     this.host.hidden = false;
     this.mount(focus);
   }
@@ -196,7 +230,7 @@ export class FullView {
     // sign-in cookie. Nothing from an object or from agent text reaches this address.
     frame.title = `Terminal of ${this.name}`;
     frame.allow = FULL_VIEW_ALLOW;
-    frame.src = this.options.url(fullViewPath(this.sessionId ?? '', this.options.workspaceId));
+    frame.src = this.options.url(fullViewPath(this.sessionId ?? '', this.options.workspaceId, this.passive));
     this.frame = frame;
     this.slot.replaceChildren(frame);
     if (focus) frame.focus({ preventScroll: true });

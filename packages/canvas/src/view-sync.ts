@@ -36,13 +36,15 @@ export class ViewSync {
   private lastSentAt = Date.now();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private applied: string[] = [];
+  private refused: { commandId: string; reason: string } | null = null;
   private beat: ReturnType<typeof setInterval> | undefined;
   constructor(
     private options: {
       url: (path: string) => string;
       workspace: string;
       read: () => ViewReport;
-      apply: (action: ViewAction) => void;
+      /** Returns a plain reason when the view refused the command and changed nothing. */
+      apply: (action: ViewAction) => string | void;
     }
   ) {
     this.beat = setInterval(() => this.schedule(true), HEARTBEAT_MS);
@@ -60,7 +62,9 @@ export class ViewSync {
     }
     if (event.viewId !== this.viewId || event.workspaceId !== this.options.workspace) return;
     if (this.applied.includes(event.commandId)) return;
-    this.options.apply(event.command);
+    // Only the latest command's refusal is reported: the next command replaces or clears it.
+    const reason = this.options.apply(event.command);
+    this.refused = reason ? { commandId: event.commandId, reason } : null;
     this.applied = [...this.applied, event.commandId].slice(-20);
     this.schedule(true);
   }
@@ -75,7 +79,11 @@ export class ViewSync {
     );
   }
   private async send(force: boolean): Promise<void> {
-    const body = JSON.stringify({ ...this.options.read(), appliedCommands: this.applied });
+    const body = JSON.stringify({
+      ...this.options.read(),
+      appliedCommands: this.applied,
+      ...(this.refused ? { refused: this.refused } : {}),
+    });
     if (!force && body === this.last) return;
     if (!PublishedViewSchema.safeParse(JSON.parse(body)).success) return;
     this.lastSentAt = Date.now();

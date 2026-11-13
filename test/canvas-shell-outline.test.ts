@@ -10,6 +10,9 @@ import {
   launchChoices,
   newlyNeeding,
   parseSessions,
+  REFRESH_GAP_MS,
+  REFRESH_SETTLE_MS,
+  refreshDelay,
   sessionRows,
   withStarted,
   type ShellSessionRow,
@@ -96,6 +99,35 @@ describe('session rows', () => {
       { mode: 'shell', label: 'Shell', available: true, reason: '' },
     ]);
     expect(launchChoices([]).map((c) => c.mode)).toEqual(['shell']);
+  });
+});
+
+describe('the session list refetch', () => {
+  it('follows an event shortly, and at most once per gap while events keep arriving', () => {
+    const now = 1_000_000;
+    expect(refreshDelay(now, 0)).toBe(REFRESH_SETTLE_MS);
+    expect(refreshDelay(now, now - REFRESH_GAP_MS * 5)).toBe(REFRESH_SETTLE_MS);
+    expect(refreshDelay(now, now)).toBe(REFRESH_GAP_MS);
+    expect(refreshDelay(now, now - 500)).toBe(REFRESH_GAP_MS - 500);
+    // A clock that moved back never makes the wait longer than the gap, so a change still shows within it.
+    expect(refreshDelay(now, now + 60_000)).toBe(REFRESH_GAP_MS);
+    expect(REFRESH_GAP_MS).toBe(2000);
+  });
+  it('makes a busy server cost one fetch per gap, not one per event', () => {
+    // Events every 500 ms for a minute, each fetch starting when its timer fires.
+    let last = 0,
+      due = -1,
+      fetches = 0;
+    for (let now = 10_000; now < 70_000; now += 100) {
+      if (due >= 0 && now >= due) {
+        last = now;
+        due = -1;
+        fetches++;
+      }
+      if (now % 500 === 0 && due < 0) due = now + refreshDelay(now, last);
+    }
+    expect(fetches).toBeLessThanOrEqual(31);
+    expect(fetches).toBeGreaterThanOrEqual(28);
   });
 });
 

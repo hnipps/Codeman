@@ -735,6 +735,8 @@
     'Try the canvas again': '重试画布',
     'Back to Canvas': '返回画布',
     'Back to canvas': '返回画布',
+    'This session is stopped.': '此会话已停止。',
+    'Start session': '启动会话',
     'Back to the canvas (Ctrl+Shift+Backspace)': '返回画布 (Ctrl+Shift+Backspace)',
     'Gives every case an infinite canvas for notes, sections, images and links that you and your agents both edit. Open it with Open canvas in the case picker. Off hides the entry and its tools; saved canvases are kept.':
       '为每个案例提供一块无限画布，你和智能体都可以在上面编辑便签、分区、图片和链接。在案例选择器中点击“打开画布”进入。关闭后入口和相关工具会隐藏，已保存的画布会保留。',

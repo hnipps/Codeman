@@ -309,6 +309,31 @@ describe('GET /api/canvas/:workspaceId/sessions', () => {
     expect(response.json().success).toBe(false);
     expect(response.json().error).toContain('Case folder');
     expect(response.json().data).toBeUndefined();
+    // The page asks by itself, so the probe keeps the stall cap: `pastCap` is for a folder a person named.
+    expect(vi.mocked(probePathKind).mock.lastCall).toEqual([h.casePath]);
+  });
+
+  it('leaves out a remote session whose path on the other machine sits under the local case folder', async () => {
+    const h = await harness();
+    h.sessions.set('s-local', { id: 's-local', name: 'local', workingDir: h.casePath });
+    h.sessions.set('s-remote', {
+      id: 's-remote',
+      name: 'remote',
+      workingDir: join(h.casePath, 'sub'),
+      remote: { hostId: 'h1', tmuxSession: 't', owned: true },
+    });
+    // A Docker case shares the real folder with the host, so its sessions belong to the workspace.
+    h.sessions.set('s-docker', { id: 's-docker', name: 'docker', workingDir: h.casePath, docker: { caseName: 'c' } });
+    expect(
+      rowsOf(await h.list())
+        .map((r) => r.id)
+        .sort()
+    ).toEqual(['s-docker', 's-local']);
+    const listed = (await h.app.inject({ method: 'GET', url: '/api/canvas/workspaces' })).json().data.workspaces as {
+      id: string;
+      sessions: { live: number };
+    }[];
+    expect(listed.find((w) => w.id === h.workspace.id)?.sessions.live).toBe(2);
   });
 
   it('writes nothing: no operation, no conversation and no session input', async () => {

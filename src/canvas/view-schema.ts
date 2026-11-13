@@ -37,6 +37,11 @@ export const PublishedViewSchema = z
       .nullable()
       .optional(),
     appliedCommands: z.array(z.uuid()).max(20),
+    /** The latest command this view refused, and why in plain words; absent when the latest one was applied. */
+    refused: z
+      .object({ commandId: z.uuid(), reason: z.string().min(1).max(200) })
+      .strict()
+      .optional(),
   })
   .strict();
 export type PublishedView = z.infer<typeof PublishedViewSchema>;

@@ -2161,14 +2161,44 @@ class CodemanApp {
   // and that it wants to be closed. It reads nothing from the parent.
   // ══════════════════════════════════════════════════════════════════════
 
-  /** `{ ws }` when the address says the canvas opened this page, else null. `ws` is '' when absent or malformed. */
+  /** `{ ws, passive }` when the address says the canvas opened this page, else null. `ws` is '' when absent or
+   *  malformed. `passive` (exactly `passive=1`) marks an agent's `canvas_view` open: see _showSoloStoppedNotice. */
   _detectCanvasReturn() {
     try {
       const params = new URLSearchParams(location.search);
       if (params.get('from') !== 'canvas') return null;
       const ws = params.get('ws') || '';
-      return { ws: /^[a-zA-Z0-9_-]{1,128}$/.test(ws) ? ws : '' };
+      return { ws: /^[a-zA-Z0-9_-]{1,128}$/.test(ws) ? ws : '', passive: params.get('passive') === '1' };
     } catch { return null; }
+  }
+
+  /** True while this page was opened by an agent and no person has asked it to start the session. */
+  _passiveFullView(sessionId) {
+    return !!this._canvasReturn?.passive && sessionId === this.soloSessionId;
+  }
+
+  /** An agent's view command only steers the view: it must never start a CLI or raise a dialog. So a page it
+   *  opened shows a stopped session as stopped, and only the person's own click here starts it. */
+  _showSoloStoppedNotice() {
+    if (document.getElementById('soloStoppedNotice')) return;
+    const notice = document.createElement('div');
+    notice.id = 'soloStoppedNotice';
+    notice.className = 'canvas-shell-notice';
+    notice.setAttribute('role', 'status');
+    const message = document.createElement('span');
+    message.textContent = 'This session is stopped.';
+    const start = document.createElement('button');
+    start.type = 'button';
+    start.id = 'soloStartBtn';
+    start.textContent = 'Start session';
+    start.addEventListener('click', () => {
+      this._canvasReturn.passive = false;
+      notice.remove();
+      this.activeSessionId = null;
+      this.selectSession(this.soloSessionId);
+    });
+    notice.append(message, start);
+    document.body.appendChild(notice);
   }
 
   /** The canvas page this one is framed by, or null: only a parent of this same origin counts. */
@@ -2680,6 +2710,7 @@ class CodemanApp {
     const claudeSessionIdJustSet = session.claudeSessionId && (!oldSession || !oldSession.claudeSessionId);
     this.sessions.set(session.id, session);
     if (this._chatView?.sessionId === session.id && !this._canShowChatView(session.id)) this.closeChatView();
+    if (session.id === this.soloSessionId && typeof session.pid === 'number') document.getElementById('soloStoppedNotice')?.remove();
     this.renderSessionTabs();
     this.updateCost();
     // Update tokens display if this is the active session
@@ -10392,7 +10423,9 @@ class CodemanApp {
 
     // Track working directory for path normalization in Project Insights
     this.currentSessionWorkingDir = session?.workingDir || null;
-    if (session && session.pid === null) {
+    const passive = this._passiveFullView(sessionId);
+    if (passive && session?.pid === null) this._showSoloStoppedNotice();
+    if (session && session.pid === null && !passive) {
       if (session.respawnBlocked) {
         // COD-118: the PTY-exit circuit breaker tripped for this session — the
         // automatic re-attach must NOT silently clear it (that would re-arm the

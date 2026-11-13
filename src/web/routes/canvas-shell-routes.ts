@@ -1,8 +1,8 @@
 /**
  * @fileoverview The canvas shell's read of a workspace's sessions (PC13).
  *
- * `GET /api/canvas/:workspaceId/sessions` lists the live sessions the caller may see whose working folder is the
- * workspace's case folder or below it. Read-only: it starts nothing, writes nothing and never touches a pane.
+ * `GET /api/canvas/:workspaceId/sessions` lists the live local sessions the caller may see whose working folder is
+ * the workspace's case folder or below it (a remote session is left out). Read-only: it starts nothing, writes nothing and never touches a pane.
  * Rows are derived on each request (`src/canvas/shell-sessions.ts`); the kind comes from the workspace's
  * conversation index, the state from the session and the approvals inbox.
  */
@@ -87,7 +87,8 @@ export function sessionsInside(
   const rows: ShellSessionRow[] = [];
   for (const session of ctx.sessions.values()) {
     if (rows.length >= MAX_CONCURRENT_SESSIONS_CEILING) break;
-    if (!canAccessOwned(user, session.owner) || !insideFolder(folder, session.workingDir)) continue;
+    // A remote session's folder is a path on another machine, so it is never inside a local case folder.
+    if (session.remote || !canAccessOwned(user, session.owner) || !insideFolder(folder, session.workingDir)) continue;
     rows.push(row(session, kinds));
   }
   return sortSessions(rows);
@@ -117,16 +118,12 @@ export function registerShellRoutes(scope: FastifyInstance, ctx: CanvasPort): vo
       const workspace = readWorkspaces().find((w) => w.id === req.params.workspaceId);
       if (!workspace) return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
       const folder = await workspaceFolder(workspace, user);
-      const kind = await probePathKind(folder, { pastCap: true });
+      // The page asks on a timer and on events, not because a person named this folder: the stall cap applies.
+      const kind = await probePathKind(folder);
       if (kind === 'unknown')
         return reply
           .code(503)
-          .send(
-            createErrorResponse(
-              ApiErrorCode.OPERATION_FAILED,
-              describeUnknownPath('Case folder', folder, { pastCap: true })
-            )
-          );
+          .send(createErrorResponse(ApiErrorCode.OPERATION_FAILED, describeUnknownPath('Case folder', folder)));
       return { success: true, data: { sessions: sessionsInside(ctx, user, workspace.id, folder) } };
     }
   );

@@ -114,6 +114,13 @@ export function newlyNeeding(before: readonly ShellSessionRow[], after: readonly
   return after.filter((row) => row.state === 'needs' && !was.has(row.id)).map((row) => row.name);
 }
 
+/** A server event waits this long so a burst is one fetch. */
+export const REFRESH_SETTLE_MS = 400;
+/** The server batches session updates about twice a second; the list is fetched at most once per this gap. */
+export const REFRESH_GAP_MS = 2000;
+/** How long after an event the list is fetched again, given when the last fetch started. Never over the gap. */
+export const refreshDelay = (now: number, lastFetchAt: number): number =>
+  Math.min(REFRESH_GAP_MS, Math.max(REFRESH_SETTLE_MS, lastFetchAt + REFRESH_GAP_MS - now));
 /** What New session offers: the agent CLIs the server lists, then a shell. */
 export type LaunchChoice = { mode: string; label: string; available: boolean; reason: string };
 export function launchChoices(

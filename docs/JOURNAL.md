@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — An agent's view command only steers the view (PC13 audit fix round 1)
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/full-view.ts`, `packages/canvas/src/entry.ts`, `packages/canvas/src/view-sync.ts`, `packages/canvas/src/shell-view.ts`, `src/canvas/view-schema.ts`, `src/web/public/app.js`, `src/web/routes/canvas-shell-routes.ts`, `src/canvas/commands.ts`, `src/mcp-server.ts`
+**Why:** The audit of PC13 found that an agent's `canvas_view full-view` framed the session page, whose automatic reattach starts a stopped session and can raise the breaker's confirm, and that the frame swallowed the keys of a person typing on the canvas.
+**Links:** [Intent, "Audit fix round 1"](../intent/2026-11-13-canvas-pc13-shell.md#audit-fix-round-1), [architecture-invariants, "Canvas shell"](architecture-invariants.md#canvas-shell)
+
+The rule is now stated and enforced where the write happens: an agent-issued view command never starts a CLI, never raises a dialog and never takes a keystroke. An agent's open frames the session page with `passive=1`, and that page shows a stopped session as stopped until the person presses Start session. The open is refused for an unlisted or ended session, on a phone, and while the person's focus is in an editable field. The command route cannot know the browser's focus, so a refusal is published by the view (`refused: { commandId, reason }`) and read with `canvas_view read`. Also in this round: the session list refetch is throttled to one per 2 s and stops while the page is hidden, the list route drops `pastCap` and leaves remote sessions out, and the agent-facing text says what a full view does and that a read can be a few seconds stale.
+
 ## 2026-11-13 — A session's terminal as a full view over the canvas (PC13 part 3)
 
 **Type:** intent-refinement

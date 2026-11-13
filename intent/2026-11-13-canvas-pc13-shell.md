@@ -194,3 +194,14 @@ Made while building. Each replaces what the sections above say where they differ
 - **Inventory rows confirmed in the frame:** terminal, voice input, the file viewer button and overlay, paste upload and the shortcut overlay are drawn by the session page. The Git indicator is opt-in per device (`showGitStatus`) and was not switched on in the check.
 - **Phone outline order:** the head (name, Close) stays first, then the workspace list when open, then Sessions, then search and the tree. The dock control that opens it is still labelled Sections.
 
+### Audit fix round 1
+
+- **An agent's view command only steers the view.** It never starts a CLI, never raises a dialog and never takes a keystroke. An agent's open frames the session page with `passive=1`; that page shows a stopped session as stopped, with **Start session** for the person, and skips the automatic reattach and the breaker question. A person's own open is unchanged.
+- **A refused open says why.** The command route cannot know the browser's focus, so it still answers success with a `commandId`. The view publishes the latest refusal as `refused: { commandId, reason }`, read with `canvas_view read`. This replaces Part 3's "answers success and changes nothing" for the phone, which now also publishes its reason. Reasons: not a shell page, session not listed, session ended, phone or touch device, the person is typing on the canvas.
+- **Typing means focus in an editable element of the canvas page** (a text input, textarea, select or contenteditable). The open is refused, not queued: the agent retries.
+- **The session list is throttled, not debounced.** 400 ms after an event, at most one fetch per 2 s, none while hidden, one on becoming visible. The route's probe drops `pastCap`.
+- **Remote sessions are not listed.** Docker-case sessions stay.
+- **The settings row stays editable while Canvas is off.** "Server changes" item 1 already said it shows a hint; the frontend notes said disabled and were wrong.
+- **Test 7's "unchanged" reference is the template on disk**, plus equality with `/index.html` per request shape. A previous release's bytes are not available to a test.
+- **Test 12(d) is a link, not a fallback.** With scripts disabled nothing can navigate by itself, so the test proves the plain link is visible and opens the classic document. That document needs scripts too, as Part 1 said.
+

@@ -24,6 +24,7 @@ import { ShellView } from './shell-view.js';
 import type { SessionViewRow } from './sessions.js';
 import {
   FullView,
+  agentOpenRefusal,
   fullViewMode,
   fullViewPath,
   makeTicket,
@@ -31,6 +32,7 @@ import {
   sessionFromSearch,
   takeTicket,
   type ReturnTicket,
+  typingIn,
 } from './full-view.js';
 
 declare global {
@@ -725,8 +727,8 @@ function toggleTasks(): void {
 button('tasksTool').onclick = toggleTasks;
 button('tasksOpen').onclick = toggleTasks;
 button('addToChat').onclick = addSelectionToChat;
-/** An agent's request to this view. It never moves the human's keyboard focus. */
-function applyViewAction(action: ViewAction): void {
+/** An agent's request to this view. It never moves the human's keyboard focus. A refusal answers its reason. */
+function applyViewAction(action: ViewAction): string | void {
   // An agent acts only on what this person can see: ids outside the open view are dropped.
   const visible = new Set(inView().map((o) => o.id));
   const seen = (ids: string[]): string[] => ids.filter((id) => visible.has(id));
@@ -771,9 +773,19 @@ function applyViewAction(action: ViewAction): void {
         break;
       }
       case 'full-view':
-        // An agent's open shows a listed session to the person and never moves their keyboard focus.
+        // An agent's open shows a listed session to the person: it starts nothing and takes no keystroke.
         if (action.sessionId === null) closeFullView(false);
-        else openFullView(action.sessionId, null, false);
+        else {
+          const sessionId = action.sessionId;
+          const refusal = agentOpenRefusal({
+            shell: !!fullView,
+            state: shellView?.read().find((r) => r.id === sessionId)?.state,
+            navigates: fullViewMode({ phone: mobile.matches, touch: mobile.touch }) === 'navigate',
+            typing: typingIn(document.activeElement),
+          });
+          if (refusal) return refusal;
+          openFullView(sessionId, null, false);
+        }
         break;
     }
   } finally {

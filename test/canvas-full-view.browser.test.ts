@@ -323,10 +323,11 @@ describe('canvas shell: the session full view', () => {
       timeout: 10000,
     });
     const viewId: string = (await call({ action: 'list' })).data.views[0].viewId;
-    await page.locator('#search').focus();
+    await page.locator('#board').focus();
     expect((await call({ action: 'full-view', viewId, sessionId: id })).success).toBe(true);
     await frames().waitFor();
     expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
+    expect(await frames().getAttribute('src')).toMatch(/[?&]passive=1$/);
     await vi.waitFor(async () => expect((await call({ action: 'read', viewId })).data.state.fullView).toBe(id), {
       timeout: 10000,
     });
@@ -334,6 +335,186 @@ describe('canvas shell: the session full view', () => {
     await frames().waitFor({ state: 'detached' });
     expect((await call({ action: 'full-view', viewId, sessionId: '../etc' })).success).toBe(false);
   }, 60000);
+
+  /** A session that exists and has no process: what a restart leaves, and what the session page would reattach. */
+  async function stopped(name: string): Promise<string> {
+    const body = await (
+      await page.request.post(api('/sessions'), {
+        data: { workingDir: resolve(resolveCasesDir(), 'alpha'), mode: 'shell', name },
+      })
+    ).json();
+    const id = (body.session?.id ?? body.data?.session?.id ?? body.data?.id) as string;
+    expect(id, JSON.stringify(body)).toBeTruthy();
+    started.push(id);
+    return id;
+  }
+  const pid = async (id: string) => {
+    const body = await (await page.request.get(api(`/sessions/${id}`))).json();
+    return (body.data ?? body).pid;
+  };
+  async function agent() {
+    const call = async (args: Record<string, unknown>) =>
+      (
+        await page.request.post(api(`/canvas/${alpha}/command`), { data: { tool: 'canvas_view', arguments: args } })
+      ).json();
+    await vi.waitFor(async () => expect((await call({ action: 'list' })).data.views).toHaveLength(1), {
+      timeout: 10000,
+    });
+    const viewId: string = (await call({ action: 'list' })).data.views[0].viewId;
+    return { call, viewId };
+  }
+  /** Every request that would start a CLI, and every dialog, from the page and its frames. */
+  function watch() {
+    const starts: string[] = [];
+    const dialogs: string[] = [];
+    const onRequest = (request: { method(): string; url(): string }) => {
+      if (
+        request.method() === 'POST' &&
+        /\/api\/sessions\/[^/]+\/(interactive|shell|interactive-respawn)$/.test(request.url())
+      )
+        starts.push(new URL(request.url()).pathname);
+    };
+    const onDialog = (dialog: { message(): string; dismiss(): Promise<void> }) => {
+      dialogs.push(dialog.message());
+      void dialog.dismiss().catch(() => {});
+    };
+    page.on('request', onRequest);
+    page.on('dialog', onDialog);
+    return {
+      starts,
+      dialogs,
+      stop: () => {
+        page.off('request', onRequest);
+        page.off('dialog', onDialog);
+      },
+    };
+  }
+
+  it("shows a stopped session an agent opened without starting it or asking anything; the person's own click starts it", async () => {
+    const id = await stopped('agent-stopped');
+    const tripped = await stopped('agent-tripped');
+    // The PTY-exit breaker tripped for this one: the session page's automatic path would ask before a restart.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (server as any).sessions.get(tripped)._respawnBlocked = true;
+    await open();
+    await row(id).waitFor();
+    await row(tripped).waitFor();
+    const { call, viewId } = await agent();
+    await page.locator('#board').focus();
+    const seen = watch();
+    try {
+      for (const sessionId of [id, tripped]) {
+        expect((await call({ action: 'full-view', viewId, sessionId })).success).toBe(true);
+        await page.waitForFunction(
+          (sid) => document.querySelector('#fullViewFrame iframe')?.getAttribute('src')?.includes(`/session/${sid}?`),
+          sessionId
+        );
+        const frame = await sessionPage(sessionId);
+        await frame.waitForSelector('#soloStoppedNotice');
+        expect(await frame.locator('#soloStoppedNotice').innerText()).toContain('This session is stopped.');
+        // Long enough for the page's own reattach, which runs inside selecting the session, to have gone out.
+        await page.waitForTimeout(1500);
+        expect(seen.starts).toEqual([]);
+        expect(seen.dialogs).toEqual([]);
+        expect(await pid(sessionId)).toBeNull();
+      }
+      // The person starts it, with their own click on the session page.
+      expect((await call({ action: 'full-view', viewId, sessionId: id })).success).toBe(true);
+      await page.waitForFunction(
+        (sid) => document.querySelector('#fullViewFrame iframe')?.getAttribute('src')?.includes(`/session/${sid}?`),
+        id
+      );
+      const frame = await sessionPage(id);
+      await frame.locator('#soloStartBtn').click();
+      await vi.waitFor(() => expect(seen.starts).toEqual([`/x/api/sessions/${id}/shell`]), { timeout: 10000 });
+      await frame.waitForSelector('#soloStoppedNotice', { state: 'detached' });
+      await vi.waitFor(async () => expect(await pid(id)).not.toBeNull(), { timeout: 10000 });
+      expect(seen.dialogs).toEqual([]);
+    } finally {
+      seen.stop();
+    }
+  }, 90000);
+
+  it('still reattaches a stopped session the person opened themselves, and reads the marker strictly', async () => {
+    const id = await stopped('person-stopped');
+    await open();
+    await row(id).waitFor();
+    const seen = watch();
+    try {
+      await row(id).click();
+      await sessionPage(id);
+      expect(await frames().getAttribute('src')).not.toContain('passive');
+      await vi.waitFor(() => expect(seen.starts).toEqual([`/x/api/sessions/${id}/shell`]), { timeout: 10000 });
+      expect(await frames().locator('#soloStoppedNotice').count()).toBe(0);
+      await page.keyboard.press('Control+Shift+Backspace');
+      await frames().waitFor({ state: 'detached' });
+      // Only `passive=1` on a page the canvas opened is the marker: anything else is a person's page.
+      const other = await stopped('marker');
+      for (const query of [`from=canvas&ws=${alpha}&passive=true`, 'passive=1']) {
+        seen.starts.length = 0;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (server as any).sessions
+          .get(other)
+          ?.stop?.()
+          .catch(() => {});
+        await page.goto(`${origin}/x/session/${other}?${query}`, { waitUntil: 'domcontentloaded' });
+        await vi.waitFor(() => expect(seen.starts).toEqual([`/x/api/sessions/${other}/shell`]), { timeout: 10000 });
+        expect(await page.locator('#soloStoppedNotice').count()).toBe(0);
+      }
+    } finally {
+      seen.stop();
+    }
+  }, 90000);
+
+  it("refuses an agent's open while the person is typing on the canvas, with every keystroke landing", async () => {
+    const id = await start('typing');
+    await open();
+    await row(id).waitFor();
+    const { call, viewId } = await agent();
+    const refusal = async (commandId: string) => {
+      let reason = '';
+      await vi.waitFor(
+        async () => {
+          const state = (await call({ action: 'read', viewId })).data.state;
+          expect(state.refused?.commandId).toBe(commandId);
+          reason = state.refused.reason;
+        },
+        { timeout: 10000 }
+      );
+      return reason;
+    };
+    for (const field of ['#search', '#assistantDraft']) {
+      if (field === '#assistantDraft')
+        await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'assistant' }));
+      await page.locator(field).fill('');
+      await page.locator(field).click();
+      await page.keyboard.type('hello ');
+      const sent = await call({ action: 'full-view', viewId, sessionId: id });
+      expect(sent.success).toBe(true);
+      // Keys typed while the command arrives and after the view answered it.
+      await page.keyboard.type('wide ');
+      expect(await refusal(sent.data.commandId)).toMatch(/typing on the canvas/);
+      await page.keyboard.type('world');
+      expect(await page.locator(field).inputValue()).toBe('hello wide world');
+      expect(await frames().count()).toBe(0);
+      expect((await view()).fullView ?? null).toBeNull();
+      expect(await page.evaluate((sel) => document.activeElement === document.querySelector(sel), field)).toBe(true);
+      await page.locator(field).fill('');
+    }
+    // An ended session is refused with its own reason, and the next applied command clears the report.
+    await page.locator('#board').focus();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (server as any).sessions.get(id)._paneExit = { status: 0, at: Date.now() };
+    await page.locator('#sessionsRetry').evaluate((b: HTMLButtonElement) => b.click());
+    await page.waitForSelector(`#sessionRows button.session-row[data-session-id="${id}"][data-state="done"]`);
+    const ended = await call({ action: 'full-view', viewId, sessionId: id });
+    expect(await refusal(ended.data.commandId)).toMatch(/has ended/);
+    expect(await frames().count()).toBe(0);
+    expect((await call({ action: 'clear-selection', viewId })).success).toBe(true);
+    await vi.waitFor(async () => expect((await call({ action: 'read', viewId })).data.state.refused).toBeUndefined(), {
+      timeout: 10000,
+    });
+  }, 90000);
 
   it('is one more client of the session: the classic view marks it shown elsewhere, and the page draws its own surfaces', async () => {
     const id = await start('shared');
