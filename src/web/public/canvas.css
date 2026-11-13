@@ -1529,8 +1529,62 @@ textarea[readonly] {
   margin-top: 8px;
 }
 #commentStatus {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ask-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.ask-row label {
+  flex-shrink: 0;
+}
+.ask-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+#askNote {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--critical);
+  overflow-wrap: anywhere;
+}
+.comment-request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 6px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.comment-request[data-state='failed'] .request-state {
+  color: var(--critical);
+}
+.comment-request[data-state='working'] .request-state::after {
+  content: '…';
+}
+.comment-request button,
+.turn-origin {
+  min-height: 28px;
+  font-size: 12px;
+}
+.turn-origin {
+  display: block;
+  max-width: 100%;
+  margin: 4px 0 0 10px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #commentStatus[data-state='failed'] {
   display: inline-flex;
@@ -2036,6 +2090,22 @@ textarea[readonly] {
 }
 :root[data-phone] #addSelection {
   min-height: 44px;
+}
+:root[data-phone] #commentForm {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+:root[data-phone] .ask-row select,
+:root[data-phone] #askAgent,
+:root[data-phone] #postComment,
+:root[data-phone] #retryComment,
+:root[data-phone] .comment-request button,
+:root[data-phone] .turn-origin {
+  min-height: 44px;
+}
+:root[data-phone] .composer-row {
+  flex-wrap: wrap;
 }
 :root[data-phone] #contextEmpty {
   display: none;

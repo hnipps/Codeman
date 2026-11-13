@@ -37,6 +37,8 @@ export const ConversationMessageSchema = z
     messageId: z.uuid(),
     sentAt: z.number().int().nonnegative(),
     deliveredAt: z.number().int().nonnegative().nullable(),
+    /** When the server first began writing this message to the pane: earlier than any turn it starts, unlike `deliveredAt`, which is stamped once the submit is confirmed. */
+    submittedAt: z.number().int().nonnegative().optional().catch(undefined),
     /** queued behind another message, being written and confirmed, submitted (delivered), or not delivered. A row from an earlier release has none: delivered when it has a time, else not delivered. */
     state: z.enum(['queued', 'sending', 'delivered', 'failed']).optional(),
     author: MessageAuthor,
@@ -49,6 +51,9 @@ export const ConversationMessageSchema = z
       .optional(),
     refs: z.array(ConversationRefSchema).max(MAX_CONTEXT_OBJECTS),
     seq: z.number().int().nonnegative(),
+    /** Where the request was asked (`ThreadOriginSchema`) and what became of its reply (`ThreadReply`). Read through `threadOrigin()` and `threadReply()`, so a shape a later release writes never makes the file unreadable. */
+    origin: z.unknown().optional(),
+    reply: z.unknown().optional(),
   })
   .passthrough();
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
@@ -60,7 +65,7 @@ export const ConversationSchema = z
     /** The model the session was launched on; absent means the CLI's own default (and every conversation of an earlier release). */
     model: z.string().max(100).optional(),
     title: z.string().max(200).optional(),
-    /** Reserved for a later release that starts a conversation from a comment thread. */
+    /** Set when the conversation was started from a comment thread (`ThreadOriginSchema`). */
     origin: z.unknown().optional(),
     requestId: z.uuid().optional(),
     createdAt: z.number().int().nonnegative(),
@@ -73,11 +78,76 @@ export const ConversationsFileSchema = z
   .object({ version: z.literal(1), conversations: z.array(ConversationSchema).max(MAX_CONVERSATIONS_PER_WORKSPACE) })
   .passthrough();
 
+/** A request asked from an object's comment thread: the object and the asking comment. */
+export const ThreadOriginSchema = z
+  .object({ kind: z.literal('thread'), objectId: IdSchema, commentId: IdSchema })
+  .strict();
+export type ThreadOrigin = z.infer<typeof ThreadOriginSchema>;
+/** Why a reply was not posted: the object is gone, the turn produced no text, or the canvas refused the comment. */
+export type ReplyDrop = 'object-removed' | 'no-reply' | 'refused' | 'session-ended' | 'timed-out';
+/**
+ * A posted reply names its first comment. `chars` and `hash` say how much of the turn's text is posted, so text the
+ * agent adds later in the same turn goes out as a further part (`parts`) instead of being lost; `final` ends that.
+ * A record without `chars` is one an earlier release wrote and is settled.
+ */
+export type PostedThreadReply = {
+  commentId: string;
+  postedAt: number;
+  parts?: number;
+  chars?: number;
+  hash?: string;
+  final?: boolean;
+};
+export type ThreadReply = PostedThreadReply | { dropped: ReplyDrop };
+/** More of this turn's text may still be posted under the reply. */
+export const replyExtendable = (reply: ThreadReply | 'unknown' | undefined): reply is PostedThreadReply =>
+  typeof reply === 'object' && 'commentId' in reply && reply.chars !== undefined && reply.final !== true;
+const StoredOrigin = z.object({ kind: z.literal('thread'), objectId: IdSchema, commentId: IdSchema }).passthrough();
+const PostedReply = z
+  .object({
+    commentId: IdSchema,
+    postedAt: z.number().int().nonnegative(),
+    parts: z.number().int().min(1).max(64).optional().catch(undefined),
+    chars: z.number().int().nonnegative().optional().catch(undefined),
+    hash: z.string().max(128).optional().catch(undefined),
+    final: z.boolean().optional().catch(undefined),
+  })
+  .passthrough();
+const DroppedReply = z
+  .object({ dropped: z.enum(['object-removed', 'no-reply', 'refused', 'session-ended', 'timed-out']) })
+  .passthrough();
+export function threadOrigin(source: { origin?: unknown }): ThreadOrigin | undefined {
+  const parsed = StoredOrigin.safeParse(source.origin);
+  if (!parsed.success) return undefined;
+  const { kind, objectId, commentId } = parsed.data;
+  return { kind, objectId, commentId };
+}
+/** `unknown` is a reply record this release cannot read: something was recorded, so nothing more is posted. */
+export function threadReply(message: { reply?: unknown }): ThreadReply | 'unknown' | undefined {
+  if (message.reply === undefined) return undefined;
+  const posted = PostedReply.safeParse(message.reply);
+  if (posted.success) {
+    const { commentId, postedAt, parts, chars, hash, final } = posted.data;
+    // Progress this release cannot read in full is a settled reply, never a reason to post again.
+    const progress = chars !== undefined && hash !== undefined && parts !== undefined;
+    return {
+      commentId,
+      postedAt,
+      ...(parts !== undefined ? { parts } : {}),
+      ...(progress ? { chars, hash } : {}),
+      ...(final ? { final } : {}),
+    };
+  }
+  const dropped = DroppedReply.safeParse(message.reply);
+  return dropped.success ? { dropped: dropped.data.dropped } : 'unknown';
+}
+
 export const SendBodySchema = z
   .object({
     messageId: z.uuid(),
     text: z.string().min(1),
     refIds: z.array(IdSchema).max(MAX_CONTEXT_OBJECTS).default([]),
+    origin: ThreadOriginSchema.optional(),
   })
   .strict();
 const CreateShape = {
@@ -85,7 +155,10 @@ const CreateShape = {
   cliId: z.string().min(1).max(64).optional(),
   model: z.string().max(100).optional(),
 };
-export const CreateConversationBodySchema = z.object(CreateShape).strict();
+/** `origin` is the route's alone: an agent cannot create a conversation, so the tool's create does not carry it. */
+export const CreateConversationBodySchema = z
+  .object({ ...CreateShape, origin: ThreadOriginSchema.optional() })
+  .strict();
 export const ConversationToolSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list') }).strict(),
   z.object({ action: z.literal('read'), conversationId: z.uuid() }).strict(),

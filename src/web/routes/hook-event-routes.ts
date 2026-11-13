@@ -56,7 +56,9 @@ const DSH_SEQ_MAX_SESSIONS = 500;
 
 export function registerHookEventRoutes(
   app: FastifyInstance,
-  ctx: SessionPort & EventPort & RespawnPort & ConfigPort & InfraPort
+  ctx: SessionPort & EventPort & RespawnPort & ConfigPort & InfraPort,
+  /** Told when a session's stop hook fires, after the session itself has recorded it. */
+  options: { onStop?: (sessionId: string) => void } = {}
 ): void {
   app.post('/api/hook-event', async (req) => {
     const { event, sessionId, data } = parseBody(HookEventSchema, req.body);
@@ -97,6 +99,7 @@ export function registerHookEventRoutes(
     if (waitSession && hooksAvailableForMode(waitSession.mode, sessionHookOptions(waitSession))) {
       if (event === 'stop') {
         sessionWaits.notifySignal(sessionId, 'stop');
+        options.onStop?.(sessionId);
       } else if (event === 'permission_prompt' || event === 'elicitation_dialog') {
         sessionWaits.notifySignal(sessionId, 'blocked');
       }

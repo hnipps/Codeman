@@ -104,6 +104,46 @@ describe('hook-event-routes', () => {
      * hook and idle prompt as a real one. While the session marks the turn as its keep-alive,
      * both open pre-acknowledged: the broadcast says why, and nothing is pushed.
      */
+    it('tells its stop listener which session stopped, after the session recorded it, and only for a stop', async () => {
+      const stopped: string[] = [];
+      const local = await createEnvelopeHarness((app, ctx) =>
+        registerHookEventRoutes(app, ctx, { onStop: (sessionId) => stopped.push(sessionId) })
+      );
+      try {
+        const send = (event: string) =>
+          local.app.inject({
+            method: 'POST',
+            url: '/api/hook-event',
+            payload: { event, sessionId: local.ctx._sessionId, data: null },
+          });
+        expect((await send('idle_prompt')).statusCode).toBe(200);
+        expect(stopped).toEqual([]);
+        expect((await send('stop')).statusCode).toBe(200);
+        expect(stopped).toEqual([local.ctx._sessionId]);
+      } finally {
+        await local.app.close();
+      }
+    });
+
+    it('does not tell its stop listener about a stop claimed for a session whose CLI has no stop hook', async () => {
+      const stopped: string[] = [];
+      const local = await createEnvelopeHarness((app, ctx) =>
+        registerHookEventRoutes(app, ctx, { onStop: (sessionId) => stopped.push(sessionId) })
+      );
+      try {
+        local.ctx._session.mode = 'shell';
+        const response = await local.app.inject({
+          method: 'POST',
+          url: '/api/hook-event',
+          payload: { event: 'stop', sessionId: local.ctx._sessionId, data: null },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(stopped).toEqual([]);
+      } finally {
+        await local.app.close();
+      }
+    });
+
     it('opens the stop and idle prompt of a keep-alive turn pre-acknowledged and pushes nothing', async () => {
       harness.ctx._session.keepAliveTurnActive = true;
       for (const event of ['stop', 'idle_prompt']) {

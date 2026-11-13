@@ -9,6 +9,9 @@ import {
   MAX_MESSAGES_PER_CONVERSATION,
   type Conversation,
   type ConversationMessage,
+  replyExtendable,
+  threadReply,
+  type ThreadReply,
 } from './conversation-schema.js';
 
 export type ConversationFile =
@@ -64,7 +67,7 @@ export type CreateResult = { ok: true; conversation: Conversation; duplicate: bo
 export function addConversation(
   workspaceId: string,
   make: () => Pick<Conversation, 'id' | 'sessionId' | 'cliId' | 'createdAt' | 'createdBy'> &
-    Pick<Partial<Conversation>, 'model'>,
+    Pick<Partial<Conversation>, 'model' | 'origin'>,
   requestId: string
 ): CreateResult {
   const existing = readConversations(workspaceId);
@@ -124,6 +127,32 @@ export function setMessageState(
     const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
     if (!message) return;
     message.state = state;
+    if (state === 'sending' && message.submittedAt === undefined) message.submittedAt = Date.now();
     if (state === 'delivered' && message.deliveredAt === null) message.deliveredAt = at ?? Date.now();
+  });
+}
+/** A retry wrote the message to the pane again: the turn it starts is no earlier than this write. */
+export function setMessageSubmitted(workspaceId: string, conversationId: string, messageId: string, at: number): void {
+  mutate(workspaceId, (list) => {
+    const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
+    if (message) message.submittedAt = at;
+  });
+}
+/** Records what became of a thread request's reply. A record is replaced only by further progress of the same posted reply. */
+export function setMessageReply(
+  workspaceId: string,
+  conversationId: string,
+  messageId: string,
+  reply: ThreadReply
+): boolean {
+  return mutate(workspaceId, (list) => {
+    const message = list.find((c) => c.id === conversationId)?.messages.find((m) => m.messageId === messageId);
+    if (!message) return false;
+    if (message.reply !== undefined) {
+      const current = threadReply(message);
+      if (!replyExtendable(current) || !('commentId' in reply) || reply.commentId !== current.commentId) return false;
+    }
+    message.reply = reply;
+    return true;
   });
 }

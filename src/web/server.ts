@@ -116,6 +116,7 @@ import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
 import type { CanvasStores } from '../canvas/canvas-store.js';
+import type { CanvasPort } from './ports/canvas-port.js';
 import { stopScreenshotRenders } from '../canvas/canvas-screenshot.js';
 import { deriveWebviewSseHint } from './webview-sse.js';
 import {
@@ -124,7 +125,7 @@ import {
   attachSessionListeners,
   detachSessionListeners,
 } from './session-listener-wiring.js';
-import { sessionWaits } from './session-wait-registry.js';
+import { sessionWaits, hooksAvailableForMode, sessionHookOptions } from './session-wait-registry.js';
 import { intentStore } from '../intent-store.js';
 import { agentInbox } from './agent-inbox.js';
 import { agentInboxPersistence } from './agent-inbox-persistence.js';
@@ -1354,13 +1355,36 @@ export class WebServer extends EventEmitter {
 
     // Register all route modules
     const ctx = this.createRouteContext();
+    const canvasPort: CanvasPort = {
+      sessions: this.sessions,
+      canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
+      canvasStores: () => this.getCanvasStores(),
+      broadcast: (event, data) => this.broadcast(event, data),
+      startConversationSession: (headers, request) => this.startConversationSession(headers, request),
+      discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
+      transcriptRows: async (sessionId) => (await this.transcriptReader?.rows(sessionId)) ?? null,
+      transcriptStamp: async (sessionId) => (await this.transcriptReader?.stamp(sessionId)) ?? null,
+      turnEndObservedAt: (sessionId) => {
+        const session = this.sessions.get(sessionId);
+        if (!session) return 0;
+        return hooksAvailableForMode(session.mode, sessionHookOptions(session))
+          ? session.hookStopAt
+          : session.turnEndedAt;
+      },
+      basePath: this.basePath,
+    };
     registerPushRoutes(this.app, ctx);
     registerTeamRoutes(this.app, ctx);
     registerMuxRoutes(this.app, ctx);
     registerFileRoutes(this.app, ctx);
     registerHtmlViewRoutes(this.app, ctx);
     registerScheduledRoutes(this.app, ctx);
-    registerHookEventRoutes(this.app, ctx);
+    registerHookEventRoutes(this.app, ctx, {
+      onStop: (sessionId) =>
+        void import('./routes/canvas-conversation-routes.js')
+          .then((m) => m.conversationTurnEnded(canvasPort, sessionId))
+          .catch(() => undefined),
+    });
     registerApprovalRoutes(this.app, ctx);
     registerInboxRoutes(this.app, ctx);
     registerRebootRestoreRoutes(this.app, ctx);
@@ -1385,19 +1409,13 @@ export class WebServer extends EventEmitter {
     registerStatusTelemetryRoutes(this.app, ctx);
     registerSystemRoutes(this.app, ctx);
     registerCaseRoutes(this.app, ctx);
-    registerCanvasRoutes(this.app, {
-      sessions: this.sessions,
-      canvasEnabled: async () => (await this.readSettings(true)).canvasEnabled === true,
-      canvasStores: () => this.getCanvasStores(),
-      broadcast: (event, data) => this.broadcast(event, data),
-      startConversationSession: (headers, request) => this.startConversationSession(headers, request),
-      discardConversationSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
-      basePath: this.basePath,
-    });
+    registerCanvasRoutes(this.app, canvasPort);
     registerWorktreeRoutes(this.app, ctx);
     // The registry's lifetime is the server's: it drops per-session wake state on every
     // cleanup path and resolves in-flight wakes on shutdown.
-    this.remoteWake = registerSessionRoutes(this.app, ctx);
+    this.remoteWake = registerSessionRoutes(this.app, ctx, {
+      transcriptReader: (reader) => (this.transcriptReader = reader),
+    });
     registerAgentSessionRoutes(this.app, ctx);
     registerRespawnRoutes(this.app, ctx);
     registerRalphRoutes(this.app, ctx);
@@ -2408,6 +2426,10 @@ export class WebServer extends EventEmitter {
   // post-save reload) pass forceFresh=true to bypass the cache.
   private _settingsCache: { data: Record<string, unknown>; ts: number } | null = null;
   private canvasStoreService?: CanvasStores;
+  private transcriptReader?: {
+    rows(sessionId: string): Promise<{ role: string; text: string; queued?: boolean }[] | null>;
+    stamp(sessionId: string): Promise<string | null>;
+  };
 
   /**
    * One Claude session for a canvas conversation, started through `POST /api/sessions` and `.../interactive` with the

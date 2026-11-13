@@ -1,6 +1,21 @@
 import { uuid } from './ids.js';
 import { z } from 'zod';
 import { label, type ViewObject } from './model.js';
+import {
+  askFailure,
+  nextAsk,
+  parseAsks,
+  parseDrafts,
+  requestStatus,
+  storeAsks,
+  storeDraft,
+  type AskAttempt,
+  type ThreadDrafts,
+  type ThreadRequest,
+} from './ask.js';
+import { errorMessage, sendFailure } from './conversation.js';
+import { normalizePrompt, promptRefusal } from '../../../src/canvas/conversation-schema.js';
+import type { FreshTarget } from './assistant.js';
 
 export const ViewCommentSchema = z
   .object({
@@ -111,8 +126,23 @@ type Composer = {
   name: string;
   pending: Pending | null;
   sending: boolean;
+  /** The operation in flight or last failed: Retry repeats that one. */
+  action: 'post' | 'ask';
   failure: PostFailure | null;
 };
+/** What the thread needs of the assistant to ask it: where a request can go, and what became of earlier ones. */
+export type AskPort = {
+  targets(): { id: string; label: string }[];
+  preferred(): string | null;
+  fresh(): FreshTarget;
+  requests(): ThreadRequest[];
+  asked(message: { messageId: string; text: string; refIds: string[] }): void;
+  /** Opens that conversation in the assistant rail; the camera and selection stay. */
+  open(conversationId: string): void;
+};
+const NEW_TARGET = '';
+const ASK_INTERRUPTED =
+  'Ask agent did not finish before the page reloaded. Retry finishes it; nothing is posted twice.';
 /** Composers kept at once; the oldest idle one goes first. */
 export const MAX_COMPOSERS = 64;
 
@@ -131,7 +161,7 @@ export function postFailure(status: number | null, body: unknown): PostFailure {
   return { retry: false, message: 'Not posted: the canvas refused this comment. Your comment is kept here.' };
 }
 
-/** The thread view in the rail: ordinary comments only. Posting never starts agent work. */
+/** The thread view in the rail. Post is an ordinary comment and never starts agent work; only Ask agent sends one to a conversation. */
 export class CommentsView {
   private comments: ViewComment[] = [];
   private shown: string | null = null;
@@ -140,6 +170,12 @@ export class CommentsView {
   private clock: ReturnType<typeof setInterval> | undefined;
   private list = node('threadList');
   private draft: HTMLTextAreaElement;
+  private asks: AskAttempt[] = [];
+  private drafts: ThreadDrafts = {};
+  private target = node('askTarget') as HTMLSelectElement;
+  /** The person picked a target in this thread; until then the choice follows the rail. */
+  private picked: string | null = null;
+  private targetSignature = '';
 
   constructor(
     private options: {
@@ -147,8 +183,19 @@ export class CommentsView {
       workspace: string;
       objects: () => ViewObject[];
       choose: (objectId: string) => void;
+      assistant: AskPort;
+      /** Where Ask agent attempts are kept across reloads. */
+      askKey: string;
+      /** Where unposted drafts are kept across reloads, one per object. */
+      draftKey: string;
     }
   ) {
+    try {
+      this.asks = parseAsks(localStorage.getItem(options.askKey));
+      this.drafts = parseDrafts(localStorage.getItem(options.draftKey));
+    } catch {
+      /* Storage that cannot be read keeps no attempt; a retry then uses fresh ids. */
+    }
     const draft = node('commentDraft');
     if (!(draft instanceof HTMLTextAreaElement)) throw new Error('Expected comment draft');
     this.draft = draft;
@@ -156,6 +203,7 @@ export class CommentsView {
       if (this.shown) {
         const composer = this.composer(this.shown);
         composer.draft = draft.value;
+        this.keepDraft(this.shown, draft.value);
         if (composer.failure && !composer.failure.retry) composer.failure = null;
       }
       this.paintComposer();
@@ -176,7 +224,15 @@ export class CommentsView {
       e.preventDefault();
       void this.post();
     });
-    node('retryComment').addEventListener('click', () => void this.post());
+    node('retryComment').addEventListener('click', () => {
+      const composer = this.shown ? this.composers.get(this.shown) : undefined;
+      void (composer?.action === 'ask' ? this.ask() : this.post());
+    });
+    node('askAgent').addEventListener('click', () => void this.ask());
+    this.target.addEventListener('change', () => {
+      this.picked = this.target.value;
+      this.paintTarget();
+    });
   }
 
   /** The composer for one object, kept most recent last; idle empty ones are dropped past the bound. */
@@ -185,7 +241,16 @@ export class CommentsView {
     if (composer) this.composers.delete(objectId);
     else {
       const object = this.options.objects().find((o) => o.id === objectId);
-      composer = { draft: '', name: object ? label(object) : '', pending: null, sending: false, failure: null };
+      // An Ask agent attempt a reload interrupted comes back with its text, so finishing it reuses its ids.
+      const interrupted = this.asks.find((ask) => ask.objectId === objectId);
+      composer = {
+        draft: interrupted?.text ?? this.drafts[objectId] ?? '',
+        name: object ? label(object) : '',
+        pending: null,
+        sending: false,
+        action: interrupted ? 'ask' : 'post',
+        failure: interrupted ? { retry: true, message: ASK_INTERRUPTED } : null,
+      };
     }
     this.composers.set(objectId, composer);
     for (const [id, c] of this.composers) {
@@ -207,6 +272,14 @@ export class CommentsView {
   update(comments: ViewComment[]): void {
     this.comments = comments;
     if (this.shown !== null) this.paintThread(false);
+  }
+
+  /** The conversations were read again: repaint request states and the target chooser, never the scroll or focus. */
+  requestsChanged(): void {
+    this.settleAsks();
+    if (this.shown === null) return;
+    this.paintRequests();
+    this.paintTarget();
   }
 
   /** Quiet count marks on objects that have comments; no mark at zero. */
@@ -245,7 +318,9 @@ export class CommentsView {
     if (changed) {
       this.rendered.clear();
       this.list.replaceChildren();
-      this.draft.value = objectId ? (this.composers.get(objectId)?.draft ?? '') : '';
+      const kept = objectId !== null && (this.asks.some((ask) => ask.objectId === objectId) || objectId in this.drafts);
+      const composer = objectId ? (kept ? this.composer(objectId) : this.composers.get(objectId)) : undefined;
+      this.draft.value = composer?.draft ?? '';
     }
     this.paintThread(changed);
     clearInterval(this.clock);
@@ -294,8 +369,123 @@ export class CommentsView {
     }
     this.list.hidden = !items.length;
     node('threadEmpty').hidden = !!items.length;
+    this.paintRequests();
     if (scrollToEnd || (added && atEnd)) this.list.scrollTop = this.list.scrollHeight;
     this.paintComposer();
+  }
+
+  /** The state line on each asking comment, with Open conversation and, for one not delivered, Retry. */
+  private paintRequests(): void {
+    const requests = new Map(this.options.assistant.requests().map((r) => [r.commentId, r]));
+    const present = new Set(this.comments.map((c) => c.id));
+    for (const [id, li] of this.rendered) {
+      const request = requests.get(id);
+      let line = li.querySelector<HTMLElement>(':scope > .comment-request');
+      if (!request) {
+        line?.remove();
+        continue;
+      }
+      const status = requestStatus(request, (commentId) => present.has(commentId));
+      const signature = JSON.stringify([status, request.conversationId]);
+      if (line?.dataset.signature === signature) continue;
+      const held = line?.contains(document.activeElement) ? document.activeElement?.className : undefined;
+      line?.remove();
+      line = document.createElement('div');
+      line.className = 'comment-request';
+      line.dataset.signature = signature;
+      line.dataset.state = status.kind;
+      const text = document.createElement('span');
+      text.className = 'request-state';
+      text.textContent = `Asked an agent · ${status.text}`;
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'quiet request-open';
+      open.textContent = 'Open conversation';
+      open.addEventListener('click', () => this.options.assistant.open(request.conversationId));
+      line.append(text, open);
+      if (request.state === 'failed' && !request.ended) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'quiet request-retry';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => void this.retryRequest(request, retry));
+        line.append(retry);
+      }
+      li.append(line);
+      if (held) line.querySelector<HTMLElement>(`.${held.split(' ').at(-1)}`)?.focus({ preventScroll: true });
+    }
+  }
+
+  /** The same message again: its id, the comment's own text and its origin, so the server checks the composer first and never writes it twice. */
+  private async retryRequest(request: ThreadRequest, button: HTMLButtonElement): Promise<void> {
+    const comment = this.comments.find((c) => c.id === request.commentId);
+    if (!comment) return;
+    button.toggleAttribute('disabled', true);
+    const result = await this.send(request.conversationId, request.messageId, comment.text, {
+      kind: 'thread',
+      objectId: request.objectId,
+      commentId: request.commentId,
+    });
+    if (!result.ok && button.isConnected) {
+      button.toggleAttribute('disabled', false);
+      const state = button.parentElement?.querySelector('.request-state');
+      if (state) state.textContent = `Not delivered: ${result.message}`;
+    }
+  }
+
+  private send = async (
+    conversationId: string,
+    messageId: string,
+    text: string,
+    origin: { kind: 'thread'; objectId: string; commentId: string }
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    try {
+      const response = await fetch(
+        this.options.url(`/api/canvas/${this.options.workspace}/conversations/${conversationId}/messages`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId, text, refIds: [origin.objectId], origin }),
+        }
+      );
+      if (response.ok) {
+        this.options.assistant.asked({ messageId, text: normalizePrompt(text), refIds: [origin.objectId] });
+        return { ok: true };
+      }
+      const message = errorMessage(await response.json().catch(() => null));
+      return { ok: false, message: askFailure(message, response.status) };
+    } catch {
+      return { ok: false, message: 'could not reach the server.' };
+    }
+  };
+
+  /** The inline chooser: live conversations of this canvas, or a new one on the rail's provider and model. */
+  private paintTarget(): void {
+    const assistant = this.options.assistant;
+    const targets = assistant.targets();
+    const fresh = assistant.fresh();
+    const wanted = this.picked ?? assistant.preferred() ?? targets[0]?.id ?? NEW_TARGET;
+    const value = wanted !== NEW_TARGET && !targets.some((t) => t.id === wanted) ? NEW_TARGET : wanted;
+    const signature = JSON.stringify([targets, fresh, value]);
+    if (signature !== this.targetSignature) {
+      this.targetSignature = signature;
+      this.target.replaceChildren();
+      for (const t of targets) {
+        const option = document.createElement('option');
+        option.value = t.id;
+        option.textContent = t.label;
+        this.target.append(option);
+      }
+      const option = document.createElement('option');
+      option.value = NEW_TARGET;
+      option.textContent = fresh.ok ? fresh.label : 'New conversation (unavailable)';
+      this.target.append(option);
+      this.target.value = value;
+    }
+    const note = node('askNote');
+    const blocked = value === NEW_TARGET && !fresh.ok;
+    note.textContent = blocked ? `${fresh.reason} Pick a conversation, or another provider in the assistant.` : '';
+    note.hidden = !blocked;
   }
 
   private paintPicker(): void {
@@ -358,6 +548,7 @@ export class CommentsView {
     discard.textContent = 'Discard';
     discard.onclick = () => {
       this.composers.delete(objectId);
+      this.keepDraft(objectId, '');
       this.paintPicker();
       node('threadView').focus({ preventScroll: true });
     };
@@ -406,8 +597,15 @@ export class CommentsView {
     const failure = composer?.failure ?? null;
     const post = node('postComment');
     const empty = !this.draft.value.trim();
+    const asking = sending && composer?.action === 'ask';
     post.setAttribute('aria-disabled', String(sending || empty));
-    post.textContent = sending ? 'Posting…' : 'Post';
+    post.textContent = sending && !asking ? 'Posting…' : 'Post';
+    const ask = node('askAgent');
+    ask.setAttribute('aria-disabled', String(sending || empty));
+    ask.textContent = asking ? 'Asking…' : 'Ask agent';
+    ask.hidden = !!failure?.retry;
+    this.target.disabled = sending;
+    this.paintTarget();
     this.draft.readOnly = sending;
     const status = node('commentStatus');
     status.textContent = failure
@@ -430,8 +628,17 @@ export class CommentsView {
     const object = this.options.objects().find((o) => o.id === objectId);
     if (object) composer.name = label(object);
     composer.draft = text;
-    if (!composer.pending || composer.pending.text !== text)
-      composer.pending = { requestId: uuid(), commentId: uuid(), text, objectId };
+    composer.action = 'post';
+    if (!composer.pending || composer.pending.text !== text) {
+      // The same text an Ask agent attempt already posted here goes out under that attempt's ids, so it lands once.
+      const asked = this.asks.find((ask) => ask.objectId === objectId && ask.text === text);
+      composer.pending = {
+        requestId: asked?.commentRequestId ?? uuid(),
+        commentId: asked?.commentId ?? uuid(),
+        text,
+        objectId,
+      };
+    }
     const pending = composer.pending;
     composer.sending = true;
     composer.failure = null;
@@ -456,7 +663,11 @@ export class CommentsView {
     composer.sending = false;
     if (ok) {
       composer.pending = null;
-      if (composer.draft === pending.text) composer.draft = '';
+      if (this.asks.some((ask) => ask.objectId === objectId && ask.text === pending.text)) this.keepAsk(null, objectId);
+      if (composer.draft === pending.text) {
+        composer.draft = '';
+        this.keepDraft(objectId, '');
+      }
       if (this.shown === objectId && this.draft.value === pending.text) {
         this.draft.value = '';
         this.list.scrollTop = this.list.scrollHeight;
@@ -470,5 +681,146 @@ export class CommentsView {
     if (this.shown === objectId) this.paintComposer();
     else if (this.shown === null) this.paintPicker();
     return ok;
+  }
+
+  /** An attempt the server already took (its answer was lost, or a reload cut in) is finished: its draft and ids go. */
+  private settleAsks(): void {
+    const taken = new Set(this.options.assistant.requests().map((r) => r.messageId));
+    for (const ask of this.asks.filter((a) => taken.has(a.messageId))) {
+      const composer = this.composers.get(ask.objectId);
+      if (composer?.sending) continue;
+      this.keepAsk(null, ask.objectId);
+      if (!composer || composer.draft !== ask.text) continue;
+      composer.draft = '';
+      this.keepDraft(ask.objectId, '');
+      composer.failure = null;
+      composer.action = 'post';
+      if (this.shown === ask.objectId) {
+        if (this.draft.value === ask.text) this.draft.value = '';
+        this.paintComposer();
+      }
+      this.forget(ask.objectId);
+    }
+  }
+
+  private keepDraft(objectId: string, text: string): void {
+    this.drafts = storeDraft(this.drafts, objectId, text);
+    try {
+      if (Object.keys(this.drafts).length) localStorage.setItem(this.options.draftKey, JSON.stringify(this.drafts));
+      else localStorage.removeItem(this.options.draftKey);
+    } catch {
+      /* A draft that cannot be stored stays in the composer; only a reload loses it. */
+    }
+  }
+
+  private keepAsk(attempt: AskAttempt | null, objectId: string): void {
+    this.asks = attempt ? storeAsks(this.asks, attempt) : this.asks.filter((a) => a.objectId !== objectId);
+    try {
+      if (this.asks.length) localStorage.setItem(this.options.askKey, JSON.stringify(this.asks));
+      else localStorage.removeItem(this.options.askKey);
+    } catch {
+      /* An attempt that cannot be stored still completes; only a reload in the middle loses its ids. */
+    }
+  }
+
+  /**
+   * Ask agent: posts the draft as an ordinary comment, then sends it to the chosen conversation with this object as
+   * context and the comment as its origin. Every step carries ids made once per attempt, so a retry after a lost
+   * answer posts no second comment, starts no second conversation and writes no second prompt.
+   */
+  async ask(): Promise<boolean> {
+    const objectId = this.shown;
+    if (!objectId) return false;
+    const composer = this.composer(objectId);
+    const text = this.draft.value;
+    if (composer.sending || !text.trim()) return false;
+    const fail = (message: string, retry: boolean): false => {
+      composer.sending = false;
+      composer.failure = { retry, message };
+      if (this.shown === objectId) this.paintComposer();
+      else if (this.shown === null) this.paintPicker();
+      return false;
+    };
+    composer.action = 'ask';
+    composer.draft = text;
+    composer.failure = null;
+    const refusal = promptRefusal(normalizePrompt(text));
+    if (refusal) return fail(`Not asked: ${refusal}. Nothing was posted.`, false);
+    if (typeof navigator !== 'undefined' && navigator.onLine === false)
+      return fail('You are offline. Your comment is kept here; ask again when the connection is back.', true);
+    const target = this.target.value || null;
+    const fresh = target ? null : this.options.assistant.fresh();
+    if (fresh && !fresh.ok) return fail('Not asked. Nothing was posted.', false);
+    const object = this.options.objects().find((o) => o.id === objectId);
+    if (object) composer.name = label(object);
+    let attempt = nextAsk(
+      this.asks.find((a) => a.objectId === objectId),
+      objectId,
+      text,
+      target,
+      () => uuid()
+    );
+    this.keepAsk(attempt, objectId);
+    composer.sending = true;
+    this.paintComposer();
+    const post = async (path: string, body: unknown): Promise<{ status: number | null; body: unknown }> => {
+      try {
+        const response = await fetch(this.options.url(`/api/canvas/${this.options.workspace}${path}`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return { status: response.status, body: await response.json().catch(() => null) };
+      } catch {
+        return { status: null, body: null };
+      }
+    };
+    const commented = await post('/command', {
+      tool: 'canvas_comment',
+      requestId: attempt.commentRequestId,
+      arguments: { objectId, text, commentId: attempt.commentId },
+    });
+    if (commented.status === null || commented.status >= 400) {
+      const failure = postFailure(commented.status, commented.body);
+      if (!failure.retry) this.keepAsk(null, objectId);
+      return fail(failure.message, failure.retry);
+    }
+    const origin = { kind: 'thread' as const, objectId, commentId: attempt.commentId };
+    const posted = 'Your comment is posted. The agent was not asked:';
+    if (!attempt.conversationId) {
+      const made = await post('/conversations', {
+        requestId: attempt.createRequestId,
+        ...(fresh?.ok && fresh.cliId ? { cliId: fresh.cliId } : {}),
+        ...(fresh?.ok && fresh.model ? { model: fresh.model } : {}),
+        origin,
+      });
+      const id =
+        typeof made.body === 'object' && made.body !== null && 'data' in made.body
+          ? (made.body.data as { conversation?: { id?: unknown } } | null)?.conversation?.id
+          : undefined;
+      if (made.status === null) return fail(`${posted} could not reach the server.`, true);
+      if (made.status >= 400 || typeof id !== 'string')
+        return fail(`${posted} ${sendFailure(errorMessage(made.body), made.status).text}`, true);
+      attempt = { ...attempt, conversationId: id };
+      this.keepAsk(attempt, objectId);
+    }
+    const conversationId = attempt.conversationId;
+    if (!conversationId) return fail(`${posted} no conversation was chosen.`, true);
+    const sent = await this.send(conversationId, attempt.messageId, text, origin);
+    if (!sent.ok) return fail(`${posted} ${sent.message}`, true);
+    composer.sending = false;
+    this.keepAsk(null, objectId);
+    if (composer.draft === text) {
+      composer.draft = '';
+      this.keepDraft(objectId, '');
+    }
+    if (this.shown === objectId && this.draft.value === text) {
+      this.draft.value = '';
+      this.list.scrollTop = this.list.scrollHeight;
+    }
+    this.forget(objectId);
+    if (this.shown === objectId) this.paintComposer();
+    else if (this.shown === null) this.paintPicker();
+    return true;
   }
 }

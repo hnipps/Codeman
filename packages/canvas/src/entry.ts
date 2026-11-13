@@ -13,6 +13,7 @@ import { CommentsView, commentCounts } from './comments.js';
 import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
 import { AssistantView } from './assistant.js';
+import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
 import { ViewSync } from './view-sync.js';
 import type { ViewAction } from '../../../src/canvas/view-schema.js';
@@ -88,7 +89,8 @@ function viewScoped(before: ViewState, next: ViewState): ViewState {
   const focusId = next.focusId && !members.has(next.focusId) ? before.focusId : next.focusId;
   return selected.length === next.selected.length && focusId === next.focusId ? next : { ...next, selected, focusId };
 }
-const comments = new CommentsView({
+const viewer = document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single';
+const comments: CommentsView = new CommentsView({
   url,
   workspace: workspaceId,
   objects: () => objects,
@@ -97,10 +99,23 @@ const comments = new CommentsView({
     dispatch({ kind: 'selection', ids: [id] });
     reveal(id);
   },
+  askKey: canvasStorageKeys(viewer, workspaceId).threadAsk,
+  draftKey: canvasStorageKeys(viewer, workspaceId).threadDraft,
+  assistant: {
+    targets: () => assistant.targets(),
+    preferred: () => assistant.preferredTarget(),
+    fresh: () => assistant.freshTarget(),
+    requests: () => assistant.requests(),
+    asked: (message) => assistant.noteAsked(message),
+    // The same session in the assistant rail; the camera and the selection stay where they are.
+    open: (conversationId) => {
+      assistant.showConversation(conversationId);
+      if (state.rail.at(-1) !== 'assistant') dispatch({ kind: 'rail', view: 'assistant' });
+    },
+  },
 });
 const history = new HistoryView({ url, workspace: workspaceId, phone: mobile, objects: () => objects });
-const viewer = document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single';
-const assistant = new AssistantView({
+const assistant: AssistantView = new AssistantView({
   url,
   phone: () => mobile.matches,
   addSelection: () => addSelectionOnPhone(),
@@ -115,6 +130,13 @@ const assistant = new AssistantView({
     dispatch({ kind: 'selection', ids: [id] });
     reveal(id);
   },
+  openThread: (id) => {
+    dispatch({ kind: 'focus', id });
+    dispatch({ kind: 'selection', ids: [id] });
+    reveal(id);
+    dispatch({ kind: 'rail', view: 'thread' });
+  },
+  listed: () => comments.requestsChanged(),
 });
 const icons: Record<string, string> = {
   undoEdit: 'M7 4L3 8l4 4M3 8h8a5 5 0 0 1 5 5v3',

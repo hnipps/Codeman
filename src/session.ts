@@ -3950,6 +3950,7 @@ export class Session extends EventEmitter {
    */
   private _concludeIdle(turnEnded: boolean): void {
     this._isWorking = false;
+    if (turnEnded) this._turnEndedAt = Date.now();
     this._status = 'idle';
     this._lastPromptTime = Date.now();
     // Only a finished turn proves omp has written its session file; a pane that is
@@ -5122,6 +5123,17 @@ export class Session extends EventEmitter {
   /** The CLI's stop hook fired: the turn it was running is over. */
   markHookStop(): void {
     this._hookStopAt = Date.now();
+  }
+
+  /** When the CLI's stop hook last fired in this process (0 if never). */
+  get hookStopAt(): number {
+    return this._hookStopAt;
+  }
+
+  private _turnEndedAt = 0;
+  /** When idle detection last concluded a finished turn in this process (0 if never). */
+  get turnEndedAt(): number {
+    return this._turnEndedAt;
   }
 
   /** A hook-reported turn is running: a prompt was submitted and no stop hook has followed. False for a CLI with no such hooks. */

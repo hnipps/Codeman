@@ -1,4 +1,9 @@
-import { splitPrompt, type ConversationMessage } from '../../../src/canvas/conversation-schema.js';
+import {
+  splitPrompt,
+  threadOrigin,
+  type ConversationMessage,
+  type ThreadOrigin,
+} from '../../../src/canvas/conversation-schema.js';
 
 /** One prompt or reply row as the session's transcript reports it. */
 export type TranscriptRow = { role: 'user' | 'assistant'; text: string; queued?: boolean };
@@ -15,6 +20,8 @@ export type Turn = {
   /** Set for a message the transcript does not hold yet. */
   pending?: 'queued' | 'sending' | 'failed';
   messageId?: string;
+  /** Set for a prompt asked from a comment thread: the rail links back to it. */
+  origin?: ThreadOrigin;
 };
 const refLabel = (m: ConversationMessage['refs'][number]): string =>
   m.descendants.length ? `${m.label} +${m.descendants.length}` : m.label;
@@ -49,6 +56,7 @@ export function buildThread(
       label: labelFor(kind, row.queued ? ' · queued' : ''),
       text,
       refs: record?.refs.map(refLabel) ?? [],
+      ...(record && threadOrigin(record) ? { origin: threadOrigin(record) } : {}),
     };
   });
   const local = new Map(sent.map((m) => [m.messageId.toLowerCase(), m]));
@@ -76,6 +84,7 @@ export function buildThread(
       refs: m.refs.map(refLabel),
       ...(state === 'delivered' ? {} : { pending: state }),
       messageId: m.messageId,
+      ...(threadOrigin(m) ? { origin: threadOrigin(m) } : {}),
     });
   }
   return turns;

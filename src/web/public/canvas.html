@@ -218,9 +218,15 @@
         <form id="commentForm" class="composer">
           <label class="sr" for="commentDraft">Comment</label>
           <textarea id="commentDraft" rows="3" placeholder="Add a comment" spellcheck="true"></textarea>
+          <div class="ask-row">
+            <label for="askTarget" class="secondary">Ask agent in</label>
+            <select id="askTarget"></select>
+          </div>
+          <p id="askNote" class="secondary" role="status" hidden></p>
           <div class="composer-row">
             <p id="commentStatus" class="secondary" role="status"></p>
             <button id="retryComment" type="button" class="primary" hidden>Retry</button
+            ><button id="askAgent" type="button" class="quiet">Ask agent</button
             ><button id="postComment" type="submit" class="primary">Post</button>
           </div>
         </form>
