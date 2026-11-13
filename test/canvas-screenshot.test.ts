@@ -14,6 +14,7 @@ import {
   SCREENSHOT_FAILED_MESSAGE,
   SCREENSHOT_MISCONFIGURED_MESSAGE,
   ScreenshotAborted,
+  ScreenshotEmpty,
   ScreenshotNotFound,
   ScreenshotTimeout,
   ScreenshotUnavailable,
@@ -225,6 +226,45 @@ describe('canvas screenshot geometry and hostile page', () => {
     const empty = stateOf([record('group', null, 'group', { type: 'group', label: 'Empty' }, null)]);
     expect(shotModel(empty, 'group').fit.width).toBe(97);
     expect(shotModel(empty, 'group').fit.height).toBe(97);
+  });
+
+  it('frames the top level of a workspace with sub-canvases closed, and a sub-canvas as its own open view', () => {
+    const state = stateOf([
+      record('left', null, 'text', { type: 'text', text: 'left' }, { width: 100, height: 80 }, { x: 0, y: 0 }),
+      record(
+        'sub',
+        null,
+        'subcanvas',
+        { type: 'subcanvas', workspaceId: 'w', label: 'Inner' },
+        { width: 200, height: 100 },
+        { x: 400, y: 300 }
+      ),
+      record(
+        'inside',
+        'sub',
+        'text',
+        { type: 'text', text: 'inside' },
+        { width: 50, height: 50 },
+        { x: 9000, y: 9000 }
+      ),
+      record('gone', null, 'text', { type: 'text', text: 'gone' }, { width: 50, height: 50 }, { x: -5000, y: 0 }),
+      record('orphan', 'gone', 'text', { type: 'text', text: 'orphan' }),
+    ]);
+    state.objects.gone!.deletedAt = 5;
+    const top = shotModel(state, null);
+    expect(top.objects.map((object) => object.id).sort()).toEqual(['inside', 'left', 'sub']);
+    expect(top.root).toBeNull();
+    expect(top.fit.clip).toEqual(clipFor({ x: 0, y: 0, width: 600, height: 400 }));
+    expect(top.objects.find((object) => object.id === 'inside')?.parentId).toBe('sub');
+    expect(buildShotDocument(top, '', 'void 0', 'dark')).toContain('"root":null');
+    const open = shotModel(state, 'sub');
+    expect(open.root).toBe('sub');
+    expect(buildShotDocument(open, '', 'void 0', 'dark')).toContain('"root":"sub"');
+    expect(shotModel(state, 'left').root).toBeNull();
+    expect(() => shotModel(emptyState(), null)).toThrow(ScreenshotEmpty);
+    const onlyDeleted = stateOf([record('gone', null, 'text', { type: 'text', text: 'gone' })]);
+    onlyDeleted.objects.gone!.deletedAt = 5;
+    expect(() => shotModel(onlyDeleted, null)).toThrow(ScreenshotEmpty);
   });
 
   it('screenshots five thousand descendants without a browser', () => {
@@ -702,6 +742,21 @@ describe('canvas screenshot route', () => {
       expect(current.statusCode).toBe(200);
       expect(String(current.headers['content-type'])).toContain('image/png');
       expect(current.rawPayload.subarray(0, 8).equals(PNG.subarray(0, 8))).toBe(true);
+      const whole = await app.inject({
+        method: 'GET',
+        url: '/api/canvas/current/screenshot?theme=light',
+        headers: { 'x-codeman-parent-session': 'agent-a' },
+      });
+      expect(whole.statusCode).toBe(200);
+      expect(String(whole.headers['content-type'])).toContain('image/png');
+      expect(JSON.parse(String(whole.headers['x-canvas-screenshot-meta'])).clip).toEqual(
+        JSON.parse(String(current.headers['x-canvas-screenshot-meta'])).clip
+      );
+      const bare = workspaceForCase('shot-empty-case');
+      stores.get(bare.id);
+      const nothing = await app.inject({ method: 'GET', url: `/api/canvas/${bare.id}/screenshot` });
+      expect(nothing.statusCode).toBe(404);
+      expect(nothing.json().error).toBe('Canvas has nothing to capture');
       const explicit = await app.inject({
         method: 'GET',
         url: `/api/canvas/${workspace.id}/objects/a/screenshot?theme=light`,

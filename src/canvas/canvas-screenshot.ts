@@ -1,5 +1,6 @@
 /**
- * @fileoverview Server PNG of one canvas container or object, and of one stored prototype.
+ * @fileoverview Server PNG of one canvas container or object, of the top level of a workspace, and of one
+ * stored prototype.
  * The page is hostile content: no login, no cookies, and every network request is
  * refused. The only bytes it gets are ones this process hands it: images decoded from a
  * stored data URL or read from the asset store, and the files of a stored prototype,
@@ -42,6 +43,12 @@ export class ScreenshotNotFound extends Error {
   constructor() {
     super('Canvas object not found');
     this.name = 'ScreenshotNotFound';
+  }
+}
+export class ScreenshotEmpty extends Error {
+  constructor() {
+    super('Canvas has nothing to capture');
+    this.name = 'ScreenshotEmpty';
   }
 }
 export class ScreenshotTimeout extends Error {
@@ -371,7 +378,8 @@ export interface ShotObject {
   deletedAt: number | null;
 }
 
-function kept(state: CanvasState, object: CanvasObject, rootId: string): boolean {
+/** Drawn only when it is alive, every ancestor is alive, and it hangs under `rootId` (or, for null, under the top level). */
+function kept(state: CanvasState, object: CanvasObject, rootId: string | null): boolean {
   const seen = new Set<string>();
   let current: CanvasObject | undefined = object;
   while (current) {
@@ -379,7 +387,8 @@ function kept(state: CanvasState, object: CanvasObject, rootId: string): boolean
     seen.add(current.id);
     if (current.deletedAt !== null) return false;
     if (current.id === rootId) return true;
-    current = current.parentId ? state.objects[current.parentId] : undefined;
+    if (current.parentId === null) return rootId === null;
+    current = state.objects[current.parentId];
   }
   return false;
 }
@@ -393,33 +402,57 @@ export function objectAssetIds(content: { type: string } & Record<string, unknow
   );
 }
 
+function unionBox(boxes: WorldBox[]): WorldBox {
+  const x = Math.min(...boxes.map((box) => box.x)),
+    y = Math.min(...boxes.map((box) => box.y));
+  return {
+    x,
+    y,
+    width: Math.max(...boxes.map((box) => box.x + box.width)) - x,
+    height: Math.max(...boxes.map((box) => box.y + box.height)) - y,
+  };
+}
+
+/**
+ * What one screenshot draws. `objectId` null is the top level of the workspace: every live object,
+ * with each sub-canvas closed, framed by the bounds of the top-level objects.
+ */
 export function shotModel(
   state: CanvasState,
-  objectId: string
-): { objects: ShotObject[]; fit: ShotFit; assets: Map<string, StoredImage> } {
-  const root = state.objects[objectId];
-  if (!root || root.deletedAt !== null) throw new ScreenshotNotFound();
-  let box: ReturnType<typeof bounds>;
-  try {
-    box = bounds(state, objectId);
-  } catch (error) {
-    if (error instanceof HierarchyError) throw new Error('Cyclic hierarchy cannot be screenshotted');
-    throw error;
-  }
-  if ('hierarchy' in box) throw new Error('Cyclic hierarchy cannot be screenshotted');
-  let world: Transform;
-  try {
-    world = worldTransform(state, objectId);
-  } catch (error) {
-    if (error instanceof HierarchyError) throw new Error('Cyclic hierarchy cannot be screenshotted');
-    throw error;
-  }
+  objectId: string | null
+): { objects: ShotObject[]; fit: ShotFit; assets: Map<string, StoredImage>; root: string | null } {
+  const root = objectId === null ? null : state.objects[objectId];
+  if (objectId !== null && (!root || root.deletedAt !== null)) throw new ScreenshotNotFound();
+  const cyclic = <T>(read: () => T): T => {
+    try {
+      return read();
+    } catch (error) {
+      if (error instanceof HierarchyError) throw new Error('Cyclic hierarchy cannot be screenshotted');
+      throw error;
+    }
+  };
+  const boxOf = (id: string): WorldBox => {
+    const box = cyclic(() => bounds(state, id));
+    if ('hierarchy' in box) throw new Error('Cyclic hierarchy cannot be screenshotted');
+    return box;
+  };
   let raw: CanvasObject[];
-  try {
-    raw = isContainer(root) ? descendants(state, objectId) : [root];
-  } catch (error) {
-    if (error instanceof HierarchyError) throw new Error(error.message);
-    throw error;
+  let box: WorldBox;
+  let world: Transform = { x: 0, y: 0, rotation: 0 };
+  if (root) {
+    box = boxOf(root.id);
+    world = cyclic(() => worldTransform(state, root.id));
+    try {
+      raw = isContainer(root) ? descendants(state, root.id) : [root];
+    } catch (error) {
+      if (error instanceof HierarchyError) throw new Error(error.message);
+      throw error;
+    }
+  } else {
+    raw = Object.values(state.objects).filter((object) => kept(state, object, null));
+    const top = raw.filter((object) => object.parentId === null);
+    if (!top.length) throw new ScreenshotEmpty();
+    box = unionBox(top.map((object) => boxOf(object.id)));
   }
   const objects = raw
     .filter((object) => kept(state, object, objectId))
@@ -444,7 +477,8 @@ export function shotModel(
     const image = decodeStoredImage(url);
     if (image) assets.set(objectImageKey(object.id), image);
   }
-  return { objects, fit: fitClip(clipFor(box)), assets };
+  // A screenshot of a sub-canvas shows what is inside it, as if it were open.
+  return { objects, fit: fitClip(clipFor(box)), assets, root: root?.type === 'subcanvas' ? root.id : null };
 }
 
 /**
@@ -492,6 +526,7 @@ export function buildShotDocument(
     fit: ShotFit;
     assets?: ReadonlyMap<string, StoredImage>;
     prototypes?: ReadonlyMap<string, PrototypeAddress>;
+    root?: string | null;
   },
   css: string,
   script: string,
@@ -511,7 +546,14 @@ export function buildShotDocument(
     objectId,
     src: prototypeFrameUrl(objectId, address.entry),
   }));
-  const payload = { objects: model.objects, transform: model.fit.transform, images, assets: stored, prototypes };
+  const payload = {
+    objects: model.objects,
+    transform: model.fit.transform,
+    images,
+    assets: stored,
+    prototypes,
+    root: model.root ?? null,
+  };
   const themeAttr = theme === 'light' ? ` data-theme="light"` : '';
   const safeCss = css.replace(/<\/style/gi, '<\\/style');
   const safeScript = script.replace(/<\/script/gi, '<\\/script');
@@ -576,6 +618,7 @@ function isScreenshotError(error: unknown): boolean {
     error instanceof ScreenshotTimeout ||
     error instanceof ScreenshotUnavailable ||
     error instanceof ScreenshotNotFound ||
+    error instanceof ScreenshotEmpty ||
     error instanceof ScreenshotMisconfigured ||
     error instanceof ScreenshotAborted
   );
@@ -601,7 +644,8 @@ export function classifyScreenshotError(error: unknown): Error {
 
 export function screenshotFailure(error: unknown): { status: number; message: string } {
   const mapped = classifyScreenshotError(error);
-  if (mapped instanceof ScreenshotNotFound) return { status: 404, message: mapped.message };
+  if (mapped instanceof ScreenshotNotFound || mapped instanceof ScreenshotEmpty)
+    return { status: 404, message: mapped.message };
   if (
     mapped instanceof ScreenshotTimeout ||
     mapped instanceof ScreenshotUnavailable ||
@@ -798,9 +842,10 @@ export interface RenderContainerOptions extends BrowserJobOptions {
   readPrototypeFile?: (address: PrototypeAddress, path: string) => Promise<StoredImage | null>;
 }
 
+/** `objectId` null renders the top level of the workspace. */
 export async function renderContainer(
   state: CanvasState,
-  objectId: string,
+  objectId: string | null,
   options: RenderContainerOptions = {}
 ): Promise<{ png: Buffer; meta: ShotMeta }> {
   const theme = options.theme ?? 'dark';
