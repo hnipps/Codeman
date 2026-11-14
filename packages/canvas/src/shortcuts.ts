@@ -17,7 +17,8 @@ export const shortcuts: Shortcut[] = [
   ['Show Keys', [['?'], ['F1']]],
   ['Select / pan tool', [['V'], ['H']]],
   ['Temporary pan (hold and drag)', [['Space']]],
-  ['Zoom about pointer (wheel or pinch)', []],
+  ['Pan (trackpad scroll)', []],
+  ['Zoom about pointer (mouse wheel, pinch, or Mod + trackpad scroll)', []],
   ['Close current rail view', [['Esc']]],
 ];
 

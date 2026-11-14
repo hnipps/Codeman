@@ -384,6 +384,27 @@ describe('read-only canvas document', () => {
     expect(await page.locator(`[data-object-id="${id}"]`).textContent()).toContain('<img onerror');
     await shot(page, 'zoom-live-inert');
   });
+  it('pans on a trackpad scroll and zooms on Cmd + trackpad scroll', async () => {
+    await open();
+    const scroll = (init: WheelEventInit) =>
+      page.evaluate((i) => {
+        document
+          .getElementById('board')!
+          .dispatchEvent(
+            new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 700, clientY: 450, ...i })
+          );
+        return window.canvasView.read().viewport;
+      }, init);
+    const before = await page.evaluate(() => window.canvasView.read().viewport);
+    // Chromium on a Mac trackpad reports the legacy delta as -3x the pixel delta.
+    const panned = await scroll({ deltaX: 12, deltaY: 30.5, wheelDeltaY: -91 } as WheelEventInit);
+    expect(panned.zoom).toBe(before.zoom);
+    expect(panned.x).toBeCloseTo(before.x - 12);
+    expect(panned.y).toBeCloseTo(before.y - 30.5);
+    await page.waitForTimeout(300); // a new gesture
+    const zoomed = await scroll({ deltaY: -30.5, wheelDeltaY: 91, metaKey: true } as WheelEventInit);
+    expect(zoomed.zoom).toBeGreaterThan(panned.zoom);
+  });
   it('suppresses shortcut letters, spaces and IME in search and on native controls', async () => {
     await open();
     await page.locator('#closeOutline').click();

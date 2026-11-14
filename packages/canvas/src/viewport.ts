@@ -44,3 +44,40 @@ export function union(rects: Rect[]): Rect {
 }
 export const wheelFactor = (deltaY: number, deltaMode: number, pageHeight = 800): number =>
   Math.exp(-deltaY * (deltaMode === 1 ? 16 : deltaMode === 2 ? pageHeight : 1) * 0.0015);
+/** What a wheel event asks of the board: trackpad scrolls pan, mouse wheels and modified scrolls zoom. */
+export type WheelInput = {
+  deltaX: number;
+  deltaY: number;
+  deltaMode: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  /** Chrome and Safari's legacy `wheelDeltaY`; absent in Firefox. */
+  wheelDeltaY?: number;
+};
+export type WheelDevice = 'trackpad' | 'mouse';
+/** Events closer together than this belong to one gesture, so momentum keeps its first reading. */
+export const WHEEL_GESTURE_GAP_MS = 200;
+/**
+ * Guesses the device behind one wheel event. Browsers do not say, so this reads the
+ * traces each leaves: a mouse notch is whole lines or a legacy delta of 120; a trackpad
+ * scrolls in pixels, sideways, or by fractions.
+ */
+export function wheelDevice(e: WheelInput): WheelDevice {
+  if (e.deltaMode !== 0) return 'mouse';
+  // A notch is a multiple of 120 whatever it scrolls; a Mac trackpad's legacy delta is -3x its
+  // pixel delta (checked first, since a 40px swipe is also 120), other touchpads scale it otherwise.
+  if (e.wheelDeltaY) {
+    if (Math.abs(e.wheelDeltaY + 3 * e.deltaY) < 3) return 'trackpad';
+    return e.wheelDeltaY % 120 === 0 ? 'mouse' : 'trackpad';
+  }
+  if (e.deltaX !== 0 || !Number.isInteger(e.deltaY)) return 'trackpad';
+  return Math.abs(e.deltaY) >= 50 ? 'mouse' : 'trackpad';
+}
+/** Zoom for a pinch (Ctrl), Cmd + scroll or a mouse wheel; pan for a plain trackpad scroll. */
+export const wheelIntent = (e: WheelInput, device: WheelDevice): 'zoom' | 'pan' =>
+  e.ctrlKey || e.metaKey || device === 'mouse' ? 'zoom' : 'pan';
+/** The pixel distance a wheel event scrolls, for panning. */
+export const wheelPan = (e: WheelInput, pageHeight = 800): Point => {
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? pageHeight : 1;
+  return { x: -e.deltaX * unit, y: -e.deltaY * unit };
+};

@@ -1,4 +1,4 @@
-import { wheelFactor } from './viewport.js';
+import { wheelDevice, wheelFactor, wheelIntent, wheelPan, WHEEL_GESTURE_GAP_MS, type WheelDevice } from './viewport.js';
 import { DesktopEditor } from './edit.js';
 import { joinBasePath } from '../../../src/config/base-path.js';
 import {
@@ -1281,10 +1281,28 @@ window.addEventListener('blur', () => {
   spaceHeld = false;
   spaceMoved = false;
 });
+/** The device of the wheel gesture in progress; momentum events keep the first reading. */
+let wheelGesture: { device: WheelDevice; at: number } | null = null;
 board.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
+    const now = e.timeStamp;
+    const input = {
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      wheelDeltaY: (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY,
+    };
+    const device =
+      wheelGesture && now - wheelGesture.at < WHEEL_GESTURE_GAP_MS ? wheelGesture.device : wheelDevice(input);
+    wheelGesture = { device, at: now };
+    if (wheelIntent(input, device) === 'pan') {
+      dispatch({ kind: 'pan', delta: wheelPan(input, innerHeight) });
+      return;
+    }
     dispatch({
       kind: 'zoom',
       anchor: { x: e.clientX, y: e.clientY },
