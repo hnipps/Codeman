@@ -1,4 +1,4 @@
-import { wheelFactor } from '../packages/canvas/src/viewport.js';
+import { wheelDevice, wheelFactor, wheelIntent, wheelPan } from '../packages/canvas/src/viewport.js';
 import { describe, expect, it } from 'vitest';
 import {
   canvasToScreen,
@@ -214,4 +214,41 @@ it('normalizes wheel line/page units to pixels', () => {
   expect(wheelFactor(3, 1)).toBe(wheelFactor(48, 0));
   expect(wheelFactor(1, 2, 900)).toBe(wheelFactor(900, 0));
   expect(wheelFactor(-3, 1)).toBeGreaterThan(1.05);
+});
+
+describe('wheel routing', () => {
+  const wheel = (over: Partial<Parameters<typeof wheelDevice>[0]>) => ({
+    deltaX: 0,
+    deltaY: 0,
+    deltaMode: 0,
+    ctrlKey: false,
+    metaKey: false,
+    ...over,
+  });
+  it('reads a mouse wheel notch as a mouse', () => {
+    expect(wheelDevice(wheel({ deltaY: 3, deltaMode: 1 }))).toBe('mouse'); // Firefox lines
+    expect(wheelDevice(wheel({ deltaY: 100, wheelDeltaY: -120 }))).toBe('mouse'); // Chrome
+    expect(wheelDevice(wheel({ deltaY: 66.67, wheelDeltaY: -120 }))).toBe('mouse'); // Chrome at 150% scale
+    expect(wheelDevice(wheel({ deltaY: 4.000244140625, wheelDeltaY: -120 }))).toBe('mouse'); // Safari
+    expect(wheelDevice(wheel({ deltaY: 100 }))).toBe('mouse'); // no legacy delta, whole large step
+  });
+  it('reads a two-finger scroll as a trackpad', () => {
+    expect(wheelDevice(wheel({ deltaY: 4, wheelDeltaY: -12 }))).toBe('trackpad');
+    expect(wheelDevice(wheel({ deltaY: 1.5, wheelDeltaY: -4 }))).toBe('trackpad'); // rounded legacy delta
+    expect(wheelDevice(wheel({ deltaX: 6, deltaY: 2 }))).toBe('trackpad');
+    expect(wheelDevice(wheel({ deltaY: 40, wheelDeltaY: -120 }))).toBe('trackpad'); // Mac, 40px is one notch's worth
+    expect(wheelDevice(wheel({ deltaY: 21, wheelDeltaY: -48 }))).toBe('trackpad'); // Linux touchpad scaling
+    expect(wheelDevice(wheel({ deltaY: 2.25 }))).toBe('trackpad');
+    expect(wheelDevice(wheel({ deltaY: 7 }))).toBe('trackpad');
+  });
+  it('pans on a plain trackpad scroll and zooms on a mouse wheel, pinch or Cmd + scroll', () => {
+    expect(wheelIntent(wheel({ deltaY: 4 }), 'trackpad')).toBe('pan');
+    expect(wheelIntent(wheel({ deltaY: 4, metaKey: true }), 'trackpad')).toBe('zoom');
+    expect(wheelIntent(wheel({ deltaY: 4, ctrlKey: true }), 'trackpad')).toBe('zoom'); // pinch
+    expect(wheelIntent(wheel({ deltaY: 100 }), 'mouse')).toBe('zoom');
+  });
+  it('pans the board the opposite way to the scroll delta, in pixels', () => {
+    expect(wheelPan(wheel({ deltaX: 5, deltaY: -8 }))).toEqual({ x: -5, y: 8 });
+    expect(wheelPan(wheel({ deltaY: 2, deltaMode: 1 })).y).toBe(-32);
+  });
 });
