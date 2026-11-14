@@ -1956,6 +1956,35 @@ A person or an agent can point at one element inside an embed's live frame. `Ele
 
 Not bounded tightly: one anchor can be about 20 KB at the schema's limits, so the anchors file and the route's answer can reach tens of megabytes at the cap. Real anchors are near 1 KB.
 
+### Element comments and pins
+
+The browser side of comment anchors: `packages/canvas/src/element-anchors.ts` (no DOM: the anchor store, pin grouping, pin placement, the relocate scheduler, the kept draft element), `element-comments.ts` (`ElementComments`: reads the anchors, draws the pins) and the thread view in `comments.ts`, which reaches the frames only through its `ElementsPort`. It writes nothing but `canvas_comment`.
+
+**Starting a comment about an element.** `entry.ts` registers a **Comment** pick action after Add to chat. It sets the element on that embed's composer (`CommentsView.about()`), opens the thread and focuses the draft. The composer shows the element in `#commentAbout` above the draft, with a remove control that makes the comment an ordinary one. `#commentPick` ("Pick element") starts the same from the thread: it shows only while the thread's object has a live, upright frame whose bridge has spoken (`ElementComments.canPick()`), calls `MediaEditor.pickElement()` and puts the result straight on the composer, with no popover. Post and Ask agent send `element` in the `canvas_comment` arguments and omit the key when there is none.
+
+**What is kept.** The element belongs to the composer like the draft does. A failed or offline post keeps both, and Retry resends the same request, element included. A change of element, like a change of text, gets fresh ids. The element is kept across a reload under the `threadDraftElement` storage key (16 objects, validated with `ElementRefSchema` on read), and an Ask agent attempt keeps its element on the stored attempt, so a retry after a reload posts the same anchor. A refusal `NOT_AN_EMBED` (the object no longer shows a live page) is said in the composer and is not retried as sent.
+
+**Reading anchors.** `ElementComments` holds one `AnchorStore` keyed by comment id. It reads `GET .../comment-anchors` when a comment id appears that the page had not seen (a new comment, or an undo that brought one back) and when `canvas:changed` carries `anchors: true`. Reads run one at a time and the last answer replaces the store. A comment that leaves the snapshot drops its anchor at once. A comment this page posted is anchored at once when the answer says `anchored: true`. A read that fails keeps what is held.
+
+**The chip.** Each anchored comment shows `.comment-element`: the pin number, `elementLabel()`, and the page's `source` when it gave one, else the selector; the `title` holds the selector and source in full. Activating it selects and reveals the embed and flashes the element where the frame finds it now (`showElement()`, shared with the assistant's element chips). When the live frame answered and did not find the selector the chip reads **No longer on the page** (`data-state="missing"`). While the frame is paused, loading, silent or on a phone the state is `unknown` and the chip says nothing about it.
+
+**Pins.** `pinGroups()` gives the anchored comments of one embed one group per selector, numbered in the order the elements were first commented on. Each group is one `.element-pin` button in `#elementPins`, a fixed layer of the canvas document. A pin shows its number and, when several comments share it, a count badge. Its middle sits `PIN_NUDGE` up and right of the element's top-right corner (`pinPoint()`), kept inside the frame. A click opens that embed's thread at the group's first comment and puts the keyboard on its chip (`CommentsView.goTo()`).
+
+- Geometry is `locate` then the frame's box. `ElementComments.sync()` runs on every paint of the board and only reads: it converts the rectangles it holds (frame pixels) with `frameBoxes()`, `toScreenRect()` and `clipToFrame()`, so a pan, zoom or resize asks no frame anything.
+- A frame is asked again when it is a new `<iframe>` (Reload, a new prototype version, a pause and return), when it has a selector it was never asked for, and when it reports `frame-ready` or `frame-rects-changed`. `MediaEditor.onFrameChange()` fires for both. `Relocator` sends one `codeman:locate` per frame per animation frame with all its selectors, never a second while the first is out, and at most `MAX_LOCATE_SELECTORS` (64) selectors: an embed with more commented elements shows pins for the first 64.
+- ⚠️ A pin shows only where its own frame is what a pointer would hit at that point (`document.elementsFromPoint`, ignoring the pins). That one test keeps pins off the rail, the outline, the dock, a full view and any object lying on the embed, so no pin needs a z-index above theirs. The layer is `z-index: 3` with `#elementMark`, under the dock (5), the popover (6) and every menu.
+- ⚠️ The layer takes no pointer events. Only a pin does, so the board's gestures are blocked on the pin itself and nowhere else.
+- Pins are hidden (CSS, `visibility`) while any frame is in pick mode or the lasso is armed, and are not drawn for a paused or rotated embed, a selector the page no longer has, an element scrolled out of the frame, or on a phone.
+- Pins share one tab stop (roving `tabindex`); arrow keys, Home and End move between them, and Enter or Space opens the thread.
+
+⚠️ Every string of an anchor was written by the page in the frame. The chip, the About row and the pin put it in `textContent`, `title` and `aria-label` only, never markup. Escape order is unchanged: a pick ends first (`MediaEditor.escape()`), then the rail closes.
+
+Phone: the thread shows the chips as text. There are no live frames, so no pins and no Pick element.
+
+Not covered: an element inside an embed shown outside the board has no pins, and a pin does not follow an element while the page animates it without scrolling or resizing.
+
+Tests: `test/canvas-element-anchors.test.ts`, and `test/canvas-element-comments.browser.test.ts` (browser suite, not the gate).
+
 Tests: `test/canvas-element-refs.test.ts`, `test/canvas-context-resolve.test.ts`, `test/canvas-view-registry.test.ts`, `test/mcp-canvas-tools.test.ts`.
 
 ## Canvas background tasks

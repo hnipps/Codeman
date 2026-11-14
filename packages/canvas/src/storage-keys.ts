@@ -15,6 +15,7 @@ export type CanvasStorageKeys = {
   assistantChoice: string;
   threadAsk: string;
   threadDraft: string;
+  threadDraftElement: string;
   taskOutbox: string;
   taskSent: string;
   tasksSeen: string;
@@ -35,6 +36,7 @@ export function canvasStorageKeys(viewer: string, workspace: string): CanvasStor
     assistantChoice: `${scope}:${workspace}:assistant:choice`,
     threadAsk: `${scope}:${workspace}:thread:ask`,
     threadDraft: `${scope}:${workspace}:thread:draft`,
+    threadDraftElement: `${scope}:${workspace}:thread:draft-element`,
     taskOutbox: `${scope}:${workspace}:task:outbox`,
     taskSent: `${scope}:${workspace}:task:sent`,
     tasksSeen: `${scope}:${workspace}:task:seen`,

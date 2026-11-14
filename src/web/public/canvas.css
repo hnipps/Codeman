@@ -1678,6 +1678,190 @@ textarea[readonly] {
   gap: 6px;
   color: var(--critical);
 }
+/* ───── Element comments: the composer's About row, the element chip on a comment, pins over a live page ───── */
+.comment-about {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 32px;
+  margin-bottom: 8px;
+  padding-left: 8px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.comment-about > span {
+  align-self: center;
+  flex-shrink: 0;
+}
+.comment-about-label {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.comment-about-label:hover {
+  background: none;
+  color: var(--accent);
+}
+.comment-about-remove {
+  flex-shrink: 0;
+  min-width: 32px;
+  color: var(--secondary);
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.comment-about-remove:hover {
+  color: var(--text);
+  background: var(--raised);
+}
+.comment-pick {
+  display: block;
+  min-height: 28px;
+  margin-bottom: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--secondary);
+  background: none;
+}
+.comment-pick[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Every word of the chip but "No longer on the page" was written by the page in the frame. */
+.comment-element {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  text-align: left;
+  border-color: var(--divider);
+}
+.comment-element:hover {
+  border-color: var(--muted);
+}
+.element-number,
+.element-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  color: var(--action-ink);
+  background: var(--accent);
+  font:
+    600 11px/1 ui-monospace,
+    monospace;
+  font-variant-numeric: tabular-nums;
+}
+.element-number {
+  grid-row: 1 / span 2;
+}
+.element-name,
+.element-where {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.element-name {
+  font-size: 13px;
+}
+.element-where {
+  color: var(--secondary);
+  font:
+    12px/1.45 ui-monospace,
+    monospace;
+}
+.comment-element[data-state='missing'] .element-number {
+  color: var(--muted);
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--muted);
+}
+.comment-element[data-state='missing'] .element-name {
+  color: var(--secondary);
+}
+.comment-element[data-state='missing'] .element-where {
+  font: inherit;
+  font-size: 12px;
+}
+/* The layer takes no pointer events; each pin is its own small target. Same layer as the element mark, under the dock, the popover and every menu. */
+#elementPins {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.element-pin {
+  position: fixed;
+  min-height: 0;
+  transform: translate(-50%, -50%);
+  border: 0;
+  box-shadow:
+    0 0 0 1.5px var(--panel),
+    0 2px 6px #0006;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.element-pin:hover,
+.element-pin:active {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 1.5px var(--text),
+    0 2px 6px #0006;
+}
+.element-pin:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.pin-more {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--muted);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+.pin-more:empty {
+  display: none;
+}
+/* A pick or a lasso is reading the page under the pins: they stand down until it ends. */
+:root:has(.embed-stage.picking) #elementPins,
+:root:has(#board.lasso-armed) #elementPins {
+  visibility: hidden;
+}
+:root[data-phone] #elementPins,
+:root[data-phone] #commentPick {
+  display: none !important;
+}
+:root[data-phone] .comment-element,
+:root[data-phone] .comment-about {
+  min-height: 44px;
+}
+/* ───── end of element comments ───── */
 #commentStatus[data-state='failed']::before {
   content: '';
   width: 14px;

@@ -10,6 +10,7 @@ import { outline, siblings, worldBounds } from './tree.js';
 import { hit, union, type Point, type Rect } from './viewport.js';
 import { phoneFirstView, phoneMode, trackKeyboard, visibleRect, revealDelta } from './mobile.js';
 import { CommentsView, commentCounts } from './comments.js';
+import { ElementComments } from './element-comments.js';
 import { HistoryView } from './history.js';
 import { snapshotComments } from './sync.js';
 import { AssistantView } from './assistant.js';
@@ -131,6 +132,7 @@ function viewScoped(before: ViewState, next: ViewState): ViewState {
   return selected.length === next.selected.length && focusId === next.focusId ? next : { ...next, selected, focusId };
 }
 const viewer = document.querySelector<HTMLMetaElement>('meta[name="codeman-canvas-viewer"]')?.content || '@single';
+let elementComments: ElementComments | null = null;
 const comments: CommentsView = new CommentsView({
   url,
   workspace: workspaceId,
@@ -142,6 +144,19 @@ const comments: CommentsView = new CommentsView({
   },
   askKey: canvasStorageKeys(viewer, workspaceId).threadAsk,
   draftKey: canvasStorageKeys(viewer, workspaceId).threadDraft,
+  draftElementKey: canvasStorageKeys(viewer, workspaceId).threadDraftElement,
+  elements: {
+    of: (commentId) => elementComments?.of(commentId) ?? null,
+    show: (element) => showElement(element),
+    canPick: (objectId) => !!elementComments?.canPick(objectId),
+    pick: (objectId) => {
+      // Picking belongs to one selected embed; the thread stays open on it.
+      dispatch({ kind: 'selection', ids: [objectId] });
+      return editor.media.pickElement(objectId);
+    },
+    cancelPick: () => void (editor.media.pickingId && editor.media.escape()),
+    anchored: (commentId, element) => elementComments?.anchored(commentId, element),
+  },
   assistant: {
     targets: () => assistant.targets(),
     preferred: () => assistant.preferredTarget(),
@@ -172,17 +187,7 @@ const assistant: AssistantView = new AssistantView({
     reveal(id);
   },
   removeElement: (element) => dispatch({ kind: 'context-elements-remove', elements: [element] }),
-  chooseElement: (element) => {
-    dispatch({ kind: 'focus', id: element.objectId });
-    dispatch({ kind: 'selection', ids: [element.objectId] });
-    reveal(element.objectId);
-    // The embed may only now come into view: its frame mounts a moment after the camera settles.
-    const show = (retry: boolean): void =>
-      void editor.media.flash(element).then((shown) => {
-        if (!shown && retry) setTimeout(() => show(false), 900);
-      });
-    requestAnimationFrame(() => requestAnimationFrame(() => show(true)));
-  },
+  chooseElement: (element) => showElement(element),
   openThread: (id) => {
     dispatch({ kind: 'focus', id });
     dispatch({ kind: 'selection', ids: [id] });
@@ -468,6 +473,18 @@ function paintViewPath(): void {
   here.title = here.textContent;
   crumbs.append(here);
 }
+/** Shows an element's embed on the board and marks the element where its page has it now. */
+function showElement(element: ElementRef): void {
+  dispatch({ kind: 'focus', id: element.objectId });
+  dispatch({ kind: 'selection', ids: [element.objectId] });
+  reveal(element.objectId);
+  // The embed may only now come into view: its frame mounts a moment after the camera settles.
+  const show = (retry: boolean): void =>
+    void editor.media.flash(element).then((shown) => {
+      if (!shown && retry) setTimeout(() => show(false), 900);
+    });
+  requestAnimationFrame(() => requestAnimationFrame(() => show(true)));
+}
 function paint(): void {
   frame = 0;
   if (paintedRoot !== state.root) {
@@ -477,6 +494,7 @@ function paint(): void {
   }
   renderer.view(state, keyboard);
   editor.media.frames();
+  elementComments?.sync();
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
@@ -1304,6 +1322,30 @@ editor.media.addPickAction({
   primary: true,
   run: (e) => addElementsToChat([e]),
 });
+// Element comments: the anchors, the pins over live frames, and Comment on a picked element.
+elementComments = new ElementComments({
+  url,
+  workspace: workspaceId,
+  media: editor.media,
+  phone: () => mobile.matches,
+  open: (objectId, commentId) => {
+    dispatch({ kind: 'focus', id: objectId });
+    dispatch({ kind: 'selection', ids: [objectId] });
+    dispatch({ kind: 'rail', view: 'thread' });
+    comments.goTo(commentId);
+  },
+  changed: () => comments.elementsChanged(),
+});
+editor.media.addPickAction({
+  id: 'comment',
+  label: 'Comment',
+  run: (element) => {
+    comments.about(element);
+    dispatch({ kind: 'focus', id: element.objectId });
+    dispatch({ kind: 'rail', view: 'thread' });
+    requestAnimationFrame(() => comments.focusComposer());
+  },
+});
 window.canvasFrames = {
   pickElement: (objectId) => editor.media.pickElement(objectId),
   togglePick: (objectId) => editor.media.togglePick(objectId),
@@ -1467,6 +1509,7 @@ const sync = new CanvasSync(
   workspaceId,
   (snapshot) => {
     comments.update(snapshotComments(snapshot));
+    elementComments?.commentsChanged(comments.all);
     editor.receive(snapshot);
     comments.mark(renderer.elements);
     history.changed();
@@ -1488,6 +1531,7 @@ const sync = new CanvasSync(
   }
 );
 sync.on('canvas:viewCommand', (data) => views.receive(data));
+sync.on('canvas:changed', (data) => elementComments?.serverChanged(data));
 for (const name of [
   'canvas:conversation',
   'transcript:update',

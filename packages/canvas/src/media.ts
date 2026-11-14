@@ -718,6 +718,8 @@ export class MediaEditor {
     switch (message.type) {
       case 'ready':
         this.bridged.add(frame);
+        // A page that just loaded has new rectangles for whoever holds some.
+        for (const listener of this.frameListeners) listener(objectId);
         break;
       case 'escape':
         // A lasso the frame armed ends first, and the page keeps the keyboard.
@@ -821,7 +823,7 @@ export class MediaEditor {
       this.send(frame, { type: 'codeman:query-polygon', requestId, points: framePolygon(box, screenPoints) })
     );
   }
-  /** Tells a listener that a frame scrolled or resized, so rectangles read from it are stale. */
+  /** Tells a listener that a frame loaded a page, scrolled or resized, so rectangles read from it are stale. */
   onFrameChange(listener: (objectId: string) => void): () => void {
     this.frameListeners.add(listener);
     return () => this.frameListeners.delete(listener);

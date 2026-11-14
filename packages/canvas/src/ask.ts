@@ -1,5 +1,6 @@
 import type { ThreadReply } from '../../../src/canvas/conversation-schema.js';
 import { sendFailure } from './conversation.js';
+import { ElementRefSchema, type ElementRef } from '../../../src/canvas/element-ref.js';
 
 /** One Ask agent attempt, kept across reloads so a retry reuses its ids: the comment is posted once and the prompt is written once. */
 export type AskAttempt = {
@@ -13,6 +14,8 @@ export type AskAttempt = {
   messageId: string;
   /** The conversation a "new" attempt created, once it has. */
   conversationId: string | null;
+  /** The element the comment is about, so a retry after a reload posts the same anchor. */
+  element?: ElementRef;
 };
 const MAX_STORED_ASKS = 8;
 const UUID = /^[0-9a-fA-F-]{36}$/;
@@ -33,7 +36,14 @@ export function parseAsks(raw: string | null): AskAttempt[] {
   if (!raw) return [];
   try {
     const v: unknown = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter(isAttempt).slice(-MAX_STORED_ASKS) : [];
+    if (!Array.isArray(v)) return [];
+    return v
+      .filter(isAttempt)
+      .slice(-MAX_STORED_ASKS)
+      .map(({ element, ...attempt }) => {
+        const kept = ElementRefSchema.safeParse(element);
+        return kept.success && kept.data.objectId === attempt.objectId ? { ...attempt, element: kept.data } : attempt;
+      });
   } catch {
     return [];
   }
