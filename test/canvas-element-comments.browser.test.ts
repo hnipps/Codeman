@@ -596,6 +596,32 @@ describe('canvas comments on an element of a live page', () => {
     await expect.poll(async () => (await chips()).map((c) => c.state)).toEqual(['found', 'found']);
   }, 120000);
 
+  it('follows the page when its own script removes, moves or brings back a commented element, with no reload', async () => {
+    await seed();
+    await open();
+    await commentOn('#start', 'Stays');
+    await commentOn('#stop', 'Goes away');
+    await expect.poll(() => pinTexts()).toEqual(['1', '2']);
+    const frame = await frameOf();
+
+    // An in-page state change, as a single-page app makes: nothing scrolls, resizes or reloads.
+    await frame.evaluate(() => {
+      (window as unknown as { held: Element }).held = document.getElementById('card-b')!;
+      document.getElementById('card-b')!.remove();
+    });
+    await expect.poll(() => pinTexts(), { timeout: 3000 }).toEqual(['1']);
+    await expect.poll(async () => (await chips()).map((c) => c.state), { timeout: 3000 }).toEqual(['found', 'missing']);
+
+    await frame.evaluate(() => document.getElementById('app')!.append((window as unknown as { held: Element }).held));
+    await expect.poll(() => pinTexts(), { timeout: 3000 }).toEqual(['1', '2']);
+    await expect.poll(async () => (await chips()).map((c) => c.state)).toEqual(['found', 'found']);
+
+    await frame.evaluate(() => {
+      document.getElementById('card-a')!.style.top = '150px';
+    });
+    await expect.poll(() => pinOffset(0, '#start'), { timeout: 3000 }).toBeLessThan(1.5);
+  }, 120000);
+
   it('shows anchors that arrive from elsewhere, and renders whatever the page wrote as text', async () => {
     await seed();
     await open();

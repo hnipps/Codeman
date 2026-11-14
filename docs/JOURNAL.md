@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-14 — The frame bridge reports a DOM change that moves an element the canvas located
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/frame-bridge.ts`
+**Why:** A pin stayed on an element that the prototype's own script had removed, until a scroll, resize or reload made the canvas ask again. The bridge reported scrolls and resizes only.
+**Links:** [intent/2026-11-14-canvas-live-pins.md](../intent/2026-11-14-canvas-live-pins.md), [architecture-invariants, "Element comments and pins"](architecture-invariants.md#element-comments-and-pins)
+
+Decision. After the first `locate`, the bridge runs one `MutationObserver` on the document and remembers where each of the last 64 located selectors was. A DOM change sends the existing `codeman:frame-rects-changed` only when one of them moved, appeared or went away, at most once per animation frame (a 120 ms timer stands in where the frame is not painted). The canvas side and the message shape are unchanged.
+
+Rejected. Posting on every mutation: a page that re-renders constantly would make the canvas re-ask every frame for nothing, and the message also closes an open pick popover. A `ResizeObserver` per located element: it misses removal and position, and the bridge would have to keep element references across re-renders.
+
+This retires the "Not done" line of the 2026-11-13 element-comments entry for DOM changes; motion with no DOM change (CSS animation, an image loading) is still not followed.
+
 ## 2026-11-13 — A prototype is static files that Codeman stores and serves
 
 **Type:** intent-refinement

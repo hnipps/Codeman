@@ -11,7 +11,8 @@
  *
  * Frame to parent: `codeman:canvas-escape`, `codeman:frame-ready`, `codeman:frame-key` (bare Q only),
  * `codeman:frame-picked`, `codeman:frame-pick-cancelled`, `codeman:frame-elements`, `codeman:frame-rects`,
- * `codeman:frame-rects-changed`. Parent to frame: `codeman:pick-start`, `codeman:pick-stop`,
+ * `codeman:frame-rects-changed` (on a scroll or resize, and on a DOM change that moves, adds or removes an element
+ * the canvas located). Parent to frame: `codeman:pick-start`, `codeman:pick-stop`,
  * `codeman:query-polygon`, `codeman:locate`.
  */
 import { MAX_ELEMENT_REFS } from './element-ref.js';
@@ -424,17 +425,73 @@ export function frameBridge(limits: FrameLimits): void {
     }
     return elements;
   };
+  // ───────────── telling the canvas that rectangles it holds are stale ─────────────
+  // Every selector the canvas located lately, with where it was: a change of the DOM is reported only when
+  // one of them moved, appeared or went away, so a page that re-renders all the time says nothing new.
+  const tracked = new Map<string, string>();
+  const where = (selector: string): string => {
+    const el = resolve(selector);
+    if (!el || !el.isConnected) return '';
+    const r = boxOf(el);
+    return [r.x, r.y, r.width, r.height].map((n) => Math.round(n * 4) / 4).join(',');
+  };
+  const track = (selector: string): void => {
+    tracked.delete(selector);
+    tracked.set(selector, where(selector));
+    for (const oldest of tracked.keys()) {
+      if (tracked.size <= limits.maxSelectors) break;
+      tracked.delete(oldest);
+    }
+  };
+  const moved = (): boolean => {
+    let any = false;
+    for (const [selector, was] of tracked) {
+      const now = where(selector);
+      if (now === was) continue;
+      tracked.set(selector, now);
+      any = true;
+    }
+    return any;
+  };
   let watching = false;
-  let changed: ReturnType<typeof setTimeout> | undefined;
+  // A scroll or resize moves everything and always reports; a DOM change reports only what it moved.
+  let forced = false;
+  let dirty = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let painted: number | undefined;
+  const flush = (): void => {
+    if (timer !== undefined) clearTimeout(timer);
+    if (painted !== undefined) window.cancelAnimationFrame?.(painted);
+    timer = painted = undefined;
+    const report = (dirty && moved()) || forced;
+    forced = dirty = false;
+    if (report) post({ type: 'codeman:frame-rects-changed' });
+  };
+  /** At most one report per animation frame for a DOM change, and within 120 ms where no frame is painted. */
+  const later = (soon: boolean): void => {
+    if (soon && painted === undefined && typeof window.requestAnimationFrame === 'function')
+      painted = window.requestAnimationFrame(flush);
+    if (timer === undefined) timer = setTimeout(flush, 120);
+  };
   const rectsChanged = (): void => {
-    if (!watching || changed !== undefined) return;
-    changed = setTimeout(() => {
-      changed = undefined;
-      post({ type: 'codeman:frame-rects-changed' });
-    }, 120);
+    if (!watching) return;
+    forced = true;
+    later(false);
   };
   window.addEventListener('scroll', rectsChanged, true);
   window.addEventListener('resize', rectsChanged);
+  let observer: Dom = null;
+  const observe = (): void => {
+    if (observer || typeof window.MutationObserver !== 'function') return;
+    observer = new window.MutationObserver((records: Dom[]) => {
+      // The pick layer's own outline follows the pointer; that is not the page changing.
+      if (!records.some((r) => !mine(r.target))) return;
+      dirty = true;
+      later(true);
+    });
+    // Light DOM only: a change inside a shadow root is seen when it also touches the light DOM, or on a scroll.
+    observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  };
   window.addEventListener('message', (e: Dom) => {
     if (e.source !== host) return;
     const data = e.data as { type?: unknown; requestId?: unknown; points?: unknown; selectors?: unknown } | null;
@@ -453,8 +510,10 @@ export function frameBridge(limits: FrameLimits): void {
       case 'codeman:locate': {
         if (!requestId || !Array.isArray(data.selectors) || data.selectors.length > limits.maxSelectors) break;
         watching = true;
+        observe();
         const rects = data.selectors.map((selector) => {
           const el = resolve(selector);
+          if (typeof selector === 'string' && selector && selector.length <= limits.selector) track(selector);
           return el && el.isConnected ? boxOf(el) : null;
         });
         post({ type: 'codeman:frame-rects', requestId, rects });

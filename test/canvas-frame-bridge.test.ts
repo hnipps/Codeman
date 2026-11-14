@@ -282,6 +282,37 @@ describe('requests from the canvas', () => {
     expect(last('codeman:frame-rects-changed')).toBeDefined();
     expect(posted.filter((m) => m.type === 'codeman:frame-rects-changed')).toHaveLength(1);
   });
+  it('says its rectangles changed when the page removes, moves or brings back an element it located, and only then', async () => {
+    const settle = () => new Promise((done) => setTimeout(done, 200));
+    const reports = () => posted.filter((m) => m.type === 'codeman:frame-rects-changed').length;
+    const go = () => document.querySelector('[data-testid="go"]')!;
+    place(go(), 30, 60, 100, 30);
+    expect(locate('[data-testid="go"]')).toEqual({ x: 30, y: 60, width: 100, height: 30 });
+    await settle();
+    posted.length = 0;
+
+    // A change that leaves every located element where it was says nothing.
+    document.querySelector('h3')!.textContent = 'Renamed';
+    document.querySelector('form')!.setAttribute('data-step', '2');
+    await settle();
+    expect(reports()).toBe(0);
+
+    // Moving it is one report, however many changes a frame brings.
+    place(go(), 30, 90, 100, 30);
+    go().setAttribute('class', 'lower');
+    go().setAttribute('title', 'Start');
+    await settle();
+    expect(reports()).toBe(1);
+
+    const card = go().closest('article')!;
+    const section = card.parentElement!;
+    card.remove();
+    await settle();
+    expect(reports()).toBe(2);
+    section.prepend(card);
+    await settle();
+    expect(reports()).toBe(3);
+  });
   it('answers a loop with the outermost visible elements inside it, never the page or a near-full wrapper', () => {
     const [first, second] = [...document.querySelectorAll('article')];
     place(document.body, 0, 0, 800, 600);
