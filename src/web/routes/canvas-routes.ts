@@ -27,7 +27,10 @@ import {
   commentCommand,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
-import { IdSchema, descendants, type Author } from '../../canvas/model.js';
+import { CommentSchema, IdSchema, descendants, type Author } from '../../canvas/model.js';
+import { liveEmbed } from '../../canvas/context-resolve.js';
+import { readCommentAnchors, setCommentAnchor } from '../../canvas/comment-anchors.js';
+import type { ElementRef } from '../../canvas/element-ref.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
@@ -319,7 +322,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       registerShellRoutes(workspaceScope, ctx);
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
-        { bodyLimit: 64 * 1024 },
+        // Room for the pending elements a view reports (`contextElements`).
+        { bodyLimit: 256 * 1024 },
         async (req, reply) => {
           const viewId = z.uuid().parse(req.params.viewId);
           const state = PublishedViewSchema.parse(req.body);
@@ -392,6 +396,21 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                     'Request identity was already used for a different command'
                   )
                 );
+            // The comment of this request is written; a first attempt that died before its anchor was stored is finished here.
+            if (envelope.tool === 'canvas_comment') {
+              const { element } = toolSchemas.canvas_comment.parse(envelope.arguments);
+              const written = store.records(identity.previous.map((o) => o.seq))[0];
+              const commentId =
+                written && 'comment' in written ? CommentSchema.safeParse(written.comment).data?.id : undefined;
+              if (
+                element &&
+                commentId &&
+                liveEmbed(state, element.objectId) &&
+                state.comments.some((c) => c.id === commentId && c.objectId === element.objectId) &&
+                !readCommentAnchors(req.params.workspaceId, state)[commentId]
+              )
+                setCommentAnchor(req.params.workspaceId, state, commentId, element);
+            }
             return {
               success: true,
               data: {
@@ -403,6 +422,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           }
           const args = envelope.arguments;
           let operations: Command[] | undefined;
+          /** The comment this request posts and the element it is about, if any. */
+          let anchor: { commentId: string; element: ElementRef | undefined } | undefined;
           switch (envelope.tool) {
             case 'canvas_link_preview': {
               const { url: link } = toolSchemas.canvas_link_preview.parse(args);
@@ -483,7 +504,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                     },
                   ];
                 });
-                return { success: true, data: { viewId: input.viewId, ageMs: record.ageMs, references: refs } };
+                const elements = (record.state.contextElements ?? []).filter((e) => liveEmbed(state, e.objectId));
+                return {
+                  success: true,
+                  data: { viewId: input.viewId, ageMs: record.ageMs, references: refs, elements },
+                };
               }
               const { viewId, requestId, ...rest } = input;
               const action = ViewActionSchema.parse(
@@ -495,7 +520,14 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               return applyViewCommand(reply, ctx, views, req.params.workspaceId, viewId, canSee, action, requestId);
             }
             case 'canvas_read':
-              return { success: true, data: readTree(state, toolSchemas.canvas_read.parse(args)) };
+              return {
+                success: true,
+                data: readTree(
+                  state,
+                  toolSchemas.canvas_read.parse(args),
+                  readCommentAnchors(req.params.workspaceId, state)
+                ),
+              };
             case 'canvas_search':
               return {
                 success: true,
@@ -524,9 +556,22 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             case 'canvas_arrange':
               operations = arrange(state, toolSchemas.canvas_arrange.parse(args));
               break;
-            case 'canvas_comment':
-              operations = [commentCommand(toolSchemas.canvas_comment.parse(args))];
+            case 'canvas_comment': {
+              const input = toolSchemas.canvas_comment.parse(args);
+              if (input.element && !liveEmbed(state, input.objectId))
+                return reply
+                  .code(400)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.INVALID_INPUT,
+                      `NOT_AN_EMBED: ${input.objectId} is not a live embed, so a comment on it cannot name an element`
+                    )
+                  );
+              const commentId = input.commentId ?? randomUUID();
+              operations = [commentCommand({ ...input, commentId })];
+              anchor = { commentId, element: input.element };
               break;
+            }
             case 'canvas_transform':
               operations = transform(state, toolSchemas.canvas_transform.parse(args));
               break;
@@ -592,6 +637,15 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               reasons: result.reasons,
             });
           if (!result.operations.length && noopKey) noopRequests.set(noopKey, fingerprint);
+          // After the commit and before the broadcast, so a page that reads the anchors on this event finds it. A
+          // comment posted without an element clears what an earlier comment under the same id left behind.
+          let anchored = false;
+          if (anchor && result.operations.length)
+            try {
+              anchored = setCommentAnchor(req.params.workspaceId, store.read(), anchor.commentId, anchor.element);
+            } catch {
+              // The comment is written; one without its anchor is still a comment, and the answer says so.
+            }
           if (result.operations.length) {
             retireFrames(req.params.workspaceId, result.operations);
             const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
@@ -599,6 +653,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               workspaceId: req.params.workspaceId,
               seq: result.seq,
               owner: readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner,
+              ...(anchor?.element && anchored ? { anchors: true } : {}),
             });
           }
           const changed = new Map(
@@ -617,8 +672,20 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           );
           return {
             success: true,
-            data: { seq: result.seq, sequences: result.operations.map((o) => o.seq), hierarchy },
+            data: {
+              seq: result.seq,
+              sequences: result.operations.map((o) => o.seq),
+              hierarchy,
+              ...(anchor?.element ? { anchored } : {}),
+            },
           };
+        }
+      );
+      workspaceScope.get<{ Params: { workspaceId: string } }>(
+        '/api/canvas/:workspaceId/comment-anchors',
+        async (req) => {
+          const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
+          return { success: true, data: { anchors: readCommentAnchors(req.params.workspaceId, state) } };
         }
       );
       workspaceScope.post<{ Params: { workspaceId: string } }>(

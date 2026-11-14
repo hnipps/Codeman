@@ -1,6 +1,7 @@
 /** @fileoverview Pure shapes of a canvas view: what a browser tab publishes and what an agent may ask it to do. Shared by the server registry and the browser. */
 import { z } from 'zod';
 import { IdSchema } from './model.js';
+import { ElementRefSchema, MAX_ELEMENT_REFS } from './element-ref.js';
 
 /** One view publishes at most this often, so a pan cannot flood the server. */
 export const MIN_PUBLISH_GAP_MS = 250;
@@ -23,6 +24,8 @@ export const PublishedViewSchema = z
     focusId: IdSchema.nullable(),
     rail: z.array(z.enum(RAIL_VIEWS)).max(8),
     context: z.array(IdSchema).max(MAX_VIEW_IDS),
+    /** Elements inside live frames waiting to go with the next message; absent from an earlier page. A person's alone: no view command changes it. */
+    contextElements: z.array(ElementRefSchema).max(MAX_ELEMENT_REFS).optional(),
     conversationId: z.string().max(128).nullable(),
     root: IdSchema.nullable(),
     letters: z.boolean(),

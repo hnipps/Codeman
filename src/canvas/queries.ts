@@ -10,7 +10,9 @@ import {
   HierarchyError,
   type CanvasState,
   type CanvasObject,
+  type Comment,
 } from './model.js';
+import { type ElementRef } from './element-ref.js';
 import { QuerySchema, ReadSchema, SearchSchema, CanvasCommandError } from './commands.js';
 
 export const MAX_CANVAS_TEXT_BYTES = 60_000;
@@ -175,7 +177,12 @@ export function boundedCanvasData(data: unknown, diagnostics?: ReturnType<typeof
   }
   return { data: null, truncated: true, ...metadata };
 }
-export function readTree(state: CanvasState, input: z.infer<typeof ReadSchema>) {
+/** `anchors` are the elements comments are about, by comment id; each is returned on its comment as `element`. */
+export function readTree(
+  state: CanvasState,
+  input: z.infer<typeof ReadSchema>,
+  anchors: Readonly<Record<string, ElementRef>> = {}
+) {
   const selected = readTargets(state, input.root)
     .filter((o) => input.includeDeleted || o.deletedAt === null)
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
@@ -219,7 +226,9 @@ export function readTree(state: CanvasState, input: z.infer<typeof ReadSchema>) 
     if (parent && !node.hierarchy && !parent.hierarchy) parent.children.push(node);
     else tree.push(node);
   }
-  const comments = state.comments.filter((c) => nodes.has(c.objectId));
+  const comments: (Comment & { element?: ElementRef })[] = state.comments
+    .filter((c) => nodes.has(c.objectId))
+    .map((c) => (anchors[c.id] ? { ...c, element: anchors[c.id] } : c));
   const result = { seq: state.seq, tree, comments: [] as typeof comments, diagnostics, truncated };
   for (const comment of comments) {
     const size = Buffer.byteLength(JSON.stringify(comment)) + 1;

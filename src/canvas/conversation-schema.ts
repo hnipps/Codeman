@@ -1,6 +1,7 @@
 /** @fileoverview Pure shapes of a canvas conversation and the one context block a message carries. Shared by the server and the browser; nothing here touches disk or a session. */
 import { z } from 'zod';
 import { IdSchema } from './model.js';
+import { ElementRefSchema, MAX_ELEMENT_REFS } from './element-ref.js';
 
 /** Most text one message may carry from the person, in UTF-8 bytes. */
 export const MAX_MESSAGE_BYTES = 16 * 1024;
@@ -151,6 +152,8 @@ export const SendBodySchema = z
     messageId: z.uuid(),
     text: z.string().min(1),
     refIds: z.array(IdSchema).max(MAX_CONTEXT_OBJECTS).default([]),
+    /** Elements inside live frames, each written under its embed in the context block. Never stored on the record. */
+    elements: z.array(ElementRefSchema).max(MAX_ELEMENT_REFS).optional(),
     origin: ThreadOriginSchema.optional(),
   })
   .strict();

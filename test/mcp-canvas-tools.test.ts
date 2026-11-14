@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createToolRunner, createMcpServer, buildToolDefinitions } from '../src/mcp-server.js';
-import { toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
+import { capabilities, toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
 import { MAX_CANVAS_TEXT_BYTES } from '../src/canvas/queries.js';
 import { CanvasStores } from '../src/canvas/canvas-store.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
@@ -132,6 +132,80 @@ describe('canvas MCP HTTP parity', () => {
       expect(JSON.stringify(out.at(-1))).toContain('CODEMAN_API_URL');
     }
     server.close();
+  });
+  it('offers the element of a comment and of a sent message in the tool schemas and says what it is', () => {
+    const definitions = buildToolDefinitions(['claude']);
+    const comment = definitions.find((d) => d.name === 'canvas_comment')!;
+    const properties = (comment.inputSchema as { properties: Record<string, { required?: string[] }> }).properties;
+    expect(Object.keys(properties).sort()).toEqual(['commentId', 'element', 'objectId', 'text']);
+    expect(properties.element.required).toEqual(['objectId', 'selector', 'tag', 'rect']);
+    expect((comment.inputSchema as { required: string[] }).required).toEqual(['objectId', 'text']);
+    expect(comment.description).toContain('element anchors the comment to one element inside an embed');
+    expect(definitions.find((d) => d.name === 'canvas_read')!.description).toContain('carries it as element');
+    expect(definitions.find((d) => d.name === 'canvas_conversation')!.description).toContain('optional elements');
+    expect(definitions.find((d) => d.name === 'canvas_context')!.description).toContain('read also returns elements');
+    const el = { objectId: 'page', selector: '#a', tag: 'a', rect: { x: 0, y: 0, width: 1, height: 1 } };
+    expect(toolSchemas.canvas_comment.safeParse({ objectId: 'page', text: 'x', element: el }).success).toBe(true);
+    expect(toolSchemas.canvas_comment.safeParse({ objectId: 'other', text: 'x', element: el }).success).toBe(false);
+    expect(
+      toolSchemas.canvas_conversation.safeParse({
+        action: 'send',
+        conversationId: '11111111-1111-4111-8111-111111111111',
+        messageId: '22222222-2222-4222-8222-222222222222',
+        text: 'x',
+        elements: [el],
+      }).success
+    ).toBe(true);
+    expect(JSON.stringify(capabilities().elements)).toContain('untrusted data');
+  });
+  it('an agent anchors its comment to an element of an embed and reads the anchor back with the thread', async () => {
+    const h = await harness();
+    try {
+      const tools = h.runner();
+      const page = {
+        kind: 'create',
+        opId: 'create-page',
+        objectId: 'page',
+        patch: {
+          parentId: null,
+          order: 0,
+          position: { x: 0, y: 0 },
+          size: { width: 400, height: 300 },
+          content: { type: 'embed', url: 'https://example.com/board', label: 'Board' },
+        },
+      };
+      expect((await tools.run('canvas_create', { operations: [page] })).isError).toBeFalsy();
+      const element = {
+        objectId: 'page',
+        selector: 'main > button.start',
+        tag: 'button',
+        text: 'Start task',
+        rect: { x: 1, y: 2, width: 30, height: 40 },
+      };
+      const posted = await tools.run('canvas_comment', { objectId: 'page', text: 'Too small', element });
+      expect(posted.isError).toBeFalsy();
+      expect(parse(posted).anchored).toBe(true);
+      const comments = parse(await tools.run('canvas_read', {})).comments;
+      expect(comments).toEqual([
+        expect.objectContaining({
+          objectId: 'page',
+          text: 'Too small',
+          author: { kind: 'agent', sessionId: 'agent-a' },
+          element: expect.objectContaining({ selector: 'main > button.start', text: 'Start task', attrs: {} }),
+        }),
+      ]);
+      const refused = await tools.run('canvas_comment', {
+        objectId: 'a',
+        text: 'x',
+        element: { ...element, objectId: 'a' },
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('NOT_AN_EMBED');
+      // Another case's agent reads its own workspace, never this one's anchors.
+      expect(parse(await h.runner('agent-b').run('canvas_read', {})).comments).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
   });
   it('publishes executable strict JSON schemas for typed union tools', async () => {
     const app = Fastify({ ajv: { customOptions: { removeAdditional: false, useDefaults: false } } });

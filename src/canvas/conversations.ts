@@ -111,6 +111,14 @@ export function recordMessage(
   });
 }
 export const namedHash = (ids: readonly string[]): string => sha256([...new Set(ids)].sort().join('\n'));
+/**
+ * What a sender named, as `namedHash` takes it: the object ids, and one entry per element so a retry that names
+ * other elements is a changed message. With no element this is the ids alone, as every earlier record was hashed.
+ */
+export const namedEntries = (ids: readonly string[], elements: readonly unknown[] = []): string[] => [
+  ...ids,
+  ...elements.map((element) => `element:${sha256(JSON.stringify(element))}`),
+];
 export type MessageState = NonNullable<ConversationMessage['state']>;
 /** A row from an earlier release carries no state: it was delivered if it has a time, else it was not. */
 export const messageState = (m: Pick<ConversationMessage, 'state' | 'deliveredAt'>): MessageState =>
