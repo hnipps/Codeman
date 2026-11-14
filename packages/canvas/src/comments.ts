@@ -16,6 +16,9 @@ import {
 import { errorMessage, sendFailure } from './conversation.js';
 import { normalizePrompt, promptRefusal } from '../../../src/canvas/conversation-schema.js';
 import type { FreshTarget } from './assistant.js';
+import { elementLabel, type ElementRef } from '../../../src/canvas/element-ref.js';
+import { parseDraftElements, sameElement, storeDraftElement, type DraftElements } from './element-anchors.js';
+import type { AnchoredComment } from './element-comments.js';
 
 export const ViewCommentSchema = z
   .object({
@@ -119,10 +122,12 @@ const node = (id: string): HTMLElement => {
   return el;
 };
 
-type Pending = { requestId: string; commentId: string; text: string; objectId: string };
-/** One object's composer: its draft, the post it is sending or retrying, and why the last one failed. */
+type Pending = { requestId: string; commentId: string; text: string; objectId: string; element: ElementRef | null };
+/** One object's composer: its draft, the element it is about, the post it is sending or retrying, and why the last one failed. */
 type Composer = {
   draft: string;
+  /** The element inside the embed's page this comment is about, or null for a comment on the whole object. */
+  element: ElementRef | null;
   name: string;
   pending: Pending | null;
   sending: boolean;
@@ -140,6 +145,19 @@ export type AskPort = {
   /** Opens that conversation in the assistant rail; the camera and selection stay. */
   open(conversationId: string): void;
 };
+/** What the thread needs of the live frames: the element a comment is about, and a way to point at one. */
+export type ElementsPort = {
+  of(commentId: string): AnchoredComment | null;
+  /** Shows the embed on the board and marks the element where its page has it now. */
+  show(element: ElementRef): void;
+  /** Whether this object's page is live here, so an element can be picked in it. */
+  canPick(objectId: string): boolean;
+  /** Lets the person point at one element; null when picking ended any other way. */
+  pick(objectId: string): Promise<ElementRef | null>;
+  cancelPick(): void;
+  /** The server kept this element with the comment just posted. */
+  anchored(commentId: string, element: ElementRef): void;
+};
 const NEW_TARGET = '';
 const ASK_INTERRUPTED =
   'Ask agent did not finish before the page reloaded. Retry finishes it; nothing is posted twice.';
@@ -156,10 +174,31 @@ export function postFailure(status: number | null, body: unknown): PostFailure {
   const reason = code.success ? code.data.reasons[0]?.code : undefined;
   if (status === 404 || reason === 'NOT_FOUND' || reason === 'INVALID')
     return { retry: false, message: 'Not posted: this object was removed. Your comment is kept here to copy.' };
+  const refusal = z.object({ error: z.string() }).passthrough().safeParse(body);
+  if (status === 400 && refusal.success && refusal.data.error.startsWith('NOT_AN_EMBED'))
+    return {
+      retry: false,
+      message: 'Not posted: this object no longer shows a live page. Remove the element, then post again.',
+    };
   if (status === 400)
     return { retry: false, message: 'Not posted: comments hold up to 100,000 characters. Shorten it and post again.' };
   return { retry: false, message: 'Not posted: the canvas refused this comment. Your comment is kept here.' };
 }
+
+/** What `canvas_comment` takes: the element only when the comment is about one. */
+const commentArguments = (comment: {
+  objectId: string;
+  text: string;
+  commentId: string;
+  element: ElementRef | null;
+}) => ({
+  objectId: comment.objectId,
+  text: comment.text,
+  commentId: comment.commentId,
+  ...(comment.element ? { element: comment.element } : {}),
+});
+const AnchoredSchema = z.object({ data: z.object({ anchored: z.literal(true) }).passthrough() }).passthrough();
+const wasAnchored = (body: unknown): boolean => AnchoredSchema.safeParse(body).success;
 
 /** The thread view in the rail. Post is an ordinary comment and never starts agent work; only Ask agent sends one to a conversation. */
 export class CommentsView {
@@ -172,6 +211,13 @@ export class CommentsView {
   private draft: HTMLTextAreaElement;
   private asks: AskAttempt[] = [];
   private drafts: ThreadDrafts = {};
+  private draftElements: DraftElements = {};
+  /** The object a pick started from this thread is running for. */
+  private pickingFor: string | null = null;
+  /** The press now turning into a click landed on Pick element while a pick was running, and so ended it. */
+  private pressEndedPick = false;
+  /** A comment the thread should open at, once it is drawn. */
+  private wanted: string | null = null;
   private target = node('askTarget') as HTMLSelectElement;
   /** The person picked a target in this thread; until then the choice follows the rail. */
   private picked: string | null = null;
@@ -188,11 +234,15 @@ export class CommentsView {
       askKey: string;
       /** Where unposted drafts are kept across reloads, one per object. */
       draftKey: string;
+      /** Where the element an unposted draft is about is kept, beside the draft. */
+      draftElementKey: string;
+      elements: ElementsPort;
     }
   ) {
     try {
       this.asks = parseAsks(localStorage.getItem(options.askKey));
       this.drafts = parseDrafts(localStorage.getItem(options.draftKey));
+      this.draftElements = parseDraftElements(localStorage.getItem(options.draftElementKey));
     } catch {
       /* Storage that cannot be read keeps no attempt; a retry then uses fresh ids. */
     }
@@ -229,6 +279,26 @@ export class CommentsView {
       void (composer?.action === 'ask' ? this.ask() : this.post());
     });
     node('askAgent').addEventListener('click', () => void this.ask());
+    node('commentPick').addEventListener('click', () => void this.pick());
+    // Any press outside the page being picked in ends the pick before this button hears its click; window capture
+    // runs first, so the click can tell "cancel" from "start again".
+    window.addEventListener(
+      'pointerdown',
+      (e) => {
+        this.pressEndedPick =
+          this.pickingFor !== null && e.target instanceof Node && node('commentPick').contains(e.target);
+      },
+      true
+    );
+    node('commentAboutShow').addEventListener('click', () => {
+      const element = this.shown ? this.composers.get(this.shown)?.element : null;
+      if (element) this.options.elements.show(element);
+    });
+    node('commentAboutRemove').addEventListener('click', () => {
+      if (!this.shown) return;
+      this.setElement(this.shown, null);
+      this.draft.focus({ preventScroll: true });
+    });
     this.target.addEventListener('change', () => {
       this.picked = this.target.value;
       this.paintTarget();
@@ -245,6 +315,7 @@ export class CommentsView {
       const interrupted = this.asks.find((ask) => ask.objectId === objectId);
       composer = {
         draft: interrupted?.text ?? this.drafts[objectId] ?? '',
+        element: (interrupted ? interrupted.element : this.draftElements[objectId]) ?? null,
         name: object ? label(object) : '',
         pending: null,
         sending: false,
@@ -262,7 +333,71 @@ export class CommentsView {
 
   private forget(objectId: string): void {
     const composer = this.composers.get(objectId);
-    if (composer && !composer.sending && !composer.draft && !composer.failure) this.composers.delete(objectId);
+    if (composer && !composer.sending && !composer.draft && !composer.failure && !composer.element)
+      this.composers.delete(objectId);
+  }
+
+  /** The comment being written on this object is about this element, or about the whole object when null. */
+  private setElement(objectId: string, element: ElementRef | null): void {
+    const composer = this.composer(objectId);
+    composer.element = element;
+    if (composer.failure && !composer.failure.retry) composer.failure = null;
+    this.draftElements = storeDraftElement(this.draftElements, objectId, element);
+    try {
+      if (Object.keys(this.draftElements).length)
+        localStorage.setItem(this.options.draftElementKey, JSON.stringify(this.draftElements));
+      else localStorage.removeItem(this.options.draftElementKey);
+    } catch {
+      /* An element that cannot be stored stays with the composer; only a reload loses it. */
+    }
+    if (!element) this.forget(objectId);
+    if (this.shown === objectId) this.paintComposer();
+  }
+
+  /** Start a comment about one element of an embed's page; the thread for that embed shows it above the draft. */
+  about(element: ElementRef): void {
+    this.setElement(element.objectId, element);
+  }
+
+  /** Open the shown thread at one comment, now or as soon as it is drawn. */
+  goTo(commentId: string): void {
+    this.wanted = commentId;
+    this.reveal();
+  }
+
+  private reveal(): void {
+    const li = this.wanted ? this.rendered.get(this.wanted) : undefined;
+    if (!li) return;
+    this.wanted = null;
+    li.scrollIntoView({ block: 'nearest' });
+    (li.querySelector<HTMLElement>('.comment-element') ?? li.querySelector<HTMLElement>('.comment-time'))?.focus({
+      preventScroll: true,
+    });
+  }
+
+  /** Which comments have an element, or what a live page says of one, changed: chips and the Pick control follow. */
+  elementsChanged(): void {
+    if (this.shown === null) return;
+    this.paintElements();
+    this.paintComposer();
+  }
+
+  /** Pick element from the composer: the next element the person points at in this embed's page is what the comment is about. */
+  private async pick(): Promise<void> {
+    const objectId = this.shown;
+    if (!objectId) return;
+    const ended = this.pressEndedPick;
+    this.pressEndedPick = false;
+    if (this.pickingFor) return this.options.elements.cancelPick();
+    if (ended) return;
+    this.pickingFor = objectId;
+    this.paintComposer();
+    const element = await this.options.elements.pick(objectId);
+    this.pickingFor = null;
+    if (element) this.setElement(objectId, element);
+    if (this.shown !== objectId) return;
+    this.paintComposer();
+    if (element) this.draft.focus({ preventScroll: true });
   }
 
   get all(): ViewComment[] {
@@ -318,7 +453,11 @@ export class CommentsView {
     if (changed) {
       this.rendered.clear();
       this.list.replaceChildren();
-      const kept = objectId !== null && (this.asks.some((ask) => ask.objectId === objectId) || objectId in this.drafts);
+      const kept =
+        objectId !== null &&
+        (this.asks.some((ask) => ask.objectId === objectId) ||
+          objectId in this.drafts ||
+          objectId in this.draftElements);
       const composer = objectId ? (kept ? this.composer(objectId) : this.composers.get(objectId)) : undefined;
       this.draft.value = composer?.draft ?? '';
     }
@@ -369,9 +508,56 @@ export class CommentsView {
     }
     this.list.hidden = !items.length;
     node('threadEmpty').hidden = !!items.length;
+    this.paintElements();
     this.paintRequests();
     if (scrollToEnd || (added && atEnd)) this.list.scrollTop = this.list.scrollHeight;
+    this.reveal();
     this.paintComposer();
+  }
+
+  /**
+   * The element chip on each comment that is about one: its pin number, its label and where the page marks its
+   * source, or that the page no longer has it. Every word but the last is the page's own: `textContent` only.
+   */
+  private paintElements(): void {
+    for (const [id, li] of this.rendered) {
+      const anchor = this.options.elements.of(id);
+      let chip = li.querySelector<HTMLButtonElement>(':scope > .comment-element');
+      if (!anchor) {
+        chip?.remove();
+        continue;
+      }
+      const { element, number, state } = anchor;
+      const signature = JSON.stringify([element.selector, element.tag, element.text, element.source, number, state]);
+      if (chip?.dataset.signature === signature) continue;
+      if (!chip) {
+        chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'comment-element';
+        for (const part of ['element-number', 'element-name', 'element-where']) {
+          const span = document.createElement('span');
+          span.className = part;
+          chip.append(span);
+        }
+        chip.addEventListener('click', () => {
+          const current = this.options.elements.of(id);
+          if (current) this.options.elements.show(current.element);
+        });
+        li.querySelector(':scope > .comment-head')?.after(chip);
+      }
+      chip.dataset.signature = signature;
+      chip.dataset.state = state;
+      const [mark, name, where] = [...chip.children] as HTMLElement[];
+      mark.textContent = String(number);
+      name.textContent = elementLabel(element);
+      name.dataset.i18nSkip = '';
+      const missing = state === 'missing';
+      where.textContent = missing ? 'No longer on the page' : (element.source ?? element.selector);
+      where.toggleAttribute('data-i18n-skip', !missing);
+      chip.title = [element.selector, element.source, missing ? '' : 'Show this element on the canvas']
+        .filter(Boolean)
+        .join('\n');
+    }
   }
 
   /** The state line on each asking comment, with Open conversation and, for one not delivered, Retry. */
@@ -607,12 +793,27 @@ export class CommentsView {
     this.target.disabled = sending;
     this.paintTarget();
     this.draft.readOnly = sending;
+    const element = composer?.element ?? null;
+    const picking = this.pickingFor !== null && this.pickingFor === this.shown;
+    node('commentAbout').hidden = !element;
+    const about = node('commentAboutShow');
+    const name = element ? elementLabel(element) : '';
+    if (about.textContent !== name) about.textContent = name;
+    about.title = element ? [element.selector, element.source].filter(Boolean).join('\n') : '';
+    node('commentAboutRemove').toggleAttribute('disabled', sending);
+    const pick = node('commentPick');
+    pick.hidden = !!element || !this.shown || !(picking || this.options.elements.canPick(this.shown));
+    pick.setAttribute('aria-pressed', String(picking));
+    pick.textContent = picking ? 'Cancel picking' : 'Pick element';
+    pick.toggleAttribute('disabled', sending);
     const status = node('commentStatus');
     status.textContent = failure
       ? failure.message
-      : sending || document.documentElement.hasAttribute('data-touch')
-        ? ''
-        : `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to post`;
+      : picking
+        ? 'Click an element in the page. Escape cancels.'
+        : sending || document.documentElement.hasAttribute('data-touch')
+          ? ''
+          : `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to post`;
     status.dataset.state = failure ? 'failed' : '';
     node('retryComment').hidden = !failure?.retry;
     post.hidden = !!failure?.retry;
@@ -629,14 +830,18 @@ export class CommentsView {
     if (object) composer.name = label(object);
     composer.draft = text;
     composer.action = 'post';
-    if (!composer.pending || composer.pending.text !== text) {
+    const element = composer.element;
+    if (!composer.pending || composer.pending.text !== text || !sameElement(composer.pending.element, element)) {
       // The same text an Ask agent attempt already posted here goes out under that attempt's ids, so it lands once.
-      const asked = this.asks.find((ask) => ask.objectId === objectId && ask.text === text);
+      const asked = this.asks.find(
+        (ask) => ask.objectId === objectId && ask.text === text && sameElement(ask.element, element)
+      );
       composer.pending = {
         requestId: asked?.commentRequestId ?? uuid(),
         commentId: asked?.commentId ?? uuid(),
         text,
         objectId,
+        element,
       };
     }
     const pending = composer.pending;
@@ -652,17 +857,20 @@ export class CommentsView {
         body: JSON.stringify({
           tool: 'canvas_comment',
           requestId: pending.requestId,
-          arguments: { objectId: pending.objectId, text: pending.text, commentId: pending.commentId },
+          arguments: commentArguments(pending),
         }),
       });
       ok = response.ok;
-      if (!ok) failure = postFailure(response.status, await response.json().catch(() => null));
+      const body: unknown = await response.json().catch(() => null);
+      if (!ok) failure = postFailure(response.status, body);
+      else if (pending.element && wasAnchored(body)) this.options.elements.anchored(pending.commentId, pending.element);
     } catch {
       failure = postFailure(null, null);
     }
     composer.sending = false;
     if (ok) {
       composer.pending = null;
+      if (pending.element && sameElement(composer.element, pending.element)) this.setElement(objectId, null);
       if (this.asks.some((ask) => ask.objectId === objectId && ask.text === pending.text)) this.keepAsk(null, objectId);
       if (composer.draft === pending.text) {
         composer.draft = '';
@@ -691,6 +899,7 @@ export class CommentsView {
       if (composer?.sending) continue;
       this.keepAsk(null, ask.objectId);
       if (!composer || composer.draft !== ask.text) continue;
+      if (ask.element && sameElement(composer.element, ask.element)) this.setElement(ask.objectId, null);
       composer.draft = '';
       this.keepDraft(ask.objectId, '');
       composer.failure = null;
@@ -753,13 +962,11 @@ export class CommentsView {
     if (fresh && !fresh.ok) return fail('Not asked. Nothing was posted.', false);
     const object = this.options.objects().find((o) => o.id === objectId);
     if (object) composer.name = label(object);
-    let attempt = nextAsk(
-      this.asks.find((a) => a.objectId === objectId),
-      objectId,
-      text,
-      target,
-      () => uuid()
-    );
+    const element = composer.element;
+    // The same text about another element is another comment: it gets ids of its own.
+    const stored = this.asks.find((a) => a.objectId === objectId && sameElement(a.element, element));
+    let attempt: AskAttempt = nextAsk(stored, objectId, text, target, () => uuid());
+    if (element) attempt = { ...attempt, element };
     this.keepAsk(attempt, objectId);
     composer.sending = true;
     this.paintComposer();
@@ -778,13 +985,14 @@ export class CommentsView {
     const commented = await post('/command', {
       tool: 'canvas_comment',
       requestId: attempt.commentRequestId,
-      arguments: { objectId, text, commentId: attempt.commentId },
+      arguments: commentArguments({ objectId, text, commentId: attempt.commentId, element }),
     });
     if (commented.status === null || commented.status >= 400) {
       const failure = postFailure(commented.status, commented.body);
       if (!failure.retry) this.keepAsk(null, objectId);
       return fail(failure.message, failure.retry);
     }
+    if (element && wasAnchored(commented.body)) this.options.elements.anchored(attempt.commentId, element);
     const origin = { kind: 'thread' as const, objectId, commentId: attempt.commentId };
     const posted = 'Your comment is posted. The agent was not asked:';
     if (!attempt.conversationId) {
@@ -810,6 +1018,7 @@ export class CommentsView {
     if (!sent.ok) return fail(`${posted} ${sent.message}`, true);
     composer.sending = false;
     this.keepAsk(null, objectId);
+    if (element && sameElement(composer.element, element)) this.setElement(objectId, null);
     if (composer.draft === text) {
       composer.draft = '';
       this.keepDraft(objectId, '');

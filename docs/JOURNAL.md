@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Comments on an element of a live page: the About row, the chip and the pins
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/{element-anchors,element-comments,comments,ask,entry,media,storage-keys}.ts`, `src/web/public/canvas.{html,css}`
+**Why:** The server stored an element beside a comment and the picker could name one, but nothing in the browser let a person say "this comment is about that button", see it in the thread, or find it in the page.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Element comments and pins"](architecture-invariants.md#element-comments-and-pins)
+
+Decision. The element belongs to the composer, like the draft. Comment on a picked element, or Pick element in the thread, sets it; Post and Ask agent send it with `canvas_comment`; a failure or a reload keeps it. Anchors are read whole from the server whenever a comment appears or a commit says it stored one, and the thread joins them to comments by id. Pins are a fixed layer of the canvas document, placed from `locate` answers held in frame pixels, so a pan or zoom redraws them without asking the frame.
+
+Decisions the intent did not settle. A pin carries the element's number, in the order elements were first commented on in that embed, and the chip in the thread carries the same number. Several comments on one selector share a pin, with a count badge. A pin sits just off the element's top-right corner so it covers little of a small control. A pin opens the thread at the oldest comment of its group. A pin is drawn only where its frame is what a pointer would hit, which settles the rail, the dock and overlapping objects with one hit test in place of a z-index rule. Pick element in the thread is offered only once the frame's bridge has spoken, so a page that blocks the bridge shows no control in place of a refusal. An embed with more than 64 commented elements shows pins for the first 64. `MediaEditor.onFrameChange()` now also fires on `frame-ready`: a page that just loaded has new rectangles.
+
+Rejected. Pins as children of the embed's stage: pan and zoom would be free, but the stage's children are rebuilt by the media editor on pause and reload, the stage clips at its edge, and the board captures presses inside it. Showing `1+1` on a shared pin: it read as arithmetic.
+
+Not done. A pin does not follow an element the page moves without scrolling or resizing. An element's chip does not offer to re-pick a selector the page dropped.
+
 ## 2026-11-13 — Every local Claude launch carries the Codeman MCP server
 
 **Type:** intent-refinement

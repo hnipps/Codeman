@@ -273,6 +273,8 @@
     <div id="elementPopover" class="edit-control" role="group" aria-label="Picked element" hidden>
       <span id="elementPopoverLabel"></span><span id="elementPopoverActions"></span>
     </div>
+    <!-- Element comments: one pin per commented element of a live page. -->
+    <div id="elementPins" role="group" aria-label="Comments on page elements"></div>
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
         <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
@@ -378,6 +380,23 @@
         <ol id="threadList" aria-label="Comments"></ol>
         <p id="threadEmpty" class="thread-empty" hidden>No comments yet. Leave the first note on this object.</p>
         <form id="commentForm" class="composer">
+          <!-- Element comments: the element this comment is about, or the control that picks one. -->
+          <div id="commentAbout" class="comment-about" hidden>
+            <span class="secondary">About</span>
+            <button id="commentAboutShow" type="button" class="comment-about-label" data-i18n-skip></button>
+            <button
+              id="commentAboutRemove"
+              type="button"
+              class="comment-about-remove"
+              aria-label="Remove the element: comment on the whole object"
+              title="Comment on the whole object"
+            >
+              ×
+            </button>
+          </div>
+          <button id="commentPick" type="button" class="quiet comment-pick" aria-pressed="false" hidden>
+            Pick element
+          </button>
           <label class="sr" for="commentDraft">Comment</label>
           <textarea id="commentDraft" rows="3" placeholder="Add a comment" spellcheck="true"></textarea>
           <div class="ask-row">

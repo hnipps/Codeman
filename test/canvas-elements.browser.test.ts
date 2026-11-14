@@ -201,7 +201,7 @@ describe('canvas elements inside a live frame', () => {
     // The click went to the picker, not to the page's own button.
     expect(await (await frameOf()).title()).toBe('Sprint board');
     expect(await page.locator('#elementPopoverLabel').textContent()).toBe('button "Start task"');
-    expect(await page.locator('#elementPopoverActions button').allTextContents()).toEqual(['Add to chat']);
+    expect(await page.locator('#elementPopoverActions button').allTextContents()).toEqual(['Add to chat', 'Comment']);
     // The popover hangs under the element it is about, and the mark sits on it.
     const target = await inFrame('#start');
     const popover = (await page.locator('#elementPopover').boundingBox())!;
@@ -214,7 +214,7 @@ describe('canvas elements inside a live frame', () => {
     expect(await stageClass()).not.toMatch(/picking|interacting/);
     expect(await (await frameOf()).locator('[data-codeman-frame-bridge]').count()).toBe(0);
 
-    await page.locator('#elementPopoverActions button').click();
+    await page.locator('#elementPopoverActions [data-pick-action="add-to-chat"]').click();
     await page.waitForSelector('#contextChips .chip-element');
     expect(await page.locator('#elementPopover').isHidden()).toBe(true);
     expect(await page.locator('#assistantView').isVisible()).toBe(true);
@@ -246,9 +246,9 @@ describe('canvas elements inside a live frame', () => {
   it('keeps the element chips when a send fails, removes one on request, and drops them when the page changes', async () => {
     await open();
     await pick('#start');
-    await page.locator('#elementPopoverActions button').click();
+    await page.locator('#elementPopoverActions [data-pick-action="add-to-chat"]').click();
     await pick('#stop');
-    await page.locator('#elementPopoverActions button').click();
+    await page.locator('#elementPopoverActions [data-pick-action="add-to-chat"]').click();
     await page.waitForFunction(() => document.querySelectorAll('#contextChips .chip-element').length === 2);
     await page.unroute('**/conversations/*/messages');
     await page.route('**/conversations/*/messages', (route) =>
@@ -284,18 +284,22 @@ describe('canvas elements inside a live frame', () => {
     expect(await page.locator('#contextChips .chip-element').count()).toBe(0);
   }, 60000);
 
-  it('offers a second action through the same seam, and tells listeners what was picked', async () => {
+  it('offers another action through the same seam, and tells listeners what was picked', async () => {
     await open();
     await page.evaluate(() => {
       const w = window as unknown as { picked: string[]; commented: string[] };
       w.picked = [];
       w.commented = [];
       window.canvasFrames.onPicked((e) => w.picked.push(e.selector));
-      window.canvasFrames.addPickAction({ id: 'comment', label: 'Comment', run: (e) => w.commented.push(e.selector) });
+      window.canvasFrames.addPickAction({ id: 'inspect', label: 'Inspect', run: (e) => w.commented.push(e.selector) });
     });
     await pick('#stop');
-    expect(await page.locator('#elementPopoverActions button').allTextContents()).toEqual(['Add to chat', 'Comment']);
-    await page.locator('#elementPopoverActions [data-pick-action="comment"]').click();
+    expect(await page.locator('#elementPopoverActions button').allTextContents()).toEqual([
+      'Add to chat',
+      'Comment',
+      'Inspect',
+    ]);
+    await page.locator('#elementPopoverActions [data-pick-action="inspect"]').click();
     const heard = await page.evaluate(() => {
       const w = window as unknown as { picked: string[]; commented: string[] };
       return { picked: w.picked, commented: w.commented };
@@ -471,7 +475,7 @@ describe('canvas elements inside a live frame', () => {
   it('shows the embed and flashes the element when its chip is used', async () => {
     await open();
     await pick('#stop');
-    await page.locator('#elementPopoverActions button').click();
+    await page.locator('#elementPopoverActions [data-pick-action="add-to-chat"]').click();
     await page.waitForSelector('#contextChips .chip-element');
     await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: [] }));
     await page.locator('#contextChips .chip-element .chip-label').click();
@@ -538,7 +542,7 @@ describe('canvas elements inside a live frame', () => {
     expect(await pending()).toEqual([]);
     // The legitimate frame still works beside it.
     await pick('#start');
-    await page.locator('#elementPopoverActions button').click();
+    await page.locator('#elementPopoverActions [data-pick-action="add-to-chat"]').click();
     expect(await pending()).toEqual(['#start']);
     expect((await view()).contextElements[0].objectId).toBe('board');
   }, 60000);

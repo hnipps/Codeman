@@ -675,8 +675,8 @@ describe('per-viewer canvas storage', () => {
     const a = canvasStorageKeys('user-a', 'ws');
     const b = canvasStorageKeys('user-b', 'ws');
     // Every key but the one clipboard is per viewer; PC13 added the phone's return ticket, and the frame
-    // bridge the elements pending for the next message.
-    expect(new Set([...Object.values(a), ...Object.values(b)]).size).toBe(30);
+    // bridge the elements pending for the next message, and element comments the element of an unposted one.
+    expect(new Set([...Object.values(a), ...Object.values(b)]).size).toBe(32);
     expect(canvasStorageKeys('user-a', 'other').clipboard).toBe(a.clipboard);
     expect(a.edits).not.toBe(canvasStorageKeys('user-a', 'other').edits);
   });
