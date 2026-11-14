@@ -42,6 +42,8 @@ import { PrototypesView } from './prototypes-view.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
 import { installPanelResize } from './panel-widths.js';
+import { ReviewView, REVIEW_RAIL_WIDTH } from './review.js';
+import { uuid } from './ids.js';
 import type { SessionViewRow } from './sessions.js';
 import {
   FullView,
@@ -98,6 +100,8 @@ let state = initialView(),
   objects: ViewObject[] = [],
   keyboard = false,
   frame = 0;
+/** Brief review; made once its dependencies exist, read earlier only through the rail-width floor. */
+let reviewView: ReviewView | null = null;
 const railOrigins = new Map<string, HTMLElement>();
 // A tapped button takes no focus on iOS, so the control a tap pressed stands in as the opener.
 let pressed: HTMLElement | null = null;
@@ -134,6 +138,7 @@ const panels = installPanelResize({
   isPhone: () => mobile.matches,
   storage,
   onResize: () => elementComments?.sync(),
+  floor: (panel) => (panel === 'rail' && reviewView?.current()?.mode === 'rail' ? REVIEW_RAIL_WIDTH : 0),
 });
 const assetUrl = (assetId: string): string | null =>
   /^[a-f0-9]{64}$/.test(assetId) ? url(`/api/canvas/${workspaceId}/assets/${assetId}`) : null;
@@ -214,6 +219,33 @@ const exporter = new ExportView({
   objects: () => objects,
   rest: () => board.focus({ preventScroll: true }),
 });
+const review: ReviewView = (reviewView = new ReviewView({
+  url,
+  workspace: workspaceId,
+  objects: () => objects,
+  comments: () => comments.all,
+  phone: () => mobile.matches,
+  apply: (object, text) =>
+    window.canvasEdit.apply([
+      {
+        kind: 'update',
+        opId: uuid(),
+        objectId: object.id,
+        expectedRevision: typeof object.revision === 'number' ? object.revision : 0,
+        patch: { content: { type: 'text', text } },
+      },
+    ]),
+  openThread: (objectId, commentId) => {
+    dispatch({ kind: 'focus', id: objectId });
+    dispatch({ kind: 'selection', ids: [objectId] });
+    dispatch({ kind: 'rail', view: 'thread' });
+    comments.goTo(commentId);
+  },
+  changed: () => {
+    panels.layout();
+    if (!frame) frame = requestAnimationFrame(paint);
+  },
+}));
 const assistant: AssistantView = new AssistantView({
   url,
   phone: () => mobile.matches,
@@ -300,6 +332,7 @@ const icons: Record<string, string> = {
   openOutline: 'M3 4h14v12H3zM7 4v12',
   closeRail: 'M5 5l10 10M15 5L5 15',
   closeSheet: 'M5 5l10 10M15 5L5 15',
+  reviewClose: 'M5 5l10 10M15 5L5 15',
   sectionsTool: 'M4 5h12M7 10h9M7 15h9M4 10h.01M4 15h.01',
   findTool: 'M9 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM13.5 13.5L17 17',
   alignXStart: 'M3 3v14M6 5h9v3H6zM6 12h6v3H6z',
@@ -545,6 +578,11 @@ function paint(): void {
   panels.layout();
   node('keysView').hidden = state.rail.at(-1) !== 'keys';
   node('readerView').hidden = state.rail.at(-1) !== 'reader';
+  const reviewing = reviewView?.current();
+  // A rail review belongs to the reader of its object: another object or another rail view ends it.
+  if (reviewing?.mode === 'rail' && (state.rail.at(-1) !== 'reader' || state.focusId !== reviewing.objectId))
+    reviewView?.close();
+  node('readerView').classList.toggle('reviewing', reviewView?.current()?.mode === 'rail');
   node('threadView').hidden = state.rail.at(-1) !== 'thread';
   node('historyView').hidden = state.rail.at(-1) !== 'history';
   node('assistantView').hidden = state.rail.at(-1) !== 'assistant';
@@ -645,6 +683,7 @@ function paintSheet(): void {
   }
   sheet.dataset.sheetFor = o.id;
   node('sheetTitle').textContent = label(o);
+  button('sheetReview').hidden = o.type !== 'text';
   const count = siblings(objects, o.id).length;
   const excerpt = readable(o).replace(/\s+/g, ' ').trim();
   node('sheetMeta').textContent = container(o)
@@ -709,6 +748,7 @@ function readObject(): void {
   }
   button('parent').hidden = !o?.parentId;
   button('children').hidden = !o || !siblings(objects, o.id).length;
+  button('readerReview').hidden = o?.type !== 'text' || mobile.matches;
 }
 const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 const keyNames: Record<string, string> = {
@@ -796,6 +836,13 @@ button('chatTool').onclick = openThread;
 button('readerComments').onclick = openThread;
 button('sheetComments').onclick = openThread;
 button('sheetRead').onclick = () => dispatch({ kind: 'rail', view: 'reader' });
+button('sheetReview').onclick = () => {
+  if (state.focusId) review.open(state.focusId, 'full');
+};
+button('readerReview').onclick = () => {
+  if (state.focusId) review.open(state.focusId, 'rail');
+};
+button('reviewClose').onclick = () => review.close();
 button('sheetParent').onclick = () => {
   const o = objects.find((o) => o.id === state.focusId);
   if (o?.parentId) {
@@ -1200,7 +1247,10 @@ document.addEventListener('keydown', (e) => {
       else node('announcement').textContent = 'Select one embed to pick an element in its page';
     } else if ((key === 'd' || key === 'f') && !e.shiftKey && !e.repeat && !mobile.matches) {
       const target = state.selected.length === 1 ? objects.find((o) => o.id === state.selected[0]) : undefined;
-      if (target?.type !== 'embed')
+      if (key === 'f' && target?.type === 'text') {
+        e.preventDefault();
+        review.open(target.id, 'full');
+      } else if (target?.type !== 'embed')
         node('announcement').textContent = 'Select one embed to open its page in the rail or the full view';
       else if (key === 'f' && !fullView) node('announcement').textContent = 'The full view is part of the canvas shell';
       else openPage(target.id, key === 'd' ? 'rail' : 'full', null);
@@ -1408,6 +1458,8 @@ const editor = new DesktopEditor({
     if (state.fullView !== kept.fullView) closeFullView(false);
     if (state.page !== kept.page) dispatch({ kind: 'page', objectId: null });
     comments.mark(renderer.elements);
+    reviewView?.changed();
+    reviewView?.paintBoard(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
     const first = initial;
@@ -1748,7 +1800,10 @@ const sync = new CanvasSync(
   }
 );
 sync.on('canvas:viewCommand', (data) => views.receive(data));
-sync.on('canvas:changed', (data) => elementComments?.serverChanged(data));
+sync.on('canvas:changed', (data) => {
+  elementComments?.serverChanged(data);
+  review.serverChanged(data);
+});
 for (const name of [
   'canvas:conversation',
   'transcript:update',

@@ -1540,7 +1540,9 @@ textarea[readonly] {
   background: color-mix(in srgb, var(--accent) 88%, var(--text));
 }
 .primary[aria-disabled='true'],
-.primary[aria-disabled='true']:hover {
+.primary[aria-disabled='true']:hover,
+.primary:disabled,
+.primary:disabled:hover {
   color: var(--muted);
   background: var(--raised);
   border-color: var(--divider);
@@ -3526,4 +3528,293 @@ textarea[readonly] {
   margin: 0 0 4px;
   color: var(--secondary);
   font-size: 12px;
+}
+
+/* Brief review (review.ts): a text object read as a document with typed notes. The rail holds it with the notes
+   under their paragraph; #reviewFull holds the full layout (document centre, notes right) and, on a phone, the
+   document with a bottom bar and the notes as a bottom sheet. Highlights are CSS Custom Highlights over text nodes. */
+#readerView.reviewing > :not(#reviewRail) {
+  display: none !important;
+}
+#readerView.reviewing {
+  padding: 0;
+}
+#reviewRail,
+#reviewRail > .review {
+  height: 100%;
+}
+::highlight(review-unsent) {
+  background-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+::highlight(review-sent) {
+  background-color: color-mix(in srgb, var(--secondary) 26%, transparent);
+}
+.review {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--divider);
+}
+.review-count {
+  flex: 1;
+  margin: 0;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.review-body-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+}
+.review-doc {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.review-line {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.review-line.blank {
+  min-height: 0.8em;
+}
+.review-answer {
+  margin: -2px 0 8px;
+  font-size: 12px;
+}
+.review-list {
+  list-style: none;
+  margin: 4px 0 12px;
+  padding: 0;
+}
+.review-note,
+.review-composer {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--divider);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--raised);
+  user-select: none;
+}
+.review-note[data-state='sent'] {
+  border-left-color: var(--secondary);
+}
+.review-note[data-state='resolved'] {
+  border-left-color: var(--divider);
+  opacity: 0.75;
+}
+.review-note-head,
+.review-composer-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+.review-kind {
+  font-weight: 600;
+}
+.review-state {
+  color: var(--secondary);
+}
+.review-note[data-state='unsent'] .review-state {
+  color: var(--accent);
+}
+.review-changed {
+  color: var(--critical);
+}
+.review-quote {
+  margin: 0 0 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--divider);
+  color: var(--secondary);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6.5em;
+  overflow: hidden;
+}
+.review-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review-note-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.review-note-actions button {
+  font-size: 12px;
+  min-height: 28px;
+}
+.review-field {
+  display: block;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.review-field textarea {
+  margin-top: 2px;
+  font-size: 14px;
+}
+.review-failed {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--critical);
+}
+.review-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--divider);
+  background: var(--panel);
+}
+.review-acts {
+  display: flex;
+  gap: 2px;
+}
+.review-act[aria-disabled='true'] {
+  color: var(--muted);
+}
+.review-to {
+  flex: 1;
+  min-width: 120px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.review-to select {
+  max-width: 100%;
+  font-size: 13px;
+}
+.review-status {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+}
+.review-status:empty {
+  display: none;
+}
+.review-empty {
+  font-size: 12px;
+}
+#reviewFull {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas);
+}
+#reviewFull[hidden] {
+  display: none;
+}
+.review-full-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left));
+  padding-top: max(8px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--divider);
+  background: var(--panel);
+}
+#reviewFullTitle {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#reviewFullBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+#reviewFullBody > .review {
+  flex: 1;
+}
+.review.full .review-body-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 68ch) minmax(280px, 400px);
+  justify-content: center;
+  gap: 32px;
+  padding: 24px 32px;
+}
+.review.full .review-doc {
+  font-size: 16px;
+}
+.review.full .review-notes {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: calc(100dvh - 180px);
+  overflow: auto;
+}
+.review.phone .review-body-wrap {
+  display: block;
+  padding: 16px;
+}
+.review.phone .review-doc {
+  font-size: 17px;
+}
+.review.phone button {
+  min-height: 44px;
+}
+.review.phone textarea,
+.review.phone select {
+  font-size: 16px;
+}
+.review.phone .review-bar {
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+.review.phone .review-sheet {
+  position: fixed;
+  top: auto;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 46;
+  max-height: 70dvh;
+  overflow: auto;
+  padding: 12px 16px max(16px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--divider);
+  border-radius: 10px 10px 0 0;
+  background: var(--panel);
+  box-shadow: 0 -6px 20px #0004;
+}
+.review.phone .review-sheet[hidden] {
+  display: none;
+}
+.review-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.review-applied {
+  align-self: center;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.review:focus {
+  outline: none;
 }

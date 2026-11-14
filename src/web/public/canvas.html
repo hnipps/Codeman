@@ -397,7 +397,8 @@
       </div>
       <p id="sheetMeta" class="secondary"></p>
       <div class="sheet-actions">
-        <button id="sheetRead" class="quiet">Read</button><button id="sheetComments" class="quiet">Comments</button
+        <button id="sheetRead" class="quiet">Read</button><button id="sheetReview" class="quiet" hidden>Review</button
+        ><button id="sheetComments" class="quiet">Comments</button
         ><button id="sheetParent" class="quiet">Focus parent</button
         ><button id="sheetExport" class="quiet" data-export-open>Export</button>
       </div>
@@ -601,6 +602,8 @@
         <p id="historyStatus" class="secondary" role="status"></p>
       </div>
       <div id="readerView" class="rail-body" hidden>
+        <!-- Brief review (review.ts): the text read as a document with notes under its paragraphs. -->
+        <div id="reviewRail" hidden></div>
         <p id="readerText"></p>
         <div id="textEdit" class="edit-control" hidden>
           <label class="sr" id="editorLabel" for="textEditor">Text</label>
@@ -634,11 +637,27 @@
         </div>
         <p id="readerCount" class="secondary" hidden></p>
         <dl id="readerMeta"></dl>
+        <button
+          id="readerReview"
+          class="quiet"
+          title="Select words and leave notes for the agent that wrote this · F full screen"
+          hidden
+        >
+          Review
+        </button>
         <button id="readerComments" class="quiet">Comments</button>
         <button id="parent" class="quiet">Focus parent <kbd role="img" aria-label="Left arrow">←</kbd></button
         ><button id="children" class="quiet">Explore children <kbd role="img" aria-label="Right arrow">→</kbd></button>
       </div>
     </aside>
+    <section id="reviewFull" role="dialog" aria-labelledby="reviewFullTitle" hidden>
+      <div class="review-full-head">
+        <span class="secondary">Review</span>
+        <p id="reviewFullTitle"></p>
+        <button id="reviewClose" type="button" aria-label="Close review" title="Close · Escape"></button>
+      </div>
+      <div id="reviewFullBody"></div>
+    </section>
     <span id="announcement" class="sr" role="status" aria-live="polite"></span>
   </body>
 </html>
