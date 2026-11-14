@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A prototype shown where chrome lives, and frames that survive the workspace gate
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/{slots,frame-loader,presence,prototypes-view,media,full-view,view-sync,commands,entry}.ts`, `packages/canvas/src/objects/embed.ts`, `src/canvas/{view-schema,view-registry,commands}.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`, `src/web/public/canvas.{html,css}`, `skills/codeman/reference/verbs.md`
+**Why:** A prototype of a rail view or a full view could only be a board object, so it was never seen at its real size and place. And "served only while the workspace is open" left blank frames: the first paint could ask before the first view publish, and a retired address looked like a loaded page.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas prototypes"](architecture-invariants.md#canvas-prototypes)
+
+Decision. A slot shows an embed that is already on the board. It is not a second object type and stores nothing, so the operation log is unchanged and a reload starts with the slots empty. There are two slots, rail and full, one frame each. The frame is built by the board's own function from the board's own frame route, so the sandbox cannot drift. An agent steers a slot with `canvas_view open-page` and `close-page`.
+
+Decisions the brief left open. The full view for an embed is on shell pages only, because the full view exists only there. A hidden tab deletes its view on the server as well as stopping its publishes, so serving stops at once; without the delete the registry would keep serving for up to 60 s. The 409 retry keys on the status and the prototype address, with no new error code. Silence is judged for prototype frames only: a proxied page can lack the bridge for honest reasons. An agent's open is refused while the person types anywhere on the canvas, for both slots.
+
+Found by the browser test. The first design let a slot's page keep focus when the pointer was over it. A sandboxed frame is out of process and the parent document saw no pointer event for it, so every click into the page was read as the page grabbing focus. The slot now has a shield, as board frames do: one click or a Tab gives the page the keyboard, and only an event in the canvas's own document can do that. The cost is that hover styles in the page do not show until that click. The same test has a page that calls `focus()` on itself and counts that the grab happened before asserting the keyboard came back.
+
+Rejected. Letting a bridge message lift the shield: the page can post any message. A new object type for a docked page: stored data would gain a kind the previous release cannot replay.
+
 ## 2026-11-13 — Every local Claude launch carries the Codeman MCP server
 
 **Type:** intent-refinement
