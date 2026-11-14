@@ -29,6 +29,7 @@ import {
   type CanvasObject,
   type CanvasState,
 } from './model.js';
+import { PROTOTYPE_HOST, parsePrototypeAddress } from './prototype-address.js';
 
 export const MAX_CALLER_OPERATIONS = 1000;
 export const MAX_EXPANDED_OPERATIONS = MAX_CALLER_OPERATIONS * 10;
@@ -157,15 +158,40 @@ function hierarchyReason(state: CanvasState, o: CanvasObject, isKnown: (id: stri
   return null;
 }
 
+/** Whether the workspace being written holds that prototype version with that entry file. */
+export type PrototypeStored = (id: string, version: number, entry: string) => boolean;
+
+/**
+ * Why an address on the reserved prototype host cannot be written, or null. Such an address is only
+ * ever an embed, and only of a version the workspace holds: `stored` is the store's answer, and a
+ * caller that only previews a write (no store behind it) passes none.
+ */
+export function prototypeAddressRefusal(url: string, type: 'link' | 'embed', stored?: PrototypeStored): string | null {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  if (host !== PROTOTYPE_HOST) return null;
+  if (type !== 'embed') return 'A prototype can only be shown as an embed, not as a link';
+  const address = parsePrototypeAddress(url);
+  if (!address) return 'This is not a prototype address. Publish the page with canvas_prototype to get one';
+  if (stored && !stored(address.id, address.version, address.entry))
+    return `Version ${address.version} of prototype "${address.id}" is not stored in this workspace. Publish it with canvas_prototype`;
+  return null;
+}
+
 export function validateBatch(
   initial: CanvasState,
   commands: Command[],
   author: Author,
   now = 0,
-  historyRemovals?: ReadonlySet<string>
+  historyRemovals?: ReadonlySet<string>,
+  prototypeStored?: PrototypeStored
 ): BatchResult {
   try {
-    return validateBatchUnchecked(initial, commands, author, now, historyRemovals);
+    return validateBatchUnchecked(initial, commands, author, now, historyRemovals, prototypeStored);
   } catch (error) {
     if (error instanceof HierarchyError) return { ok: false, reasons: [error.reason] };
     throw error;
@@ -177,7 +203,8 @@ function validateBatchUnchecked(
   commands: Command[],
   author: Author,
   now = 0,
-  historyRemovals?: ReadonlySet<string>
+  historyRemovals?: ReadonlySet<string>,
+  prototypeStored?: PrototypeStored
 ): BatchResult {
   const known = knownObjectIds(initial);
   const staged = new Map<string, CanvasObject>();
@@ -329,7 +356,10 @@ function validateBatchUnchecked(
         before.type !== proposed.content.type ||
         ('url' in before ? before.url : null) !== proposed.content.url;
       const url = proposed.content.url;
-      const refusal = changed ? webAddressRefusal(typeof url === 'string' ? url : '') : null;
+      const address = typeof url === 'string' ? url : '';
+      const refusal = changed
+        ? (webAddressRefusal(address) ?? prototypeAddressRefusal(address, proposed.content.type, prototypeStored))
+        : null;
       if (refusal) return reject('INVALID', refusal);
     }
     const parentLock = proposed.parentId === null ? null : effectiveLock(state, proposed.parentId);
