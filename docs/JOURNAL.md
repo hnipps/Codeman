@@ -86,6 +86,15 @@ Decisions the intent did not settle. The popover offers Add to chat only; Commen
 
 Three faults found by the browser test. A strict page policy blocked the bridge, so the proxy now adds the bridge's hash to that policy. The hash did not match on a page served without a charset, because the script held non-ASCII comment characters; the script is ASCII only now. A closed loop that ended on its starting point over a selected embed read as a click and handed the page the keyboard; a click is now judged by how far the pointer went. Reload also left a second shield in the stage, which is fixed.
 
+## 2026-11-14 — The build rewrites every page to its hashed assets
+
+**Type:** incident
+**Touches:** `scripts/build.mjs`
+**Why:** After PRs #42 and #43 the live canvas still showed agent replies as plain text. The build renamed `sanitize-html.js` and `mermaid-render.js` to hashed names and rewrote only `index.html`, so `canvas.html` asked for two files that did not exist. `renderMarkdown()` found no sanitizer and fell back to text, as designed. Every test passed because the tests serve `src/web/public`, where nothing is renamed.
+**Links:** [intent/2026-11-13-canvas-agent-markdown.md](../intent/2026-11-13-canvas-agent-markdown.md)
+
+Decision. The hashing step rewrites every `.html` page in `dist/web/public`, then fails the build when a page names a local `.js` or `.css` file that is not on disk. The build runs in every deploy, so a page pointing at a missing file is now rejected before it goes live. Run against the old release, the check names exactly the two missing files.
+
 ## 2026-11-13 — An agent's messages and background task results render Markdown too
 
 **Type:** intent-refinement
