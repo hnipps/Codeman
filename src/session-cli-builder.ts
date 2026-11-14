@@ -131,6 +131,7 @@ export function buildNameCliArgs(sessionName: string | undefined, cliVersion: st
  * @param sessionName - Optional Codeman session name, passed as `--name` (version-gated)
  * @param cliVersion - Installed Claude CLI version for the `--name` gate (null = omit the flag)
  * @param advisorModel - Optional advisor model, merged into the one `--settings` JSON (see buildAdvisorSettings)
+ * @param mcpConfigJson - Optional inline `--mcp-config` JSON for Codeman's own MCP server (agent-mcp-config.ts)
  * @returns Array of CLI arguments
  */
 export function buildInteractiveArgs(
@@ -141,7 +142,8 @@ export function buildInteractiveArgs(
   effort?: EffortLevel,
   sessionName?: string,
   cliVersion?: string | null,
-  advisorModel?: string
+  advisorModel?: string,
+  mcpConfigJson?: string
 ): string[] {
   const args = [...buildPermissionArgs(claudeMode, allowedTools), '--session-id', sessionId];
   if (model) args.push('--model', model);
@@ -155,6 +157,8 @@ export function buildInteractiveArgs(
   } else {
     args.push(...effortArgs, '--settings', JSON.stringify(advisor));
   }
+  // `--mcp-config` is variadic: keep it ahead of `--name`, and never add a positional after it.
+  if (mcpConfigJson) args.push('--mcp-config', mcpConfigJson);
   args.push(...buildNameCliArgs(sessionName, cliVersion));
   return args;
 }

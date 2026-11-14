@@ -1102,6 +1102,8 @@ Skills are copied into each CLI's user skill directory. A plugin is also install
 
 `codeman mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio, so any MCP client (Claude Code, Claude Desktop, Codex, Gemini CLI, Cursor, ...) can start Codeman sessions in any installed agent CLI, prompt them, wait for them, read their answers and clean up, from inside Codeman or from outside it. Like `codeman agent`, it is a client of the HTTP API. The MCP server adds no routes of its own, and auth and ownership are unchanged.
 
+A Claude Code session that Codeman starts on this machine already has the server: every launch attaches it under the name `codeman`, beside your own MCP servers, so there is nothing to register. Turn that off with **Codeman MCP Server** in App Settings. Remote (SSH) and Docker sessions, other agent CLIs and clients outside Codeman register it by hand:
+
 ```bash
 # Claude Code
 claude mcp add codeman -e CODEMAN_API_URL=https://127.0.0.1:3000 -- codeman mcp

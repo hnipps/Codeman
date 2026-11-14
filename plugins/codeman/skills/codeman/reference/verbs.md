@@ -879,7 +879,12 @@ for budgets, receipt expiry, conflict handling and supported composers.
 
 ### Canvas MCP
 
-Register once with Claude Code from a Codeman case session:
+A local Claude Code session that Codeman launches already has this server: every
+launch carries it as `--mcp-config`, under the name `codeman`, so the tools appear as
+`mcp__codeman__canvas_read` and so on with no setup. Remote (SSH) and Docker
+sessions do not get it, and neither does a session started while the synced
+`agentMcpEnabled` setting is stored as `false` (App Settings, **Codeman MCP Server**).
+There, or for another MCP client, register it by hand from a Codeman case session:
 
 ```bash
 claude mcp add codeman -- codeman mcp
@@ -889,8 +894,8 @@ The MCP process inherits `CODEMAN_API_URL`, `CODEMAN_MUX` and
 `CODEMAN_SESSION_ID` from the pane. For a client outside that environment, configure
 the server URL explicitly with `--url`/`CODEMAN_API_URL` and use a Codeman case
 session for canvas calls. The synced `canvasEnabled` setting must not be off (it is on
-unless stored as `false`), and the case's canvas workspace must exist first. Registration is manual; launch does not rewrite
-client configuration.
+unless stored as `false`), and the case's canvas workspace must exist first. The launch flag adds to the session's
+own MCP servers and writes no client configuration.
 
 Use `canvas_read` with a container's `root` ID for its complete nested hierarchy,
 `canvas_search` for text and ancestor paths, and `canvas_query` for inclusive world

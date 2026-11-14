@@ -68,8 +68,10 @@ import {
   buildSpawnCommandFromRegistry,
   configSetenvValues,
   launchGatePasses,
+  cliTakesAgentMcp,
   legacyConfigForMode,
 } from './session-cli-registry-bridge.js';
+import { resolveAgentMcpConfigJson } from './agent-mcp-config.js';
 import { keepWarmOn } from './prompt-cache-keepwarm.js';
 import type { CliEntry } from './config/cli-registry/types.js';
 import {
@@ -1182,6 +1184,8 @@ export function buildSpawnCommand(options: {
   statusLineCommand?: string;
   /** Add `idleCompaction: false` to the launch's one `--settings` JSON (see decideIdleCompactionOptOut). */
   idleCompactionOff?: boolean;
+  /** Inline `--mcp-config` JSON for Codeman's own MCP server (resolveAgentMcpConfigJson). Undefined omits the flag. */
+  mcpConfigJson?: string;
   /** Name pinned on claude as `--name` (version-gated, sanitized; local spawns only). By default only a user-chosen name; `pinCliSessionName` pins every tab name: see `Session.cliPinnedName`. */
   sessionName?: string;
   /**
@@ -2398,6 +2402,16 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
   }
 
   /**
+   * Codeman's own MCP server for one launch, as inline `--mcp-config` JSON. Only for a CLI
+   * whose launch template takes it and only for a local spawn: the remote and docker command
+   * builders are separate, and this server's entry script does not exist on their side.
+   */
+  private async _resolveAgentMcpConfig(mode: SessionMode, remoteOrDocker: boolean): Promise<string | undefined> {
+    if (remoteOrDocker || !cliTakesAgentMcp(mode)) return undefined;
+    return resolveAgentMcpConfigJson();
+  }
+
+  /**
    * Whether this launch carries `idleCompaction: false` (decideIdleCompactionOptOut), with the
    * keep-warm app default read fresh like the plan-usage switch above. Logged when keep-warm is
    * on but the version gate keeps the key off, so a session that may still idle-compact says why.
@@ -2548,6 +2562,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       !!(remote || docker)
     );
     const idleCompactionOff = await this._resolveIdleCompactionOptOut(mode, statusLine, keepWarm, spawnedByAgent);
+    const mcpConfigJson = await this._resolveAgentMcpConfig(mode, !!(remote || docker));
     // The user's own REAL statusLine, if any (walked via Claude Code's own
     // settings precedence) — exported below so the shared exporter script
     // can wrap it. Only worth discovering when we're actually injecting.
@@ -2573,6 +2588,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       advisorModel,
       statusLineCommand,
       idleCompactionOff,
+      mcpConfigJson,
       sessionName: cliName,
     });
 
@@ -2852,6 +2868,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       !!(remote || docker)
     );
     const idleCompactionOff = await this._resolveIdleCompactionOptOut(mode, statusLine, keepWarm, spawnedByAgent);
+    const mcpConfigJson = await this._resolveAgentMcpConfig(mode, !!(remote || docker));
     const userStatusLineCommand = statusLineCommand ? await findEffectiveUserStatusLineCommand(workingDir) : undefined;
 
     const baseCmd = buildSpawnCommand({
@@ -2874,6 +2891,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       advisorModel,
       statusLineCommand,
       idleCompactionOff,
+      mcpConfigJson,
       sessionName: cliName,
     });
     const config = niceConfig || DEFAULT_NICE_CONFIG;

@@ -152,6 +152,12 @@ extension tools import and remove plugins and skills for every agent CLI.
 `logs_query` returns already-redacted telemetry lines as text. `codeman extension`
 is the same service as a local command (`codeman extension --help`).
 
+A Claude Code session that Codeman starts on this machine already has the server:
+every launch attaches it under the name `codeman`, beside your own MCP servers, so
+there is nothing to register. Turn that off with **Codeman MCP Server** in App
+Settings. Remote (SSH) and Docker sessions, other agent CLIs and clients outside
+Codeman register it by hand:
+
 ```bash
 # Claude Code
 claude mcp add codeman -e CODEMAN_API_URL=https://127.0.0.1:3000 -- codeman mcp

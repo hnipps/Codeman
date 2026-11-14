@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — Every local Claude launch carries the Codeman MCP server
+
+**Type:** intent-refinement
+**Touches:** `src/agent-mcp-config.ts`, `src/config/cli-registry/stock.ts`, `src/session-cli-registry-bridge.ts`, `src/tmux-manager.ts`, `src/session-cli-builder.ts`, `src/session.ts`, `src/hooks-config.ts`, `src/web/schemas.ts`, `skills/codeman/reference/verbs.md`
+**Why:** No Claude session had the canvas tools unless someone ran `claude mcp add` in it first, so an agent started from the canvas and one started from a terminal could not do the same work.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md)
+
+Decision. The launch carries one inline `--mcp-config` argument that names this process's own entry script, behind the synced `agentMcpEnabled` setting (absent means on). It is not a `codeman` looked up on PATH, because two instances on one machine can run different code. Which CLI takes it is read off the launch template (the `codemanMcpConfigJson` engine value), so there is no new capability flag that could disagree with the template.
+
+Rejected. Writing the server into the user's Claude configuration: launch must not rewrite client configuration, and an entry there would outlive the instance that wrote it. `--strict-mcp-config`: it drops the user's own servers.
+
+Measured on Claude Code 2.1.325. A `codeman` server the user already has in local scope is not started when the launch names one inline; `/mcp` shows a single `codeman`. Positionals after `--mcp-config` are read as more configs, so the flag stays ahead of `--name`.
+
 ## 2026-11-13 — The assistant rail does not ask for the transcript of a deleted session
 
 **Type:** drift
