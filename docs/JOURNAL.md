@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — An agent's messages and background task results render Markdown too
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/assistant.ts`, `packages/canvas/src/tasks-view.ts`
+**Why:** Harry asked for every agent message in the assistant chat and the background task view to render, not only Claude's replies.
+**Links:** [intent/2026-11-13-canvas-agent-markdown.md](../intent/2026-11-13-canvas-agent-markdown.md)
+
+Decision. A rail turn renders unless a person wrote it, so a message an agent sent into a conversation renders like Claude's reply. A task row's result renders through the same `renderMarkdown()`, reused across the list's repaints so its diagram draws once. A person's own prompt still stays plain text.
+
 ## 2026-11-13 — Agent text on the canvas renders Markdown and Mermaid
 
 **Type:** intent-refinement

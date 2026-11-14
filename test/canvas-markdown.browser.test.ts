@@ -1,7 +1,8 @@
 /**
  * @fileoverview Agent text on the canvas page renders as Markdown, and its Mermaid fences become diagrams through the
- * shared renderer frame: Claude's turns in the assistant rail and an agent's comment in a thread. A person's text
- * stays plain. The transcript read is stubbed; the parser, sanitizer and Mermaid frame are the real ones.
+ * shared renderer frame: Claude's turns in the assistant rail, an agent's comment in a thread and a background task's
+ * result. A person's text stays plain. The transcript and task reads are stubbed; the parser, sanitizer and Mermaid
+ * frame are the real ones.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -131,5 +132,31 @@ describe('canvas agent Markdown and Mermaid', () => {
     await page
       .locator('#rail')
       .screenshot({ path: resolve('test-results', `canvas-markdown-thread-${Date.now()}.png`) });
+  }, 60000);
+
+  it("renders a background task's result as Markdown with its diagram", async () => {
+    const row = {
+      id: 't1',
+      requestId: '00000000-0000-4000-8000-000000000001',
+      name: 'Plan the release',
+      sessionId: 's1',
+      cliId: 'claude',
+      cliLabel: 'Claude Code',
+      createdAt: Date.now(),
+      state: 'completed',
+      isolation: { kind: 'shared', label: 'Shared checkout' },
+      result: { text: REPLY, truncated: false },
+      refs: [],
+    };
+    await page.route('**/api/canvas/*/tasks*', (route) =>
+      route.fulfill({ json: { success: true, data: { tasks: [row], leftBehind: [] } } })
+    );
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'tasks' }));
+    await page.waitForSelector('[data-task-id="t1"] .task-result.md h2');
+    const result = page.locator('[data-task-id="t1"] .task-result');
+    expect(await result.locator('strong').textContent()).toBe('steps');
+    await diagram('[data-task-id="t1"]');
+    await page.locator('#rail').screenshot({ path: resolve('test-results', `canvas-markdown-task-${Date.now()}.png`) });
+    await page.unroute('**/api/canvas/*/tasks*');
   }, 60000);
 });

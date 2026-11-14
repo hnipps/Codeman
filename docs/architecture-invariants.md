@@ -604,7 +604,8 @@ Postinstall prepares dev assets. The production build prepares the same document
 inside `dist`. The fixed-name HTML response uses `no-cache`.
 
 The canvas page loads the same `mermaid-render.js`, `marked` and sanitizer for
-agent text (Claude's rail turns and agent-authored comments), so it gets the same
+agent text (Claude's and an agent's rail turns, agent-authored comments and
+background task results), so it gets the same
 frame and the same limits. A person's text on the canvas stays plain.
 
 The dashboard creates one lazy iframe with `sandbox="allow-scripts"`, never

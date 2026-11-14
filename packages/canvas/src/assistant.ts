@@ -1064,9 +1064,9 @@ export class AssistantView {
     }
     if (atEnd) list.scrollTop = list.scrollHeight;
   }
-  /** Claude's text as rendered Markdown; a person's or agent's prompt, or a page without the renderer, as plain text. */
+  /** Claude's and an agent's text as rendered Markdown; a person's prompt, or a page without the renderer, as plain text. */
   private turnText(turn: Turn, conversationId: string, used: Map<string, HTMLElement>): HTMLElement {
-    if (turn.who === 'claude') {
+    if (turn.who !== 'you') {
       const key = `${conversationId}\0${turn.key}\0${turn.text}`;
       const body = this.rendered.get(key) ?? renderMarkdown(turn.text);
       if (body) {
