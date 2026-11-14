@@ -362,6 +362,22 @@ describe('canvas comments on an element of a live page', () => {
     expect(await anchors()).toEqual({});
   }, 90000);
 
+  it('hides a pin in the same paint that opens the rail over it', async () => {
+    await seed();
+    // Far enough right that the pin on #start sits where the rail will open.
+    await open({ x: 1000, y: 40, zoom: 1 });
+    await commentOn('#start', 'Under the rail');
+    await closeRail();
+    await expect.poll(() => pins().count()).toBe(1);
+    const pin = (await pins().boundingBox())!;
+    expect(pin.x).toBeGreaterThan(1440 - 320);
+    await openThread();
+    // Read in the paint that showed the rail, before anything else repaints the board.
+    expect(await pins().count()).toBe(0);
+    await closeRail();
+    await expect.poll(() => pins().count()).toBe(1);
+  }, 90000);
+
   it('gives comments on one element one pin with a count, numbers the next element, and posts a plain comment once the element is removed', async () => {
     await seed();
     await open();

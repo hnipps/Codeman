@@ -509,7 +509,6 @@ function paint(): void {
   }
   renderer.view(state, keyboard);
   editor.media.frames();
-  elementComments?.sync();
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
@@ -521,6 +520,8 @@ function paint(): void {
   node('tasksView').hidden = state.rail.at(-1) !== 'tasks';
   node('pageView').hidden = state.rail.at(-1) !== 'page';
   paintPage();
+  // After the panels: a pin hides where the rail or outline now covers its frame, and that is read from the page.
+  elementComments?.sync();
   button('tasksTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'tasks'));
   tasks.sync();
   button('assistantTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'assistant'));
