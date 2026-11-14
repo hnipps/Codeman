@@ -599,7 +599,10 @@ describe('canvas MCP HTTP parity', () => {
     expect((await runner.run('canvas_screenshot', { objectId: 'section', workspaceId: 'other' })).text).toContain(
       'Unknown field'
     );
-    expect((await runner.run('canvas_screenshot', {})).text).toContain('objectId');
+    expect((await runner.run('canvas_screenshot', { objectId: 'no spaces' })).text).toContain('objectId is invalid');
+    const whole = await runner.run('canvas_screenshot', {});
+    expect(seen.path).toBe('/api/v1/canvas/current/screenshot');
+    expect(whole.images?.[0]?.data).toBe(png.toString('base64'));
     const unconfigured = createToolRunner({
       config: { allowAnySession: false, version: 'test' },
       request,
