@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 import puppeteer from 'puppeteer';
+import { PNG } from 'pngjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { checkPrototype, stopScreenshotRenders } from '../src/canvas/canvas-screenshot.js';
 import { capturePrototype, type CapturedPrototype } from '../src/canvas/prototype-capture.js';
@@ -41,6 +42,15 @@ function render() {
   if (go) go.addEventListener('click', () => { localStorage.setItem('view', 'settings'); render(); });
 }
 render();`;
+/** A WebGL canvas cleared to opaque red after load, the way a renderer draws once and then waits. */
+const GL_HTML = `<!doctype html><html><body style="margin:0"><canvas id="gl" width="40" height="30"></canvas><script>
+requestAnimationFrame(function () {
+  var gl = document.getElementById('gl').getContext('webgl');
+  gl.clearColor(1, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  document.body.setAttribute('data-drawn', '1');
+});
+</script></body></html>`;
 const SITE_CSS = `@import "theme.css";
 body { margin: 0; font-family: Fixture, sans-serif; background: url("../img/dot.png") repeat; }
 @font-face { font-family: Fixture; src: url("/fonts/missing.woff2") format("woff2"); }`;
@@ -87,6 +97,7 @@ describe('prototype capture in a real browser', () => {
       if (req.url === '/css/theme.css') return send('text/css', 'h1 { letter-spacing: 1px; }');
       if (req.url === '/img/dot.png') return send('image/png', DOT);
       if (req.url === '/img/huge.png') return send('image/png', Buffer.alloc(6 * 1024 * 1024));
+      if (req.url === '/gl') return send('text/html', GL_HTML);
       if (req.url === '/huge')
         return send('text/html', '<!doctype html><html><body><img src="/img/huge.png"></body></html>');
       if (req.url?.startsWith('/fonts/')) {
@@ -181,6 +192,21 @@ describe('prototype capture in a real browser', () => {
       expect(report.failedRequests, entry).toEqual([]);
     }
   }, 90_000);
+
+  it('captures what a WebGL canvas shows, not a cleared buffer', async () => {
+    const gl = await capturePrototype({
+      baseUrl: appUrl,
+      settleMs: 300,
+      states: [{ name: 'gl', steps: [{ goto: '/gl' }, { waitFor: 'body[data-drawn]' }] }],
+    });
+    const pictures = gl.files.filter((f) => f.path.startsWith('assets/') && f.path.endsWith('.png'));
+    expect(pictures).toHaveLength(1);
+    const png = PNG.sync.read(pictures[0].data);
+    expect([png.width, png.height]).toEqual([40, 30]);
+    // Opaque red at the centre; before the fix every pixel was transparent black.
+    const at = ((15 * png.width + 20) << 2) >>> 0;
+    expect(Array.from(png.data.subarray(at, at + 4))).toEqual([255, 0, 0, 255]);
+  }, 60_000);
 
   it('refuses an app whose file breaks a prototype limit, naming the limit', async () => {
     await expect(

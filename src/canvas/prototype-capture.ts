@@ -240,6 +240,18 @@ const pageFetchSource = (url: string, max: number): string =>
   `for(var i=0;i<b.length;i+=32768)s+=String.fromCharCode.apply(null,b.subarray(i,i+32768));` +
   `return {type:r.headers.get('content-type'),b64:btoa(s)}}catch(e){return null}})()`;
 
+/**
+ * Runs before the app's own scripts on every page of a capture: a WebGL context is created with
+ * `preserveDrawingBuffer`, so the snapshot's `toDataURL()` reads what the canvas shows. Without it the
+ * buffer is cleared once a frame is composited and a WebGL canvas (xterm's renderer, a map, a chart)
+ * is captured as a transparent picture.
+ */
+export const PRESERVE_WEBGL_SOURCE =
+  `(function(){var P=HTMLCanvasElement.prototype,g=P.getContext;if(!g||g.__ccaPreserve)return;` +
+  `var f=function(type,attrs){if(type==='webgl'||type==='webgl2'||type==='experimental-webgl')` +
+  `attrs=Object.assign({},attrs||{},{preserveDrawingBuffer:true});return g.call(this,type,attrs)};` +
+  `f.__ccaPreserve=true;P.getContext=f})()`;
+
 const seedSource = (origin: string, seed: Record<string, string>): string =>
   `(function(){try{if(location.origin!==${JSON.stringify(origin)})return;var s=${JSON.stringify(seed)};` +
   `for(var k in s)localStorage.setItem(k,s[k])}catch(e){}})()`;
@@ -326,6 +338,7 @@ export async function capturePrototype(input: unknown, options: CaptureOptions =
         try {
           const page = await context.newPage();
           await setUpPage(page, viewport);
+          await page.evaluateOnNewDocument(PRESERVE_WEBGL_SOURCE);
           const responses = new Map<string, HTTPResponse>();
           page.on('response', (response) => {
             const status = response.status();

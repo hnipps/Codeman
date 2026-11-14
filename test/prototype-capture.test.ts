@@ -21,7 +21,12 @@ import {
   captureRuntimeScript,
   type CaptureRuntimeData,
 } from '../src/canvas/capture-runtime.js';
-import { assembleStatePage, assetExtension, replaceTokens } from '../src/canvas/prototype-capture.js';
+import {
+  PRESERVE_WEBGL_SOURCE,
+  assembleStatePage,
+  assetExtension,
+  replaceTokens,
+} from '../src/canvas/prototype-capture.js';
 import { forkId } from '../src/canvas/prototypes.js';
 
 const base = 'http://app.test:4000/';
@@ -327,6 +332,35 @@ describe('the runtime in a page', () => {
     expect(host.shadowRoot).toBeNull();
     expect(document.body.querySelector('codeman-capture-switcher')).toBeNull();
     expect(HIDE_HASH).toBe('#cca-hide');
+  });
+});
+
+describe('WebGL canvases', () => {
+  it('asks every WebGL context to keep its drawing buffer, leaves 2d alone, and installs once', () => {
+    const proto = HTMLCanvasElement.prototype;
+    const original = proto.getContext;
+    const seen: [string, unknown][] = [];
+    proto.getContext = function (type: string, attrs?: unknown) {
+      seen.push([type, attrs]);
+      return null;
+    } as typeof proto.getContext;
+    try {
+      (0, eval)(PRESERVE_WEBGL_SOURCE);
+      const patched = proto.getContext;
+      (0, eval)(PRESERVE_WEBGL_SOURCE);
+      expect(proto.getContext).toBe(patched);
+      const canvas = document.createElement('canvas');
+      canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false });
+      canvas.getContext('webgl');
+      canvas.getContext('2d', { alpha: false });
+      expect(seen).toEqual([
+        ['webgl2', { antialias: false, preserveDrawingBuffer: true }],
+        ['webgl', { preserveDrawingBuffer: true }],
+        ['2d', { alpha: false }],
+      ]);
+    } finally {
+      proto.getContext = original;
+    }
   });
 });
 
