@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { dataPath } from '../config/instance.js';
 import { deployRole, DeployRoleRefusal } from '../deploy-role.js';
+import { prototypeVersionStored } from './prototypes.js';
 import {
   AuthorSchema,
   IdSchema,
@@ -296,7 +297,9 @@ export class CanvasStore {
           },
         ],
       };
-    const result = validateBatch(this.state, commands, author, Date.now());
+    const result = validateBatch(this.state, commands, author, Date.now(), undefined, (id, version, entry) =>
+      prototypeVersionStored(this.workspaceId, id, version, entry)
+    );
     if (!result.ok) return result;
     if (!result.operations.length) return { ok: true, seq: this.state.seq, operations: [], sequences: [] };
     requireCanvasWriter();

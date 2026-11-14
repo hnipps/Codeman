@@ -1,7 +1,8 @@
 /**
  * @fileoverview Embed objects: a slim header (title, host, Reload, Open, Back to link) over a
- * stage. The stage shows the link card with "Paused" until the editor puts a live frame in it;
- * the screenshot renderer never does, so it never loads a remote page.
+ * stage. The stage shows the link card with "Paused" until the editor puts a live frame in it.
+ * The screenshot page never loads a remote page: its cards carry its own note (`ctx.embedNote`),
+ * and it frames only a stored prototype, from bytes the server hands it.
  */
 import type { ViewObject } from '../model.js';
 import type { MediaContext } from './image.js';
@@ -76,7 +77,7 @@ export function paintEmbed(body: HTMLElement, o: ViewObject, ctx: MediaContext):
       card,
       { ...o, content: { ...o.content, type: 'link', preview: 'ready' } },
       ctx,
-      stage.dataset.note ?? 'Paused'
+      stage.dataset.note ?? ctx.embedNote ?? 'Paused'
     );
   }
 }

@@ -48,6 +48,10 @@ import { LRUMap } from '../../utils/lru-map.js';
 import { canvasFailure, caseFolderUnavailable } from './canvas-failure.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
+import { PROTOTYPE_HOST, parsePrototypeAddress } from '../../canvas/prototype-address.js';
+import { PROTOTYPE_FRAME_PREFIX, prototypeFrames } from '../../canvas/prototype-frames.js';
+import { prototypeVersionStored, readPrototypeFile } from '../../canvas/prototypes.js';
+import { registerPrototypeRoutes, registerPrototypeServeRoute } from './canvas-prototype-routes.js';
 
 /** A no-op answer writes nothing, so its request identity is held here instead of in the log. */
 const noopRequests = new LRUMap<string, string>({ maxSize: 2000 });
@@ -82,6 +86,7 @@ function retireFrames(workspaceId: string, operations: Pick<Operation, 'prev'>[]
   const ids = new Set(retiredEmbeds(operations));
   if (!ids.size) return;
   removeCanvasWebviews((origin) => origin.workspaceId === workspaceId && ids.has(origin.objectId));
+  prototypeFrames.retire((frame) => frame.workspaceId === workspaceId && ids.has(frame.objectId));
 }
 
 /** Who a rate limit counts against: the user in multi-user mode, else the client address. */
@@ -218,6 +223,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       { parseAs: 'buffer', bodyLimit: 9 * 1024 * 1024 },
       (_req, body, done) => done(null, body)
     );
+    registerPrototypeServeRoute(scope, views);
     scope.get('/api/canvas/workspaces', async (req) => {
       const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
       const user = getAuthUser(req);
@@ -320,6 +326,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       registerConversationRoutes(workspaceScope, ctx);
       registerTaskRoutes(workspaceScope, ctx);
       registerShellRoutes(workspaceScope, ctx);
+      registerPrototypeRoutes(workspaceScope, ctx, { views, callerKey, retireFrames, requestIdentity });
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
         // Room for the pending elements a view reports (`contextElements`).
@@ -767,7 +774,49 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             return reply
               .code(409)
               .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only a live embed object has a page to show'));
-          const target = typeof object.content.url === 'string' ? parseWebviewUrl(object.content.url) : null;
+          const owner = readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner;
+          const address = typeof object.content.url === 'string' ? object.content.url : '';
+          const prototype = parsePrototypeAddress(address);
+          if (prototype || URL.parse(address)?.hostname === PROTOTYPE_HOST) {
+            // A stored prototype is served by Codeman itself, never proxied, and only to an open workspace.
+            // Nothing is awaited between reading the object above and the mint below.
+            if (
+              !prototype ||
+              !prototypeVersionStored(req.params.workspaceId, prototype.id, prototype.version, prototype.entry)
+            )
+              return reply
+                .code(404)
+                .send(
+                  createErrorResponse(
+                    ApiErrorCode.NOT_FOUND,
+                    'This prototype version is no longer stored. Publish it again with canvas_prototype.'
+                  )
+                );
+            if (!views.list(req.params.workspaceId, (viewOwner) => canAccessOwned(getAuthUser(req), viewOwner)).length)
+              return reply
+                .code(409)
+                .send(
+                  createErrorResponse(
+                    ApiErrorCode.CONFLICT,
+                    'A prototype is served only while its canvas workspace is open in a browser'
+                  )
+                );
+            const capability = prototypeFrames.mint({
+              workspaceId: req.params.workspaceId,
+              objectId: id,
+              prototypeId: prototype.id,
+              version: prototype.version,
+              owner,
+            });
+            return {
+              success: true,
+              data: {
+                embedUrl: `${ctx.basePath ?? ''}${PROTOTYPE_FRAME_PREFIX}/${capability}/${prototype.entry}`,
+                prototype: { id: prototype.id, version: prototype.version },
+              },
+            };
+          }
+          const target = parseWebviewUrl(address);
           const blocked = target ? blockedWebviewHostReason(target.hostname) : null;
           if (!target || blocked)
             return reply
@@ -783,7 +832,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             objectId: id,
             url: target.href,
             name: typeof object.content.label === 'string' && object.content.label ? object.content.label : target.host,
-            owner: readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner,
+            owner,
             basePath: ctx.basePath ?? '',
           });
           return { success: true, data: opened };
@@ -806,7 +855,13 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               const bytes = await readFile(asset.path);
               return bytes.length > maxBytes ? null : { mime: asset.mime, bytes };
             };
-            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal, readAsset });
+            const rendered = await renderContainer(state, id, {
+              theme,
+              signal: hangup.signal,
+              readAsset,
+              readPrototypeFile: (address, path) =>
+                readPrototypeFile(req.params.workspaceId, address.id, address.version, path),
+            });
             return reply
               .header('Cache-Control', 'no-store')
               .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))

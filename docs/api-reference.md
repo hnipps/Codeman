@@ -1701,6 +1701,35 @@ web tab store, never listed by `GET /api/webviews`, never trusted, and is remove
 pointed at another URL, and when its owner logs out. After a server restart the
 page asks for its frame again.
 
+Stored prototypes. `POST /api/canvas/:workspaceId/prototypes` publishes a folder of static
+files as a page Codeman stores and serves itself. Body (JSON, 18 MB at most):
+`{ files: [{ path, base64 }], entry?, id?, name?, objectId?, parentId?, position?, size?, requestId? }`.
+`entry` is the HTML file to open (`index.html` by default). `id` is lower-case letters,
+digits and dashes; without one it is derived from `name`. The answer is
+`{ prototypeId, version, objectId, url, seq, sequences }`: the version is new and the
+one canvas operation either created an `embed` whose `url` is
+`https://prototype.invalid/<id>/<version>/<entry>` or pointed an existing one at the new
+version. With no `objectId`, the only live embed showing that prototype is updated, a new
+embed is created when none shows it, and several is a 409 that asks for `objectId`.
+`parentId` and `position` apply to a new embed only. A retry with the same `requestId`
+answers the first result with `replayed: true`; the same id with other content is 409.
+Refusals carry `refusal`: `path`, `type`, `entry`, `empty` and `id` are 400, `size`,
+`count` and `quota` are 413, `limit` is 409. Limits: 200 files, 5 MB a file, 12 MB a
+version, 50 prototypes and 256 MB a workspace, 12 publishes a minute (429).
+`GET /api/canvas/:workspaceId/prototypes` and `GET …/prototypes/:id` answer the record:
+`id`, `name`, `latest`, `entry`, `bytes`, `versions` and the `objects` that show it.
+`DELETE …/prototypes/:id` removes it, and is 409 with `objects` while a live embed shows
+it. `POST …/prototypes/:id/check` with `{ version?, width?, height?, theme? }` loads one
+version alone in the headless browser, with no network, and answers
+`{ loaded, consoleErrors, pageErrors, failedRequests, dialogs, png }` (`png` is base64).
+
+For an embed that shows a prototype, the frame route above answers
+`{ embedUrl, prototype: { id, version } }` with a `/canvas-prototype/<cap>/<entry>` URL,
+and no `webviewId`. It is 409 while no browser has the workspace open and 404 when the
+version is no longer stored. `GET /canvas-prototype/<cap>/<path>` serves that one
+version's files to the sandboxed frame; it needs no login, only the capability, and
+answers 409 once the workspace is no longer open in any browser.
+
 Agents use `current` for the workspace segment. Their
 `X-Codeman-Parent-Session` header resolves through a visible session's working
 directory and the owner-scoped workspace registry. An agent request cannot select
