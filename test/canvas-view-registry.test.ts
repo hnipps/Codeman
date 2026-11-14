@@ -143,6 +143,30 @@ describe('view schemas', () => {
       }).success
     ).toBe(true);
   });
+  it('carries the pending elements of a view, bounded, and keeps a page that reports none valid', () => {
+    const el = {
+      objectId: 'page',
+      selector: '#start',
+      tag: 'button',
+      rect: { x: 0, y: 0, width: 10, height: 10 },
+    };
+    expect(PublishedViewSchema.safeParse(state()).success).toBe(true);
+    const parsed = PublishedViewSchema.safeParse({ ...state(), contextElements: [el] });
+    expect(parsed.success && parsed.data.contextElements?.[0]).toMatchObject({
+      selector: '#start',
+      text: '',
+      attrs: {},
+    });
+    expect(PublishedViewSchema.safeParse({ ...state(), contextElements: Array(51).fill(el) }).success).toBe(false);
+    expect(PublishedViewSchema.safeParse({ ...state(), contextElements: [{ ...el, html: '<b>' }] }).success).toBe(
+      false
+    );
+    // No view command changes it: the pending elements are a person's alone.
+    expect(ViewActionSchema.safeParse({ action: 'context-add', targetIds: ['a'], elements: [el] }).success).toBe(false);
+    const registry = new ViewRegistry();
+    registry.publish('w', view, undefined, PublishedViewSchema.parse({ ...state(), contextElements: [el] }));
+    expect(registry.read('w', view, anyone)?.state.contextElements).toHaveLength(1);
+  });
   it('exposes strict canvas_view and canvas_context tool schemas', () => {
     expect(toolSchemas.canvas_view.safeParse({ action: 'list' }).success).toBe(true);
     expect(toolSchemas.canvas_view.safeParse({ action: 'select', viewId: view, targetIds: ['a'] }).success).toBe(true);
