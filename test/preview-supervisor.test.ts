@@ -24,6 +24,7 @@ import {
   type ProcEntry,
 } from '../src/preview-proc.js';
 import type { PreviewProcess } from '../src/types/preview.js';
+import { PREVIEW_STRIPPED_ENV } from '../src/preview-env.js';
 
 const NODE = process.execPath;
 const SERVER = `${NODE} -e "require('http').createServer((q,s)=>s.end('ok '+process.env.PORT)).listen(Number(process.argv[1]))" {port}`;
@@ -199,6 +200,29 @@ describe('start and stop against real processes', () => {
     const onDisk = JSON.parse(await fs.readFile(path.join(dataDir, 'previews.json'), 'utf-8'));
     expect(onDisk).toMatchObject([{ webviewId: record.webviewId, port: record.port, state: 'running', cwd: workDir }]);
     expect(onDisk[0].startTicks).toBe(readProcStat(record.pid)?.startTicks);
+  });
+
+  it("starts the server without the Codeman server's instance, deploy and credential variables", async () => {
+    for (const name of PREVIEW_STRIPPED_ENV) vi.stubEnv(name, `leaked-${name}`);
+    vi.stubEnv('CODEMAN_API_URL', 'https://127.0.0.1:1');
+    try {
+      const envFile = path.join(workDir, 'env.txt');
+      const sup = supervisor();
+      const { ready } = await sup.start(
+        { sessionId: 's1', name: 'web', cmd: `env > ${envFile}; exec ${SERVER}`, cwd: workDir },
+        bindNew
+      );
+      expect(ready).toBe(true);
+      const names = new Set(
+        (await fs.readFile(envFile, 'utf-8')).split('\n').map((line) => line.slice(0, line.indexOf('=')))
+      );
+      for (const name of PREVIEW_STRIPPED_ENV) expect(names.has(name), name).toBe(false);
+      expect(names.has('CODEMAN_API_URL')).toBe(true);
+      expect(names.has('CODEMAN_PREVIEW_ID')).toBe(true);
+      expect(names.has('CODEMAN_PREVIEW_OWNER')).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('a repeated start leaves one live process group, on the same web tab and port', async () => {

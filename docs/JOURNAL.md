@@ -15,6 +15,21 @@ Rejected. Posting on every mutation: a page that re-renders constantly would mak
 
 This retires the "Not done" line of the 2026-11-13 element-comments entry for DOM changes; motion with no DOM change (CSS animation, an image loading) is still not followed.
 
+## 2026-11-14 — A preview server starts without this Codeman's instance, deploy and login variables
+
+**Type:** propagated-discovery
+**Touches:** `src/preview-env.ts`, `src/preview-supervisor.ts`, `test/preview-env.test.ts`, `test/preview-supervisor.test.ts`
+**Why:** A throwaway Codeman started as a preview with its own `CODEMAN_INSTANCE` used the live data dir and tmux socket. The preview inherited `CODEMAN_DATA_DIR` and `CODEMAN_TMUX_SOCKET` from the server, and both outrank the instance name.
+**Links:** [intent/2026-11-14-preview-env-isolation.md](../intent/2026-11-14-preview-env-isolation.md), [architecture-invariants, "Preview servers"](architecture-invariants.md#preview-servers)
+
+Decision. One named list, `PREVIEW_STRIPPED_ENV`, and one pure function, `buildPreviewEnv()`, build every preview's environment: the server's environment minus the list, then `PORT` and the two stop markers. The list covers instance scoping, this server's address, deployment and supervision, login and its waivers, and a pane's session identity. The intent gives a reason for each name.
+
+Kept. `CODEMAN_API_URL` names this server and grants nothing: `codeman agent` needs the stripped `CODEMAN_MUX`, and a nested Codeman overwrites the URL at start. Shared trees (`CODEMAN_CASES_PATH`), tuning limits and facts about the host stay too.
+
+Rejected. An allowlist of variables a preview may see: a dev server needs whatever the user's toolchain reads, which Codeman cannot list. Stripping every `CODEMAN_*`: it would drop the markers and the limits for no gain.
+
+Not changed. Session panes, the direct-PTY fallback, `dsh web`, self-update and the headless browser spread the server's environment too. Panes cannot take the same list, because `codeman agent` finds the login through the data dir; the intent lists each site.
+
 ## 2026-11-13 — A prototype is static files that Codeman stores and serves
 
 **Type:** intent-refinement

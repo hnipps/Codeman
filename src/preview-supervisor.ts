@@ -27,9 +27,8 @@ import {
   PREVIEW_STOP_GRACE_MS,
   previewIdleStopMs,
 } from './config/preview-limits.js';
+import { buildPreviewEnv } from './preview-env.js';
 import {
-  PREVIEW_ID_ENV,
-  PREVIEW_OWNER_ENV,
   findListenerPids,
   isPortListening,
   parsePreviewMarker,
@@ -549,14 +548,7 @@ export class PreviewSupervisor {
     closeSync(openSync(logPath, 'w', 0o600));
     // O_APPEND, so the reconcile's truncation moves the server's next write back to offset 0.
     const logFd = openSync(logPath, 'a');
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      PORT: String(port),
-      [PREVIEW_ID_ENV]: webviewId,
-      [PREVIEW_OWNER_ENV]: this.owner,
-    };
-    delete env.CODEMAN_PASSWORD;
-    delete env.CODEMAN_USERNAME;
+    const env = buildPreviewEnv(process.env, { port, previewId: webviewId, owner: this.owner });
     let pid: number | undefined;
     try {
       const child = spawn('/bin/sh', ['-c', substitutePort(input.cmd, port)], {
