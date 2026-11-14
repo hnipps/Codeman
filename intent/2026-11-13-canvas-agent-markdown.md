@@ -10,8 +10,10 @@ Claude answers in Markdown. The canvas assistant rail and the comment threads sh
 
 Agent text on the canvas page reads as the dashboard's Chat does:
 
-- Claude's turns in the assistant rail.
+- Claude's turns in the assistant rail, in a person's conversation and in a background task's conversation.
+- Messages an agent sends into a conversation (labelled Agent in the rail).
 - Agent-authored comments in a thread (an Ask agent reply).
+- A background task's result in the task list.
 
 Both render through the dashboard's existing pipeline: the vendored `marked`, the DOMPurify allowlist in `sanitize-html.js`, and the shared Mermaid frame in `mermaid-render.js`. `canvas.html` loads those four files as classic scripts ahead of the bundle. `packages/canvas/src/markdown.ts` holds only the glue. No second parser, sanitizer or diagram path exists.
 

@@ -369,7 +369,11 @@ describe('canvas background tasks', () => {
     expect(after.rail).toEqual(before.rail);
     await openTasks();
     await page.waitForFunction(() => document.querySelector('.task-state')?.textContent === 'Completed');
-    expect(await rowText(task.id, 'result').textContent()).toBe('Readers scan headings first.\n\nThen the lede.');
+    // The result renders as Markdown: two paragraphs, not the raw text.
+    expect(await rowText(task.id, 'result').locator('p').allTextContents()).toEqual([
+      'Readers scan headings first.',
+      'Then the lede.',
+    ]);
     expect(await count()).toBe('');
     await shot('list-completed');
     await closeRail();

@@ -1,7 +1,8 @@
-/** The background task list in the rail: one row per task with its state, result and links. Everything is `textContent`; a task is started from the assistant, never from here. */
+/** The background task list in the rail: one row per task with its state, result and links. The agent's result renders as Markdown (markdown.ts); everything else is `textContent`. A task is started from the assistant, never from here. */
 import { label, type ViewObject } from './model.js';
 import { canvasStorageKeys } from './storage-keys.js';
 import { errorMessage } from './conversation.js';
+import { hydrateDiagrams, renderMarkdown } from './markdown.js';
 import {
   KEPT_REASON,
   STATE_LABEL,
@@ -66,6 +67,8 @@ export class TasksView {
   private seen: Set<string>;
   private seenKey: string;
   private signature = '';
+  /** A result rendered on an earlier paint, keyed by task and text, so its diagram is drawn once and not on every poll. */
+  private rendered = new Map<string, HTMLElement>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   private wasOpen = false;
@@ -264,6 +267,21 @@ export class TasksView {
     await this.refresh();
     this.paint();
   }
+
+  /** The agent's result as rendered Markdown, or as plain text on a page without the renderer. */
+  private result(id: string, result: NonNullable<TaskRow['result']>, used: Map<string, HTMLElement>): HTMLElement {
+    const key = `${id}\0${result.text}`;
+    const body = this.rendered.get(key) ?? renderMarkdown(result.text);
+    if (body) {
+      body.classList.add('task-result');
+      used.set(key, body);
+      return body;
+    }
+    const text = document.createElement('p');
+    text.className = 'task-result';
+    text.textContent = result.truncated ? `${result.text}…` : result.text;
+    return text;
+  }
   private leftRow(row: LeftBehindRow): HTMLElement {
     const key = `left:${row.name}`;
     const item = document.createElement('li');
@@ -359,12 +377,18 @@ export class TasksView {
     this.signature = signature;
     const list = node('taskList');
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.taskControl : null;
-    list.replaceChildren(...rows.map((row) => this.row(row, name)), ...this.left.map((row) => this.leftRow(row)));
+    const rendered = new Map<string, HTMLElement>();
+    list.replaceChildren(
+      ...rows.map((row) => this.row(row, name, rendered)),
+      ...this.left.map((row) => this.leftRow(row))
+    );
+    this.rendered = rendered;
+    hydrateDiagrams(list);
     node('tasksEmpty').hidden = rows.length + this.left.length > 0;
     if (focused)
       list.querySelector<HTMLElement>(`[data-task-control="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   }
-  private row(row: TaskRow, name: (id: string) => string | null): HTMLElement {
+  private row(row: TaskRow, name: (id: string) => string | null, rendered: Map<string, HTMLElement>): HTMLElement {
     const item = document.createElement('li');
     item.className = 'task-row';
     item.dataset.taskId = row.id;
@@ -393,10 +417,7 @@ export class TasksView {
         lead.textContent = 'The agent exited before its turn ended. What it had written:';
         item.append(lead);
       }
-      const result = document.createElement('p');
-      result.className = 'task-result';
-      result.textContent = row.result.truncated ? `${row.result.text}…` : row.result.text;
-      item.append(result);
+      item.append(this.result(row.id, row.result, rendered));
       if (row.result.truncated) {
         const more = document.createElement('p');
         more.className = 'task-meta';

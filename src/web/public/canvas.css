@@ -2892,7 +2892,7 @@ textarea[readonly] {
   max-height: 60%;
 }
 
-/* Rendered agent text (markdown.ts): rail turns and agent comments. Scoped to .md, so plain turns are unchanged. */
+/* Rendered agent text (markdown.ts): rail turns, agent comments and task results. Scoped to .md, so plain turns are unchanged. */
 .md {
   white-space: normal;
   overflow-wrap: anywhere;
