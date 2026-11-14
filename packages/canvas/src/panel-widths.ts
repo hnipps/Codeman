@@ -88,8 +88,10 @@ export function installPanelResize(options: {
   isOpen: (panel: Panel) => boolean;
   isPhone: () => boolean;
   storage: Store | null;
+  /** Called after the person changes a width, for things placed against the panels' edges. */
+  onResize?: () => void;
 }): PanelResize {
-  const { root, handles, isOpen, isPhone, storage } = options;
+  const { root, handles, isOpen, isPhone, storage, onResize } = options;
   let stored: string | null = null;
   try {
     stored = storage?.getItem(PANEL_WIDTHS_KEY) ?? null;
@@ -125,6 +127,7 @@ export function installPanelResize(options: {
   const set = (panel: Panel, width: number): void => {
     preferred = { ...preferred, [panel]: width };
     layout();
+    onResize?.();
   };
 
   for (const panel of ['outline', 'rail'] as const) {

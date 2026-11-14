@@ -132,6 +132,7 @@ const panels = installPanelResize({
   isOpen: (panel) => (panel === 'outline' ? state.outlineOpen : state.rail.length > 0),
   isPhone: () => mobile.matches,
   storage,
+  onResize: () => elementComments?.sync(),
 });
 const assetUrl = (assetId: string): string | null =>
   /^[a-f0-9]{64}$/.test(assetId) ? url(`/api/canvas/${workspaceId}/assets/${assetId}`) : null;
@@ -532,6 +533,7 @@ function paint(): void {
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
+  panels.layout();
   node('keysView').hidden = state.rail.at(-1) !== 'keys';
   node('readerView').hidden = state.rail.at(-1) !== 'reader';
   node('threadView').hidden = state.rail.at(-1) !== 'thread';
@@ -576,7 +578,6 @@ function paint(): void {
               : top === 'page'
                 ? pageTitle(state.page)
                 : 'Keys';
-  panels.layout();
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
   board.classList.toggle('panning', state.tool === 'pan' || spaceHeld);
