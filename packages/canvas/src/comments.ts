@@ -240,8 +240,27 @@ export class CommentsView {
       /** Where the element an unposted draft is about is kept, beside the draft. */
       draftElementKey: string;
       elements: ElementsPort;
+      /** A count mark on the board was used: open that object's thread. */
+      open: (objectId: string) => void;
     }
   ) {
+    // A count mark sits inside its object on the board. Document capture runs before the board's own capture
+    // listeners, so a press on the mark never starts a drag, a marquee, a lasso or a pan, nor selects first.
+    const markOf = (e: Event) =>
+      e.target instanceof Element ? e.target.closest<HTMLElement>('#board .comment-mark') : null;
+    document.addEventListener(
+      'pointerdown',
+      (e) => {
+        if (markOf(e)) e.stopPropagation();
+      },
+      true
+    );
+    document.addEventListener('click', (e) => {
+      const id = markOf(e)?.dataset.markFor;
+      if (!id) return;
+      e.preventDefault();
+      this.options.open(id);
+    });
     try {
       this.asks = parseAsks(localStorage.getItem(options.askKey));
       this.drafts = parseDrafts(localStorage.getItem(options.draftKey));

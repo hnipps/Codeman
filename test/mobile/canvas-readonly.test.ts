@@ -387,6 +387,27 @@ describe('phone canvas', () => {
     await page.locator('#closeRail').click();
   });
 
+  it('opens the same thread from a tap on the count mark', async () => {
+    await page.waitForSelector('#rail', { state: 'hidden' });
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: [] }));
+    const before = await page.evaluate(() => window.canvasView.read().viewport);
+    const mark = page.locator('.comment-mark[data-mark-for="tap"]');
+    await page.waitForFunction(
+      () => document.querySelector('.comment-mark[data-mark-for="tap"]')?.textContent === '3'
+    );
+    const box = (await mark.boundingBox())!;
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForSelector('#threadView:not([hidden])');
+    const view = await page.evaluate(() => window.canvasView.read());
+    expect(view.selected).toEqual(['tap']);
+    expect(view.rail.at(-1)).toBe('thread');
+    expect(await page.locator('#threadList .comment').count()).toBe(3);
+    // The rail covers the phone, so the camera stays where it was unless the object was off screen.
+    expect(view.viewport.zoom).toBe(before.zoom);
+    await page.locator('#closeRail').click();
+    await page.waitForSelector('#rail', { state: 'hidden' });
+  });
+
   it('keeps history read-only on a phone', async () => {
     await page.waitForSelector('#rail', { state: 'hidden' });
     await page.waitForSelector('#sectionsTool', { state: 'visible' });

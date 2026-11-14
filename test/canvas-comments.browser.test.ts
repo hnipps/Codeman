@@ -160,6 +160,40 @@ describe('canvas comments and author history', () => {
     await shot(page, 'comment-count');
   });
 
+  it('opens the thread from a count mark without dragging, panning or selecting anything else first', async () => {
+    const mark = page.locator('.comment-mark[data-mark-for="caption"]');
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: ['brief'] }));
+    const before = await page.evaluate(() => window.canvasView.read());
+    const at = (await page.locator('[data-object-id="caption"]').boundingBox())!;
+
+    // A press that wanders off the mark moves nothing: no drag of the object, no marquee, no pan.
+    const box = (await mark.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + 90, { steps: 6 });
+    await page.mouse.up();
+    const dragged = await page.evaluate(() => window.canvasView.read());
+    expect(dragged.viewport).toEqual(before.viewport);
+    expect(dragged.selected).toEqual(['brief']);
+    expect(await page.locator('[data-object-id="caption"]').boundingBox()).toEqual(at);
+
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForSelector('#threadView:not([hidden])');
+    await page.waitForFunction(() => document.getElementById('threadTarget')?.textContent?.includes('A place for'));
+    const opened = await page.evaluate(() => window.canvasView.read());
+    expect(opened.selected).toEqual(['caption']);
+    expect(opened.focusId).toBe('caption');
+    expect(opened.rail.at(-1)).toBe('thread');
+    expect(await page.locator('#threadList .comment').count()).toBe(14);
+    // A real button with a name, not decoration hidden from assistive technology.
+    expect(await mark.evaluate((el) => el.tagName)).toBe('BUTTON');
+    expect(await mark.getAttribute('aria-hidden')).toBe(null);
+    expect(await mark.getAttribute('aria-label')).toBe('14 comments. Open the thread');
+
+    await closeRail();
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'selection', ids: [] }));
+  });
+
   it('opens a thread in the rail with authors, inert text and an agent mark', async () => {
     await page.locator('[data-object-id="brief"]').click({ position: { x: 20, y: 60 } });
     await page.locator('#chatTool').click();

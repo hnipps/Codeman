@@ -30,7 +30,6 @@ export class CommentMarks {
     if (!layer) {
       layer = document.createElement('div');
       layer.id = 'commentMarks';
-      layer.setAttribute('aria-hidden', 'true');
       board.append(layer);
     }
     this.layer = layer;
@@ -57,15 +56,23 @@ export class CommentMarks {
       if (!count || !elements.has(id)) continue;
       let mark = this.marks.get(id);
       if (!mark) {
-        mark = document.createElement('span');
+        mark = document.createElement('button');
+        (mark as HTMLButtonElement).type = 'button';
         mark.className = 'comment-mark';
+        // Objects on the board are not tab stops either; the thread is reached from a selection by keyboard.
+        mark.tabIndex = -1;
         mark.dataset.markFor = id;
         mark.append(this.makeIcon(), document.createElement('span'));
         this.layer.append(mark);
         this.marks.set(id, mark);
       }
       const text = mark.lastElementChild;
-      if (text && text.textContent !== String(count)) text.textContent = String(count);
+      if (text && text.textContent !== String(count)) {
+        text.textContent = String(count);
+        const name = `${count} ${count === 1 ? 'comment' : 'comments'}`;
+        mark.setAttribute('aria-label', `${name}. Open the thread`);
+        mark.title = name;
+      }
     }
     this.place();
   }

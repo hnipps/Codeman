@@ -170,6 +170,12 @@ const comments: CommentsView = new CommentsView({
     cancelPick: () => void (editor.media.pickingId && editor.media.escape()),
     anchored: (commentId, element) => elementComments?.anchored(commentId, element),
   },
+  open: (id) => {
+    dispatch({ kind: 'focus', id });
+    dispatch({ kind: 'selection', ids: [id] });
+    reveal(id);
+    dispatch({ kind: 'rail', view: 'thread' });
+  },
   assistant: {
     targets: () => assistant.targets(),
     preferred: () => assistant.preferredTarget(),
