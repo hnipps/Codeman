@@ -9,13 +9,13 @@
  *   2. Copy static assets (web/public, templates)
  *   3. Build vendor xterm bundles
  *   4. Minify frontend assets (app.js, styles.css, mobile.css)
- *   5. Content-hash cache busting (rename assets, rewrite index.html)
+ *   5. Content-hash cache busting (rename assets, rewrite every page, check each page's assets exist)
  *   6. Compress with gzip + brotli
  */
 
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
-import { appendFileSync, cpSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { join, extname, basename, dirname } from 'path';
@@ -181,12 +181,23 @@ console.log('\n[build] content-hash cache busting');
     renameSync(filePath, join(distPublic, hashed));
     manifest[file] = hashed;
   }
-  // Rewrite index.html to reference hashed filenames
-  let html = readFileSync(join(distPublic, 'index.html'), 'utf8');
-  for (const [original, hashed] of Object.entries(manifest)) {
-    html = html.replaceAll(`"${original}"`, `"${hashed}"`);
+  // Rewrite every page to reference hashed filenames. The canvas page loads sanitize-html.js and mermaid-render.js
+  // too, and once only index.html was rewritten, so production served the canvas 404s for both.
+  const pages = readdirSync(distPublic).filter((name) => name.endsWith('.html'));
+  for (const page of pages) {
+    let html = readFileSync(join(distPublic, page), 'utf8');
+    for (const [original, hashed] of Object.entries(manifest)) {
+      html = html.replaceAll(`"${original}"`, `"${hashed}"`);
+    }
+    writeFileSync(join(distPublic, page), html);
+    const missing = [...html.matchAll(/\s(?:src|href)="([^"#:?]+\.(?:js|css))"/g)]
+      .map((m) => m[1])
+      .filter((ref) => !existsSync(join(distPublic, ref)));
+    if (missing.length) {
+      console.error(`[build] ${page} references files the build did not produce: ${missing.join(', ')}`);
+      process.exit(1);
+    }
   }
-  writeFileSync(join(distPublic, 'index.html'), html);
 
   // Rewrite sw.js from the SAME manifest that just renamed the files.
   //
