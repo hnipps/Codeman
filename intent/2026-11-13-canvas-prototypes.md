@@ -54,3 +54,5 @@ People using the canvas on desktop, and agents in any Claude session. `src/confi
 
 - A prototype that needs its own server process (an API, a dev server with hot reload) is not covered. It stays a preview of the session that runs it.
 - Source mapping reads a `data-source` attribute only. Framework debug metadata is not read.
+- A page that sets its own script policy in a `<meta http-equiv="Content-Security-Policy">` tag blocks the injected bridge, so that page can be used but not picked, commented by element or lassoed. Only a policy sent as a header by a proxied page is amended.
+- "While its workspace is open" counts a view from anyone who may open the workspace. In multi-user mode that is the owner and admins, so an admin's open tab keeps the owner's prototype serving.

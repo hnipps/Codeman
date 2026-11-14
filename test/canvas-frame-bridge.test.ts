@@ -202,6 +202,16 @@ describe('describing an element', () => {
     const element = pick(secret)!;
     expect(element.text).toBe('');
     expect(JSON.stringify(element)).not.toContain('hunter2');
+    const note = document.createElement('div');
+    note.setAttribute('contenteditable', 'true');
+    note.setAttribute('aria-label', 'Notes');
+    note.textContent = 'written by the person';
+    Object.defineProperty(note, 'isContentEditable', { value: true });
+    const wrap = document.createElement('section');
+    wrap.append(note);
+    document.body.append(wrap);
+    expect(pick(note)!.text).toBe('Notes');
+    expect(JSON.stringify([pick(note), pick(wrap)])).not.toContain('written by the person');
     const go = document.createElement('input');
     go.type = 'submit';
     go.value = 'Send order';

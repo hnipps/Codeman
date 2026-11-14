@@ -34,7 +34,7 @@ import type { ElementRef } from '../../canvas/element-ref.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
-import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
+import { MAX_VIEW_IDS, PublishedViewSchema, VIEW_BODY_LIMIT, ViewActionSchema } from '../../canvas/view-schema.js';
 import {
   checkChoice,
   conversationTool,
@@ -329,8 +329,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       registerPrototypeRoutes(workspaceScope, ctx, { views, callerKey, retireFrames, requestIdentity });
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
-        // Room for the pending elements a view reports (`contextElements`).
-        { bodyLimit: 256 * 1024 },
+        // Room for the pending elements a view reports at the schema's own bounds, so a full shelf is never a 413.
+        { bodyLimit: VIEW_BODY_LIMIT },
         async (req, reply) => {
           const viewId = z.uuid().parse(req.params.viewId);
           const state = PublishedViewSchema.parse(req.body);

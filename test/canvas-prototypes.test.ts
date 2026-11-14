@@ -167,6 +167,25 @@ describe('publishing', () => {
     expect((await publish('demo')).version).toBe(3);
   });
 
+  it('takes back a first version whole, so a refused first publish leaves no record', async () => {
+    const first = await publish('ghost');
+    await discardPrototypeVersion(WS, 'ghost', first.version);
+    expect(await readPrototype(WS, 'ghost')).toBeNull();
+    expect((await listPrototypes(WS)).map((p) => p.id)).not.toContain('ghost');
+  });
+
+  it('asks whether a prototype is in use inside the write queue, after a publish ahead of it has finished', async () => {
+    let placed = false;
+    const publishing = publish('racy').then(() => {
+      placed = true;
+    });
+    const removing = removePrototype(WS, 'racy', () => placed);
+    await publishing;
+    expect(await removing).toBe('in-use');
+    expect(prototypeVersionStored(WS, 'racy', 1, 'index.html')).toBe(true);
+    expect(await removePrototype(WS, 'racy', () => false)).toBe(true);
+  });
+
   it('stops at the workspace quota and at the prototype count, and still shows what is stored', async () => {
     vi.stubEnv('CODEMAN_CANVAS_PROTOTYPE_QUOTA_BYTES', '64');
     await publish('small', [file('index.html', 'x'.repeat(40))]);

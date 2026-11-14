@@ -186,7 +186,9 @@ export function frameBridge(limits: FrameLimits): void {
     const field = el as Dom;
     // What a person typed into the page is theirs and never leaves it. A button input's value is its label.
     const labelled = el.localName === 'input' && ['button', 'submit', 'reset'].includes(field.type);
-    const shown = (el as Dom).innerText ?? el.textContent ?? '';
+    const editable =
+      field.isContentEditable === true || el.querySelector('[contenteditable]:not([contenteditable="false"])') !== null;
+    const shown = editable ? '' : ((el as Dom).innerText ?? el.textContent ?? '');
     const candidates = [
       shown,
       el.getAttribute('aria-label'),

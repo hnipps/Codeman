@@ -328,11 +328,12 @@ export function registerPrototypeRoutes(scope: FastifyInstance, ctx: CanvasPort,
           .code(409)
           .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
       if (!(await readPrototype(workspaceId, id))) return notStored(reply);
-      // The check and the removal run with nothing awaited between the state read and the delete starting,
-      // and an embed can only be pointed at a version the store still holds.
-      const state = (await ctx.canvasStores()).get(workspaceId).read();
-      const live = (prototypeReferences(state).get(id) ?? []).filter((r) => !r.deleted);
-      if (live.length)
+      const store = (await ctx.canvasStores()).get(workspaceId);
+      const liveNow = () => (prototypeReferences(store.read()).get(id) ?? []).filter((r) => !r.deleted);
+      // Asked inside the store's write queue, so a publish still in flight has placed its object by then.
+      const removed = await removePrototype(workspaceId, id, () => liveNow().length > 0);
+      const live = removed === 'in-use' ? liveNow() : [];
+      if (removed === 'in-use')
         return reply.code(409).send({
           ...createErrorResponse(
             ApiErrorCode.CONFLICT,
@@ -340,9 +341,7 @@ export function registerPrototypeRoutes(scope: FastifyInstance, ctx: CanvasPort,
           ),
           objects: live.map((r) => r.objectId),
         });
-      const removing = removePrototype(workspaceId, id);
       prototypeFrames.retire((frame) => frame.workspaceId === workspaceId && frame.prototypeId === id);
-      await removing;
       return { success: true, data: { removed: id } };
     }
   );
@@ -354,13 +353,17 @@ export function registerPrototypeRoutes(scope: FastifyInstance, ctx: CanvasPort,
       const { workspaceId, id } = req.params;
       const input = CheckSchema.parse(req.body ?? {});
       const meta = await readPrototype(workspaceId, id);
-      const version = meta?.versions.find((v) => v.version === (input.version ?? meta.latest));
+      const version =
+        input.version === undefined ? meta?.versions.at(-1) : meta?.versions.find((v) => v.version === input.version);
       if (!meta || !version)
         return meta
           ? reply
               .code(404)
               .send(
-                createErrorResponse(ApiErrorCode.NOT_FOUND, `Version ${input.version} of "${id}" is not stored here`)
+                createErrorResponse(
+                  ApiErrorCode.NOT_FOUND,
+                  `Version ${input.version ?? 'latest'} of "${id}" is not stored here`
+                )
               )
           : notStored(reply);
       if (await limited(req, reply, 'check', PROTOTYPE_CHECKS_PER_MINUTE)) return reply;

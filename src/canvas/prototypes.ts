@@ -347,16 +347,32 @@ export async function discardPrototypeVersion(workspaceId: string, id: string, v
     const meta = await readPrototype(workspaceId, id);
     if (!meta) return;
     const versions = meta.versions.filter((v) => v.version !== version);
+    if (!versions.length) {
+      // Nothing was ever shown from it, so the record goes too and does not count toward the limit.
+      await rm(dir, { recursive: true, force: true });
+      return;
+    }
     await rm(join(dir, String(version)), { recursive: true, force: true });
     await writeMeta(dir, { ...meta, versions, entry: versions.at(-1)?.entry ?? meta.entry });
   });
 }
 
-/** Delete a prototype and every version of it. The caller has checked nothing live points at it. */
-export async function removePrototype(workspaceId: string, id: string): Promise<boolean> {
+/**
+ * Delete a prototype and every version of it. `inUse` is asked inside the write queue, after any publish
+ * ahead of this call has placed its object, and a prototype in use is left alone (`'in-use'`).
+ */
+export async function removePrototype(
+  workspaceId: string,
+  id: string,
+  inUse: () => boolean = () => false
+): Promise<boolean | 'in-use'> {
   requireWriter();
   const dir = prototypeDir(workspaceId, id);
   return serialized(workspaceId, async () => {
+    // A publish places its object synchronously once its own queued write settles. One turn of the event
+    // loop lets every such continuation run before the question is asked.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (inUse()) return 'in-use';
     const found = await stat(dir).then(
       (info) => info.isDirectory(),
       () => false

@@ -19,6 +19,7 @@ import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { readConversations } from '../src/canvas/conversations.js';
 import {
   commentAnchorsPath,
+  MAX_COMMENT_ANCHOR_BYTES,
   MAX_COMMENT_ANCHORS,
   readCommentAnchors,
   setCommentAnchor,
@@ -337,6 +338,30 @@ describe('comment anchors', () => {
       expect(Object.keys(stored)).toHaveLength(MAX_COMMENT_ANCHORS);
       expect(stored['stale-first']).toBeUndefined();
       expect(stored['stale-0']).toBeDefined();
+      expect(readCommentAnchors(h.workspace.id, state)).toEqual({ [live]: element({ selector: '#moved' }) });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('is bounded in bytes too: a file of large anchors sheds removed ones until it fits', async () => {
+    const h = await harness();
+    try {
+      const live = uuid();
+      await h.command('canvas_comment', { objectId: 'page', text: 'live', commentId: live, element: element() });
+      const path = commentAnchorsPath(h.workspace.id);
+      const large = element({ text: 'x'.repeat(2000), path: 'y'.repeat(2048) });
+      const each = Buffer.byteLength(JSON.stringify(large));
+      const count = Math.ceil(MAX_COMMENT_ANCHOR_BYTES / each) + 20;
+      expect(count).toBeLessThan(MAX_COMMENT_ANCHORS);
+      const stale = Object.fromEntries(Array.from({ length: count }, (_, i) => [`stale-${i}`, large]));
+      writeFileSync(path, JSON.stringify({ version: 1, anchors: { ...stale, [live]: element() } }));
+      const state = h.store.read();
+      expect(setCommentAnchor(h.workspace.id, state, live, element({ selector: '#moved' }))).toBe(true);
+      expect(statSync(path).size).toBeLessThanOrEqual(MAX_COMMENT_ANCHOR_BYTES + 64);
+      const stored = JSON.parse(readFileSync(path, 'utf8')).anchors as Record<string, unknown>;
+      expect(stored['stale-0']).toBeUndefined();
+      expect(stored[`stale-${count - 1}`]).toBeDefined();
       expect(readCommentAnchors(h.workspace.id, state)).toEqual({ [live]: element({ selector: '#moved' }) });
     } finally {
       await h.app.close();

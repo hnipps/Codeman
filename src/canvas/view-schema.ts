@@ -19,6 +19,11 @@ export const AssistantChoiceSchema = z
   .object({ cliId: z.string().min(1).max(64).nullable(), model: z.string().max(100) })
   .strict();
 export type AssistantChoice = z.infer<typeof AssistantChoiceSchema>;
+/**
+ * The request body a view publish may be: the rest of the view, plus every pending element at the element
+ * schema's own bounds (about 22,000 characters each, allowed three bytes a character).
+ */
+export const VIEW_BODY_LIMIT = 256 * 1024 + MAX_ELEMENT_REFS * 64 * 1024;
 /** The state one canvas tab reports. It is ephemeral and never written to disk. */
 export const PublishedViewSchema = z
   .object({

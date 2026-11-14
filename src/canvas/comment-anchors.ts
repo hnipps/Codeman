@@ -13,13 +13,15 @@
  * an agent prompt. Writes are synchronous (one at a time by construction), 0600 through a temporary file and a
  * rename, and only on the live deploy colour.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dataPath } from '../config/instance.js';
 import { atomicWrite } from './canvas-store.js';
 import { ElementRefSchema, type ElementRef } from './element-ref.js';
 import { IdSchema, type CanvasState } from './model.js';
 
 export const MAX_COMMENT_ANCHORS = 2000;
+/** The file is read and written whole on request paths, so its size is bounded as well as its count. */
+export const MAX_COMMENT_ANCHOR_BYTES = 4 * 1024 * 1024;
 export const commentAnchorsPath = (workspaceId: string): string =>
   dataPath('canvas', IdSchema.parse(workspaceId), 'comment-anchors.json');
 
@@ -29,9 +31,29 @@ type AnchorsFile =
   /** Not JSON, not this shape, or written by a later release: read as empty and never written over. */
   | { ok: false };
 
+/** The last parse of each file, reused while the file on disk is the one that was parsed. Callers never mutate it. */
+const parsed = new Map<string, { stamp: string; file: AnchorsFile }>();
+const MAX_PARSED_FILES = 16;
+
 function readFile(workspaceId: string): AnchorsFile {
   const path = commentAnchorsPath(workspaceId);
-  if (!existsSync(path)) return { ok: true, raw: {}, entries: {} };
+  let stamp: string;
+  try {
+    const info = statSync(path);
+    stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
+  } catch {
+    return { ok: true, raw: {}, entries: {} };
+  }
+  const held = parsed.get(path);
+  if (held?.stamp === stamp) return held.file;
+  const file = parseFile(path);
+  parsed.delete(path);
+  parsed.set(path, { stamp, file });
+  if (parsed.size > MAX_PARSED_FILES) parsed.delete(parsed.keys().next().value as string);
+  return file;
+}
+
+function parseFile(path: string): AnchorsFile {
   try {
     const json: unknown = JSON.parse(readFileSync(path, 'utf8'));
     if (typeof json !== 'object' || json === null || Array.isArray(json)) return { ok: false };
@@ -90,6 +112,14 @@ export function setCommentAnchor(
     const removedFirst = [...ids.filter((id) => !comments.has(id)), ...ids.filter((id) => comments.has(id))];
     for (const id of removedFirst.slice(0, Math.max(0, ids.length - MAX_COMMENT_ANCHORS)))
       if (id !== commentId) delete entries[id];
+    const size = (id: string): number => Buffer.byteLength(JSON.stringify(entries[id])) + id.length + 4;
+    let bytes = Object.keys(entries).reduce((sum, id) => sum + size(id), 0);
+    for (const id of removedFirst) {
+      if (bytes <= MAX_COMMENT_ANCHOR_BYTES) break;
+      if (id === commentId || !(id in entries)) continue;
+      bytes -= size(id);
+      delete entries[id];
+    }
   }
   atomicWrite(commentAnchorsPath(workspaceId), { ...file.raw, version: 1, anchors: entries });
   return true;

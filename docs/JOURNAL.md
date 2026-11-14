@@ -2,6 +2,34 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A prototype is static files that Codeman stores and serves
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{prototypes,prototype-address,prototype-frames,canvas-screenshot}.ts`, `src/web/routes/canvas-prototype-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/shot.ts`
+**Why:** A prototype on the board was a loopback preview owned by the session that built it. It went blank when that session or its server ended, and a screenshot drew it as a paused card.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas prototypes"](architecture-invariants.md#canvas-prototypes)
+
+Decision. `canvas_prototype publish` copies a folder into the workspace's data as an immutable version and places or updates an ordinary `embed` whose address is `https://prototype.invalid/<id>/<version>/<entry>`. Codeman serves the files on a capability path with the sandbox policy every canvas frame has. No process, port or session belongs to a prototype. A capability is minted only by the frame route, and each request is refused unless a browser view of that workspace reported in recently, so nothing is served for a closed workspace. Publishing again is a new address on the same object: the frame reloads, undo returns to the earlier version, and comments stay.
+
+Why an embed with a reserved address. The previous release parses the operation log strictly. A new object type or key would make a rollback unable to replay the log. An `embed` with an address it cannot load draws as an unavailable page there and loses nothing.
+
+Rejected. One server process per prototype: it brings back the lifetime and resource problem this removes. Serving from the agent's own folder in place: the page would change under a comment and die with a worktree. A static-only store is the cost; a prototype that needs its own API stays a session preview, and the intent lists that as open.
+
+Screenshots. The screenshot page still makes no network request. It draws a prototype from the stored files through its own request handler, and `check` loads one at a given size and theme and returns the picture and the console errors.
+
+## 2026-11-13 — An element reference is stored beside its comment, never in it
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{element-ref,comment-anchors,context-resolve,commands,view-schema}.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`
+**Why:** A comment or a chat message could name a whole canvas object only. Pointing at one button inside a page needed somewhere to keep the element without changing stored records the previous release reads strictly.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas element refs"](architecture-invariants.md#canvas-element-refs)
+
+Decision. One shape, `ElementRef`, serves comments, chat context and the lasso. A comment's element lives in `comment-anchors.json`, keyed by comment id, and the comment operation never carries it. An anchor follows its comment: it is filtered on read by the comments that are live, so undo and redo hide and restore it without a second log. An element sent as chat context is written as text into the prompt's context block and stored nowhere else.
+
+Bounds. 50 elements per send, 2 KiB per element in the prompt, 2,000 anchors per workspace. Everything in a reference comes from the page, so it reaches an agent only through `plainLine` and reaches a person only through `textContent`. The bridge never reports the value typed into a field.
+
+Rejected. A new `element` key on the comment operation: a rollback could not replay it. Deleting an anchor when its comment is undone: redo would return a comment that had lost its element.
+
 ## 2026-11-13 — Comments on an element of a live page: the About row, the chip and the pins
 
 **Type:** intent-refinement
