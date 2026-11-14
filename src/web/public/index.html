@@ -643,6 +643,19 @@
       <div class="file-browser-status" id="fileBrowserStatus"></div>
     </div>
 
+    <!-- Previews drawer (webview-tabs.js): every preview the agents started, across sessions. -->
+    <div class="preview-drawer" id="previewDrawer" hidden>
+      <div class="preview-drawer-backdrop" onclick="app.closePreviewDrawer()"></div>
+      <div class="preview-drawer-sheet" role="dialog" aria-modal="true" aria-labelledby="previewDrawerTitle">
+        <div class="preview-drawer-header">
+          <h2 class="preview-drawer-title" id="previewDrawerTitle">Previews</h2>
+          <button type="button" class="btn-icon-sm" id="previewDrawerClose" onclick="app.closePreviewDrawer()" title="Close" aria-label="Close previews">&times;</button>
+        </div>
+        <p class="preview-drawer-empty" id="previewDrawerEmpty">Nothing is running. An agent starts a preview with <code data-i18n-skip>codeman agent preview add</code>.</p>
+        <ul class="preview-drawer-list" id="previewDrawerList" aria-labelledby="previewDrawerTitle"></ul>
+      </div>
+    </div>
+
     <!-- Git status panel (git-status-ui.js): what the active session's repo has not committed or pushed. -->
     <div class="git-status-panel" id="gitStatusPanel" role="dialog" aria-label="Git status">
       <div class="git-status-header">
@@ -860,6 +873,9 @@
               <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
           </button>
+          <button type="button" class="btn-previews-mobile" id="previewsBtnMobile" data-preview-drawer-toggle aria-haspopup="dialog" aria-expanded="false" aria-controls="previewDrawer" onclick="app.togglePreviewDrawer(event)" title="Previews">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><circle cx="5.5" cy="6.5" r="0.5"/><circle cx="8" cy="6.5" r="0.5"/></svg><span class="preview-drawer-count" hidden data-i18n-skip></span>
+          </button>
           <button class="btn-settings-mobile" onclick="app.openAppSettings()" title="App Settings">&#x2699;</button>
           <button class="btn-toolbar btn-case-mobile" onclick="app.showMobileCasePicker()" title="Select case">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -910,6 +926,11 @@
         <!-- Orchestrator button hidden until feature is ready -->
         <!-- <button class="btn-toolbar btn-sm" onclick="app.toggleOrchestratorPanel()" title="Orchestrator Loop">&#x2699; Orchestrator</button> -->
         <button class="btn-toolbar btn-sm btn-cron btn-cron--hidden" onclick="app.openCron()" title="Cron Jobs">&#x23F0; Cron</button>
+        <!-- Every preview server the agents started (webview-tabs.js, docs/web-tabs.md#the-previews-drawer). -->
+        <button type="button" class="btn-toolbar btn-sm btn-previews" id="previewsBtn" data-preview-drawer-toggle aria-haspopup="dialog" aria-expanded="false" aria-controls="previewDrawer" onclick="app.togglePreviewDrawer(event)" title="Previews">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><circle cx="5.5" cy="6.5" r="0.5"/><circle cx="8" cy="6.5" r="0.5"/></svg>
+          <span>Previews</span><span class="preview-drawer-count" hidden data-i18n-skip></span>
+        </button>
         <!-- Git status of the active session's repository (git-status-ui.js). Optional and per-device
              (App Settings → Header & Panels → Bottom bar, default OFF), so it is hidden until that
              setting is on AND the session is a local git repository. -->
