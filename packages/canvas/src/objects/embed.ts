@@ -1,5 +1,5 @@
 /**
- * @fileoverview Embed objects: a slim header (title, host, Reload, Open, Back to link) over a
+ * @fileoverview Embed objects: a slim header (title, host, Pick element, Reload, Open, Back to link) over a
  * stage. The stage shows the link card with "Paused" until the editor puts a live frame in it.
  * The screenshot page never loads a remote page: its cards carry its own note (`ctx.embedNote`),
  * and it frames only a stored prototype, from bytes the server hands it.
@@ -12,6 +12,7 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : ''
 
 /** 20-unit icon paths, drawn with the dock's stroke (`svg` in canvas.css). */
 const ICONS = {
+  pick: 'M10 4.5a5.5 5.5 0 1 0 0 11a5.5 5.5 0 0 0 0-11M10 2v4M10 14v4M2 10h4M14 10h4',
   reload: 'M15.5 7.5A6 6 0 1 0 16 11M16 3.5v4h-4',
   open: 'M11 4h5v5M16 4l-7 7M14 12.5V16H4V6h3.5',
   'to-link': 'M8.5 11.5l3-3M7.5 9l-2 2a2.5 2.5 0 0 0 3.5 3.5l2-2M12.5 11l2-2A2.5 2.5 0 0 0 11 5.5l-2 2',
@@ -54,6 +55,7 @@ export function paintEmbed(body: HTMLElement, o: ViewObject, ctx: MediaContext):
     const actions = document.createElement('span');
     actions.className = 'embed-actions';
     actions.append(
+      action('pick', 'Pick element'),
       action('reload', 'Reload page'),
       action('open', 'Open in new tab'),
       action('to-link', 'Back to link')

@@ -1,7 +1,16 @@
 import { targets, selectRegion } from './select.js';
 import type { ViewObject } from './model.js';
 import { nextFocus, siblings } from './tree.js';
-import { contextAdd, contextRemove, contextPrune } from './context.js';
+import {
+  contextAdd,
+  contextRemove,
+  contextPrune,
+  elementsAdd,
+  elementsPrune,
+  elementsRemove,
+  type ElementKey,
+} from './context.js';
+import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import { pan, zoomAt, pinch, fit, type Point, type Rect, type Viewport } from './viewport.js';
 export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant' | 'tasks';
 export type ViewState = {
@@ -16,6 +25,8 @@ export type ViewState = {
   root: string | null;
   /** Objects pending as direct context for the assistant; normalized, never written to the canvas. */
   context: string[];
+  /** Elements picked inside live frames, pending as context beside the objects; never written to the canvas. */
+  contextElements: ElementRef[];
   /** The conversation the assistant rail shows; none until conversations arrive. */
   conversationId: string | null;
   /** The provider and model the NEXT new conversation starts on; null until a person or an agent chooses. A view setting: nothing is written. */
@@ -41,7 +52,11 @@ export type ViewCommand =
   | { kind: 'rail-close'; view: RailView }
   | { kind: 'context-add'; ids: string[] }
   | { kind: 'context-remove'; ids: string[] }
-  | { kind: 'context-clear-sent'; ids?: string[] }
+  | { kind: 'context-clear-sent'; ids?: string[]; elements?: ElementKey[] }
+  | { kind: 'context-elements-add'; elements: ElementRef[] }
+  | { kind: 'context-elements-remove'; elements: ElementKey[] }
+  /** The pages of these embeds changed or went away: what was picked in them names nothing now. */
+  | { kind: 'context-elements-drop'; objectIds: string[] }
   | { kind: 'conversation'; id: string | null }
   | { kind: 'assistant-choice'; choice: ViewState['choice'] }
   | { kind: 'full-view'; sessionId: string | null }
@@ -59,6 +74,7 @@ export const initialView = (): ViewState => ({
   letters: true,
   root: null,
   context: [],
+  contextElements: [],
   conversationId: null,
   choice: null,
   fullView: null,
@@ -113,11 +129,35 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
     case 'rail-close':
       return { ...state, rail: state.rail.filter((v) => v !== action.view) };
     case 'context-add':
-      return { ...state, context: contextAdd(objects, contextPrune(objects, state.context), action.ids) };
+      return {
+        ...state,
+        context: contextAdd(objects, contextPrune(objects, state.context), action.ids),
+        contextElements: elementsPrune(objects, state.contextElements),
+      };
     case 'context-remove':
       return { ...state, context: contextRemove(state.context, action.ids) };
     case 'context-clear-sent':
-      return { ...state, context: action.ids ? contextRemove(state.context, action.ids) : [] };
+      // A send names what it carried, so whatever was added while it travelled stays; with nothing named, all of it goes.
+      return {
+        ...state,
+        context: action.ids ? contextRemove(state.context, action.ids) : [],
+        contextElements: action.ids ? elementsRemove(state.contextElements, action.elements ?? []) : [],
+      };
+    case 'context-elements-add':
+      return {
+        ...state,
+        contextElements: elementsAdd(
+          elementsPrune(objects, state.contextElements),
+          elementsPrune(objects, action.elements)
+        ),
+      };
+    case 'context-elements-remove':
+      return { ...state, contextElements: elementsRemove(state.contextElements, action.elements) };
+    case 'context-elements-drop':
+      return {
+        ...state,
+        contextElements: state.contextElements.filter((ref) => !action.objectIds.includes(ref.objectId)),
+      };
     case 'conversation':
       return { ...state, conversationId: action.id };
     case 'assistant-choice':

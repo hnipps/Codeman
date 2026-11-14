@@ -6,7 +6,12 @@
  * write path. Live frames are a view concern: at most `MAX_LIVE_FRAMES` embeds nearest the
  * middle of the viewport hold an iframe; the rest show their card with "Paused". A frame never
  * takes focus by itself: a shield covers it until a click on an already selected embed, and
- * Escape inside the page (relayed by the proxy) hands focus back to the board.
+ * Escape inside the page (relayed by the frame bridge) hands focus back to the board.
+ *
+ * The frame bridge (`src/canvas/frame-bridge.ts`) is the only channel into a frame. A message is
+ * taken only from the window of a frame this editor mounted, only with the opaque origin a
+ * sandboxed frame has, and only when `parseFrameMessage` accepts its shape and size. What a frame
+ * reports is the page's own text: it reaches the DOM through `textContent` and nothing else.
  */
 import { uuid } from './ids.js';
 import type { PhoneQuery } from './mobile.js';
@@ -20,7 +25,19 @@ import { label, type ViewObject } from './model.js';
 import { imageCreateSize } from './objects/image.js';
 import { isLoopbackUrl, linkHost, pastedUrl } from './objects/link.js';
 import { embedStage, paintEmbed } from './objects/embed.js';
-import { screenToCanvas, type Point } from './viewport.js';
+import { screenToCanvas, type Point, type Rect } from './viewport.js';
+import { elementLabel, type ElementRef } from '../../../src/canvas/element-ref.js';
+import {
+  clipToFrame,
+  FRAME_ORIGIN,
+  frameBox,
+  framePolygon,
+  FrameReplies,
+  MAX_LOCATE_SELECTORS,
+  parseFrameMessage,
+  toScreenRect,
+  type FrameBox,
+} from './frame-messages.js';
 
 export const MAX_LIVE_FRAMES = 6;
 /**
@@ -54,6 +71,17 @@ export type MediaHost = {
   assetUrl: (assetId: string) => string | null;
 };
 
+/** Something a person can do with an element they picked; the popover lists these in the order they were added. */
+export type PickAction = { id: string; label: string; primary?: boolean; run: (element: ElementRef) => void };
+/** What the page wires to the frame bridge beyond this editor: the hold-Q lasso. */
+export type FrameHooks = {
+  /** The frame in use reported bare Q going down or up. */
+  key?: (objectId: string, phase: 'down' | 'up') => void;
+  /** Escape was pressed inside a frame. True when it was used up and the frame keeps the keyboard. */
+  escape?: () => boolean;
+};
+const FLASH_MS = 1200;
+
 const UploadSchema = z.object({
   success: z.literal(true),
   data: z.object({ assetId: z.string(), width: z.number().nullable(), height: z.number().nullable() }),
@@ -84,6 +112,17 @@ export class MediaEditor {
   private interacting: string | null = null;
   private dropTarget: HTMLElement | null = null;
   private fileInput: HTMLInputElement;
+  /** Frames whose bridge has spoken: a page that blocks the injected script never does. */
+  private bridged = new WeakSet<HTMLIFrameElement>();
+  private hooks: FrameHooks = {};
+  private picking: { id: string; done: (element: ElementRef | null) => void } | null = null;
+  private offered: { element: ElementRef; view: string } | null = null;
+  private pickActions: PickAction[] = [];
+  private pickListeners = new Set<(element: ElementRef) => void>();
+  private frameListeners = new Set<(objectId: string) => void>();
+  private elementReplies = new FrameReplies<ElementRef[]>(uuid);
+  private rectReplies = new FrameReplies<(Rect | null)[]>(uuid);
+  private flashTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private host: MediaHost) {
     const board = node('board');
@@ -107,9 +146,20 @@ export class MediaEditor {
           y: e.clientY,
           selected: [...this.host.view().selected],
           shield: target?.closest<HTMLElement>('.embed-shield') ?? null,
+          moved: false,
         };
+        if (this.offered && !target?.closest('#elementPopover')) this.closeOffer(false);
+        if (this.picking && !target?.closest('.embed-stage.picking, [data-media-action="pick"]')) this.endPick(null);
         if (target?.closest('#board [data-media-action]')) e.stopPropagation();
         else if (this.interacting && !target?.closest('.embed-stage.interacting')) this.endInteraction(false);
+      },
+      true
+    );
+    // A loop that ends where it began is still a drag: what counts is how far the pointer went, not where it stopped.
+    document.addEventListener(
+      'pointermove',
+      (e) => {
+        if (this.down && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 4) this.down.moved = true;
       },
       true
     );
@@ -130,6 +180,11 @@ export class MediaEditor {
         const active = document.activeElement;
         if (active instanceof HTMLIFrameElement && active.closest('.embed-stage') && !this.interacting)
           board.focus({ preventScroll: true });
+        // Focus inside one of our frames still counts as this document's; anything else is the person leaving.
+        if (!document.hasFocus()) {
+          this.endPick(null);
+          this.closeOffer(false);
+        }
       }, 0);
     });
     const add = document.getElementById('addImage');
@@ -488,10 +543,15 @@ export class MediaEditor {
       case 'reload': {
         // Ask for the frame again: the address this page holds may have been retired by the server.
         this.frameUrls.delete(object.id);
-        this.frameOf(object.id)?.remove();
+        this.unmount(this.frameOf(object.id));
         this.frames();
         break;
       }
+      case 'pick':
+        this.host.dispatch({ kind: 'selection', ids: [object.id] });
+        this.togglePick(object.id);
+        // The popover or the page takes over from here; the board keeps the keyboard so Escape cancels.
+        break;
       case 'to-link':
         this.host.dispatch({ kind: 'selection', ids: [object.id] });
         this.toggleEmbed();
@@ -537,14 +597,21 @@ export class MediaEditor {
       if (live.has(el) && object) this.mount(body, stage, object, text(object.content.url));
       else this.pause(body, stage, object);
     }
+    this.syncPick();
+  }
+  private unmount(frame: Element | null | undefined): void {
+    if (!(frame instanceof HTMLIFrameElement)) return;
+    this.elementReplies.drop(frame);
+    this.rectReplies.drop(frame);
+    frame.remove();
   }
   private pause(body: HTMLElement, stage: HTMLElement, object: ViewObject | undefined): void {
     const frame = stage.querySelector(':scope > iframe');
     if (!frame && stage.dataset.note === 'Paused' && stage.querySelector(':scope > .embed-card')) return;
-    frame?.remove();
+    this.unmount(frame);
     stage.querySelector(':scope > .embed-shield')?.remove();
     stage.dataset.note = 'Paused';
-    stage.classList.remove('live', 'interacting');
+    stage.classList.remove('live', 'interacting', 'picking', 'shielded');
     if (object && this.interacting === object.id) this.interacting = null;
     if (object) paintEmbed(body, object, { assetUrl: this.host.assetUrl });
   }
@@ -565,8 +632,9 @@ export class MediaEditor {
         return;
       }
       if (stage.querySelector(':scope > iframe')?.getAttribute('src') === embedUrl) return;
-      stage.querySelector(':scope > iframe')?.remove();
+      this.unmount(stage.querySelector(':scope > iframe'));
       stage.querySelector(':scope > .embed-card')?.remove();
+      stage.querySelector(':scope > .embed-shield')?.remove();
       const frame = document.createElement('iframe');
       frame.setAttribute('sandbox', EMBED_SANDBOX);
       frame.referrerPolicy = 'no-referrer';
@@ -607,14 +675,14 @@ export class MediaEditor {
     return request;
   }
   /** A click (not a drag) on an embed that was already selected hands the pointer and keys to its page. */
-  private down: { x: number; y: number; selected: string[]; shield: HTMLElement | null } | null = null;
+  private down: { x: number; y: number; selected: string[]; shield: HTMLElement | null; moved: boolean } | null = null;
   private maybeInteract(e: PointerEvent): void {
     // The board captures the pointer, so pointerup targets the board: the shield is the one pressed.
     const down = this.down;
     const shield = down?.shield ?? null;
     const id = shield?.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
     if (!shield || !id || !down || this.host.mobile.matches || e.button !== 0) return;
-    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+    if (down.moved || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
     if (down.selected.length !== 1 || down.selected[0] !== id) return;
     // Defer so the board's own pointerup (selection) runs first.
     setTimeout(() => {
@@ -639,23 +707,285 @@ export class MediaEditor {
     if (focusBoard) node('board').focus({ preventScroll: true });
   }
   private message(e: MessageEvent): void {
-    if (!e.data || typeof e.data !== 'object' || (e.data as { type?: unknown }).type !== 'codeman:canvas-escape')
-      return;
+    // Only a frame this editor mounted may speak, and only as the opaque origin its sandbox gives it.
+    if (e.origin !== FRAME_ORIGIN || !e.source) return;
     const frame = [...document.querySelectorAll<HTMLIFrameElement>('.embed-stage > iframe')].find(
       (candidate) => candidate.contentWindow === e.source
     );
-    if (!frame) return;
-    this.endInteraction(true);
-    // Escape from any of our frames hands the keys back, even one that took focus by itself.
-    if (document.activeElement === frame) node('board').focus({ preventScroll: true });
+    const objectId = frame?.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
+    const message = frame && objectId ? parseFrameMessage(e.data, objectId) : null;
+    if (!frame || !objectId || !message) return;
+    switch (message.type) {
+      case 'ready':
+        this.bridged.add(frame);
+        break;
+      case 'escape':
+        // A lasso the frame armed ends first, and the page keeps the keyboard.
+        if (this.interacting === objectId && this.hooks.escape?.()) break;
+        this.endInteraction(true);
+        // Escape from any of our frames hands the keys back, even one that took focus by itself.
+        if (document.activeElement === frame) node('board').focus({ preventScroll: true });
+        break;
+      case 'key':
+        // Only the frame the person is using speaks for the keyboard.
+        if (this.interacting === objectId && !this.host.mobile.matches) this.hooks.key?.(objectId, message.phase);
+        break;
+      case 'picked':
+        if (this.picking?.id === objectId) this.endPick(message.element);
+        break;
+      case 'pick-cancelled':
+        if (this.picking?.id === objectId) this.endPick(null);
+        break;
+      case 'elements':
+        this.elementReplies.settle(message.requestId, frame, message.elements);
+        break;
+      case 'rects':
+        this.rectReplies.settle(message.requestId, frame, message.rects);
+        break;
+      case 'rects-changed':
+        if (this.offered?.element.objectId === objectId) this.closeOffer(false);
+        for (const listener of this.frameListeners) listener(objectId);
+        break;
+    }
   }
   get interactingId(): string | null {
     return this.interacting;
   }
   escape(): boolean {
+    if (this.offered) {
+      this.closeOffer(true);
+      return true;
+    }
+    if (this.picking) {
+      this.endPick(null);
+      return true;
+    }
     if (!this.interacting) return false;
     this.endInteraction(true);
     return true;
+  }
+
+  // ───────────── the frame bridge: pick, locate, lasso ─────────────
+  connect(hooks: FrameHooks): void {
+    this.hooks = hooks;
+  }
+  private liveFrame(id: string): HTMLIFrameElement | null {
+    return this.host.mobile.matches ? null : this.frameOf(id);
+  }
+  private send(frame: HTMLIFrameElement, message: Record<string, unknown>): void {
+    // The frame's origin is opaque, so no target origin can name it; the bridge checks that its parent sent this.
+    frame.contentWindow?.postMessage(message, '*');
+  }
+  /** Where each live, unrotated frame sits on screen, front-most first. */
+  frameBoxes(): FrameBox[] {
+    if (this.host.mobile.matches) return [];
+    const byId = new Map(this.host.objects().map((o) => [o.id, o]));
+    const boxes: FrameBox[] = [];
+    for (const stage of document.querySelectorAll<HTMLElement>('#layer .embed-stage.live')) {
+      const el = stage.closest<HTMLElement>('[data-object-id]');
+      const object = byId.get(el?.dataset.objectId ?? '');
+      if (!el || !object || el.dataset.view !== 'in' || !stage.querySelector(':scope > iframe')) continue;
+      const r = stage.getBoundingClientRect();
+      const box = frameBox(
+        object.id,
+        { x: r.x, y: r.y, width: r.width, height: r.height },
+        stage.offsetWidth,
+        worldOrigin(this.host.objects(), object).rotation
+      );
+      if (box) boxes.unshift(box);
+    }
+    return boxes;
+  }
+  private boxOf(id: string): FrameBox | null {
+    return this.frameBoxes().find((box) => box.id === id) ?? null;
+  }
+  /** A rectangle in a frame's own pixels as it shows on screen, cut to the frame; null when none of it shows. */
+  screenRect(objectId: string, rect: Rect): Rect | null {
+    const box = this.boxOf(objectId);
+    return box ? clipToFrame(box, toScreenRect(box, rect)) : null;
+  }
+  /** Where the frame finds each selector now, in its own pixels. Null when the frame is not live or does not answer. */
+  locate(objectId: string, selectors: string[]): Promise<(Rect | null)[] | null> {
+    const frame = this.liveFrame(objectId);
+    if (!frame) return Promise.resolve(null);
+    return this.rectReplies.ask(frame, (requestId) =>
+      this.send(frame, { type: 'codeman:locate', requestId, selectors: selectors.slice(0, MAX_LOCATE_SELECTORS) })
+    );
+  }
+  /** Elements whose centres fall inside a loop drawn on screen. Null when the frame is not live or does not answer. */
+  elementsIn(objectId: string, screenPoints: Point[]): Promise<ElementRef[] | null> {
+    const frame = this.liveFrame(objectId);
+    const box = this.boxOf(objectId);
+    if (!frame || !box) return Promise.resolve(null);
+    return this.elementReplies.ask(frame, (requestId) =>
+      this.send(frame, { type: 'codeman:query-polygon', requestId, points: framePolygon(box, screenPoints) })
+    );
+  }
+  /** Tells a listener that a frame scrolled or resized, so rectangles read from it are stale. */
+  onFrameChange(listener: (objectId: string) => void): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
+  }
+  /** Called with every element a person picks, before the popover offers its actions. */
+  onPicked(listener: (element: ElementRef) => void): () => void {
+    this.pickListeners.add(listener);
+    return () => this.pickListeners.delete(listener);
+  }
+  /** Adds an action to the popover a picked element shows. */
+  addPickAction(action: PickAction): () => void {
+    this.pickActions = [...this.pickActions.filter((a) => a.id !== action.id), action];
+    return () => {
+      this.pickActions = this.pickActions.filter((a) => a !== action);
+    };
+  }
+  /**
+   * Lets the person point at one element in a live frame. Resolves with it, or with null when picking
+   * ended any other way (Escape, a click elsewhere, the selection or the frame changing, the window losing focus).
+   */
+  pickElement(objectId: string): Promise<ElementRef | null> {
+    this.endPick(null);
+    this.closeOffer(false);
+    const frame = this.liveFrame(objectId);
+    if (!frame) return Promise.resolve(null);
+    return new Promise((done) => {
+      this.picking = { id: objectId, done };
+      frame.parentElement?.classList.add('picking');
+      this.send(frame, { type: 'codeman:pick-start' });
+      this.paintPick();
+    });
+  }
+  get pickingId(): string | null {
+    return this.picking?.id ?? null;
+  }
+  /** Pick element as the head button and the I key run it: pick, then offer what can be done with the element. */
+  togglePick(objectId: string): void {
+    if (this.picking?.id === objectId) return this.endPick(null);
+    const frame = this.liveFrame(objectId);
+    if (!frame) return this.host.say('This page is paused. Bring it to the middle of the view, then pick an element.');
+    if (!this.bridged.has(frame))
+      return this.host.say('This page has not answered Codeman, so its elements cannot be picked.');
+    void this.pickElement(objectId).then((element) => {
+      if (element) this.offer(element);
+    });
+  }
+  private endPick(element: ElementRef | null): void {
+    const picking = this.picking;
+    if (!picking) return;
+    this.picking = null;
+    const frame = this.frameOf(picking.id);
+    frame?.parentElement?.classList.remove('picking');
+    if (frame) this.send(frame, { type: 'codeman:pick-stop' });
+    this.paintPick();
+    if (element) for (const listener of this.pickListeners) listener(element);
+    picking.done(element);
+  }
+  private paintPick(): void {
+    for (const button of document.querySelectorAll<HTMLElement>('#board [data-media-action="pick"]')) {
+      const on = button.dataset.objectRef === this.picking?.id;
+      button.setAttribute('aria-pressed', String(on));
+      button.title = on ? 'Cancel picking' : 'Pick element';
+    }
+  }
+  /** Picking and its popover belong to one selected, live frame at one camera position. */
+  private syncPick(): void {
+    const view = this.host.view();
+    const only = view.selected.length === 1 ? view.selected[0] : null;
+    if (this.picking && (only !== this.picking.id || !this.liveFrame(this.picking.id))) this.endPick(null);
+    if (this.picking) this.paintPick();
+    const offered = this.offered;
+    if (offered && (!this.liveFrame(offered.element.objectId) || offered.view !== this.viewKey()))
+      this.closeOffer(false);
+  }
+  private viewKey(): string {
+    const v = this.host.view();
+    return JSON.stringify([v.viewport, v.selected, v.root]);
+  }
+  private outline(rect: Rect | null): void {
+    const mark = node('elementMark');
+    mark.hidden = !rect;
+    if (!rect) return;
+    mark.style.left = `${rect.x}px`;
+    mark.style.top = `${rect.y}px`;
+    mark.style.width = `${rect.width}px`;
+    mark.style.height = `${rect.height}px`;
+  }
+  /** The popover for a picked element: its label and what can be done with it. Every word of the label is the page's. */
+  private offer(element: ElementRef): void {
+    const rect = this.screenRect(element.objectId, element.rect);
+    if (!this.pickActions.length || !this.boxOf(element.objectId)) return;
+    const popover = node('elementPopover');
+    node('elementPopoverLabel').textContent = elementLabel(element);
+    const actions = node('elementPopoverActions');
+    actions.replaceChildren(
+      ...this.pickActions.map((action) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.pickAction = action.id;
+        button.textContent = action.label;
+        if (action.primary) button.className = 'primary';
+        button.onclick = () => {
+          this.closeOffer(true);
+          action.run(element);
+        };
+        return button;
+      })
+    );
+    clearTimeout(this.flashTimer);
+    this.outline(rect);
+    node('elementMark').classList.remove('flash');
+    popover.hidden = false;
+    // Under the element when there is room, over it otherwise; an element scrolled out of the frame anchors to the frame.
+    const stage = this.boxOf(element.objectId)!.rect;
+    const anchor = rect ?? { x: stage.x, y: stage.y, width: 0, height: 0 };
+    const size = popover.getBoundingClientRect();
+    const below = anchor.y + anchor.height + 8;
+    const top = below + size.height <= innerHeight - 8 ? below : Math.max(8, anchor.y - size.height - 8);
+    popover.style.left = `${Math.max(8, Math.min(anchor.x, innerWidth - size.width - 8))}px`;
+    popover.style.top = `${top}px`;
+    this.offered = { element, view: this.viewKey() };
+    actions.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
+  }
+  private closeOffer(focusBoard: boolean): void {
+    if (!this.offered) return;
+    this.offered = null;
+    const popover = node('elementPopover');
+    const held = popover.contains(document.activeElement);
+    popover.hidden = true;
+    this.outline(null);
+    if (focusBoard || held) node('board').focus({ preventScroll: true });
+  }
+  /** Shows where an element is now, for a moment. False when its frame is not live or no longer has it. */
+  async flash(element: ElementRef): Promise<boolean> {
+    const rects = await this.locate(element.objectId, [element.selector]);
+    const found = rects?.[0];
+    const rect = found ? this.screenRect(element.objectId, found) : null;
+    if (!rect || this.offered) return false;
+    const mark = node('elementMark');
+    clearTimeout(this.flashTimer);
+    this.outline(rect);
+    mark.classList.remove('flash');
+    void mark.offsetWidth;
+    mark.classList.add('flash');
+    this.flashTimer = setTimeout(() => {
+      mark.classList.remove('flash');
+      this.outline(null);
+    }, FLASH_MS);
+    return true;
+  }
+  /** While the lasso a frame armed is held, its shield is back up so the drag reaches the board. */
+  holdShield(objectId: string): void {
+    this.frameOf(objectId)?.parentElement?.classList.add('shielded');
+  }
+  /** The hold is over: the page is in use again, with the keyboard if the board borrowed it for the drag. */
+  releaseShield(objectId: string): void {
+    const frame = this.frameOf(objectId);
+    frame?.parentElement?.classList.remove('shielded');
+    if (frame && this.interacting === objectId && document.activeElement !== frame) frame.focus();
+  }
+  /** Whether the keyboard is inside this frame right now. */
+  frameHasKeys(objectId: string): boolean {
+    const frame = this.frameOf(objectId);
+    return !!frame && document.activeElement === frame && document.hasFocus();
   }
   /** Drop frame addresses of objects that are no longer embeds (removed, or switched back to a link): the server retired them. Called after every render. */
   forget(ids: Set<string>): void {

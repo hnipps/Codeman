@@ -1,6 +1,7 @@
 import { uuid } from './ids.js';
 import { MAX_MODEL_ID_LENGTH } from '../../../src/canvas/providers.js';
-import { chips, type Chip } from './context.js';
+import { chips, elementChips, type Chip, type ElementChip, type ElementKey } from './context.js';
+import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import type { ViewCommand, ViewState } from './commands.js';
 import type { ViewObject } from './model.js';
 import type { ConversationMessage } from '../../../src/canvas/conversation-schema.js';
@@ -15,7 +16,7 @@ import {
   type SentMessage,
   type TranscriptRow,
 } from './conversation.js';
-import { nextAttempt, parseAttempt, parseSent, type Attempt } from './outbox.js';
+import { elementsField, nextAttempt, parseAttempt, parseElements, parseSent, type Attempt } from './outbox.js';
 import {
   NO_ACTIVITY,
   parseActivity,
@@ -93,6 +94,9 @@ type Options = {
   view: () => ViewState;
   remove: (id: string) => void;
   choose: (id: string) => void;
+  removeElement: (element: ElementKey) => void;
+  /** Shows the element's embed on the board and, when its frame is live, the element in it. */
+  chooseElement: (element: ElementRef) => void;
   /** Selects an object and opens its comment thread (a thread-origin prompt's backlink). */
   openThread: (objectId: string) => void;
   /** The conversation list was read again: thread request states may have changed. */
@@ -152,6 +156,26 @@ export function parseStoredContext(raw: string | null): string[] {
     return [];
   }
 }
+/**
+ * Pending elements stored by this viewer, each with the address its embed showed when it was picked. Read
+ * back, an element is kept only while that embed still shows that address.
+ */
+export function parseStoredElements(raw: string | null, pages: ReadonlyMap<string, string>): ElementRef[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const kept = parsed.filter(
+      (entry): entry is { url: string; ref: unknown } =>
+        typeof entry === 'object' && entry !== null && typeof (entry as { url?: unknown }).url === 'string'
+    );
+    return parseElements(kept.map((entry) => entry.ref)).filter(
+      (ref, index) => pages.get(ref.objectId) === kept[index].url
+    );
+  } catch {
+    return [];
+  }
+}
 const NEAR_END_PX = 24;
 const TRANSCRIPT_DEBOUNCE_MS = 400;
 /** How often a release that is still running is read again; the server reads the supervisor no more often. */
@@ -174,6 +198,8 @@ export class AssistantView {
   private keys: CanvasStorageKeys;
   private signature = '';
   private storedContext = '';
+  private storedElements = '';
+  private restoredElementsRaw: string | null;
   private restoring = true;
   private refocus: number | null = null;
   private restored: string[];
@@ -216,6 +242,7 @@ export class AssistantView {
     // Read once, before the first paint can overwrite the stored list with the empty starting state.
     this.restored = parseStoredContext(read(this.keys.assistantContext));
     this.restoredChoiceValue = parseChoice(read(this.keys.assistantChoice));
+    this.restoredElementsRaw = read(this.keys.assistantElements);
     this.attempt = parseAttempt(read(this.keys.assistantOutbox));
     this.sent = parseSent(read(this.keys.assistantSent));
     this.taskAttempt = parseTaskAttempt(read(this.keys.taskOutbox));
@@ -312,6 +339,17 @@ export class AssistantView {
   }
   restoredContext(): string[] {
     return this.restored;
+  }
+  /** Elements pending when this viewer last left, minus those whose embed has gone or shows another page. */
+  restoredElements(): ElementRef[] {
+    return parseStoredElements(this.restoredElementsRaw, this.pages());
+  }
+  private pages(): Map<string, string> {
+    const pages = new Map<string, string>();
+    for (const o of this.options.objects())
+      if (o.type === 'embed' && o.deletedAt === null && typeof o.content.url === 'string')
+        pages.set(o.id, o.content.url);
+    return pages;
   }
   restoredChoice(): Choice | null {
     return this.restoredChoiceValue;
@@ -516,7 +554,10 @@ export class AssistantView {
         return fail(failure.text, failure.share);
       }
       this.acknowledged(attempt, task);
-      const said = `Running in the background: ${task.name}`;
+      // A background run carries objects only; what was picked inside a page stays on the shelf for the conversation.
+      const said = this.pendingElements().length
+        ? `Running in the background: ${task.name}. Picked elements were not sent with it and stay here.`
+        : `Running in the background: ${task.name}`;
       this.say(said);
       this.options.taskStarted?.(task);
       return { ok: true, text: said };
@@ -687,7 +728,15 @@ export class AssistantView {
   private keptMessages(): SentMessage[] {
     const attempt = this.attempt;
     if (!attempt || this.sent.some((m) => m.messageId === attempt.messageId)) return this.sent;
-    return [...this.sent, { messageId: attempt.messageId, text: attempt.text, refIds: attempt.refIds }];
+    return [
+      ...this.sent,
+      {
+        messageId: attempt.messageId,
+        text: attempt.text,
+        refIds: attempt.refIds,
+        ...elementsField(attempt.elements),
+      },
+    ];
   }
   /** A message the transcript now shows no longer needs the text this page kept for it. */
   private pruneSent(): void {
@@ -814,6 +863,12 @@ export class AssistantView {
     this.inflight = run;
     return run;
   }
+  /** Pending elements whose embed is still on the canvas, as the next message carries them. */
+  private pendingElements(): ElementRef[] {
+    const pending = this.options.view().contextElements;
+    const live = elementChips(this.options.objects(), pending);
+    return pending.filter((ref) => live.some((c) => c.objectId === ref.objectId && c.selector === ref.selector));
+  }
   private async deliver(): Promise<SendResult> {
     if (this.sending) return { ok: false };
     // The draft is on its way to a background task: sent here too, the same request would run twice.
@@ -824,6 +879,7 @@ export class AssistantView {
     const refusal = promptRefusal(text);
     if (refusal) return this.refuse(refusal);
     const ids = chips(this.options.objects(), this.options.view().context).map((c) => c.id);
+    const elements = this.pendingElements();
     if (typeof navigator !== 'undefined' && navigator.onLine === false)
       return this.refuse('You are offline. Your message is kept; retry when the connection is back.');
     const choice = this.options.view().choice;
@@ -840,7 +896,7 @@ export class AssistantView {
     }
     // A failed attempt against the bound conversation is not carried into the new one the choice now asks for.
     const stored = fresh && this.attempt?.conversationId === (this.current?.id ?? null) ? null : this.attempt;
-    const attempt = nextAttempt(stored, target, text, ids, () => uuid());
+    const attempt = nextAttempt(stored, target, text, ids, () => uuid(), elements);
     this.attempt = attempt;
     write(this.keys.assistantOutbox, JSON.stringify(attempt));
     this.sending = true;
@@ -871,12 +927,12 @@ export class AssistantView {
       const answer = await this.json(`/api/canvas/${this.options.workspace}/conversations/${conversationId}/messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ messageId: attempt.messageId, text, refIds: ids }),
+        body: JSON.stringify({ messageId: attempt.messageId, text, refIds: ids, ...elementsField(elements) }),
       });
       if (answer.status >= 400) throw new SendError(errorMessage(answer.body), answer.status);
       this.sent = [
         ...this.sent.filter((m) => m.messageId !== attempt.messageId),
-        { messageId: attempt.messageId, text, refIds: ids },
+        { messageId: attempt.messageId, text, refIds: ids, ...elementsField(elements) },
       ].slice(-10);
       this.persistSent();
       this.attempt = null;
@@ -886,7 +942,7 @@ export class AssistantView {
       const now = this.draft.value;
       if (now.startsWith(text)) this.draft.value = now.slice(text.length).replace(/^\s+/, '');
       write(this.keys.assistantDraft, this.draft.value || null);
-      this.options.dispatch({ kind: 'context-clear-sent', ids });
+      this.options.dispatch({ kind: 'context-clear-sent', ids, elements });
       this.say('');
       this.syncRun();
       this.options.sent?.(attempt.messageId, text, conversationId);
@@ -925,7 +981,7 @@ export class AssistantView {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ messageId, text: kept.text, refIds: kept.refIds }),
+          body: JSON.stringify({ messageId, text: kept.text, refIds: kept.refIds, ...elementsField(kept.elements) }),
         }
       );
       if (answer.status >= 400) {
@@ -1187,6 +1243,15 @@ export class AssistantView {
       this.storedContext = stored;
       write(this.keys.assistantContext, ids.length ? stored : null);
     }
+    const elements = this.options.view().contextElements;
+    const pages = this.pages();
+    const storedElements = JSON.stringify(
+      elements.flatMap((ref) => (pages.has(ref.objectId) ? [{ url: pages.get(ref.objectId), ref }] : []))
+    );
+    if (!this.restoring && storedElements !== this.storedElements) {
+      this.storedElements = storedElements;
+      write(this.keys.assistantElements, elements.length ? storedElements : null);
+    }
     const choice = this.options.view().choice;
     const choiceKey = JSON.stringify(choice);
     if (!this.restoring && choiceKey !== this.storedChoice) {
@@ -1195,13 +1260,15 @@ export class AssistantView {
     }
     this.paintChoice();
     const rows = chips(this.options.objects(), ids);
-    const signature = JSON.stringify(rows);
+    const picked = elementChips(this.options.objects(), elements);
+    const signature = JSON.stringify([rows, picked]);
     if (signature !== this.signature) {
       this.signature = signature;
-      this.paintChips(rows);
+      this.paintChips(rows, picked);
     }
-    node('contextEmpty').hidden = rows.length > 0;
-    node('contextHeading').textContent = rows.length ? `Context · ${rows.length}` : 'Context';
+    const count = rows.length + picked.length;
+    node('contextEmpty').hidden = count > 0;
+    node('contextHeading').textContent = count ? `Context · ${count}` : 'Context';
     if (this.refocus !== null) {
       const removers = [...node('contextChips').querySelectorAll<HTMLElement>('.chip-remove')];
       (removers[Math.min(this.refocus, removers.length - 1)] ?? this.draft).focus({ preventScroll: true });
@@ -1275,7 +1342,7 @@ export class AssistantView {
     banner.textContent = promised;
     banner.hidden = !promised;
   }
-  private paintChips(rows: Chip[]): void {
+  private paintChips(rows: Chip[], picked: ElementChip[]): void {
     const list = node('contextChips');
     list.replaceChildren();
     rows.forEach((chip, index) => {
@@ -1306,6 +1373,43 @@ export class AssistantView {
       close.addEventListener('click', () => {
         this.refocus = index;
         this.options.remove(chip.id);
+      });
+      item.append(open, close);
+      list.append(item);
+    });
+    // Every word of an element chip was written by the page inside the frame: textContent only, and never translated.
+    picked.forEach((chip, index) => {
+      const item = document.createElement('li');
+      item.className = 'chip chip-element';
+      item.dataset.elementObject = chip.objectId;
+      item.dataset.elementSelector = chip.selector;
+      item.dataset.i18nSkip = '';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'chip-label';
+      open.title = 'Show this element on the canvas';
+      const name = document.createElement('span');
+      name.className = 'chip-name';
+      name.textContent = chip.label;
+      const page = document.createElement('span');
+      page.className = 'chip-page';
+      page.textContent = `in ${chip.page}`;
+      open.append(name, page);
+      open.addEventListener('click', () => {
+        const ref = this.options
+          .view()
+          .contextElements.find((r) => r.objectId === chip.objectId && r.selector === chip.selector);
+        if (ref) this.options.chooseElement(ref);
+      });
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'chip-remove';
+      close.setAttribute('aria-label', `Remove ${chip.label} from context`);
+      close.title = 'Remove from context';
+      close.textContent = '×';
+      close.addEventListener('click', () => {
+        this.refocus = rows.length + index;
+        this.options.removeElement({ objectId: chip.objectId, selector: chip.selector });
       });
       item.append(open, close);
       list.append(item);

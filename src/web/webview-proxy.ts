@@ -45,6 +45,7 @@
 import { createHash } from 'node:crypto';
 import { WEBVIEW_PROXY_PREFIX } from '../config/webview-limits.js';
 import { stripBasePath } from '../config/base-path.js';
+import { FRAME_BRIDGE_SCRIPT, FRAME_BRIDGE_SOURCE } from '../canvas/frame-bridge.js';
 
 /** Headers that are per-connection and must never be relayed in either direction. */
 const HOP_BY_HOP = new Set([
@@ -686,19 +687,50 @@ function moduleImportMap(html: string, prefix: string): string {
  * relative URLs, attribute rewriting for root-absolute markup, and the shim for
  * URLs built at runtime.
  */
+const FRAME_BRIDGE_HASH = `'sha256-${createHash('sha256').update(FRAME_BRIDGE_SOURCE, 'utf8').digest('base64')}'`;
+const INLINE_PROOF = /^'(?:nonce-|sha(?:256|384|512)-)/i;
+
 /**
- * A canvas embed hands keyboard focus back to the board on Escape. The frame is
- * cross-origin to the canvas, so its keys never reach the parent; this tells it.
- * The page can send the same message itself, which can only end its own focus.
+ * Let the frame bridge run under a page's own Content-Security-Policy. A policy that restricts
+ * inline scripts would block the injected bridge, and with it Escape, Pick element and the lasso.
+ * The bridge's hash is added to the directive that governs inline scripts, in every policy of the
+ * header; it allows that one script and nothing else.
+ *
+ * A directive that allows inline scripts with a bare `'unsafe-inline'` is left alone: a hash beside
+ * it would switch `'unsafe-inline'` off and block the page's own scripts.
  */
-const CANVAS_ESCAPE_RELAY =
-  "<script>addEventListener('keydown',function(e){if(e.key==='Escape')parent.postMessage({type:'codeman:canvas-escape'},'*')},true)</script>";
+export function allowFrameBridge(csp: string): string {
+  return csp
+    .split(',')
+    .map((policy) => {
+      const directives = policy
+        .split(';')
+        .map((d) => d.trim())
+        .filter(Boolean);
+      const named = (name: string): number => directives.findIndex((d) => d.toLowerCase().split(/\s+/)[0] === name);
+      const fallback = named('default-src');
+      const at = [named('script-src-elem'), named('script-src')].find((i) => i >= 0) ?? -1;
+      const governing = at >= 0 ? at : fallback;
+      if (governing < 0) return policy;
+      const [, ...sources] = directives[governing].split(/\s+/);
+      const inlineAllowed =
+        sources.some((source) => source.toLowerCase() === "'unsafe-inline'") &&
+        !sources.some((source) => INLINE_PROOF.test(source) || source.toLowerCase() === "'strict-dynamic'");
+      if (inlineAllowed) return policy;
+      const allowed = [...sources.filter((source) => source.toLowerCase() !== "'none'"), FRAME_BRIDGE_HASH].join(' ');
+      // A page with only `default-src` gets a script directive of its own, so nothing but scripts is touched.
+      if (at >= 0) directives[at] = `${directives[at].split(/\s+/)[0]} ${allowed}`;
+      else directives.push(`script-src ${allowed}`);
+      return directives.join('; ');
+    })
+    .join(', ');
+}
 
 export function rewriteHtml(
   html: string,
   capability: string,
   basePath = '',
-  { moduleMap = false, escapeRelay = false }: { moduleMap?: boolean; escapeRelay?: boolean } = {}
+  { moduleMap = false, frameBridge = false }: { moduleMap?: boolean; frameBridge?: boolean } = {}
 ): string {
   const prefix = proxyPrefixFor(capability, basePath);
 
@@ -713,7 +745,8 @@ export function rewriteHtml(
     (/<base\b/i.test(rebased) ? '' : `<base href="${prefix}">`) +
     runtimeUrlShim(prefix) +
     (moduleMap ? moduleImportMap(rebased, prefix) : '') +
-    (escapeRelay ? CANVAS_ESCAPE_RELAY : '');
+    // A canvas frame is cross-origin to the canvas: the bridge is the one channel between them.
+    (frameBridge ? FRAME_BRIDGE_SCRIPT : '');
 
   const headMatch = /<head\b[^>]*>/i.exec(rebased);
   if (headMatch) {

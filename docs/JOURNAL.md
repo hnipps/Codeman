@@ -15,6 +15,19 @@ Rejected. Writing the server into the user's Claude configuration: launch must n
 
 Measured on Claude Code 2.1.325. A `codeman` server the user already has in local scope is not started when the launch names one inline; `/mcp` shows a single `codeman`. Positionals after `--mcp-config` are read as more configs, so the flag stays ahead of `--name`.
 
+## 2026-11-13 — Elements inside a live canvas frame: the bridge, Pick element and the in-frame lasso
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/frame-bridge.ts`, `src/web/webview-proxy.ts`, `src/web/routes/webview-routes.ts`, `packages/canvas/src/{frame-messages,media,context-capture,context,commands,assistant,outbox,entry}.ts`, `src/web/public/canvas.{html,css}`
+**Why:** Chat context and the hold-Q lasso knew whole canvas objects only. A person could not point at a button inside a prototype.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas media"](architecture-invariants.md#canvas-media)
+
+Decision. One injected script speaks for a page, and the canvas treats every word of it as the page's own. A message counts only from a frame the editor mounted, with the opaque origin, in an exact bounded shape; the canvas stamps the object id. The bridge forwards Escape and bare Q and nothing else.
+
+Decisions the intent did not settle. The popover offers Add to chat only; Comment is a later unit and registers through `addPickAction()`. A loop inside a frame that finds no element, or whose frame does not answer in 800 ms, captures the embed as an object. A loop that also circles an object lying on the frame is an object loop. A rotated embed gets neither pick nor the in-frame lasso. Pending elements are kept per viewer with the embed's address and dropped when the address changes. A lasso armed from inside a page leaves the keyboard with that page. Background tasks do not carry elements yet.
+
+Three faults found by the browser test. A strict page policy blocked the bridge, so the proxy now adds the bridge's hash to that policy. The hash did not match on a page served without a charset, because the script held non-ASCII comment characters; the script is ASCII only now. A closed loop that ended on its starting point over a selected embed read as a click and handed the page the keyboard; a click is now judged by how far the pointer went. Reload also left a second shield in the stage, which is fixed.
+
 ## 2026-11-13 — The assistant rail does not ask for the transcript of a deleted session
 
 **Type:** drift

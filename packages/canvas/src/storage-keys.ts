@@ -9,6 +9,7 @@ export type CanvasStorageKeys = {
   clipboard: string;
   assistantDraft: string;
   assistantContext: string;
+  assistantElements: string;
   assistantOutbox: string;
   assistantSent: string;
   assistantChoice: string;
@@ -28,6 +29,7 @@ export function canvasStorageKeys(viewer: string, workspace: string): CanvasStor
     clipboard: `${scope}:clipboard`,
     assistantDraft: `${scope}:${workspace}:assistant:draft`,
     assistantContext: `${scope}:${workspace}:assistant:context`,
+    assistantElements: `${scope}:${workspace}:assistant:elements`,
     assistantOutbox: `${scope}:${workspace}:assistant:outbox`,
     assistantSent: `${scope}:${workspace}:assistant:sent`,
     assistantChoice: `${scope}:${workspace}:assistant:choice`,

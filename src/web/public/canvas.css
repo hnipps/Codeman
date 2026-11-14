@@ -1315,9 +1315,94 @@ textarea[readonly] {
 .embed-stage.interacting > .embed-shield {
   display: none;
 }
-.embed-stage.interacting {
+.embed-stage.interacting,
+.embed-stage.picking {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+/* Picking hands the pointer to the page, whose own bridge draws the hover outline. */
+.embed-stage.picking > .embed-shield {
+  display: none;
+}
+/* A lasso armed from inside the page: the shield is back for the hold, so the drag reaches the board. */
+.embed-stage.shielded > .embed-shield {
+  display: block;
+  cursor: crosshair;
+}
+/* Pick element needs a live page; a paused or loading embed has none. */
+.object-body:not(:has(> .embed-stage.live)) [data-media-action='pick'] {
+  display: none;
+}
+.embed-action[aria-pressed='true'] {
+  background-color: var(--raised);
+  color: var(--accent);
+}
+/* What a picked element offers, anchored to it. Its label is the page's own text. */
+#elementPopover {
+  position: fixed;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 16px));
+  padding: 4px 4px 4px 12px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px #0002;
+}
+#elementPopoverLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--secondary);
+}
+#elementPopoverActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+#elementPopoverActions > button {
+  padding: 4px 10px;
+  border-color: var(--divider);
+  white-space: nowrap;
+}
+#elementPopoverActions > .primary {
+  color: var(--action-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* Where an element is inside a frame, drawn by the canvas over the frame. */
+#elementMark {
+  position: fixed;
+  z-index: 3;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+#elementMark.flash {
+  animation: element-flash 1.2s ease-out both;
+}
+@keyframes element-flash {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #elementMark.flash {
+    animation: none;
+  }
+}
+:root[data-phone] #elementPopover,
+:root[data-phone] #elementMark {
+  display: none !important;
 }
 .embed-card {
   height: 100%;
@@ -1825,6 +1910,21 @@ textarea[readonly] {
 }
 .chip-count {
   flex-shrink: 0;
+  color: var(--secondary);
+  font-size: 12px;
+}
+/* An element picked inside a page: its label over the embed it is in. */
+.chip-element .chip-label {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.chip-page {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--secondary);
   font-size: 12px;
 }
