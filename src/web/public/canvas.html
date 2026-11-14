@@ -104,6 +104,17 @@
   <body>
     <main id="board" tabindex="0" aria-label="Canvas workspace"><div id="layer"></div></main>
     <aside id="outline" aria-label="Workspace outline">
+      <div
+        id="outlineResize"
+        class="panel-resize"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-controls="outline"
+        aria-label="Outline width"
+        title="Drag to resize · arrows · Enter resets · double-click resets"
+        hidden
+      ></div>
       <div class="panel-head">
         <span id="workspaceName">Canvas</span
         ><button
@@ -375,6 +386,17 @@
       aria-label="Canvas assistant, background tasks, reader, comments, history, a docked page and Keys"
       hidden
     >
+      <div
+        id="railResize"
+        class="panel-resize"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-controls="rail"
+        aria-label="Rail width"
+        title="Drag to resize · arrows · Enter resets · double-click resets"
+        hidden
+      ></div>
       <div class="panel-head">
         <span id="railTitle">Keys</span
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>

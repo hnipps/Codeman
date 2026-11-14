@@ -274,7 +274,7 @@ kbd {
 #outline {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 192px;
+  width: var(--outline-width, 192px);
   background: var(--panel);
   border-right: 1px solid var(--divider);
   display: flex;
@@ -394,10 +394,54 @@ kbd {
   right: 0;
   top: 0;
   height: 100dvh;
-  width: 320px;
+  width: var(--rail-width, 320px);
   background: var(--panel);
   border-left: 1px solid var(--divider);
   animation: arrive 160ms ease-out;
+}
+/* The inner edge of each side panel: drag it, or focus it and use the arrow keys (panel-widths.ts). */
+.panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+}
+#outlineResize {
+  right: -4px;
+}
+#railResize {
+  left: -4px;
+}
+.panel-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms ease-out;
+}
+.panel-resize:hover::after,
+.panel-resize.dragging::after {
+  background: var(--divider);
+}
+.panel-resize:focus-visible {
+  outline: none;
+}
+.panel-resize:focus-visible::after {
+  background: var(--accent);
+}
+:root.panel-resizing,
+:root.panel-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+:root.panel-resizing iframe {
+  pointer-events: none;
 }
 #rail .panel-head {
   border-bottom: 1px solid var(--divider);
@@ -2176,19 +2220,19 @@ textarea[readonly] {
   --dock-left: 0px;
 }
 :root:not([data-phone]) body:has(#rail:not([hidden])) .dock-area {
-  left: calc(var(--dock-left) + (100vw - var(--dock-left) - 320px) / 2);
+  left: calc(var(--dock-left) + (100vw - var(--dock-left) - var(--rail-width, 320px)) / 2);
 }
 :root:not([data-phone]) body:has(#rail:not([hidden])):has(#outline:not([hidden])) {
-  --dock-left: 192px;
+  --dock-left: var(--outline-width, 192px);
 }
 :root:not([data-phone]) body:has(#rail:not([hidden])) #contextRow {
   /* The row centres on the tools, which sit left of centre beside Fit: leave room for that offset. */
-  max-width: calc(100vw - var(--dock-left) - 320px - 72px);
+  max-width: calc(100vw - var(--dock-left) - var(--rail-width, 320px) - 72px);
   flex-wrap: wrap;
   row-gap: 4px;
 }
 :root:not([data-phone]) body:has(#rail:not([hidden])) :is(#moveToMenu, .action-menu) {
-  left: calc(var(--dock-left, 0px) + (100vw - var(--dock-left, 0px) - 320px) / 2);
+  left: calc(var(--dock-left, 0px) + (100vw - var(--dock-left, 0px) - var(--rail-width, 320px)) / 2);
 }
 /* Where the row wraps to a second line, its menus open above both lines. */
 @media (max-width: 1180px) {
