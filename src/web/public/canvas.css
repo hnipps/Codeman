@@ -1475,11 +1475,16 @@ textarea[readonly] {
   background: var(--raised);
   border-color: var(--divider);
 }
+/* Count marks live in their own layer above every object (comment-marks.ts): inside an object they
+   were painted under later siblings and the object's own children. Placed in board pixels. */
+#commentMarks {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 .comment-mark {
   position: absolute;
-  right: 0;
-  top: 0;
-  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -1493,11 +1498,11 @@ textarea[readonly] {
     12px/1 ui-monospace,
     monospace;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   pointer-events: none;
-  left: 100%;
-  right: auto;
-  transform-origin: 0 0;
-  transform: scale(calc(1 / var(--zoom, 1))) translate(14px, 0);
+}
+.comment-mark[hidden] {
+  display: none;
 }
 .comment-mark svg {
   width: 12px;

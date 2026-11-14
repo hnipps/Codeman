@@ -152,10 +152,10 @@ describe('canvas comments and author history', () => {
   }, 60000);
 
   it('marks only objects that have comments, quietly', async () => {
-    await page.waitForSelector('[data-object-id="brief"] > .comment-mark');
-    expect(await page.locator('[data-object-id="brief"] > .comment-mark').textContent()).toBe('2');
-    expect(await page.locator('[data-object-id="caption"] > .comment-mark').textContent()).toBe('14');
-    expect(await page.locator('[data-object-id="notes"] > .comment-mark').count()).toBe(0);
+    await page.waitForSelector('.comment-mark[data-mark-for="brief"]');
+    expect(await page.locator('.comment-mark[data-mark-for="brief"]').textContent()).toBe('2');
+    expect(await page.locator('.comment-mark[data-mark-for="caption"]').textContent()).toBe('14');
+    expect(await page.locator('.comment-mark[data-mark-for="notes"]').count()).toBe(0);
     expect(await page.locator('[data-object-id="brief"]').getAttribute('aria-label')).toContain('2 comments');
     await shot(page, 'comment-count');
   });
@@ -258,7 +258,7 @@ describe('canvas comments and author history', () => {
     expect(after.view.focusId).toEqual(before.view.focusId);
     expect(after.active).toBe(before.active);
     expect(after.scroll).toBe(0);
-    expect(await page.locator('[data-object-id="caption"] > .comment-mark').textContent()).toBe('15');
+    expect(await page.locator('.comment-mark[data-mark-for="caption"]').textContent()).toBe('15');
     await page.keyboard.press('Escape');
   });
 

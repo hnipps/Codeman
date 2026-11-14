@@ -373,12 +373,12 @@ describe('phone canvas', () => {
   it('shows the phone comment on a desktop tab within a second', async () => {
     const desktop = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
     await desktop.goto(`${origin}/x/canvas/${workspace}`, { waitUntil: 'domcontentloaded' });
-    await desktop.waitForSelector('[data-object-id="tap"] > .comment-mark');
+    await desktop.waitForSelector('.comment-mark[data-mark-for="tap"]');
     await desktop.waitForTimeout(500);
     const started = Date.now();
     expect(await page.evaluate(() => window.canvasComments.post('tap', 'Second note from the phone.'))).toBe(true);
     await desktop.waitForFunction(
-      () => document.querySelector('[data-object-id="tap"] > .comment-mark')?.textContent === '3',
+      () => document.querySelector('.comment-mark[data-mark-for="tap"]')?.textContent === '3',
       undefined,
       { timeout: 1000 }
     );

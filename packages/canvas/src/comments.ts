@@ -20,6 +20,7 @@ import type { FreshTarget } from './assistant.js';
 import { elementLabel, type ElementRef } from '../../../src/canvas/element-ref.js';
 import { parseDraftElements, sameElement, storeDraftElement, type DraftElements } from './element-anchors.js';
 import type { AnchoredComment } from './element-comments.js';
+import { CommentMarks } from './comment-marks.js';
 
 export const ViewCommentSchema = z
   .object({
@@ -204,6 +205,7 @@ const wasAnchored = (body: unknown): boolean => AnchoredSchema.safeParse(body).s
 /** The thread view in the rail. Post is an ordinary comment and never starts agent work; only Ask agent sends one to a conversation. */
 export class CommentsView {
   private comments: ViewComment[] = [];
+  private marks: CommentMarks | undefined;
   private shown: string | null = null;
   private rendered = new Map<string, HTMLElement>();
   private composers = new Map<string, Composer>();
@@ -421,22 +423,11 @@ export class CommentsView {
   /** Quiet count marks on objects that have comments; no mark at zero. */
   mark(elements: Map<string, HTMLElement>): void {
     const counts = commentCounts(this.comments);
+    this.marks ??= new CommentMarks(node('board'), bubble);
+    this.marks.update(counts, elements);
     for (const [id, el] of elements) {
       const count = counts.get(id) ?? 0;
-      let mark = el.querySelector<HTMLElement>(':scope > .comment-mark');
-      if (!count) {
-        mark?.remove();
-        continue;
-      }
-      if (!mark) {
-        mark = document.createElement('span');
-        mark.className = 'comment-mark';
-        mark.setAttribute('aria-hidden', 'true');
-        mark.append(bubble(), document.createElement('span'));
-        el.append(mark);
-      }
-      const text = mark.lastElementChild;
-      if (text && text.textContent !== String(count)) text.textContent = String(count);
+      if (!count) continue;
       const base = el.getAttribute('aria-label') ?? '';
       if (!base.includes(' comment'))
         el.setAttribute('aria-label', `${base} · ${count} ${count === 1 ? 'comment' : 'comments'}`);
