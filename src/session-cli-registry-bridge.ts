@@ -74,6 +74,12 @@ export interface SpawnBridgeOptions {
    * passed) by TmuxManager._resolveIdleCompactionOptOut, which records it on the mux record.
    */
   idleCompactionOff?: boolean;
+  /**
+   * Inline `--mcp-config` JSON for this Codeman's own MCP server (resolveAgentMcpConfigJson,
+   * agent-mcp-config.ts). Undefined leaves the launch without the flag. Rendered only by a
+   * launch template that declares the `codemanMcpConfigJson` engine value.
+   */
+  mcpConfigJson?: string;
 }
 
 /**
@@ -189,6 +195,15 @@ export function launchGatePasses(mode: string, gate: string, claudeCliVersion?: 
 }
 
 /**
+ * Does this CLI's launch template take Codeman's own MCP server (`--mcp-config`)? Read off the
+ * launch params, so the template that renders the value is the one place that says so.
+ */
+export function cliTakesAgentMcp(mode: string): boolean {
+  const params = getCli(mode)?.launch.params ?? {};
+  return Object.values(params).some((spec) => spec.type === 'engine' && spec.source === 'codemanMcpConfigJson');
+}
+
+/**
  * Render the spawn command for `entry` from the legacy option bag. Returns `undefined` for a
  * `shell`-kind entry (or any entry declaring no launch variants), which callers take as "fall
  * back to the local login-shell resolution" — shell has no CLI to template.
@@ -247,6 +262,8 @@ export function buildSpawnCommandFromRegistry(entry: CliEntry, options: SpawnBri
     if (options.idleCompactionOff) settingsObj.idleCompaction = false;
     engineValues.effortSettingsJson = JSON.stringify(settingsObj);
   }
+
+  if (options.mcpConfigJson) engineValues.codemanMcpConfigJson = options.mcpConfigJson;
 
   // Preserves buildSpawnCommand's original fallback exactly: an EXPLICIT `undefined` probes
   // the local claude CLI (getClaudeCliVersion, null under vitest); an explicit `null` means

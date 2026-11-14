@@ -1483,6 +1483,13 @@ export const SettingsUpdateSchema = z
      */
     workspaceHooksEnabled: z.boolean().optional(),
     /**
+     * Attach Codeman's own MCP server (`codeman mcp`) to every local Claude launch, so the
+     * agent gets the session and canvas tools with no `claude mcp add`. SYNCED, default ON
+     * (an absent key reads as on). Nothing acts on it in `PUT /api/settings`: it is read fresh
+     * from disk by readAgentMcpEnabled() (hooks-config.ts) at every claude create and respawn.
+     */
+    agentMcpEnabled: z.boolean().optional(),
+    /**
      * Launch every Claude session with `--name` set to its tab name (default OFF: only a
      * name the user chose is pinned). Nothing acts on it in `PUT /api/settings`: it is read
      * fresh from disk by readPinCliSessionNameEnabled() (hooks-config.ts) at every claude

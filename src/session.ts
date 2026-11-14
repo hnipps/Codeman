@@ -162,7 +162,8 @@ import type { SessionAttachmentHistoryItem, DisplayModel } from './types/session
 import { resolveConfigModel } from './model-config-resolvers.js';
 import { caseSessionSettled, isCasePathLocked, noteCaseSessionStarting } from './case-rename.js';
 import { deployRole, DeployRoleRefusal } from './deploy-role.js';
-import { legacyConfigForMode } from './session-cli-registry-bridge.js';
+import { cliTakesAgentMcp, legacyConfigForMode } from './session-cli-registry-bridge.js';
+import { resolveAgentMcpConfigJson } from './agent-mcp-config.js';
 import {
   launchModelFor,
   readScreenModel,
@@ -3212,7 +3213,8 @@ export class Session extends EventEmitter {
           this._effort,
           this.cliPinnedName,
           getClaudeCliVersion(),
-          this._advisorModel
+          this._advisorModel,
+          cliTakesAgentMcp(this.mode) ? await resolveAgentMcpConfigJson() : undefined
         );
         this.ptyProcess = spawnPtyWithHelperRepair(() =>
           pty.spawn(getClaudeBinaryPath(), args, {

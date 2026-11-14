@@ -16,7 +16,7 @@ Separately, comments, chat context and the hold-Q lasso only know whole canvas o
 
 ## Proposed outcome
 
-**Every Claude session launches with the Codeman MCP server attached.** The launch carries one `--mcp-config` argument naming this server's own entry script. It adds to the user's servers and replaces none. A synced setting, `agentMcpEnabled` (absent means on), turns it off.
+**Every local Claude session launches with the Codeman MCP server attached.** The launch carries one `--mcp-config` argument naming this server's own entry script. It adds to the user's servers and replaces none. A synced setting, `agentMcpEnabled` (absent means on), turns it off. Remote (SSH) and Docker sessions are not covered: this server's entry script does not exist on their side.
 
 **A prototype is a folder of static files that Codeman stores and serves.** An agent publishes a folder with the `canvas_prototype` tool. Codeman copies it into the workspace's data as an immutable version and places (or updates) an `embed` object whose address is `https://prototype.invalid/<id>/<version>/<entry>`. The files are served by Codeman on a capability path, sandboxed like every canvas frame. No agent session, port or process is involved, so the prototype outlives the session that made it.
 

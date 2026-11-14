@@ -1143,6 +1143,17 @@ export async function readPlanUsageTelemetryEnabled(): Promise<boolean> {
 }
 
 /**
+ * Whether a Claude launch carries Codeman's own MCP server (the `agentMcpEnabled` setting,
+ * see agent-mcp-config.ts). Read FRESH at every claude create and respawn, like
+ * {@link readPlanUsageTelemetryEnabled}. An ABSENT key means ON: only an explicit `false`
+ * leaves the launch as it was before the server was attached.
+ */
+export async function readAgentMcpEnabled(): Promise<boolean> {
+  const settings = await readJsonConfig<Record<string, unknown>>(SETTINGS_PATH, 'settings.json', {});
+  return settings.agentMcpEnabled !== false;
+}
+
+/**
  * Whether every Claude session is launched with `--name` set to its tab name
  * (the `pinCliSessionName` setting). Read FRESH from settings.json at every
  * claude create and respawn, like {@link readPlanUsageTelemetryEnabled}, so a
