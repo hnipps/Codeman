@@ -1003,6 +1003,8 @@ App Settings → Agents & CLIs → **Plugins & skills** 可以粘贴 GitHub 仓�
 
 `codeman mcp` 是一个走 stdio 的 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，因此任何 MCP 客户端（Claude Code、Claude Desktop、Codex、Gemini CLI、Cursor 等）都能在任意已安装的智能体 CLI 里启动 Codeman 会话、给它们发提示、等它们完成、读取回答并清理，无论是在 Codeman 内部还是外部。和 `codeman agent` 一样，它是 HTTP API 的客户端。MCP 服务器自己不新增任何路由，认证和归属规则不变。
 
+Codeman 在本机启动的 Claude Code 会话已经自带这个服务器：每次启动都会以 `codeman` 为名把它附加进去，和你自己的 MCP 服务器并存，无需注册。可在 App Settings 的 **Codeman MCP Server** 关闭。远程（SSH）和 Docker 会话、其他智能体 CLI 以及 Codeman 之外的客户端仍需手动注册：
+
 ```bash
 # Claude Code
 claude mcp add codeman -e CODEMAN_API_URL=https://127.0.0.1:3000 -- codeman mcp

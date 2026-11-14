@@ -76,7 +76,7 @@ describe('every launch decides the opt-out and records it', () => {
     expect(body).toContain(
       'const idleCompactionOff = await this._resolveIdleCompactionOptOut(mode, statusLine, keepWarm, spawnedByAgent);'
     );
-    expect(body).toMatch(/statusLineCommand,\n\s+idleCompactionOff,\n\s+sessionName: cliName,/);
+    expect(body).toMatch(/statusLineCommand,\n\s+idleCompactionOff,\n\s+mcpConfigJson,\n\s+sessionName: cliName,/);
   });
 
   it('createSession records it on the new mux record, next to statusLine', () => {

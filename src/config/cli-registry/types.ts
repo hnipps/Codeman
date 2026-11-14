@@ -29,6 +29,8 @@ export type EngineValue =
   | 'muxName'
   | 'effortLevel'
   | 'effortSettingsJson'
+  /** Inline `--mcp-config` JSON naming this Codeman's own MCP server (agent-mcp-config.ts). */
+  | 'codemanMcpConfigJson'
   /** `sessionId` prefixed `codeman_<id>` — codex's unique per-pane rollout originator. */
   | 'codemanPrefixedSessionId'
   /**

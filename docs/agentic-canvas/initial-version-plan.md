@@ -212,7 +212,7 @@ No cloud VM exists here. Each live lane runs a throwaway Codeman instance at the
 - [x] Resolve the caller's workspace on the server from `X-Codeman-Parent-Session`, through the session's `workingDir` and the workspace registry. A tool call never names another workspace. Evidence: `test/mcp-canvas-tools.test.ts` 'resolves separate case sessions, rejects workspace/author injection and explains a session outside a case'.
 - [x] Stamp every operation from a tool with the agent session as `author`. Evidence: the same two tests assert the trusted agent author and refuse an injected one.
 - [x] Return text only from `canvas_read`, like `read_output`, and cap its size with a `truncated` flag. Evidence: `test/mcp-canvas-tools.test.ts` 'caps reads and search with text only and retains disabled tool discovery'.
-- [x] Document the one-time `claude mcp add codeman` step in `verbs.md`. Auto-registration at launch is out of this PR. Evidence: `skills/codeman/reference/verbs.md` documents `claude mcp add codeman -- codeman mcp`.
+- [x] Document the one-time `claude mcp add codeman` step in `verbs.md`. Auto-registration at launch is out of this PR; it landed later as the `--mcp-config` launch flag (`src/agent-mcp-config.ts`, setting `agentMcpEnabled`), so the manual step now applies only where that flag does not reach. Evidence: `skills/codeman/reference/verbs.md` documents `claude mcp add codeman -- codeman mcp`.
 - [x] Update the invariant text that says the MCP server has ten tools. Evidence: PR #20 rewrote the line in `docs/architecture-invariants.md`. Its summary now says twenty-six tools while the server lists twenty-nine; see the docs box under PR mechanics.
 
 **You see.**

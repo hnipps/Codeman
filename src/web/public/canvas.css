@@ -1315,9 +1315,94 @@ textarea[readonly] {
 .embed-stage.interacting > .embed-shield {
   display: none;
 }
-.embed-stage.interacting {
+.embed-stage.interacting,
+.embed-stage.picking {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+/* Picking hands the pointer to the page, whose own bridge draws the hover outline. */
+.embed-stage.picking > .embed-shield {
+  display: none;
+}
+/* A lasso armed from inside the page: the shield is back for the hold, so the drag reaches the board. */
+.embed-stage.shielded > .embed-shield {
+  display: block;
+  cursor: crosshair;
+}
+/* Pick element needs a live page; a paused or loading embed has none. */
+.object-body:not(:has(> .embed-stage.live)) [data-media-action='pick'] {
+  display: none;
+}
+.embed-action[aria-pressed='true'] {
+  background-color: var(--raised);
+  color: var(--accent);
+}
+/* What a picked element offers, anchored to it. Its label is the page's own text. */
+#elementPopover {
+  position: fixed;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 16px));
+  padding: 4px 4px 4px 12px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px #0002;
+}
+#elementPopoverLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--secondary);
+}
+#elementPopoverActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+#elementPopoverActions > button {
+  padding: 4px 10px;
+  border-color: var(--divider);
+  white-space: nowrap;
+}
+#elementPopoverActions > .primary {
+  color: var(--action-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* Where an element is inside a frame, drawn by the canvas over the frame. */
+#elementMark {
+  position: fixed;
+  z-index: 3;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+#elementMark.flash {
+  animation: element-flash 1.2s ease-out both;
+}
+@keyframes element-flash {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #elementMark.flash {
+    animation: none;
+  }
+}
+:root[data-phone] #elementPopover,
+:root[data-phone] #elementMark {
+  display: none !important;
 }
 .embed-card {
   height: 100%;
@@ -1593,6 +1678,190 @@ textarea[readonly] {
   gap: 6px;
   color: var(--critical);
 }
+/* ───── Element comments: the composer's About row, the element chip on a comment, pins over a live page ───── */
+.comment-about {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 32px;
+  margin-bottom: 8px;
+  padding-left: 8px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.comment-about > span {
+  align-self: center;
+  flex-shrink: 0;
+}
+.comment-about-label {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.comment-about-label:hover {
+  background: none;
+  color: var(--accent);
+}
+.comment-about-remove {
+  flex-shrink: 0;
+  min-width: 32px;
+  color: var(--secondary);
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.comment-about-remove:hover {
+  color: var(--text);
+  background: var(--raised);
+}
+.comment-pick {
+  display: block;
+  min-height: 28px;
+  margin-bottom: 8px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--secondary);
+  background: none;
+}
+.comment-pick[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Every word of the chip but "No longer on the page" was written by the page in the frame. */
+.comment-element {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  text-align: left;
+  border-color: var(--divider);
+}
+.comment-element:hover {
+  border-color: var(--muted);
+}
+.element-number,
+.element-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  color: var(--action-ink);
+  background: var(--accent);
+  font:
+    600 11px/1 ui-monospace,
+    monospace;
+  font-variant-numeric: tabular-nums;
+}
+.element-number {
+  grid-row: 1 / span 2;
+}
+.element-name,
+.element-where {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.element-name {
+  font-size: 13px;
+}
+.element-where {
+  color: var(--secondary);
+  font:
+    12px/1.45 ui-monospace,
+    monospace;
+}
+.comment-element[data-state='missing'] .element-number {
+  color: var(--muted);
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--muted);
+}
+.comment-element[data-state='missing'] .element-name {
+  color: var(--secondary);
+}
+.comment-element[data-state='missing'] .element-where {
+  font: inherit;
+  font-size: 12px;
+}
+/* The layer takes no pointer events; each pin is its own small target. Same layer as the element mark, under the dock, the popover and every menu. */
+#elementPins {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.element-pin {
+  position: fixed;
+  min-height: 0;
+  transform: translate(-50%, -50%);
+  border: 0;
+  box-shadow:
+    0 0 0 1.5px var(--panel),
+    0 2px 6px #0006;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.element-pin:hover,
+.element-pin:active {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 1.5px var(--text),
+    0 2px 6px #0006;
+}
+.element-pin:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.pin-more {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--muted);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+.pin-more:empty {
+  display: none;
+}
+/* A pick or a lasso is reading the page under the pins: they stand down until it ends. */
+:root:has(.embed-stage.picking) #elementPins,
+:root:has(#board.lasso-armed) #elementPins {
+  visibility: hidden;
+}
+:root[data-phone] #elementPins,
+:root[data-phone] #commentPick {
+  display: none !important;
+}
+:root[data-phone] .comment-element,
+:root[data-phone] .comment-about {
+  min-height: 44px;
+}
+/* ───── end of element comments ───── */
 #commentStatus[data-state='failed']::before {
   content: '';
   width: 14px;
@@ -1825,6 +2094,21 @@ textarea[readonly] {
 }
 .chip-count {
   flex-shrink: 0;
+  color: var(--secondary);
+  font-size: 12px;
+}
+/* An element picked inside a page: its label over the embed it is in. */
+.chip-element .chip-label {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.chip-page {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--secondary);
   font-size: 12px;
 }
@@ -2890,6 +3174,168 @@ textarea[readonly] {
 :root[data-phone][data-shell] #sessions {
   order: -1;
   max-height: 60%;
+}
+
+/* Page slots and prototypes. One embed's live page docked in the rail (`#pageView`) or over the whole canvas
+   (`#fullViewFrame.page`), under a slim bar; and the outline's Prototypes section. A slot's frame is removed
+   when it is not shown, never hidden. A phone shows no live pages, so it has none of the controls. */
+.page-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--panel);
+  font-size: 13px;
+}
+.page-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+.page-origin {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.page-bar button {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.page-bar button:hover,
+.page-bar button:focus-visible {
+  color: var(--text);
+}
+.page-bar button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+#pageView {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.slot-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  background: var(--canvas);
+}
+.slot-stage > iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.slot-stage > iframe:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* Over a slot's page until the person clicks it: a page gets the keyboard only when it is given. */
+.slot-shield {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+}
+.slot-shield[hidden] {
+  display: none;
+}
+.slot-note {
+  margin: auto;
+  padding: 16px;
+  color: var(--secondary);
+  font-size: 12px;
+  text-align: center;
+}
+#fullViewFrame.page {
+  flex-direction: column;
+}
+#fullViewFrame.page .slot-stage > iframe {
+  background: #fff;
+}
+/* The embed header's two slot actions: the full view is part of the shell. */
+:root:not([data-shell]) [data-media-action='full'] {
+  display: none;
+}
+#prototypes {
+  flex: 0 0 auto;
+  max-height: 30%;
+  overflow: auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--divider);
+}
+#prototypeRows {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.prototype-item {
+  display: flex;
+  align-items: center;
+}
+.prototype-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 12px;
+}
+.prototype-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prototype-version {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.prototype-slot {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  color: var(--secondary);
+}
+.prototype-slot svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.prototype-slot:hover,
+.prototype-slot:focus-visible {
+  color: var(--text);
+}
+:is(.prototype-row, .prototype-slot):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+:root[data-phone] .prototype-row {
+  min-height: 44px;
 }
 
 /* Rendered agent text (markdown.ts): rail turns, agent comments and task results. Scoped to .md, so plain turns are unchanged. */

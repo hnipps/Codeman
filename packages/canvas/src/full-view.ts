@@ -1,5 +1,10 @@
 /**
- * @fileoverview A session's terminal as a full view over the canvas (PC13).
+ * @fileoverview The full view: one page covering the canvas, which stays loaded underneath. It holds either a
+ * session's terminal (PC13) or one embed's live page (`FullViewContent`), never both.
+ *
+ * An embed's page is shown under a slim bar (title, Reload, Close). Its frame is mounted by the page slots
+ * (`slots.ts`) into the stage this view provides, sandboxed exactly like a frame on the board: this view
+ * never builds that frame and never gives it Codeman's origin.
  *
  * The full view is Codeman's own single-session page (`session/<id>`), never terminal code of the canvas's
  * own. With a hardware keyboard the page opens in ONE same-origin frame that covers the canvas, which stays
@@ -7,7 +12,7 @@
  * return ticket brings the view back. The canvas sends the page nothing: it only hears two messages from
  * it, "ready" and "close", and only from the frame it opened, on its own origin.
  */
-import type { RailView } from './commands.js';
+import type { FullViewContent, RailView } from './commands.js';
 import { RAIL_VIEWS } from '../../../src/canvas/view-schema.js';
 import type { Viewport } from './viewport.js';
 
@@ -166,13 +171,20 @@ export type FullViewHost = {
   conceal(): void;
   /** The full view closed by its own page, its error state or Escape. */
   closed(): void;
+  /** An embed's page: the slots mount its frame into `stage`, reload it, and remove it. */
+  page: {
+    show(stage: HTMLElement, objectId: string): void;
+    reload(objectId: string): void;
+    clear(): void;
+  };
 };
 
 /** The frame, its error state and the inert canvas under it. At most one is open. */
 export class FullView {
   private frame: HTMLIFrameElement | null = null;
-  private sessionId: string | null = null;
+  private content: FullViewContent | null = null;
   private name = '';
+  private origin = '';
   private passive = false;
   private opener: HTMLElement | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -192,7 +204,7 @@ export class FullView {
     window.addEventListener(
       'keydown',
       (event) => {
-        if (this.sessionId === null) return;
+        if (this.content === null) return;
         if (this.error.contains(event.target as Node) && event.key !== 'Escape') return;
         event.stopImmediatePropagation();
         if (event.key !== 'Escape') return;
@@ -202,19 +214,23 @@ export class FullView {
       true
     );
     element('fullViewRetry', HTMLButtonElement).onclick = () => {
-      if (this.sessionId !== null) this.mount(true);
+      if (this.content !== null) this.mount(true);
     };
     element('fullViewBack', HTMLButtonElement).onclick = () => this.dismiss();
   }
 
-  current(): string | null {
-    return this.sessionId;
+  current(): FullViewContent | null {
+    return this.content;
   }
 
-  /** Opens `sessionId`'s page over the canvas, replacing any open one. `focus: false` is an agent's open. */
-  open(sessionId: string, name: string, opener: HTMLElement | null, focus: boolean): void {
+  /**
+   * Opens a session's page or an embed's page over the canvas, replacing whatever is open. `name` is the
+   * session's or the embed's label and `origin` the embed's own line ("Prototype · v2", or its host).
+   * `focus: false` is an agent's open.
+   */
+  open(content: FullViewContent, name: string, opener: HTMLElement | null, focus: boolean, origin = ''): void {
     this.options.conceal();
-    if (this.sessionId === null) {
+    if (this.content === null) {
       this.opener = opener;
       for (const child of document.body.children) {
         if (!(child instanceof HTMLElement) || child === this.host || child.inert) continue;
@@ -222,28 +238,92 @@ export class FullView {
         this.inerted.push(child);
       }
     }
-    this.sessionId = sessionId;
+    this.content = content;
     this.name = name;
+    this.origin = origin;
     this.passive = !focus;
     this.host.hidden = false;
+    this.host.setAttribute('aria-label', content.kind === 'session' ? 'Session terminal' : `Page: ${name}`);
     this.mount(focus);
   }
 
   private mount(focus: boolean): void {
     clearTimeout(this.timer);
+    this.timer = undefined;
     this.frame?.remove();
+    this.frame = null;
+    this.options.page.clear();
     this.error.hidden = true;
+    this.slot.classList.toggle('page', this.content?.kind === 'embed');
+    if (this.content?.kind === 'embed') return this.mountPage(this.content.objectId, focus);
     const frame = document.createElement('iframe');
     // No `sandbox`: this is Codeman's own page from a fixed prefix and a listed session id, and it needs the
     // sign-in cookie. Nothing from an object or from agent text reaches this address.
     frame.title = `Terminal of ${this.name}`;
     frame.allow = FULL_VIEW_ALLOW;
-    frame.src = this.options.url(fullViewPath(this.sessionId ?? '', this.options.workspaceId, this.passive));
+    frame.src = this.options.url(
+      fullViewPath(
+        this.content?.kind === 'session' ? this.content.sessionId : '',
+        this.options.workspaceId,
+        this.passive
+      )
+    );
     this.frame = frame;
     this.slot.replaceChildren(frame);
     if (this.passive) this.hold(frame);
     else if (focus) frame.focus({ preventScroll: true });
     this.timer = setTimeout(() => this.failed(), FULL_VIEW_TIMEOUT_MS);
+  }
+
+  /**
+   * An embed's page under a slim bar. The frame is the slots' to mount: an untrusted, sandboxed frame like
+   * the one on the board. The keyboard stays on the bar, so Escape closes at once; a click uses the page.
+   */
+  private mountPage(objectId: string, focus: boolean): void {
+    const bar = document.createElement('div');
+    bar.className = 'page-bar';
+    const title = document.createElement('span');
+    title.className = 'page-title';
+    const origin = document.createElement('span');
+    origin.className = 'page-origin';
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.className = 'quiet';
+    reload.dataset.pageAction = 'reload';
+    reload.textContent = 'Reload';
+    reload.onclick = () => this.options.page.reload(objectId);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'quiet';
+    close.dataset.pageAction = 'close';
+    close.textContent = 'Close';
+    close.title = 'Back to the canvas · Escape';
+    close.onclick = () => this.dismiss();
+    bar.append(title, origin, reload, close);
+    const stage = document.createElement('div');
+    stage.className = 'slot-stage';
+    this.slot.replaceChildren(bar, stage);
+    this.words();
+    this.options.page.show(stage, objectId);
+    if (focus) close.focus({ preventScroll: true });
+  }
+  /** The embed was renamed or published again: the bar says so, and the page is the slots' to reload. */
+  describe(name: string, origin: string): void {
+    if (this.content?.kind !== 'embed' || (name === this.name && origin === this.origin)) return;
+    this.name = name;
+    this.origin = origin;
+    this.host.setAttribute('aria-label', `Page: ${name}`);
+    this.words();
+  }
+  private words(): void {
+    const title = this.slot.querySelector('.page-title');
+    const origin = this.slot.querySelector('.page-origin');
+    if (title) title.textContent = this.name;
+    if (origin) origin.textContent = this.origin;
+  }
+  /** The bar of an embed's page takes the keyboard back from the page. */
+  focusBar(): void {
+    this.slot.querySelector<HTMLElement>('[data-page-action="close"]')?.focus({ preventScroll: true });
   }
 
   /**
@@ -276,26 +356,30 @@ export class FullView {
     this.slot.replaceChildren();
     this.frame = null;
     const classic = element('fullViewClassic', HTMLAnchorElement);
-    classic.href = `${this.options.url('/classic')}#session=${encodeURIComponent(this.sessionId ?? '')}`;
+    classic.href = `${this.options.url('/classic')}#session=${encodeURIComponent(
+      this.content?.kind === 'session' ? this.content.sessionId : ''
+    )}`;
     this.error.hidden = false;
     if (hadFocus || document.activeElement === document.body)
       element('fullViewRetry', HTMLButtonElement).focus({ preventScroll: true });
   }
 
   private dismiss(): void {
-    if (this.sessionId === null) return;
+    if (this.content === null) return;
     this.close(true);
     this.options.closed();
   }
 
   /** Removes the frame (never hides it: a hidden terminal would keep holding a size) and gives the canvas back. */
   close(focus: boolean): void {
-    if (this.sessionId === null) return;
+    if (this.content === null) return;
     clearTimeout(this.timer);
     this.timer = undefined;
+    this.options.page.clear();
     this.slot.replaceChildren();
+    this.slot.classList.remove('page');
     this.frame = null;
-    this.sessionId = null;
+    this.content = null;
     this.error.hidden = true;
     this.host.hidden = true;
     for (const child of this.inerted) child.inert = false;
@@ -310,6 +394,13 @@ export class FullView {
             ...document.querySelectorAll<HTMLElement>(`#sessionRows button.${opener.classList[0] ?? 'session-row'}`),
           ].find((b) => b.dataset.sessionId === opener.dataset.sessionId)
         : opener;
-    (again?.isConnected ? again : element('board', HTMLElement)).focus({ preventScroll: true });
+    // An embed's own header button is redrawn with its object: the same action on the same object stands in.
+    const control =
+      opener && !opener.isConnected && opener.dataset.mediaAction && opener.dataset.objectRef
+        ? [...document.querySelectorAll<HTMLElement>(`[data-media-action="${opener.dataset.mediaAction}"]`)].find(
+            (b) => b.dataset.objectRef === opener.dataset.objectRef
+          )
+        : again;
+    (control?.isConnected ? control : element('board', HTMLElement)).focus({ preventScroll: true });
   }
 }

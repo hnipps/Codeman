@@ -152,6 +152,10 @@ const CLAUDE: CliEntry = {
       // from the EFFORT_LEVELS allowlist upstream, same as every other engine value).
       effortLevel: { type: 'engine', source: 'effortLevel' },
       effortJson: { type: 'engine', source: 'effortSettingsJson' },
+      // Codeman's own MCP server, attached beside the user's servers (never `--strict-mcp-config`).
+      // `--mcp-config` is variadic, so it must stay ahead of another flag or be the last token:
+      // a positional placed after it would be read as a second config.
+      mcpConfig: { type: 'engine', source: 'codemanMcpConfigJson' },
       sessionId: { type: 'engine', source: 'sessionId' },
       sessionName: { type: 'engine', source: 'sessionName' },
     },
@@ -178,6 +182,7 @@ const CLAUDE: CliEntry = {
           { flag: '--model', valueFrom: 'model', quote: 'double', when: { param: 'model', state: 'set' } },
           { flag: '--effort', valueFrom: 'effortLevel', quote: 'single', when: { param: 'effortLevel', state: 'set' } },
           { flag: '--settings', valueFrom: 'effortJson', quote: 'single', when: { param: 'effortJson', state: 'set' } },
+          { flag: '--mcp-config', valueFrom: 'mcpConfig', quote: 'single', when: { param: 'mcpConfig', state: 'set' } },
           { flag: '--name', valueFrom: 'sessionName', quote: 'double', when: { capabilityGate: 'nameFlag' } },
         ],
       },
@@ -202,6 +207,7 @@ const CLAUDE: CliEntry = {
           { flag: '--model', valueFrom: 'model', quote: 'double', when: { param: 'model', state: 'set' } },
           { flag: '--effort', valueFrom: 'effortLevel', quote: 'single', when: { param: 'effortLevel', state: 'set' } },
           { flag: '--settings', valueFrom: 'effortJson', quote: 'single', when: { param: 'effortJson', state: 'set' } },
+          { flag: '--mcp-config', valueFrom: 'mcpConfig', quote: 'single', when: { param: 'mcpConfig', state: 'set' } },
           { flag: '--name', valueFrom: 'sessionName', quote: 'double', when: { capabilityGate: 'nameFlag' } },
         ],
       },

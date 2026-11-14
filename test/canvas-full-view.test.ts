@@ -177,9 +177,9 @@ describe('full view: the return ticket', () => {
 describe('full view: the view command', () => {
   it('opens and closes in the reducer and touches nothing else', () => {
     const start = initialView();
-    const open = command(start, { kind: 'full-view', sessionId: 's1' }, []);
-    expect(open).toEqual({ ...start, fullView: 's1' });
-    expect(command(open, { kind: 'full-view', sessionId: null }, [])).toEqual(start);
+    const open = command(start, { kind: 'full-view', content: { kind: 'session', sessionId: 's1' } }, []);
+    expect(open).toEqual({ ...start, fullView: { kind: 'session', sessionId: 's1' } });
+    expect(command(open, { kind: 'full-view', content: null }, [])).toEqual(start);
   });
   it('is an action an agent may issue for a named view, with a well-formed id or null', () => {
     expect(ViewActionSchema.safeParse({ action: 'full-view', sessionId: 's-1' }).success).toBe(true);

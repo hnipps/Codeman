@@ -9,11 +9,13 @@ export type CanvasStorageKeys = {
   clipboard: string;
   assistantDraft: string;
   assistantContext: string;
+  assistantElements: string;
   assistantOutbox: string;
   assistantSent: string;
   assistantChoice: string;
   threadAsk: string;
   threadDraft: string;
+  threadDraftElement: string;
   taskOutbox: string;
   taskSent: string;
   tasksSeen: string;
@@ -28,11 +30,13 @@ export function canvasStorageKeys(viewer: string, workspace: string): CanvasStor
     clipboard: `${scope}:clipboard`,
     assistantDraft: `${scope}:${workspace}:assistant:draft`,
     assistantContext: `${scope}:${workspace}:assistant:context`,
+    assistantElements: `${scope}:${workspace}:assistant:elements`,
     assistantOutbox: `${scope}:${workspace}:assistant:outbox`,
     assistantSent: `${scope}:${workspace}:assistant:sent`,
     assistantChoice: `${scope}:${workspace}:assistant:choice`,
     threadAsk: `${scope}:${workspace}:thread:ask`,
     threadDraft: `${scope}:${workspace}:thread:draft`,
+    threadDraftElement: `${scope}:${workspace}:thread:draft-element`,
     taskOutbox: `${scope}:${workspace}:task:outbox`,
     taskSent: `${scope}:${workspace}:task:sent`,
     tasksSeen: `${scope}:${workspace}:task:seen`,

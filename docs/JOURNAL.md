@@ -2,6 +2,90 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-13 — A prototype is static files that Codeman stores and serves
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{prototypes,prototype-address,prototype-frames,canvas-screenshot}.ts`, `src/web/routes/canvas-prototype-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/shot.ts`
+**Why:** A prototype on the board was a loopback preview owned by the session that built it. It went blank when that session or its server ended, and a screenshot drew it as a paused card.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas prototypes"](architecture-invariants.md#canvas-prototypes)
+
+Decision. `canvas_prototype publish` copies a folder into the workspace's data as an immutable version and places or updates an ordinary `embed` whose address is `https://prototype.invalid/<id>/<version>/<entry>`. Codeman serves the files on a capability path with the sandbox policy every canvas frame has. No process, port or session belongs to a prototype. A capability is minted only by the frame route, and each request is refused unless a browser view of that workspace reported in recently, so nothing is served for a closed workspace. Publishing again is a new address on the same object: the frame reloads, undo returns to the earlier version, and comments stay.
+
+Why an embed with a reserved address. The previous release parses the operation log strictly. A new object type or key would make a rollback unable to replay the log. An `embed` with an address it cannot load draws as an unavailable page there and loses nothing.
+
+Rejected. One server process per prototype: it brings back the lifetime and resource problem this removes. Serving from the agent's own folder in place: the page would change under a comment and die with a worktree. A static-only store is the cost; a prototype that needs its own API stays a session preview, and the intent lists that as open.
+
+Screenshots. The screenshot page still makes no network request. It draws a prototype from the stored files through its own request handler, and `check` loads one at a given size and theme and returns the picture and the console errors.
+
+## 2026-11-13 — An element reference is stored beside its comment, never in it
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{element-ref,comment-anchors,context-resolve,commands,view-schema}.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`
+**Why:** A comment or a chat message could name a whole canvas object only. Pointing at one button inside a page needed somewhere to keep the element without changing stored records the previous release reads strictly.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas element refs"](architecture-invariants.md#canvas-element-refs)
+
+Decision. One shape, `ElementRef`, serves comments, chat context and the lasso. A comment's element lives in `comment-anchors.json`, keyed by comment id, and the comment operation never carries it. An anchor follows its comment: it is filtered on read by the comments that are live, so undo and redo hide and restore it without a second log. An element sent as chat context is written as text into the prompt's context block and stored nowhere else.
+
+Bounds. 50 elements per send, 2 KiB per element in the prompt, 2,000 anchors per workspace. Everything in a reference comes from the page, so it reaches an agent only through `plainLine` and reaches a person only through `textContent`. The bridge never reports the value typed into a field.
+
+Rejected. A new `element` key on the comment operation: a rollback could not replay it. Deleting an anchor when its comment is undone: redo would return a comment that had lost its element.
+
+## 2026-11-13 — Comments on an element of a live page: the About row, the chip and the pins
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/{element-anchors,element-comments,comments,ask,entry,media,storage-keys}.ts`, `src/web/public/canvas.{html,css}`
+**Why:** The server stored an element beside a comment and the picker could name one, but nothing in the browser let a person say "this comment is about that button", see it in the thread, or find it in the page.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Element comments and pins"](architecture-invariants.md#element-comments-and-pins)
+
+Decision. The element belongs to the composer, like the draft. Comment on a picked element, or Pick element in the thread, sets it; Post and Ask agent send it with `canvas_comment`; a failure or a reload keeps it. Anchors are read whole from the server whenever a comment appears or a commit says it stored one, and the thread joins them to comments by id. Pins are a fixed layer of the canvas document, placed from `locate` answers held in frame pixels, so a pan or zoom redraws them without asking the frame.
+
+Decisions the intent did not settle. A pin carries the element's number, in the order elements were first commented on in that embed, and the chip in the thread carries the same number. Several comments on one selector share a pin, with a count badge. A pin sits just off the element's top-right corner so it covers little of a small control. A pin opens the thread at the oldest comment of its group. A pin is drawn only where its frame is what a pointer would hit, which settles the rail, the dock and overlapping objects with one hit test in place of a z-index rule. Pick element in the thread is offered only once the frame's bridge has spoken, so a page that blocks the bridge shows no control in place of a refusal. An embed with more than 64 commented elements shows pins for the first 64. `MediaEditor.onFrameChange()` now also fires on `frame-ready`: a page that just loaded has new rectangles.
+
+Rejected. Pins as children of the embed's stage: pan and zoom would be free, but the stage's children are rebuilt by the media editor on pause and reload, the stage clips at its edge, and the board captures presses inside it. Showing `1+1` on a shared pin: it read as arithmetic.
+
+Not done. A pin does not follow an element the page moves without scrolling or resizing. An element's chip does not offer to re-pick a selector the page dropped.
+
+## 2026-11-13 — A prototype shown where chrome lives, and frames that survive the workspace gate
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/{slots,frame-loader,presence,prototypes-view,media,full-view,view-sync,commands,entry}.ts`, `packages/canvas/src/objects/embed.ts`, `src/canvas/{view-schema,view-registry,commands}.ts`, `src/web/routes/canvas-routes.ts`, `src/mcp-server.ts`, `src/web/public/canvas.{html,css}`, `skills/codeman/reference/verbs.md`
+**Why:** A prototype of a rail view or a full view could only be a board object, so it was never seen at its real size and place. And "served only while the workspace is open" left blank frames: the first paint could ask before the first view publish, and a retired address looked like a loaded page.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas prototypes"](architecture-invariants.md#canvas-prototypes)
+
+Decision. A slot shows an embed that is already on the board. It is not a second object type and stores nothing, so the operation log is unchanged and a reload starts with the slots empty. There are two slots, rail and full, one frame each. The frame is built by the board's own function from the board's own frame route, so the sandbox cannot drift. An agent steers a slot with `canvas_view open-page` and `close-page`.
+
+Decisions the brief left open. The full view for an embed is on shell pages only, because the full view exists only there. A hidden tab deletes its view on the server as well as stopping its publishes, so serving stops at once; without the delete the registry would keep serving for up to 60 s. The 409 retry keys on the status and the prototype address, with no new error code. Silence is judged for prototype frames only: a proxied page can lack the bridge for honest reasons. An agent's open is refused while the person types anywhere on the canvas, for both slots.
+
+Found by the browser test. The first design let a slot's page keep focus when the pointer was over it. A sandboxed frame is out of process and the parent document saw no pointer event for it, so every click into the page was read as the page grabbing focus. The slot now has a shield, as board frames do: one click or a Tab gives the page the keyboard, and only an event in the canvas's own document can do that. The cost is that hover styles in the page do not show until that click. The same test has a page that calls `focus()` on itself and counts that the grab happened before asserting the keyboard came back.
+
+Rejected. Letting a bridge message lift the shield: the page can post any message. A new object type for a docked page: stored data would gain a kind the previous release cannot replay.
+
+## 2026-11-13 — Every local Claude launch carries the Codeman MCP server
+
+**Type:** intent-refinement
+**Touches:** `src/agent-mcp-config.ts`, `src/config/cli-registry/stock.ts`, `src/session-cli-registry-bridge.ts`, `src/tmux-manager.ts`, `src/session-cli-builder.ts`, `src/session.ts`, `src/hooks-config.ts`, `src/web/schemas.ts`, `skills/codeman/reference/verbs.md`
+**Why:** No Claude session had the canvas tools unless someone ran `claude mcp add` in it first, so an agent started from the canvas and one started from a terminal could not do the same work.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md)
+
+Decision. The launch carries one inline `--mcp-config` argument that names this process's own entry script, behind the synced `agentMcpEnabled` setting (absent means on). It is not a `codeman` looked up on PATH, because two instances on one machine can run different code. Which CLI takes it is read off the launch template (the `codemanMcpConfigJson` engine value), so there is no new capability flag that could disagree with the template.
+
+Rejected. Writing the server into the user's Claude configuration: launch must not rewrite client configuration, and an entry there would outlive the instance that wrote it. `--strict-mcp-config`: it drops the user's own servers.
+
+Measured on Claude Code 2.1.325. A `codeman` server the user already has in local scope is not started when the launch names one inline; `/mcp` shows a single `codeman`. Positionals after `--mcp-config` are read as more configs, so the flag stays ahead of `--name`.
+
+## 2026-11-13 — Elements inside a live canvas frame: the bridge, Pick element and the in-frame lasso
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/frame-bridge.ts`, `src/web/webview-proxy.ts`, `src/web/routes/webview-routes.ts`, `packages/canvas/src/{frame-messages,media,context-capture,context,commands,assistant,outbox,entry}.ts`, `src/web/public/canvas.{html,css}`
+**Why:** Chat context and the hold-Q lasso knew whole canvas objects only. A person could not point at a button inside a prototype.
+**Links:** [intent/2026-11-13-canvas-prototypes.md](../intent/2026-11-13-canvas-prototypes.md), [architecture-invariants, "Canvas media"](architecture-invariants.md#canvas-media)
+
+Decision. One injected script speaks for a page, and the canvas treats every word of it as the page's own. A message counts only from a frame the editor mounted, with the opaque origin, in an exact bounded shape; the canvas stamps the object id. The bridge forwards Escape and bare Q and nothing else.
+
+Decisions the intent did not settle. The popover offers Add to chat only; Comment is a later unit and registers through `addPickAction()`. A loop inside a frame that finds no element, or whose frame does not answer in 800 ms, captures the embed as an object. A loop that also circles an object lying on the frame is an object loop. A rotated embed gets neither pick nor the in-frame lasso. Pending elements are kept per viewer with the embed's address and dropped when the address changes. A lasso armed from inside a page leaves the keyboard with that page. Background tasks do not carry elements yet.
+
+Three faults found by the browser test. A strict page policy blocked the bridge, so the proxy now adds the bridge's hash to that policy. The hash did not match on a page served without a charset, because the script held non-ASCII comment characters; the script is ASCII only now. A closed loop that ended on its starting point over a selected embed read as a click and handed the page the keyboard; a click is now judged by how far the pointer went. Reload also left a second shield in the stage, which is fixed.
+
 ## 2026-11-13 — An agent's messages and background task results render Markdown too
 
 **Type:** intent-refinement

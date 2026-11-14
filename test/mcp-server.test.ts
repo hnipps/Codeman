@@ -166,7 +166,7 @@ describe('protocol: both eras', () => {
     expect(out[0]).toMatchObject({ id: 4, error: { code: RPC_ERROR.invalidParams } });
   });
 
-  it('lists the same twenty-nine tools in a fixed order, decorated for the era', async () => {
+  it('lists the same thirty-one tools in a fixed order, decorated for the era', async () => {
     const { out, send } = server();
     await send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     await send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: MODERN_META } });
@@ -175,6 +175,7 @@ describe('protocol: both eras', () => {
     const names = [
       ...canvasToolNames,
       'canvas_upload_image',
+      'canvas_prototype',
       'canvas_screenshot',
       'list_sessions',
       'start_session',
@@ -188,6 +189,7 @@ describe('protocol: both eras', () => {
       'remove_extension',
       'logs_query',
     ];
+    expect(names).toHaveLength(31);
     expect(legacy.tools.map((t) => t.name)).toEqual(names);
     expect(modern.tools.map((t) => t.name)).toEqual(names);
     expect(legacy.resultType).toBeUndefined();

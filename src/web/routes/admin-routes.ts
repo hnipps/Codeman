@@ -16,6 +16,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { prototypeFrames } from '../../canvas/prototype-frames.js';
 import { z } from 'zod';
 import { readdirSync, promises as fsp } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
@@ -190,6 +191,7 @@ export function registerAdminRoutes(
     // touch; a forced logout that left them alive would not be a logout.
     const revokedWebviews = webviewCapabilities.revokeOwner(normalizeUsername(username));
     const revokedHtmlViews = htmlViewCapabilities.revokeOwner(normalizeUsername(username));
+    prototypeFrames.revokeOwner(normalizeUsername(username));
     audit(req, 'user.logout', username, { revoked, revokedWebviews, revokedHtmlViews });
     return { success: true, data: { revoked } };
   });
@@ -214,6 +216,7 @@ export function registerAdminRoutes(
       revokeUserSessions(ctx.authSessions, username);
       webviewCapabilities.revokeOwner(normalizeUsername(username));
       htmlViewCapabilities.revokeOwner(normalizeUsername(username));
+      prototypeFrames.revokeOwner(normalizeUsername(username));
       if (deleteSpace) await deleteUserSpace(username);
       audit(req, 'user.delete', username, { deleteSpace, killedSessions: owned.length });
       ctx.broadcast(SseEvent.AdminUsersChanged, {});

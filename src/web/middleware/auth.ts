@@ -25,6 +25,7 @@ import { isMultiUserMode } from '../../config/multiuser.js';
 import { findUser, setPassword, touchLastLogin, verifyPassword } from '../../user-store.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
 import { capabilityFromHtmlViewPath, htmlViewCapabilities } from '../../html-view-capabilities.js';
+import { capabilityFromPrototypePath, prototypeFrames } from '../../canvas/prototype-frames.js';
 import {
   capabilityFromProxyPath,
   capabilityFromReferer,
@@ -213,8 +214,13 @@ function hasValidWebviewCapability(req: FastifyRequest, basePath = ''): boolean 
  */
 function hasValidHtmlViewCapability(req: FastifyRequest): boolean {
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') return false;
-  const cap = capabilityFromHtmlViewPath((req.url ?? '').split('?')[0]);
-  return !!cap && htmlViewCapabilities.resolve(cap) !== undefined;
+  const path = (req.url ?? '').split('?')[0];
+  const cap = capabilityFromHtmlViewPath(path);
+  if (cap) return htmlViewCapabilities.resolve(cap) !== undefined;
+  // A stored canvas prototype (`/canvas-prototype/<cap>/...`): the same kind of page, the same reasoning
+  // and the same fence. Its capability is minted by the canvas frame route (prototype-frames.ts).
+  const frame = capabilityFromPrototypePath(path);
+  return !!frame && prototypeFrames.resolve(frame) !== undefined;
 }
 
 /**

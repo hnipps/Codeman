@@ -1,13 +1,19 @@
 /**
- * @fileoverview Server PNG of one canvas container or object.
+ * @fileoverview Server PNG of one canvas container or object, and of one stored prototype.
  * The page is hostile content: no login, no cookies, and every network request is
- * refused except image bytes this process already decoded from a stored data URL.
+ * refused. The only bytes it gets are ones this process hands it: images decoded from a
+ * stored data URL or read from the asset store, and the files of a stored prototype,
+ * which is framed and drawn as it renders. Any other embed stays a card.
  * One render runs at a time. The caller's 20 second budget includes the wait.
  */
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchHeadlessBrowser } from '../headless-browser.js';
+import { PROTOTYPE_SHOT_FRAMES } from '../config/canvas-limits.js';
+import { injectFrameBridge } from './frame-bridge.js';
+import { parsePrototypeAddress, type PrototypeAddress } from './prototype-address.js';
+import { PROTOTYPE_CSP } from './prototypes.js';
 import {
   HierarchyError,
   bounds,
@@ -92,8 +98,14 @@ export interface ShotRequest {
   url(): string;
   resourceType(): string;
   isNavigationRequest(): boolean;
-  respond(options: { status: number; contentType: string; body: string | Buffer }): Promise<void> | void;
+  respond(options: {
+    status: number;
+    contentType: string;
+    body: string | Buffer;
+    headers?: Record<string, string>;
+  }): Promise<void> | void;
   abort(): Promise<void> | void;
+  continue?(): Promise<void> | void;
 }
 export interface HeadlessPage {
   setViewport(viewport: { width: number; height: number; deviceScaleFactor: number }): Promise<void>;
@@ -190,8 +202,9 @@ export function fitClip(clip: WorldBox, maxSide = SCREENSHOT_MAX_SIDE): ShotFit 
 export function classifyShotRequest(
   url: string,
   resourceType: string,
-  assets: ReadonlySet<string>
-): 'document' | 'asset' | 'refuse' {
+  assets: ReadonlySet<string>,
+  frames: ReadonlySet<string> = new Set()
+): 'document' | 'asset' | 'prototype' | 'refuse' {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -200,6 +213,9 @@ export function classifyShotRequest(
   }
   if (parsed.origin !== DOCUMENT_ORIGIN) return 'refuse';
   if (parsed.pathname === '/screenshot' && resourceType === 'document') return 'document';
+  // A framed prototype asks for its own files with every resource type, so only the path decides.
+  const frame = prototypePathParts(parsed.pathname);
+  if (frame && frames.has(frame.objectId)) return 'prototype';
   if (resourceType === 'image') {
     const key = shotKeyFromPath(parsed.pathname);
     if (key && assets.has(key)) return 'asset';
@@ -244,9 +260,80 @@ export function decodeStoredImage(url: string): StoredImage | null {
   return { mime: `image/${match[1].toLowerCase()}`, bytes };
 }
 
-export function handleShotRequest(request: ShotRequest, html: string, assets: ReadonlyMap<string, StoredImage>): void {
+/** Prototype bytes one screenshot or check hands its page in total; requests past it are refused. */
+export const MAX_SHOT_PROTOTYPE_BYTES = 48 * 1024 * 1024;
+
+/** The prototype embeds a screenshot frames, and how their files are read (asynchronously, from the store). */
+export interface ShotPrototypes {
+  frames: ReadonlyMap<string, PrototypeAddress>;
+  read(address: PrototypeAddress, path: string): Promise<StoredImage | null>;
+  /** Bytes still allowed; shared by every frame of the capture. */
+  budget: { left: number };
+}
+
+function prototypePathParts(pathname: string): { objectId: string; path: string } | null {
+  const match = /^\/prototype\/([^/]+)\/(.+)$/.exec(pathname);
+  if (!match) return null;
+  try {
+    return { objectId: decodeURIComponent(match[1]), path: match[2].split('/').map(decodeURIComponent).join('/') };
+  } catch {
+    return null;
+  }
+}
+
+/** Where the screenshot page frames one prototype embed. */
+export function prototypeFrameUrl(objectId: string, entry: string): string {
+  return `${DOCUMENT_ORIGIN}/prototype/${encodeURIComponent(objectId)}/${entry}`;
+}
+
+/** Answer a framed page's request for one of its own files, or refuse it. */
+async function respondWithPrototypeFile(
+  request: ShotRequest,
+  read: () => Promise<StoredImage | null>,
+  budget: { left: number }
+): Promise<void> {
+  const file = budget.left > 0 ? await read().catch(() => null) : null;
+  if (!file || file.bytes.length > budget.left) {
+    await request.abort();
+    return;
+  }
+  budget.left -= file.bytes.length;
+  const html = file.mime.startsWith('text/html');
+  await request.respond({
+    status: 200,
+    contentType: file.mime,
+    body: html ? injectFrameBridge(file.bytes.toString('utf8')) : file.bytes,
+    headers: {
+      'Content-Security-Policy': PROTOTYPE_CSP,
+      'X-Content-Type-Options': 'nosniff',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
+export function handleShotRequest(
+  request: ShotRequest,
+  html: string,
+  assets: ReadonlyMap<string, StoredImage>,
+  prototypes?: ShotPrototypes
+): void {
   const resourceType = request.isNavigationRequest() ? 'document' : request.resourceType();
-  const decision = classifyShotRequest(request.url(), resourceType, new Set(assets.keys()));
+  const decision = classifyShotRequest(
+    request.url(),
+    resourceType,
+    new Set(assets.keys()),
+    new Set(prototypes?.frames.keys() ?? [])
+  );
+  if (decision === 'prototype' && prototypes) {
+    const parts = prototypePathParts(new URL(request.url()).pathname);
+    const address = parts ? prototypes.frames.get(parts.objectId) : undefined;
+    if (parts && address) {
+      respondWithPrototypeFile(request, () => prototypes.read(address, parts.path), prototypes.budget).catch(
+        () => undefined
+      );
+      return;
+    }
+  }
   if (decision === 'document') {
     void request.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
     return;
@@ -384,8 +471,28 @@ export async function loadShotAssets(
   }
 }
 
+/** The prototype embeds among the objects, by object id: the first `limit` in paint order. */
+export function shotPrototypeEmbeds(
+  objects: ShotObject[],
+  limit = PROTOTYPE_SHOT_FRAMES
+): Map<string, PrototypeAddress> {
+  const found = new Map<string, PrototypeAddress>();
+  for (const object of objects) {
+    if (found.size >= limit) break;
+    const url = 'url' in object.content ? object.content.url : undefined;
+    const address = object.content.type === 'embed' && typeof url === 'string' ? parsePrototypeAddress(url) : null;
+    if (address) found.set(object.id, address);
+  }
+  return found;
+}
+
 export function buildShotDocument(
-  model: { objects: ShotObject[]; fit: ShotFit; assets?: ReadonlyMap<string, StoredImage> },
+  model: {
+    objects: ShotObject[];
+    fit: ShotFit;
+    assets?: ReadonlyMap<string, StoredImage>;
+    prototypes?: ReadonlyMap<string, PrototypeAddress>;
+  },
   css: string,
   script: string,
   theme: 'dark' | 'light'
@@ -400,7 +507,11 @@ export function buildShotDocument(
   const stored = [...(model.assets?.keys() ?? [])]
     .filter((key) => key.startsWith('asset:'))
     .map((key) => key.slice('asset:'.length));
-  const payload = { objects: model.objects, transform: model.fit.transform, images, assets: stored };
+  const prototypes = [...(model.prototypes ?? [])].map(([objectId, address]) => ({
+    objectId,
+    src: prototypeFrameUrl(objectId, address.entry),
+  }));
+  const payload = { objects: model.objects, transform: model.fit.transform, images, assets: stored, prototypes };
   const themeAttr = theme === 'light' ? ` data-theme="light"` : '';
   const safeCss = css.replace(/<\/style/gi, '<\\/style');
   const safeScript = script.replace(/<\/script/gi, '<\\/script');
@@ -571,18 +682,27 @@ function delay(ms: number): { promise: Promise<never>; cancel: () => void } {
   return { promise, cancel: () => clearTimeout(timer) };
 }
 
+/** How long a capture waits for its framed prototypes to load, inside what is left of the budget. */
+const FRAME_LOAD_WAIT_MS = 6_000;
+const FRAME_WAIT_RESERVE_MS = 3_000;
+
 async function capture(
   browser: HeadlessBrowser,
   html: string,
   assets: Map<string, StoredImage>,
-  fit: ShotFit
+  fit: ShotFit,
+  prototypes: ShotPrototypes | undefined,
+  leftMs: number
 ): Promise<Buffer> {
   const page = await browser.newPage();
   await page.setViewport({ width: fit.width, height: fit.height, deviceScaleFactor: 1 });
   if (page.setCacheEnabled) await page.setCacheEnabled(false);
   await page.setRequestInterception(true);
-  page.on('request', (request) => handleShotRequest(request, html, assets));
+  page.on('request', (request) => handleShotRequest(request, html, assets, prototypes));
   await page.goto(DOCUMENT_URL, { waitUntil: 'domcontentloaded' });
+  const frameWait = prototypes?.frames.size
+    ? Math.max(0, Math.min(FRAME_LOAD_WAIT_MS, leftMs - FRAME_WAIT_RESERVE_MS))
+    : 0;
   await page.evaluate(`(async () => {
     const deadline = Date.now() + 5000;
     while (document.documentElement.dataset.ready !== '1') {
@@ -590,30 +710,28 @@ async function capture(
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
     await Promise.all([...document.images].map((img) => (img.complete ? undefined : img.decode().catch(() => undefined))));
+    if (${frameWait} > 0 && globalThis.CodemanCanvasShot && CodemanCanvasShot.settle) await CodemanCanvasShot.settle(${frameWait});
   })()`);
   const png = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: fit.width, height: fit.height } });
   return Buffer.from(png);
 }
 
-export interface RenderContainerOptions {
-  theme?: 'dark' | 'light';
+export interface BrowserJobOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   launch?: (options: { noSandbox?: boolean; timeoutMs?: number }) => Promise<HeadlessBrowser>;
-  readAssets?: () => Promise<{ css: string; script: string }>;
-  /**
-   * Stored image bytes by asset id, read asynchronously; null for anything over `maxBytes`. The
-   * page is handed them and never fetches anything else.
-   */
-  readAsset?: (assetId: string, maxBytes: number) => Promise<StoredImage | null>;
 }
 
-export async function renderContainer(
-  state: CanvasState,
-  objectId: string,
-  options: RenderContainerOptions = {}
-): Promise<{ png: Buffer; meta: ShotMeta }> {
-  const theme = options.theme ?? 'dark';
+/**
+ * One queued job with its own headless browser: `prepare` runs when the job reaches the head of the
+ * queue, `work` gets the browser and the milliseconds left. The browser is closed (then killed) whatever
+ * happens, and the whole thing, the wait in the queue included, ends at `timeoutMs`.
+ */
+async function browserJob<P, T>(
+  options: BrowserJobOptions,
+  prepare: (signal: AbortSignal) => Promise<P>,
+  work: (browser: HeadlessBrowser, prepared: P, leftMs: number) => Promise<T>
+): Promise<T> {
   const launch = options.launch ?? ((launchOptions) => launchHeadlessBrowser(launchOptions));
   const timeoutMs = options.timeoutMs ?? SCREENSHOT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
@@ -622,17 +740,7 @@ export async function renderContainer(
     if (signal.aborted) throw new ScreenshotAborted();
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScreenshotTimeout();
-    const model = shotModel(state, objectId);
-    if (options.readAsset) await loadShotAssets(model, options.readAsset, signal);
-    const bundles = await (options.readAssets ?? readBundles)();
-    const html = buildShotDocument(model, bundles.css, bundles.script, theme);
-    const meta: ShotMeta = {
-      scaled: model.fit.scaled,
-      scale: model.fit.scale,
-      width: model.fit.width,
-      height: model.fit.height,
-      clip: model.fit.clip,
-    };
+    const prepared = await prepare(signal);
     let browser: HeadlessBrowser | undefined;
     try {
       try {
@@ -646,12 +754,11 @@ export async function renderContainer(
       const left = deadline - Date.now();
       if (left <= 0) throw new ScreenshotTimeout();
       const gate = delay(left);
-      const painting = capture(browser, html, model.assets, model.fit);
-      painting.catch(() => undefined);
+      const working = work(browser, prepared, left);
+      working.catch(() => undefined);
       const aborted = whenAborted(signal);
       try {
-        const png = await Promise.race([painting, gate.promise, aborted.promise]);
-        return { png, meta };
+        return await Promise.race([working, gate.promise, aborted.promise]);
       } finally {
         gate.cancel();
         aborted.cancel();
@@ -674,4 +781,181 @@ export async function renderContainer(
   } finally {
     outer.cancel();
   }
+}
+
+export interface RenderContainerOptions extends BrowserJobOptions {
+  theme?: 'dark' | 'light';
+  readAssets?: () => Promise<{ css: string; script: string }>;
+  /**
+   * Stored image bytes by asset id, read asynchronously; null for anything over `maxBytes`. The
+   * page is handed them and never fetches anything else.
+   */
+  readAsset?: (assetId: string, maxBytes: number) => Promise<StoredImage | null>;
+  /**
+   * One file of one stored prototype version, or null. Given this, a prototype embed whose entry
+   * file reads is framed and drawn as it renders; without it every embed stays a card.
+   */
+  readPrototypeFile?: (address: PrototypeAddress, path: string) => Promise<StoredImage | null>;
+}
+
+export async function renderContainer(
+  state: CanvasState,
+  objectId: string,
+  options: RenderContainerOptions = {}
+): Promise<{ png: Buffer; meta: ShotMeta }> {
+  const theme = options.theme ?? 'dark';
+  return browserJob(
+    options,
+    async (signal) => {
+      const model = shotModel(state, objectId);
+      if (options.readAsset) await loadShotAssets(model, options.readAsset, signal);
+      let prototypes: ShotPrototypes | undefined;
+      const read = options.readPrototypeFile;
+      if (read) {
+        const frames = new Map<string, PrototypeAddress>();
+        for (const [id, address] of shotPrototypeEmbeds(model.objects))
+          if (await read(address, address.entry).catch(() => null)) frames.set(id, address);
+        if (frames.size) prototypes = { frames, read, budget: { left: MAX_SHOT_PROTOTYPE_BYTES } };
+      }
+      const bundles = await (options.readAssets ?? readBundles)();
+      const html = buildShotDocument({ ...model, prototypes: prototypes?.frames }, bundles.css, bundles.script, theme);
+      const meta: ShotMeta = {
+        scaled: model.fit.scaled,
+        scale: model.fit.scale,
+        width: model.fit.width,
+        height: model.fit.height,
+        clip: model.fit.clip,
+      };
+      return { model, prototypes, html, meta };
+    },
+    async (browser, { model, prototypes, html, meta }, leftMs) => ({
+      png: await capture(browser, html, model.assets, model.fit, prototypes, leftMs),
+      meta,
+    })
+  );
+}
+
+export const PROTOTYPE_CHECK_ORIGIN = 'https://codeman-prototype.invalid';
+const CHECK_LIST_ENTRIES = 40;
+const CHECK_LINE_CHARS = 300;
+const CHECK_LOAD_WAIT_MS = 10_000;
+const CHECK_SETTLE_MS = 500;
+
+/** The parts of a Puppeteer page a prototype check uses beyond a screenshot's. */
+interface CheckPage extends Omit<HeadlessPage, 'on' | 'goto'> {
+  on(event: 'request', handler: (request: ShotRequest) => void): void;
+  on(event: 'console', handler: (message: { type(): string; text(): string }) => void): void;
+  on(event: 'pageerror', handler: (error: unknown) => void): void;
+  on(event: 'dialog', handler: (dialog: { message(): string; dismiss(): Promise<void> }) => void): void;
+  goto(url: string, options: { waitUntil: 'load'; timeout: number }): Promise<unknown>;
+  emulateMediaFeatures(features: { name: string; value: string }[]): Promise<void>;
+}
+
+export interface PrototypeCheck {
+  png: Buffer;
+  width: number;
+  height: number;
+  theme: 'dark' | 'light';
+  /** False when the page's load event did not arrive in time; the picture is what had drawn by then. */
+  loaded: boolean;
+  consoleErrors: string[];
+  pageErrors: string[];
+  /** Requests the page made that got no answer: a file the version does not hold, or any outside address. */
+  failedRequests: string[];
+  dialogs: string[];
+}
+
+/**
+ * Load one prototype version alone in the headless browser and report what it drew and what went
+ * wrong. Its files come from `read`; every other request is refused, as in a screenshot, so a page
+ * that needs an outside script shows that request under `failedRequests`.
+ */
+export async function checkPrototype(
+  input: {
+    entry: string;
+    width: number;
+    height: number;
+    theme: 'dark' | 'light';
+    read: (path: string) => Promise<StoredImage | null>;
+  },
+  options: BrowserJobOptions = {}
+): Promise<PrototypeCheck> {
+  return browserJob(
+    options,
+    async () => undefined,
+    async (browser, _prepared, leftMs) => {
+      const report: Omit<PrototypeCheck, 'png'> = {
+        width: input.width,
+        height: input.height,
+        theme: input.theme,
+        loaded: true,
+        consoleErrors: [],
+        pageErrors: [],
+        failedRequests: [],
+        dialogs: [],
+      };
+      const note = (list: string[], line: string): void => {
+        if (list.length < CHECK_LIST_ENTRIES) list.push(line.slice(0, CHECK_LINE_CHARS));
+      };
+      const budget = { left: MAX_SHOT_PROTOTYPE_BYTES };
+      const page = (await browser.newPage()) as unknown as CheckPage;
+      await page.setViewport({ width: input.width, height: input.height, deviceScaleFactor: 1 });
+      if (page.setCacheEnabled) await page.setCacheEnabled(false);
+      await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: input.theme }]);
+      await page.setRequestInterception(true);
+      page.on('console', (message) => {
+        if (message.type() === 'error') note(report.consoleErrors, message.text());
+      });
+      page.on('pageerror', (error) => note(report.pageErrors, error instanceof Error ? error.message : String(error)));
+      page.on('dialog', (dialog) => {
+        note(report.dialogs, dialog.message());
+        dialog.dismiss().catch(() => undefined);
+      });
+      page.on('request', (request) => {
+        let parsed: URL | null = null;
+        try {
+          parsed = new URL(request.url());
+        } catch {
+          parsed = null;
+        }
+        // Inline bytes the page already holds: not a network request.
+        if (parsed?.protocol === 'data:' || parsed?.protocol === 'blob:') {
+          void request.continue?.();
+          return;
+        }
+        if (!parsed || parsed.origin !== PROTOTYPE_CHECK_ORIGIN) {
+          note(report.failedRequests, `${request.url()} (refused: a check has no network)`);
+          void request.abort();
+          return;
+        }
+        let path: string;
+        try {
+          path = parsed.pathname.slice(1).split('/').map(decodeURIComponent).join('/');
+        } catch {
+          path = '';
+        }
+        respondWithPrototypeFile(
+          request,
+          async () => {
+            const file = path ? await input.read(path) : null;
+            if (!file) note(report.failedRequests, `${path || parsed.pathname} (not a file of this prototype)`);
+            return file;
+          },
+          budget
+        ).catch(() => undefined);
+      });
+      const wait = Math.max(1_000, Math.min(CHECK_LOAD_WAIT_MS, leftMs - FRAME_WAIT_RESERVE_MS));
+      try {
+        await page.goto(`${PROTOTYPE_CHECK_ORIGIN}/${input.entry}`, { waitUntil: 'load', timeout: wait });
+      } catch {
+        report.loaded = false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, CHECK_SETTLE_MS));
+      const png = await page.screenshot({
+        type: 'png',
+        clip: { x: 0, y: 0, width: input.width, height: input.height },
+      });
+      return { ...report, png: Buffer.from(png) };
+    }
+  );
 }

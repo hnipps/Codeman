@@ -169,8 +169,12 @@ describe('canvas comments and author history', () => {
     expect(await rows.count()).toBe(2);
     expect(await rows.nth(0).locator('.author-name').textContent()).toBe('Agent design7f');
     expect(await rows.nth(0).locator('.agent-mark').count()).toBe(1);
-    expect(await rows.nth(0).locator('.comment-text').textContent()).toContain('<b>Not bold</b>');
-    expect(await page.locator('#threadList b').count()).toBe(0);
+    // An agent's comment is rendered and sanitized Markdown (test/canvas-markdown.browser.test.ts covers what
+    // that allows), so its tags are not shown as text. A person's comment stays the text they typed.
+    expect(await rows.nth(0).locator('.comment-text').textContent()).toContain('Not bold');
+    expect(await rows.nth(0).locator('.comment-text').textContent()).not.toContain('<b>');
+    expect(await rows.nth(0).locator('script, [onclick], [onerror]').count()).toBe(0);
+    expect(await rows.nth(1).locator('.comment-text *').count()).toBe(0);
     expect(await rows.nth(1).locator('.author-name').textContent()).toBe('admin');
     expect(await rows.nth(1).locator('.agent-mark').count()).toBe(0);
     const time = rows.nth(1).locator('.comment-time');

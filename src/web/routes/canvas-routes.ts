@@ -27,11 +27,14 @@ import {
   commentCommand,
 } from '../../canvas/commands.js';
 import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasData } from '../../canvas/queries.js';
-import { IdSchema, descendants, type Author } from '../../canvas/model.js';
+import { CommentSchema, IdSchema, descendants, type Author } from '../../canvas/model.js';
+import { liveEmbed } from '../../canvas/context-resolve.js';
+import { readCommentAnchors, setCommentAnchor } from '../../canvas/comment-anchors.js';
+import type { ElementRef } from '../../canvas/element-ref.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
 import { ViewRegistry } from '../../canvas/view-registry.js';
-import { MAX_VIEW_IDS, PublishedViewSchema, ViewActionSchema } from '../../canvas/view-schema.js';
+import { MAX_VIEW_IDS, PublishedViewSchema, VIEW_BODY_LIMIT, ViewActionSchema } from '../../canvas/view-schema.js';
 import {
   checkChoice,
   conversationTool,
@@ -45,6 +48,10 @@ import { LRUMap } from '../../utils/lru-map.js';
 import { canvasFailure, caseFolderUnavailable } from './canvas-failure.js';
 import type { Operation } from '../../canvas/operations.js';
 import { MAX_OPS_PAGE_RECORDS } from '../../canvas/canvas-store.js';
+import { PROTOTYPE_HOST, parsePrototypeAddress } from '../../canvas/prototype-address.js';
+import { PROTOTYPE_FRAME_PREFIX, prototypeFrames } from '../../canvas/prototype-frames.js';
+import { prototypeVersionStored, readPrototypeFile } from '../../canvas/prototypes.js';
+import { registerPrototypeRoutes, registerPrototypeServeRoute } from './canvas-prototype-routes.js';
 
 /** A no-op answer writes nothing, so its request identity is held here instead of in the log. */
 const noopRequests = new LRUMap<string, string>({ maxSize: 2000 });
@@ -79,6 +86,7 @@ function retireFrames(workspaceId: string, operations: Pick<Operation, 'prev'>[]
   const ids = new Set(retiredEmbeds(operations));
   if (!ids.size) return;
   removeCanvasWebviews((origin) => origin.workspaceId === workspaceId && ids.has(origin.objectId));
+  prototypeFrames.retire((frame) => frame.workspaceId === workspaceId && ids.has(frame.objectId));
 }
 
 /** Who a rate limit counts against: the user in multi-user mode, else the client address. */
@@ -215,6 +223,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       { parseAs: 'buffer', bodyLimit: 9 * 1024 * 1024 },
       (_req, body, done) => done(null, body)
     );
+    registerPrototypeServeRoute(scope, views);
     scope.get('/api/canvas/workspaces', async (req) => {
       const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
       const user = getAuthUser(req);
@@ -317,9 +326,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       registerConversationRoutes(workspaceScope, ctx);
       registerTaskRoutes(workspaceScope, ctx);
       registerShellRoutes(workspaceScope, ctx);
+      registerPrototypeRoutes(workspaceScope, ctx, { views, callerKey, retireFrames, requestIdentity });
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
-        { bodyLimit: 64 * 1024 },
+        // Room for the pending elements a view reports at the schema's own bounds, so a full shelf is never a 413.
+        { bodyLimit: VIEW_BODY_LIMIT },
         async (req, reply) => {
           const viewId = z.uuid().parse(req.params.viewId);
           const state = PublishedViewSchema.parse(req.body);
@@ -340,6 +351,14 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                 )
               );
           }
+          return { success: true };
+        }
+      );
+      workspaceScope.delete<{ Params: { workspaceId: string; viewId: string } }>(
+        '/api/canvas/:workspaceId/views/:viewId',
+        async (req) => {
+          // The tab is hidden: it is no longer an open view, so prototypes stop being served for it.
+          views.remove(req.params.workspaceId, z.uuid().parse(req.params.viewId), ownerFor(req));
           return { success: true };
         }
       );
@@ -392,6 +411,21 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                     'Request identity was already used for a different command'
                   )
                 );
+            // The comment of this request is written; a first attempt that died before its anchor was stored is finished here.
+            if (envelope.tool === 'canvas_comment') {
+              const { element } = toolSchemas.canvas_comment.parse(envelope.arguments);
+              const written = store.records(identity.previous.map((o) => o.seq))[0];
+              const commentId =
+                written && 'comment' in written ? CommentSchema.safeParse(written.comment).data?.id : undefined;
+              if (
+                element &&
+                commentId &&
+                liveEmbed(state, element.objectId) &&
+                state.comments.some((c) => c.id === commentId && c.objectId === element.objectId) &&
+                !readCommentAnchors(req.params.workspaceId, state)[commentId]
+              )
+                setCommentAnchor(req.params.workspaceId, state, commentId, element);
+            }
             return {
               success: true,
               data: {
@@ -403,6 +437,8 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           }
           const args = envelope.arguments;
           let operations: Command[] | undefined;
+          /** The comment this request posts and the element it is about, if any. */
+          let anchor: { commentId: string; element: ElementRef | undefined } | undefined;
           switch (envelope.tool) {
             case 'canvas_link_preview': {
               const { url: link } = toolSchemas.canvas_link_preview.parse(args);
@@ -483,7 +519,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                     },
                   ];
                 });
-                return { success: true, data: { viewId: input.viewId, ageMs: record.ageMs, references: refs } };
+                const elements = (record.state.contextElements ?? []).filter((e) => liveEmbed(state, e.objectId));
+                return {
+                  success: true,
+                  data: { viewId: input.viewId, ageMs: record.ageMs, references: refs, elements },
+                };
               }
               const { viewId, requestId, ...rest } = input;
               const action = ViewActionSchema.parse(
@@ -492,10 +532,26 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               if ('targetIds' in action && action.targetIds && action.action !== 'context-remove')
                 normalizeTargets(state, action.targetIds);
               if (action.action === 'focus' && action.targetId) normalizeTargets(state, [action.targetId]);
+              if (action.action === 'open-page' && !liveEmbed(state, action.objectId))
+                return reply
+                  .code(400)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.INVALID_INPUT,
+                      'Only a live embed object of this workspace can be opened in the rail or the full view'
+                    )
+                  );
               return applyViewCommand(reply, ctx, views, req.params.workspaceId, viewId, canSee, action, requestId);
             }
             case 'canvas_read':
-              return { success: true, data: readTree(state, toolSchemas.canvas_read.parse(args)) };
+              return {
+                success: true,
+                data: readTree(
+                  state,
+                  toolSchemas.canvas_read.parse(args),
+                  readCommentAnchors(req.params.workspaceId, state)
+                ),
+              };
             case 'canvas_search':
               return {
                 success: true,
@@ -524,9 +580,22 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             case 'canvas_arrange':
               operations = arrange(state, toolSchemas.canvas_arrange.parse(args));
               break;
-            case 'canvas_comment':
-              operations = [commentCommand(toolSchemas.canvas_comment.parse(args))];
+            case 'canvas_comment': {
+              const input = toolSchemas.canvas_comment.parse(args);
+              if (input.element && !liveEmbed(state, input.objectId))
+                return reply
+                  .code(400)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.INVALID_INPUT,
+                      `NOT_AN_EMBED: ${input.objectId} is not a live embed, so a comment on it cannot name an element`
+                    )
+                  );
+              const commentId = input.commentId ?? randomUUID();
+              operations = [commentCommand({ ...input, commentId })];
+              anchor = { commentId, element: input.element };
               break;
+            }
             case 'canvas_transform':
               operations = transform(state, toolSchemas.canvas_transform.parse(args));
               break;
@@ -592,6 +661,15 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               reasons: result.reasons,
             });
           if (!result.operations.length && noopKey) noopRequests.set(noopKey, fingerprint);
+          // After the commit and before the broadcast, so a page that reads the anchors on this event finds it. A
+          // comment posted without an element clears what an earlier comment under the same id left behind.
+          let anchored = false;
+          if (anchor && result.operations.length)
+            try {
+              anchored = setCommentAnchor(req.params.workspaceId, store.read(), anchor.commentId, anchor.element);
+            } catch {
+              // The comment is written; one without its anchor is still a comment, and the answer says so.
+            }
           if (result.operations.length) {
             retireFrames(req.params.workspaceId, result.operations);
             const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
@@ -599,6 +677,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               workspaceId: req.params.workspaceId,
               seq: result.seq,
               owner: readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner,
+              ...(anchor?.element && anchored ? { anchors: true } : {}),
             });
           }
           const changed = new Map(
@@ -617,8 +696,20 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           );
           return {
             success: true,
-            data: { seq: result.seq, sequences: result.operations.map((o) => o.seq), hierarchy },
+            data: {
+              seq: result.seq,
+              sequences: result.operations.map((o) => o.seq),
+              hierarchy,
+              ...(anchor?.element ? { anchored } : {}),
+            },
           };
+        }
+      );
+      workspaceScope.get<{ Params: { workspaceId: string } }>(
+        '/api/canvas/:workspaceId/comment-anchors',
+        async (req) => {
+          const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
+          return { success: true, data: { anchors: readCommentAnchors(req.params.workspaceId, state) } };
         }
       );
       workspaceScope.post<{ Params: { workspaceId: string } }>(
@@ -700,7 +791,49 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             return reply
               .code(409)
               .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only a live embed object has a page to show'));
-          const target = typeof object.content.url === 'string' ? parseWebviewUrl(object.content.url) : null;
+          const owner = readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner;
+          const address = typeof object.content.url === 'string' ? object.content.url : '';
+          const prototype = parsePrototypeAddress(address);
+          if (prototype || URL.parse(address)?.hostname === PROTOTYPE_HOST) {
+            // A stored prototype is served by Codeman itself, never proxied, and only to an open workspace.
+            // Nothing is awaited between reading the object above and the mint below.
+            if (
+              !prototype ||
+              !prototypeVersionStored(req.params.workspaceId, prototype.id, prototype.version, prototype.entry)
+            )
+              return reply
+                .code(404)
+                .send(
+                  createErrorResponse(
+                    ApiErrorCode.NOT_FOUND,
+                    'This prototype version is no longer stored. Publish it again with canvas_prototype.'
+                  )
+                );
+            if (!views.list(req.params.workspaceId, (viewOwner) => canAccessOwned(getAuthUser(req), viewOwner)).length)
+              return reply
+                .code(409)
+                .send(
+                  createErrorResponse(
+                    ApiErrorCode.CONFLICT,
+                    'A prototype is served only while its canvas workspace is open in a browser'
+                  )
+                );
+            const capability = prototypeFrames.mint({
+              workspaceId: req.params.workspaceId,
+              objectId: id,
+              prototypeId: prototype.id,
+              version: prototype.version,
+              owner,
+            });
+            return {
+              success: true,
+              data: {
+                embedUrl: `${ctx.basePath ?? ''}${PROTOTYPE_FRAME_PREFIX}/${capability}/${prototype.entry}`,
+                prototype: { id: prototype.id, version: prototype.version },
+              },
+            };
+          }
+          const target = parseWebviewUrl(address);
           const blocked = target ? blockedWebviewHostReason(target.hostname) : null;
           if (!target || blocked)
             return reply
@@ -716,7 +849,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             objectId: id,
             url: target.href,
             name: typeof object.content.label === 'string' && object.content.label ? object.content.label : target.host,
-            owner: readWorkspaces().find((w) => w.id === req.params.workspaceId)?.owner,
+            owner,
             basePath: ctx.basePath ?? '',
           });
           return { success: true, data: opened };
@@ -739,7 +872,13 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               const bytes = await readFile(asset.path);
               return bytes.length > maxBytes ? null : { mime: asset.mime, bytes };
             };
-            const rendered = await renderContainer(state, id, { theme, signal: hangup.signal, readAsset });
+            const rendered = await renderContainer(state, id, {
+              theme,
+              signal: hangup.signal,
+              readAsset,
+              readPrototypeFile: (address, path) =>
+                readPrototypeFile(req.params.workspaceId, address.id, address.version, path),
+            });
             return reply
               .header('Cache-Control', 'no-store')
               .header('X-Canvas-Screenshot-Meta', JSON.stringify(rendered.meta))

@@ -26,8 +26,11 @@ import {
   handleShotRequest,
   liveScreenshotBrowserPids,
   loadShotAssets,
+  prototypeFrameUrl,
   renderContainer,
   shotModel,
+  shotPrototypeEmbeds,
+  type ShotPrototypes,
   stopScreenshotRenders,
   type HeadlessBrowser,
   type HeadlessPage,
@@ -290,6 +293,89 @@ describe('canvas screenshot geometry and hostile page', () => {
     expect(calls[3]?.respond).toHaveBeenCalledOnce();
     const body = calls[3]?.respond.mock.calls[0]?.[0].body as Buffer;
     expect(body.equals(PNG)).toBe(true);
+  });
+
+  it('hands a framed prototype only its own files, sandboxed, within one byte budget, and nothing from outside', async () => {
+    const embedOf = (id: string, url: string) => record(id, 'section', 'embed', { type: 'embed', url });
+    const model = shotModel(
+      stateOf([
+        record('section', null, 'section', { type: 'section', label: 'Protos' }),
+        embedOf('p1', 'https://prototype.invalid/demo/2/index.html'),
+        embedOf('p2', 'https://prototype.invalid/other/1/pages/home.html'),
+        embedOf('web', 'https://example.com/'),
+        embedOf('bad', 'https://prototype.invalid/demo/latest/index.html'),
+      ]),
+      'section'
+    );
+    const frames = shotPrototypeEmbeds(model.objects);
+    expect([...frames]).toEqual([
+      ['p1', { id: 'demo', version: 2, entry: 'index.html' }],
+      ['p2', { id: 'other', version: 1, entry: 'pages/home.html' }],
+    ]);
+    expect([...shotPrototypeEmbeds(model.objects, 1).keys()]).toEqual(['p1']);
+    const html = buildShotDocument({ ...model, prototypes: frames }, 'css', 'script', 'dark');
+    expect(html).toContain(JSON.stringify(prototypeFrameUrl('p1', 'index.html')));
+    expect(html).toContain(JSON.stringify(prototypeFrameUrl('p2', 'pages/home.html')));
+    expect(html).not.toContain('/prototype/web/');
+
+    const ids = new Set(frames.keys());
+    const page = prototypeFrameUrl('p1', 'index.html');
+    expect(classifyShotRequest(page, 'document', new Set(), ids)).toBe('prototype');
+    expect(classifyShotRequest(page.replace('index.html', 'app.js'), 'script', new Set(), ids)).toBe('prototype');
+    expect(classifyShotRequest(page.replace('/p1/', '/web/'), 'document', new Set(), ids)).toBe('refuse');
+    expect(classifyShotRequest(page, 'document', new Set())).toBe('refuse');
+    expect(classifyShotRequest('https://prototype.invalid/demo/2/index.html', 'document', new Set(), ids)).toBe(
+      'refuse'
+    );
+    expect(classifyShotRequest('https://evil.example/prototype/p1/index.html', 'fetch', new Set(), ids)).toBe('refuse');
+
+    const files: Record<string, string> = {
+      'demo/2/index.html': '<!doctype html><html><head></head><body>demo</body></html>',
+      'demo/2/app.js': 'x'.repeat(40),
+      'other/1/pages/home.html': '<p>other</p>',
+    };
+    const read = vi.fn(async (address: { id: string; version: number }, path: string) => {
+      const text = files[`${address.id}/${address.version}/${path}`];
+      return text === undefined
+        ? null
+        : {
+            mime: path.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8',
+            bytes: Buffer.from(text),
+          };
+    });
+    const prototypes: ShotPrototypes = { frames, read, budget: { left: 130 } };
+    const ask = async (url: string, type = 'document') => {
+      const call = request(url, type, false);
+      handleShotRequest(call.request, html, model.assets, prototypes);
+      await vi.waitFor(() => expect(call.respond.mock.calls.length + call.abort.mock.calls.length).toBe(1));
+      return call;
+    };
+    const entry = await ask(page);
+    const answer = entry.respond.mock.calls[0]?.[0] as { body: string; headers: Record<string, string> };
+    expect(answer.body).toContain('demo');
+    expect(answer.headers['Content-Security-Policy']).toContain('sandbox');
+    expect(answer.headers['Content-Security-Policy']).not.toContain('allow-same-origin');
+    expect(answer.headers['X-Content-Type-Options']).toBe('nosniff');
+    expect((await ask(page.replace('index.html', 'app.js'), 'script')).respond).toHaveBeenCalledOnce();
+    // A frame reads its own version only: the other prototype's file is not under its address.
+    expect((await ask(page.replace('index.html', 'pages/home.html'))).abort).toHaveBeenCalledOnce();
+    expect((await ask(page.replace('index.html', 'missing.js'), 'script')).abort).toHaveBeenCalledOnce();
+    expect((await ask('https://evil.example/collect?x=1', 'fetch')).abort).toHaveBeenCalledOnce();
+    expect((await ask('https://prototype.invalid/demo/2/index.html')).abort).toHaveBeenCalledOnce();
+    expect((await ask(prototypeFrameUrl('web', 'index.html'))).abort).toHaveBeenCalledOnce();
+    expect(read.mock.calls.map(([address, path]) => `${address.id}/${address.version}/${path}`)).toEqual([
+      'demo/2/index.html',
+      'demo/2/app.js',
+      'demo/2/pages/home.html',
+      'demo/2/missing.js',
+    ]);
+    // The budget is spent: a file that no longer fits is refused, and once it is gone nothing is read.
+    expect(prototypes.budget.left).toBeLessThan(40);
+    expect((await ask(page.replace('index.html', 'app.js'), 'script')).abort).toHaveBeenCalledOnce();
+    prototypes.budget.left = 0;
+    const reads = read.mock.calls.length;
+    expect((await ask(prototypeFrameUrl('p2', 'pages/home.html'))).abort).toHaveBeenCalledOnce();
+    expect(read.mock.calls.length).toBe(reads);
   });
 
   it('never lets a data-URL image object stand in for a stored asset, even under the same id', async () => {

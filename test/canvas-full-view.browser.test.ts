@@ -161,7 +161,7 @@ describe('canvas shell: the session full view', () => {
       allow: 'clipboard-read; clipboard-write; microphone',
       src: `/x/session/${id}?from=canvas&ws=${alpha}`,
     });
-    expect((await view()).fullView).toBe(id);
+    expect((await view()).fullView).toEqual({ kind: 'session', sessionId: id });
     // The canvas underneath is inert, and the page under the frame is the same document.
     expect(
       await page.evaluate(() =>
@@ -267,13 +267,18 @@ describe('canvas shell: the session full view', () => {
     // Opening another replaces the open one (a typed view command; an agent's takes the same path).
     await row(first).click();
     await sessionPage(first);
-    await page.evaluate((sid) => window.canvasView.dispatch({ kind: 'full-view', sessionId: sid }), second);
+    await page.evaluate(
+      (sid) => window.canvasView.dispatch({ kind: 'full-view', content: { kind: 'session', sessionId: sid } }),
+      second
+    );
     frame = await sessionPage(second);
     expect(await frames().count()).toBe(1);
-    expect((await view()).fullView).toBe(second);
+    expect((await view()).fullView).toEqual({ kind: 'session', sessionId: second });
     // A session this view does not list never opens.
-    await page.evaluate(() => window.canvasView.dispatch({ kind: 'full-view', sessionId: 'not-a-session' }));
-    expect((await view()).fullView).toBe(second);
+    await page.evaluate(() =>
+      window.canvasView.dispatch({ kind: 'full-view', content: { kind: 'session', sessionId: 'not-a-session' } })
+    );
+    expect((await view()).fullView).toEqual({ kind: 'session', sessionId: second });
     expect(await frames().getAttribute('src')).toContain(`/session/${second}?`);
 
     // A message that is not from the frame's own window is ignored.
@@ -311,7 +316,7 @@ describe('canvas shell: the session full view', () => {
     expect(await frames().count()).toBe(0);
     expect(await page.locator('#fullViewError h1').textContent()).toBe('The session page did not open');
     expect(await page.locator('#fullViewClassic').getAttribute('href')).toBe(`/x/classic#session=${id}`);
-    expect((await view()).fullView).toBe(id);
+    expect((await view()).fullView).toEqual({ kind: 'session', sessionId: id });
     // Try again mounts a fresh frame; this time the real page answers.
     await page.unrouteAll({ behavior: 'ignoreErrors' });
     await page.locator('#fullViewRetry').click();
@@ -319,7 +324,7 @@ describe('canvas shell: the session full view', () => {
     expect(await page.locator('#fullViewError').isHidden()).toBe(true);
     await page.waitForTimeout(500);
     // Back to canvas, from the error state of a second failure.
-    await page.evaluate(() => window.canvasView.dispatch({ kind: 'full-view', sessionId: null }));
+    await page.evaluate(() => window.canvasView.dispatch({ kind: 'full-view', content: null }));
     await frames().waitFor({ state: 'detached' });
     expect(await page.locator('#fullView').isHidden()).toBe(true);
   }, 60000);
@@ -329,7 +334,7 @@ describe('canvas shell: the session full view', () => {
     await page.goto(`${origin}/x/canvas/${alpha}?session=${id}`, { waitUntil: 'domcontentloaded' });
     const frame = await sessionPage(id);
     expect(new URL(page.url()).search).toBe('');
-    expect((await view()).fullView).toBe(id);
+    expect((await view()).fullView).toEqual({ kind: 'session', sessionId: id });
     // The session ends while its full view is open: the session page says so and offers the way back.
     await page.request.delete(api(`/sessions/${id}`));
     await frame.waitForSelector('#soloGoneCanvasBtn');
@@ -606,7 +611,7 @@ describe('canvas shell: the session full view', () => {
       );
       expect(await frames().count()).toBe(1);
       expect(await frames().getAttribute('src')).toContain(`/session/${first}?`);
-      expect((await view()).fullView).toBe(first);
+      expect((await view()).fullView).toEqual({ kind: 'session', sessionId: first });
     }
   }, 60000);
 

@@ -337,7 +337,10 @@ describe('canvas media', () => {
         .locator('button')
         .evaluateAll((b) => b.map((x) => [x.getAttribute('aria-label'), x.getAttribute('title'), x.textContent]))
     ).toEqual([
+      ['Pick element', 'Pick element', ''],
       ['Reload page', 'Reload page', ''],
+      ['Dock in rail', 'Dock in rail', ''],
+      ['Open in full view', 'Open in full view', ''],
       ['Open in new tab', 'Open in new tab', ''],
       ['Back to link', 'Back to link', ''],
     ]);
@@ -398,7 +401,8 @@ describe('canvas media', () => {
     // Keys reach the page while it is in use; the frame's own Escape relay hands them back.
     const field = page.frameLocator('[data-object-id="embed-0"] iframe').locator('#field');
     await field.waitFor();
-    await field.click();
+    // Focused, not clicked: Playwright places a click inside a framed page without the canvas's zoom.
+    await field.focus();
     await page.keyboard.type('hello');
     expect(await field.inputValue()).toBe('hello');
     await page.keyboard.press('Escape');

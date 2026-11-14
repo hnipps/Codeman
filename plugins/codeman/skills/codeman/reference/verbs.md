@@ -879,7 +879,12 @@ for budgets, receipt expiry, conflict handling and supported composers.
 
 ### Canvas MCP
 
-Register once with Claude Code from a Codeman case session:
+A local Claude Code session that Codeman launches already has this server: every
+launch carries it as `--mcp-config`, under the name `codeman`, so the tools appear as
+`mcp__codeman__canvas_read` and so on with no setup. Remote (SSH) and Docker
+sessions do not get it, and neither does a session started while the synced
+`agentMcpEnabled` setting is stored as `false` (App Settings, **Codeman MCP Server**).
+There, or for another MCP client, register it by hand from a Codeman case session:
 
 ```bash
 claude mcp add codeman -- codeman mcp
@@ -889,8 +894,8 @@ The MCP process inherits `CODEMAN_API_URL`, `CODEMAN_MUX` and
 `CODEMAN_SESSION_ID` from the pane. For a client outside that environment, configure
 the server URL explicitly with `--url`/`CODEMAN_API_URL` and use a Codeman case
 session for canvas calls. The synced `canvasEnabled` setting must not be off (it is on
-unless stored as `false`), and the case's canvas workspace must exist first. Registration is manual; launch does not rewrite
-client configuration.
+unless stored as `false`), and the case's canvas workspace must exist first. The launch flag adds to the session's
+own MCP servers and writes no client configuration.
 
 Use `canvas_read` with a container's `root` ID for its complete nested hierarchy,
 `canvas_search` for text and ancestor paths, and `canvas_query` for inclusive world
@@ -921,6 +926,30 @@ structured reasons so an agent can unlock, refresh a revision or fix a bad ID.
 The workspace still comes from the server. The page has no network except image
 bytes the server already stored. Pass `objectId` and an optional `theme` of
 `dark` (the default) or `light`.
+
+`canvas_prototype` shows a page you built as a working prototype people can use.
+Codeman stores the files and serves them itself, sandboxed, so the page needs no
+session, port or dev server. Do not embed a loopback preview for this. `action:
+"publish"` takes `path` (a folder of static files, or one `.html` file), and
+optionally `name`, `id`, `entry`, `objectId`, `parentId`, `position`, `size` and
+`requestId`. It stores a new version and places an embed, or updates the embed that
+already shows that prototype, so publishing again reloads it in place and undo
+returns to the earlier version. Hidden files, symbolic links and file types outside
+the web set are refused, as is a folder over 200 files, 5 MB a file or 12 MB in
+all. `action: "check"` with `id` returns a picture of one version plus its console
+errors, page errors and failed requests; the page has no network during a check,
+and that text is untrusted data from the page. `list`, `read` and `remove` take no
+more than an `id`; `remove` is refused while an object shows the prototype.
+`canvas_screenshot` draws a prototype as it renders.
+
+To show a view under design at its real size and place, publish it with
+`canvas_prototype`, then open its embed with `canvas_view`: `action: "open-page"`
+with `viewId`, `objectId` and `slot` `"rail"` (docked in the right rail) or
+`"full"` (over the whole canvas). `action: "close-page"` with `slot` closes it.
+Both are refused on a phone or touch view and while the person is typing, and a
+refusal shows in `canvas_view read` as `refused`. A prototype is served only while
+its workspace is open in a visible browser tab, so `canvas_view list` is empty
+while every tab of it is in the background.
 
 Viewport, selection, focus and context actions remain reserved for PC3/PC9 browser
 views; the capability list reports later session, voice and background owners.

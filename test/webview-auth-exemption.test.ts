@@ -15,6 +15,7 @@ import fastifyCookie from '@fastify/cookie';
 import { registerAuthMiddleware, registerHostGuard, registerSecurityHeaders } from '../src/web/middleware/auth.js';
 import { webviewCapabilities } from '../src/webview-capabilities.js';
 import { htmlViewCapabilities } from '../src/html-view-capabilities.js';
+import { prototypeFrames } from '../src/canvas/prototype-frames.js';
 import type { HostPolicy } from '../src/web/network-auth-policy.js';
 
 const POLICY: HostPolicy = { allowedHosts: [], allowLan: true };
@@ -53,6 +54,8 @@ beforeEach(async () => {
   app.get('/webviewfoo/bar', async () => 'lookalike');
   app.all('/html-view/:cap/*', async () => ({ page: true }));
   app.all('/html-viewx/*', async () => 'lookalike');
+  app.all('/canvas-prototype/:cap/*', async () => ({ prototype: true }));
+  app.all('/canvas-prototypex/*', async () => 'lookalike');
   // Stand-in for @fastify/static mounted at '/', which is what actually serves
   // /static/app.js in production. It matches EVERY path, so the fence must treat a
   // root catch-all as "no real route" or the Referer form could never apply at all.
@@ -64,6 +67,7 @@ afterEach(async () => {
   await app.close();
   webviewCapabilities.revokeWebview('webview-under-test');
   htmlViewCapabilities.revokeOwner(undefined);
+  prototypeFrames.retire(() => true);
   if (savedPassword === undefined) delete process.env.CODEMAN_PASSWORD;
   else process.env.CODEMAN_PASSWORD = savedPassword;
 });
@@ -381,5 +385,41 @@ describe('the html-view exemption', () => {
   it('is not a web-tab capability, and a web-tab capability is not an html-view one', async () => {
     expect((await app.inject({ method: 'GET', url: `/webview/${htmlCapability}/x` })).statusCode).toBe(401);
     expect((await app.inject({ method: 'GET', url: `/html-view/${capability}/x.html` })).statusCode).toBe(401);
+  });
+});
+
+// A stored canvas prototype (/canvas-prototype/<cap>/...) rides the same narrow exemption.
+describe('the canvas prototype exemption', () => {
+  const mint = () =>
+    prototypeFrames.mint({ workspaceId: 'ws', objectId: 'e', prototypeId: 'demo', version: 1, owner: undefined });
+
+  it('lets an unauthenticated GET and HEAD through with a live capability, and answers its preflight', async () => {
+    const cap = mint();
+    for (const method of ['GET', 'HEAD'] as const)
+      expect((await app.inject({ method, url: `/canvas-prototype/${cap}/index.html?x=1` })).statusCode, method).toBe(
+        200
+      );
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: `/canvas-prototype/${cap}/data.json`,
+      headers: { origin: 'null', 'access-control-request-method': 'GET' },
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-methods']).toBe('GET, HEAD');
+  });
+
+  it('never exempts a write, an unknown or retired capability, or a look-alike path', async () => {
+    const cap = mint();
+    for (const method of ['POST', 'PUT', 'DELETE'] as const)
+      expect((await app.inject({ method, url: `/canvas-prototype/${cap}/index.html` })).statusCode, method).toBe(401);
+    expect(
+      (await app.inject({ method: 'GET', url: `/canvas-prototype/${'A'.repeat(32)}/index.html` })).statusCode
+    ).toBe(401);
+    expect((await app.inject({ method: 'GET', url: `/canvas-prototypex/${cap}/index.html` })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: `/api/sessions?next=/canvas-prototype/${cap}/` })).statusCode).toBe(
+      401
+    );
+    prototypeFrames.retire((frame) => frame.prototypeId === 'demo');
+    expect((await app.inject({ method: 'GET', url: `/canvas-prototype/${cap}/index.html` })).statusCode).toBe(401);
   });
 });

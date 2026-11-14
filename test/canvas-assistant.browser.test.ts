@@ -115,8 +115,9 @@ describe('canvas assistant conversations', () => {
     ]);
     expect(posts[1].body.refIds).toEqual(['n1', 'n2']);
     expect(await page.locator('#contextChips .chip').count()).toBe(0);
+    // The turn is drawn from the record, which is read again after the send: a moment after the draft clears.
+    await expect.poll(async () => (await turns())[0] ?? '').toContain('summarise this');
     const text = await turns();
-    expect(text[0]).toContain('summarise this');
     expect(text[0]).toContain('Reading patterns · Reference notes');
     expect(await conversations()).toHaveLength(1);
     await shot('first-send');

@@ -159,6 +159,11 @@
         <ul id="sessionRows" aria-labelledby="sessionsTitle"></ul>
         <p id="sessionsAnnounce" class="sr" role="status"></p>
       </section>
+      <!-- Page slots and prototypes: the pages Codeman stores for this workspace. Not drawn while there are none. -->
+      <section id="prototypes" aria-labelledby="prototypesTitle" hidden>
+        <div class="section-head"><h2 id="prototypesTitle">Prototypes</h2></div>
+        <ul id="prototypeRows" aria-labelledby="prototypesTitle"></ul>
+      </section>
       <nav id="tree" aria-label="Canvas objects"></nav>
       <p id="shellLine" class="shell-only" hidden><a id="shellLineLink" href="classic"></a></p>
       <div class="outline-foot">
@@ -274,6 +279,12 @@
     <p id="actionMessage" class="edit-control" role="status" hidden></p>
     <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
     <span id="dropName" class="edit-control" hidden></span>
+    <div id="elementMark" aria-hidden="true" hidden></div>
+    <div id="elementPopover" class="edit-control" role="group" aria-label="Picked element" hidden>
+      <span id="elementPopoverLabel"></span><span id="elementPopoverActions"></span>
+    </div>
+    <!-- Element comments: one pin per commented element of a live page. -->
+    <div id="elementPins" role="group" aria-label="Comments on page elements"></div>
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
         <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
@@ -359,7 +370,11 @@
         ><button id="sheetParent" class="quiet">Focus parent</button>
       </div>
     </section>
-    <aside id="rail" aria-label="Canvas assistant, background tasks, reader, comments, history and Keys" hidden>
+    <aside
+      id="rail"
+      aria-label="Canvas assistant, background tasks, reader, comments, history, a docked page and Keys"
+      hidden
+    >
       <div class="panel-head">
         <span id="railTitle">Keys</span
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
@@ -379,6 +394,23 @@
         <ol id="threadList" aria-label="Comments"></ol>
         <p id="threadEmpty" class="thread-empty" hidden>No comments yet. Leave the first note on this object.</p>
         <form id="commentForm" class="composer">
+          <!-- Element comments: the element this comment is about, or the control that picks one. -->
+          <div id="commentAbout" class="comment-about" hidden>
+            <span class="secondary">About</span>
+            <button id="commentAboutShow" type="button" class="comment-about-label" data-i18n-skip></button>
+            <button
+              id="commentAboutRemove"
+              type="button"
+              class="comment-about-remove"
+              aria-label="Remove the element: comment on the whole object"
+              title="Comment on the whole object"
+            >
+              ×
+            </button>
+          </div>
+          <button id="commentPick" type="button" class="quiet comment-pick" aria-pressed="false" hidden>
+            Pick element
+          </button>
           <label class="sr" for="commentDraft">Comment</label>
           <textarea id="commentDraft" rows="3" placeholder="Add a comment" spellcheck="true"></textarea>
           <div class="ask-row">
@@ -425,7 +457,7 @@
         <ul id="contextChips" aria-labelledby="contextHeading"></ul>
         <p id="contextEmpty" class="secondary">
           Nothing attached. Select objects and press <kbd>Cmd/Ctrl</kbd> <kbd>Enter</kbd>, or hold <kbd>Q</kbd> and drag
-          around them.
+          around them. Inside a live page, the loop takes its elements.
         </p>
         <div
           id="assistantChoice"
@@ -499,6 +531,17 @@
             </button>
           </div>
         </form>
+      </div>
+      <!-- Page slots: one embed's live page docked in the rail. The frame is mounted by slots.ts, sandboxed. -->
+      <div id="pageView" class="rail-body" hidden>
+        <div class="page-bar">
+          <span id="pageOrigin" class="page-origin"></span
+          ><button id="pageReload" type="button" class="quiet">Reload</button
+          ><button id="pageShow" type="button" class="quiet" title="Select this embed and bring it into view">
+            Show on board
+          </button>
+        </div>
+        <div id="pageStage" class="slot-stage"></div>
       </div>
       <div id="tasksView" class="rail-body" tabindex="-1" hidden>
         <p class="secondary">

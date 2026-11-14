@@ -10,7 +10,9 @@ import { deployRole } from '../../deploy-role.js';
 import { SseEvent } from '../sse-events.js';
 import { approvalInbox } from '../approval-inbox.js';
 import { resolveCasePath } from './case-routes.js';
-import { resolveContext } from '../../canvas/context-resolve.js';
+import { liveEmbed, resolveContext } from '../../canvas/context-resolve.js';
+import { readCommentAnchors } from '../../canvas/comment-anchors.js';
+import { MAX_ELEMENT_REFS, type ElementRef } from '../../canvas/element-ref.js';
 import { deliver, retryPlan, type DeliveryDeps, type DeliveryResult } from '../../canvas/conversation-delivery.js';
 import { SendLimiter } from '../../canvas/send-limit.js';
 import { enabledClis, getCli } from '../../config/cli-registry/registry.js';
@@ -59,6 +61,7 @@ import {
   messageState,
   setMessageState,
   setMessageSubmitted,
+  namedEntries,
   namedHash,
   readConversations,
   recordMessage,
@@ -69,7 +72,7 @@ import {
 import { cutResult, deriveTaskState, isolationLabel, taskPart, type TaskState } from '../../canvas/tasks.js';
 import { joinRelease, type ReleaseRecord, type ReleaseView } from '../../canvas/release.js';
 import type { ToolRow } from '../../canvas/transcript-activity.js';
-import type { Author } from '../../canvas/model.js';
+import type { Author, CanvasState } from '../../canvas/model.js';
 import {
   AGENT_START_REFUSALS,
   agentStartedAncestor,
@@ -1068,7 +1071,21 @@ export async function sendMessage(
   if (refusal) return refuse(400, ApiErrorCode.INVALID_INPUT, refusal);
 
   const state = (await ctx.canvasStores()).get(workspaceId).read();
-  const resolved = resolveContext(state, workspaceId, body.messageId.toLowerCase(), body.refIds);
+  const notEmbed = body.elements?.find((element) => !liveEmbed(state, element.objectId));
+  if (notEmbed)
+    return refuse(
+      400,
+      ApiErrorCode.INVALID_INPUT,
+      `NOT_AN_EMBED: ${notEmbed.objectId} is not a live embed, so no element of it can be sent`
+    );
+  const named = namedEntries(body.refIds, body.elements);
+  const resolved = resolveContext(
+    state,
+    workspaceId,
+    body.messageId.toLowerCase(),
+    body.refIds,
+    contextElements(workspaceId, state, body)
+  );
   const composed = resolved.block + text;
   if (byteLength(composed) > MAX_COMPOSED_BYTES)
     return refuse(413, ApiErrorCode.INVALID_INPUT, 'TOO_LARGE: the message and its context are too large to send');
@@ -1076,7 +1093,7 @@ export async function sendMessage(
   const known = conversation.messages.find((m) => m.messageId === body.messageId);
   const knownState = known ? messageState(known) : undefined;
   if (known && knownState === 'delivered') {
-    const same = known.textSha256 === sha256(text) && known.namedSha256 === namedHash(body.refIds);
+    const same = known.textSha256 === sha256(text) && known.namedSha256 === namedHash(named);
     if (!same) return conflict('MESSAGE_CHANGED: this message id was already used for different text');
     return accepted(body.messageId, known, resolved.missing, true);
   }
@@ -1105,12 +1122,12 @@ export async function sendMessage(
       author,
       textSha256: sha256(text),
       textBytes: byteLength(text),
-      namedSha256: namedHash(body.refIds),
+      namedSha256: namedHash(named),
       refs: resolved.refs,
       seq: state.seq,
       ...(body.origin ? { origin: body.origin } : {}),
     },
-    body.refIds
+    named
   );
   if (!recorded.ok)
     return recorded.reason === 'CHANGED'
@@ -1134,6 +1151,17 @@ export async function sendMessage(
   }
   enqueue(ctx, workspace, conversation, session, recorded.message, composed, recorded.duplicate);
   return accepted(body.messageId, recorded.message, resolved.missing, recorded.duplicate);
+}
+/**
+ * The elements a message's context block carries: the ones the sender named and, for a request asked from a comment
+ * that is about an element, that element first, so the agent is told what the comment points at.
+ */
+function contextElements(workspaceId: string, state: CanvasState, body: z.infer<typeof SendBodySchema>): ElementRef[] {
+  const named = body.elements ?? [];
+  const anchor = body.origin ? readCommentAnchors(workspaceId, state)[body.origin.commentId] : undefined;
+  if (!anchor || anchor.objectId !== body.origin?.objectId) return named;
+  const same = JSON.stringify(anchor);
+  return [anchor, ...named.filter((element) => JSON.stringify(element) !== same)].slice(0, MAX_ELEMENT_REFS);
 }
 /** The send is accepted, not yet delivered: delivery is confirmed in the background and the record says when. */
 function accepted(messageId: string, message: ConversationMessage, missing: string[], duplicate: boolean): Outcome {
