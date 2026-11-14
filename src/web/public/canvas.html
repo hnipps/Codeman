@@ -92,6 +92,11 @@
     <link rel="stylesheet" href="canvas.css" />
     <!-- The UI event reporter both pages share. Deferred, so it runs before the module below. -->
     <script defer src="ui-events.js"></script>
+    <!-- The dashboard's Markdown pipeline for agent text: parser, sanitizer, then the shared Mermaid frame. -->
+    <script defer src="vendor/marked.min.js"></script>
+    <script defer src="vendor/dompurify.min.js"></script>
+    <script defer src="sanitize-html.js"></script>
+    <script defer src="mermaid-render.js"></script>
     <script type="module" src="canvas.js"></script>
     <!-- Fetches nothing: it carries the worklet's cache-bust version to the script that loads it for dictation. -->
     <link rel="codeman-voice-worklet" href="voice-pcm-worklet.js" />
