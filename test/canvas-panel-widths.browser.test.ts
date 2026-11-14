@@ -40,6 +40,7 @@ describe('canvas side panel widths', () => {
     await page.waitForFunction(() => !!window.canvasView);
     await page.evaluate(() => window.canvasView.dispatch({ kind: 'rail', view: 'keys' }));
     await page.waitForSelector('#rail:not([hidden])');
+    await page.waitForFunction(() => document.getElementById('rail')!.getAnimations().length === 0);
   };
   const drag = async (id: string, toX: number) => {
     const box = (await page.locator(id).boundingBox())!;
