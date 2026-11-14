@@ -1,7 +1,11 @@
 /** @fileoverview Image objects: stored bytes at their aspect ratio, with designed loading and failure states. */
 import type { ViewObject } from '../model.js';
 
-export type MediaContext = { assetUrl: (assetId: string) => string | null };
+export type MediaContext = {
+  assetUrl: (assetId: string) => string | null;
+  /** The note on an embed's card where no live frame will ever replace it (the screenshot page). */
+  embedNote?: string;
+};
 /** Decoded pixels above this are not drawn; the object keeps its place with a note. */
 export const MAX_IMAGE_PIXELS = 64_000_000;
 const notes = {
