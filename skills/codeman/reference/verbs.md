@@ -942,5 +942,14 @@ and that text is untrusted data from the page. `list`, `read` and `remove` take 
 more than an `id`; `remove` is refused while an object shows the prototype.
 `canvas_screenshot` draws a prototype as it renders.
 
+To show a view under design at its real size and place, publish it with
+`canvas_prototype`, then open its embed with `canvas_view`: `action: "open-page"`
+with `viewId`, `objectId` and `slot` `"rail"` (docked in the right rail) or
+`"full"` (over the whole canvas). `action: "close-page"` with `slot` closes it.
+Both are refused on a phone or touch view and while the person is typing, and a
+refusal shows in `canvas_view read` as `refused`. A prototype is served only while
+its workspace is open in a visible browser tab, so `canvas_view list` is empty
+while every tab of it is in the background.
+
 Viewport, selection, focus and context actions remain reserved for PC3/PC9 browser
 views; the capability list reports later session, voice and background owners.

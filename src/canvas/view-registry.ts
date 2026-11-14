@@ -59,6 +59,11 @@ export class ViewRegistry {
     });
     return { ok: true };
   }
+  /** A tab that went to the background stops being an open view at once, without waiting out the time limit. */
+  remove(workspace: string, viewId: string, owner: string | undefined): void {
+    const key = this.key(workspace, viewId);
+    if (this.views.get(key)?.owner === owner) this.views.delete(key);
+  }
   read(workspace: string, viewId: string, canSee: (owner: string | undefined) => boolean): ViewRecord | null {
     this.sweep();
     const entry = this.views.get(this.key(workspace, viewId));

@@ -831,6 +831,54 @@ describe('canvas media over MCP', () => {
         ])
       ).toEqual(['a', 'b']);
       expect(h.stores.get(h.workspace.id).read().seq).toBe(3);
+      // A page slot opens a live embed of this workspace and nothing else.
+      const embed = {
+        kind: 'create',
+        opId: 'create-slot-page',
+        objectId: 'slot-page',
+        patch: {
+          parentId: null,
+          order: 9,
+          position: { x: 0, y: 0 },
+          size: { width: 400, height: 300 },
+          content: { type: 'embed', url: 'https://example.com/board', label: 'Board' },
+        },
+      };
+      expect((await h.runner().run('canvas_create', { operations: [embed] })).isError).toBeFalsy();
+      const notEmbed = await h
+        .runner()
+        .run('canvas_view', { action: 'open-page', viewId: view, objectId: 'section', slot: 'rail' });
+      expect(notEmbed.isError).toBe(true);
+      expect(notEmbed.text).toContain('live embed');
+      const unknownPage = await h
+        .runner()
+        .run('canvas_view', { action: 'open-page', viewId: view, objectId: 'nope', slot: 'full' });
+      expect(unknownPage.isError).toBe(true);
+      for (const slot of ['rail', 'full']) {
+        const opened = await h
+          .runner()
+          .run('canvas_view', { action: 'open-page', viewId: view, objectId: 'slot-page', slot });
+        expect(opened.isError).toBeFalsy();
+        expect(h.broadcast).toHaveBeenCalledWith(
+          'canvas:viewCommand',
+          expect.objectContaining({ viewId: view, command: { action: 'open-page', objectId: 'slot-page', slot } })
+        );
+      }
+      expect(
+        (await h.runner().run('canvas_view', { action: 'close-page', viewId: view, slot: 'rail' })).isError
+      ).toBeFalsy();
+      expect(h.broadcast).toHaveBeenCalledWith(
+        'canvas:viewCommand',
+        expect.objectContaining({ command: { action: 'close-page', slot: 'rail' } })
+      );
+      // A tab that went to the background is no longer a view: its commands answer VIEW_GONE until it returns.
+      const left = await h.app.inject({ method: 'DELETE', url: `/api/canvas/${h.workspace.id}/views/${view}` });
+      expect(left.statusCode).toBe(200);
+      expect(parse(await h.runner().run('canvas_view', { action: 'list' })).views).toEqual([]);
+      const afterLeave = await h
+        .runner()
+        .run('canvas_view', { action: 'open-page', viewId: view, objectId: 'slot-page', slot: 'rail' });
+      expect(afterLeave.text).toContain('VIEW_GONE');
     } finally {
       await h.app.close();
     }

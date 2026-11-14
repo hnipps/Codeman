@@ -167,6 +167,45 @@ describe('view schemas', () => {
     registry.publish('w', view, undefined, PublishedViewSchema.parse({ ...state(), contextElements: [el] }));
     expect(registry.read('w', view, anyone)?.state.contextElements).toHaveLength(1);
   });
+  it('names the embed each page slot shows, and steers the slots with strict actions', () => {
+    expect(PublishedViewSchema.safeParse({ ...state(), pages: { rail: 'page', full: null } }).success).toBe(true);
+    expect(PublishedViewSchema.safeParse({ ...state(), pages: { rail: null, full: 'page' } }).success).toBe(true);
+    expect(PublishedViewSchema.safeParse({ ...state(), pages: { rail: 'page' } }).success).toBe(false);
+    expect(PublishedViewSchema.safeParse({ ...state(), pages: { rail: null, full: null, top: 'x' } }).success).toBe(
+      false
+    );
+    expect(PublishedViewSchema.safeParse({ ...state(), rail: ['page'] }).success).toBe(true);
+    expect(ViewActionSchema.safeParse({ action: 'open-page', objectId: 'page', slot: 'rail' }).success).toBe(true);
+    expect(ViewActionSchema.safeParse({ action: 'open-page', objectId: 'page', slot: 'full' }).success).toBe(true);
+    expect(ViewActionSchema.safeParse({ action: 'open-page', objectId: 'page', slot: 'board' }).success).toBe(false);
+    // An agent names an object, never an address: nothing it writes reaches a frame's `src`.
+    expect(
+      ViewActionSchema.safeParse({ action: 'open-page', objectId: 'page', slot: 'rail', url: 'https://x' }).success
+    ).toBe(false);
+    expect(ViewActionSchema.safeParse({ action: 'open-page', slot: 'rail' }).success).toBe(false);
+    expect(ViewActionSchema.safeParse({ action: 'close-page', slot: 'full' }).success).toBe(true);
+    expect(ViewActionSchema.safeParse({ action: 'close-page' }).success).toBe(false);
+    expect(
+      toolSchemas.canvas_view.safeParse({ action: 'open-page', viewId: view, objectId: 'page', slot: 'rail' }).success
+    ).toBe(true);
+    expect(toolSchemas.canvas_view.safeParse({ action: 'open-page', objectId: 'page', slot: 'rail' }).success).toBe(
+      false
+    );
+    expect(toolSchemas.canvas_view.safeParse({ action: 'close-page', viewId: view, slot: 'rail' }).success).toBe(true);
+  });
+  it('stops listing a view its tab closed, and only for the owner who published it', () => {
+    const registry = new ViewRegistry();
+    registry.publish('w', view, 'ana', state());
+    registry.remove('w', view, 'ben');
+    expect(registry.list('w', anyone)).toHaveLength(1);
+    registry.remove('other', view, 'ana');
+    expect(registry.list('w', anyone)).toHaveLength(1);
+    registry.remove('w', view, 'ana');
+    expect(registry.list('w', anyone)).toHaveLength(0);
+    // Showing the tab again publishes it back under the same id.
+    expect(registry.publish('w', view, 'ana', state())).toEqual({ ok: true });
+    expect(registry.list('w', anyone)).toHaveLength(1);
+  });
   it('exposes strict canvas_view and canvas_context tool schemas', () => {
     expect(toolSchemas.canvas_view.safeParse({ action: 'list' }).success).toBe(true);
     expect(toolSchemas.canvas_view.safeParse({ action: 'select', viewId: view, targetIds: ['a'] }).success).toBe(true);

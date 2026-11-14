@@ -153,8 +153,21 @@ export const QuerySchema = z.discriminatedUnion('shape', [
 ]);
 const ViewId = z.uuid();
 const RequestId = z.uuid().optional();
-const [setViewport, fitView, selectView, clearSelection, focusView, railView, , contextAdd, contextRemove, , fullView] =
-  ViewActionSchema.options;
+const [
+  setViewport,
+  fitView,
+  selectView,
+  clearSelection,
+  focusView,
+  railView,
+  ,
+  contextAdd,
+  contextRemove,
+  ,
+  fullView,
+  openPage,
+  closePage,
+] = ViewActionSchema.options;
 const target = { viewId: ViewId, requestId: RequestId };
 export const ViewToolSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list') }).strict(),
@@ -166,6 +179,8 @@ export const ViewToolSchema = z.discriminatedUnion('action', [
   z.object({ ...focusView.shape, ...target }).strict(),
   z.object({ ...railView.shape, ...target }).strict(),
   z.object({ ...fullView.shape, ...target }).strict(),
+  z.object({ ...openPage.shape, ...target }).strict(),
+  z.object({ ...closePage.shape, ...target }).strict(),
 ]);
 export const ContextToolSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read'), viewId: ViewId }).strict(),
@@ -237,7 +252,7 @@ export function capabilities() {
         name: 'canvas_prototype',
         available: true,
         objectTypes: ['embed'],
-        note: 'publish a folder of static files as a prototype Codeman stores and serves (an embed whose address is https://prototype.invalid/<id>/<version>/<entry>); list, read, check (a picture plus console errors) and remove. To show a page you built, publish it with canvas_prototype; do not embed a loopback preview.',
+        note: 'publish a folder of static files as a prototype Codeman stores and serves (an embed whose address is https://prototype.invalid/<id>/<version>/<entry>); list, read, check (a picture plus console errors) and remove. To show a page you built, publish it with canvas_prototype; do not embed a loopback preview. To show a view under design at its real size and place, publish it, then canvas_view open-page.',
       },
       {
         name: 'canvas_screenshot',
@@ -309,8 +324,15 @@ export function capabilities() {
         available: 'browser',
         note: 'window.canvasView.dispatch({ kind: "leave" }) returns to the parent view',
       },
+      {
+        command: 'canvas.view.list',
+        available: true,
+        tool: 'canvas_view list',
+        note: 'The open views. Every command below takes a viewId from it; a closed view answers VIEW_GONE.',
+      },
+      // One entry per command, counted against MAX_CANVAS_TEXT_BYTES: a note only where it says something new.
       ...[
-        ['canvas.viewport.read', 'canvas_view read'],
+        ['canvas.viewport.read', 'canvas_view read', 'The view reports its state every few seconds.'],
         ['canvas.viewport.set', 'canvas_view set-viewport'],
         ['canvas.viewport.fit', 'canvas_view fit'],
         ['canvas.selection.read', 'canvas_view read'],
@@ -318,23 +340,16 @@ export function capabilities() {
         ['canvas.selection.clear', 'canvas_view clear-selection'],
         ['canvas.focus.set', 'canvas_view focus'],
         ['canvas.rail.set', 'canvas_view rail'],
-        ['canvas.fullView.set', 'canvas_view full-view'],
+        [
+          'canvas.fullView.set',
+          'canvas_view full-view',
+          'Shows a listed session to the person; starts nothing, sends it nothing; a refusal shows in read as refused.',
+        ],
+        ['canvas.page.set', 'canvas_view open-page, close-page', 'One live embed, in the rail or the full view.'],
         ['canvas.context.read', 'canvas_context read'],
         ['canvas.context.add', 'canvas_context add'],
         ['canvas.context.remove', 'canvas_context remove'],
-      ].map(([command, tool]) => ({
-        command,
-        available: true,
-        tool,
-        // Repeated per command and counted against MAX_CANVAS_TEXT_BYTES: keep it short.
-        note:
-          'viewId from canvas_view list; ' +
-          (command.endsWith('.read') ? 'the view reports its state every few seconds; ' : '') +
-          'a closed view answers VIEW_GONE.' +
-          (command === 'canvas.fullView.set'
-            ? ' Shows a listed session to the person; starts nothing, sends it nothing; a refusal shows in read as refused.'
-            : ''),
-      })),
+      ].map(([command, tool, note]) => ({ command, available: true, tool, ...(note ? { note } : {}) })),
     ],
     conversations: [
       ['canvas.conversation.list', 'canvas_conversation list'],
