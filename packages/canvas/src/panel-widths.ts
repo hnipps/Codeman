@@ -90,8 +90,10 @@ export function installPanelResize(options: {
   storage: Store | null;
   /** Called after the person changes a width, for things placed against the panels' edges. */
   onResize?: () => void;
+  /** A width a panel is drawn at least at for now (brief review widens the rail), never stored as the preference. */
+  floor?: (panel: Panel) => number;
 }): PanelResize {
-  const { root, handles, isOpen, isPhone, storage, onResize } = options;
+  const { root, handles, isOpen, isPhone, storage, onResize, floor } = options;
   let stored: string | null = null;
   try {
     stored = storage?.getItem(PANEL_WIDTHS_KEY) ?? null;
@@ -111,7 +113,11 @@ export function installPanelResize(options: {
 
   const layout = (): void => {
     const open = { outline: isOpen('outline'), rail: isOpen('rail') };
-    drawn = fitPanelWidths(preferred, window.innerWidth, open);
+    const wanted = {
+      outline: Math.max(preferred.outline, floor?.('outline') ?? 0),
+      rail: Math.max(preferred.rail, floor?.('rail') ?? 0),
+    };
+    drawn = fitPanelWidths(wanted, window.innerWidth, open);
     root.style.setProperty('--outline-width', `${drawn.outline}px`);
     root.style.setProperty('--rail-width', `${drawn.rail}px`);
     root.style.setProperty('--outline-space', open.outline && !isPhone() ? `${drawn.outline}px` : '0px');

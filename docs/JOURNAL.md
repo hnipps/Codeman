@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-14 — Review notes on a canvas text object are comments plus a side file
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{review-schema,review-anchor,review-notes}.ts`, `src/web/routes/canvas-review-routes.ts`, `packages/canvas/src/{review,review-model,panel-widths,entry}.ts`
+**Why:** A person reviewing an agent's brief could only comment on the whole object or rewrite it. A comment could not point at words, ask for a replacement or reach the session that wrote the brief.
+**Links:** [intent/2026-11-14-canvas-brief-review.md](../intent/2026-11-14-canvas-brief-review.md), [architecture-invariants, "Canvas brief review"](architecture-invariants.md#canvas-brief-review)
+
+Decision. A review note is an ordinary canvas comment whose text says what it asks ("Replace “x” with “y”."). Its kind, quoted words, replacement and its sent and resolved stamps live in `review-notes.json` per workspace, keyed by comment id, like `comment-anchors.json`. Send N delivers every unsent note in one prompt to the writer session, or to a running session of the workspace the person picks once the writer has ended.
+
+Why a side file. The previous release must read the canvas (self-building rule 5). New keys on a stored comment or a new operation kind would make it refuse the log; a file it does not know is ignored, and the comments it does know still read as sentences.
+
+Why stamp a written but unconfirmed paste as sent. The text is already in the session's composer; sending it again would paste it twice. The answer says it was not confirmed.
+
+Rejected. Offsets as anchors: any edit moves them. A new comment kind in the log: unreadable by the previous release. Sending each note as its own prompt: the agent gets the review in pieces and acts before it has the rest.
+
 ## 2026-11-14 — A running app becomes a prototype by capture in the agent's process
 
 **Type:** intent-refinement
