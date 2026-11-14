@@ -43,6 +43,7 @@ import {
 } from './canvas-conversation-routes.js';
 import { registerTaskRoutes, taskTool } from './canvas-task-routes.js';
 import { registerShellRoutes, sessionCounts } from './canvas-shell-routes.js';
+import { registerReviewRoutes } from './canvas-review-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import { canvasFailure, caseFolderUnavailable } from './canvas-failure.js';
@@ -326,6 +327,7 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
       registerConversationRoutes(workspaceScope, ctx);
       registerTaskRoutes(workspaceScope, ctx);
       registerShellRoutes(workspaceScope, ctx);
+      registerReviewRoutes(workspaceScope, ctx);
       registerPrototypeRoutes(workspaceScope, ctx, { views, callerKey, retireFrames, requestIdentity });
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',

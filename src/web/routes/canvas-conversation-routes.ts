@@ -941,7 +941,7 @@ export async function deliveryEnded(
   return { ended, left: stuck.has(key) };
 }
 
-function deliveryDeps(session: CanvasSession, composed: string): DeliveryDeps {
+export function deliveryDeps(session: CanvasSession, composed: string): DeliveryDeps {
   const capabilities = getCli(session.mode ?? 'claude')?.capabilities;
   return {
     snapshot: () => session.paneSnapshot?.(true) ?? null,
