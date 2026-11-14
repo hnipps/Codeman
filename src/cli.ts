@@ -32,6 +32,7 @@ import { registerAgentCommands } from './cli-agent.js';
 import { registerExtensionCommands } from './cli-extensions.js';
 import { registerHistoryCommands } from './cli-history.js';
 import { registerMermaidCommands } from './cli-mermaid.js';
+import { registerPrototypeCommands } from './cli-prototype.js';
 import { resolveMcpConfig, runMcpStdio } from './mcp-server.js';
 import { getSessionManager } from './session-manager.js';
 import { getTaskQueue } from './task-queue.js';
@@ -333,6 +334,7 @@ registerExtensionCommands(program, resolveCliCasePath);
 registerAgentCommands(program);
 registerHistoryCommands(program);
 registerMermaidCommands(program);
+registerPrototypeCommands(program);
 
 // ============ MCP server (any MCP client drives Codeman) ============
 

@@ -3,7 +3,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createToolRunner, createMcpServer, buildToolDefinitions, readPrototypeFolder } from '../src/mcp-server.js';
+import {
+  createToolRunner,
+  createMcpServer,
+  buildToolDefinitions,
+  readPrototypeFolder,
+  type ToolRunnerDeps,
+} from '../src/mcp-server.js';
 import { PROTOTYPE_MAX_FILES, PROTOTYPE_MAX_FILE_BYTES } from '../src/config/canvas-limits.js';
 import { capabilities, toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
 import { MAX_CANVAS_TEXT_BYTES } from '../src/canvas/queries.js';
@@ -82,8 +88,9 @@ async function harness() {
     }
     return { status: response.statusCode, json: response.json(), text: response.body };
   };
-  function runner(selfId = 'agent-a', configured = true) {
+  function runner(selfId = 'agent-a', configured = true, capture?: ToolRunnerDeps['capture']) {
     return createToolRunner({
+      capture,
       config: {
         apiUrl: configured ? 'http://example.invalid' : undefined,
         selfId,
@@ -1044,6 +1051,124 @@ describe('canvas_prototype', () => {
       expect(checked.text).not.toContain(dir);
       const missing = await h.runner().run('canvas_prototype', { action: 'check', id: 'demo', version: 9 });
       expect(missing.isError).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('canvas_prototype fork and capture', () => {
+  function folder(files: Record<string, string>) {
+    const root = join(dir, `fork-${Math.random().toString(36).slice(2)}`);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(root, path, '..'), { recursive: true });
+      writeFileSync(join(root, path), text);
+    }
+    return root;
+  }
+
+  it('forks a stored version into a new prototype with its own embed, through the publish limits', async () => {
+    const h = await harness();
+    try {
+      const root = folder({ 'index.html': '<h1>one</h1>', 'css/a.css': 'h1{color:red}' });
+      const first = parse(await h.runner().run('canvas_prototype', { action: 'publish', path: root, name: 'Demo' }));
+      writeFileSync(join(root, 'index.html'), '<h1>two</h1>');
+      await h.runner().run('canvas_prototype', { action: 'publish', path: root, id: 'demo' });
+
+      const fork = await h.runner().run('canvas_prototype', { action: 'fork', id: 'demo', version: 1 });
+      expect(fork.isError, fork.text).toBeFalsy();
+      const made = parse(fork);
+      expect(made).toMatchObject({ prototypeId: 'demo-fork', version: 1 });
+      expect(made.objectId).not.toBe(first.objectId);
+      const state = h.stores.get(h.workspace.id).read();
+      expect(state.objects[made.objectId]).toMatchObject({
+        type: 'embed',
+        content: { url: 'https://prototype.invalid/demo-fork/1/index.html', label: 'Demo (fork)' },
+      });
+      // The source embed still shows the source.
+      expect(state.objects[first.objectId].content.url).toBe('https://prototype.invalid/demo/2/index.html');
+      const read = parse(await h.runner().run('canvas_prototype', { action: 'read', id: 'demo-fork' }));
+      expect(read.versions).toHaveLength(1);
+      expect(read.versions[0].files).toBe(2);
+      const { readPrototypeFile, readPrototype } = await import('../src/canvas/prototypes.js');
+      expect((await readPrototypeFile(h.workspace.id, 'demo-fork', 1, 'index.html'))?.bytes.toString()).toBe(
+        '<h1>one</h1>'
+      );
+      expect((await readPrototype(h.workspace.id, 'demo-fork'))?.forkedFrom).toEqual({ id: 'demo', version: 1 });
+
+      // A second fork takes the next free id; a named one that exists is refused, as is a missing version.
+      expect(parse(await h.runner().run('canvas_prototype', { action: 'fork', id: 'demo' })).prototypeId).toBe(
+        'demo-fork-2'
+      );
+      const taken = await h.runner().run('canvas_prototype', { action: 'fork', id: 'demo', newId: 'demo-fork' });
+      expect(taken.isError).toBe(true);
+      expect(taken.text).toContain('already stored');
+      const missing = await h.runner().run('canvas_prototype', { action: 'fork', id: 'demo', version: 9 });
+      expect(missing.isError).toBe(true);
+      expect((await h.runner().run('canvas_prototype', { action: 'fork', id: 'nope' })).isError).toBe(true);
+      expect((await h.runner().run('canvas_prototype', { action: 'fork', id: 'demo', path: root })).isError).toBe(true);
+      // Another workspace cannot fork it.
+      expect((await h.runner('agent-b').run('canvas_prototype', { action: 'fork', id: 'demo' })).isError).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('publishes what a capture produced, sized to the first viewport, and can write it to a folder only', async () => {
+    const h = await harness();
+    const page = '<!doctype html><html><head><meta charset="utf-8"></head><body>captured</body></html>';
+    const capture: ToolRunnerDeps['capture'] = async () => ({
+      files: [
+        { path: 'desktop/home.html', data: Buffer.from(page) },
+        { path: 'assets/x.css', data: Buffer.from('body{}') },
+      ],
+      entry: 'desktop/home.html',
+      warnings: ['one image not captured'],
+      states: [{ name: 'home', label: 'home', pages: ['desktop/home.html'] }],
+      hotspots: [],
+      bytes: page.length + 6,
+    });
+    const spec = {
+      baseUrl: 'http://127.0.0.1:9/',
+      viewports: [{ name: 'desktop', width: 1000, height: 700 }],
+      states: [{ name: 'home' }],
+    };
+    const run = (args: Record<string, unknown>) => h.runner('agent-a', true, capture).run('canvas_prototype', args);
+    try {
+      const result = await run({ action: 'capture', spec, name: 'Captured app' });
+      expect(result.isError, result.text).toBeFalsy();
+      const made = parse(result);
+      expect(made).toMatchObject({
+        prototypeId: 'captured-app',
+        url: 'https://prototype.invalid/captured-app/1/desktop/home.html',
+      });
+      expect(made.capture.warnings).toEqual(['one image not captured']);
+      const object = h.stores.get(h.workspace.id).read().objects[made.objectId];
+      expect(object.size).toEqual({ width: 1000, height: 700 });
+
+      const out = join(dir, `capture-out-${Math.random().toString(36).slice(2)}`);
+      const written = parse(await run({ action: 'capture', spec, output: out, publish: false }));
+      expect(written.output).toBe(out);
+      const { readFileSync } = await import('node:fs');
+      expect(readFileSync(join(out, 'desktop/home.html'), 'utf8')).toBe(page);
+      // Never into a folder that already holds something.
+      const again = await run({ action: 'capture', spec, output: out, publish: false });
+      expect(again.isError).toBe(true);
+      expect(again.text).toContain('not empty');
+      for (const args of [
+        { action: 'capture' },
+        { action: 'capture', spec, specPath: '/x.json' },
+        { action: 'capture', spec, publish: false },
+        { action: 'capture', spec, publish: 'yes' },
+        { action: 'capture', spec, version: 1 },
+      ])
+        expect((await run(args)).isError, JSON.stringify(args)).toBe(true);
+      // A spec the capture refuses comes back as the tool's error, not a protocol failure.
+      const refused = await h
+        .runner()
+        .run('canvas_prototype', { action: 'capture', spec: { baseUrl: 'ftp://x/', states: [] } });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('Capture spec');
     } finally {
       await h.app.close();
     }

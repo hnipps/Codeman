@@ -252,7 +252,7 @@ export function capabilities() {
         name: 'canvas_prototype',
         available: true,
         objectTypes: ['embed'],
-        note: 'publish a folder of static files as a prototype Codeman stores and serves (an embed whose address is https://prototype.invalid/<id>/<version>/<entry>); list, read, check (a picture plus console errors) and remove. To show a page you built, publish it with canvas_prototype; do not embed a loopback preview. To show a view under design at its real size and place, publish it, then canvas_view open-page.',
+        note: 'publish a folder of static files as a prototype Codeman stores and serves (an embed whose address is https://prototype.invalid/<id>/<version>/<entry>); list, read, check (a picture plus console errors) and remove; capture drives a running web app through named states in a headless browser on the agent side and publishes the result as clickable static pages (hotspots plus a state switcher, element comments still work); fork makes a new prototype from a stored version of another. To show a page you built, publish it with canvas_prototype; do not embed a loopback preview. To show a view under design at its real size and place, publish it, then canvas_view open-page.',
       },
       {
         name: 'canvas_screenshot',

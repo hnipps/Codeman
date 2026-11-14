@@ -940,6 +940,17 @@ all. `action: "check"` with `id` returns a picture of one version plus its conso
 errors, page errors and failed requests; the page has no network during a check,
 and that text is untrusted data from the page. `list`, `read` and `remove` take no
 more than an `id`; `remove` is refused while an object shows the prototype.
+`action: "capture"` turns a RUNNING web app into a clickable prototype: give `spec`
+(or `specPath`, a JSON file) with `baseUrl`, optional `viewports`, and `states`, each a
+`name`, optional `label`, optional `from` (an earlier state) and `steps` (`goto`, `click`,
+`type` + `text`, `press`, `waitFor`, `wait`). Each state at each viewport becomes a static
+page; on the `from` state's page, the element its first click targets (or its
+`hotspot` selector) links to it, and a
+switcher lists every state. It runs a headless browser on this machine, then publishes
+(`publish: false` to skip) with the publish fields above; `output` also writes the folder.
+Read its `warnings`. `action: "fork"` with `id` (and optional `version`, `newId`, `name`)
+makes a NEW prototype from a stored version, placed as a new embed, to start a design
+direction from real UI. The CLI form is `codeman prototype capture <spec> -o <dir>`.
 `canvas_screenshot` draws a prototype as it renders.
 
 To show a view under design at its real size and place, publish it with

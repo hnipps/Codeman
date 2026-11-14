@@ -74,6 +74,7 @@ export type PrototypeRefusal =
   | 'quota'
   | 'limit'
   | 'in-use'
+  | 'exists'
   | 'not-found';
 export class PrototypeRefusedError extends Error {
   constructor(
@@ -188,6 +189,8 @@ const MetaSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
   author: AuthorSchema,
   versions: z.array(VersionSchema),
+  /** The prototype and version this one was forked from (`canvas_prototype fork`); absent otherwise. */
+  forkedFrom: z.object({ id: z.string(), version: z.number().int().positive() }).optional(),
 });
 export type PrototypeMeta = z.infer<typeof MetaSchema>;
 export type PrototypeFile = { path: string; data: Buffer };
@@ -270,7 +273,15 @@ async function highestVersion(dir: string, meta: PrototypeMeta | null): Promise<
  */
 export async function publishPrototype(
   workspaceId: string,
-  input: { id: string; name: string; entry: string; files: PrototypeFile[]; author: Author },
+  input: {
+    id: string;
+    name: string;
+    entry: string;
+    files: PrototypeFile[];
+    author: Author;
+    /** Set on a fork's first version only; refuses when `id` is already stored. */
+    forkedFrom?: { id: string; version: number };
+  },
   referenced: ReadonlySet<number> = new Set()
 ): Promise<{ meta: PrototypeMeta; version: number }> {
   const dir = prototypeDir(workspaceId, input.id);
@@ -283,6 +294,11 @@ export async function publishPrototype(
   return serialized(workspaceId, async () => {
     const all = await listPrototypes(workspaceId);
     const existing = all.find((meta) => meta.id === input.id) ?? null;
+    if (existing && input.forkedFrom)
+      throw new PrototypeRefusedError(
+        'exists',
+        `A prototype "${input.id}" is already stored here; give the fork another id`
+      );
     if (!existing && all.length >= PROTOTYPES_PER_WORKSPACE)
       throw new PrototypeRefusedError(
         'limit',
@@ -332,6 +348,7 @@ export async function publishPrototype(
       updatedAt: now,
       author: existing?.author ?? input.author,
       versions: versions.filter((v) => !dropped.has(v.version)),
+      ...((existing?.forkedFrom ?? input.forkedFrom) ? { forkedFrom: existing?.forkedFrom ?? input.forkedFrom } : {}),
     };
     await writeMeta(dir, meta);
     for (const old of dropped) await rm(join(dir, String(old)), { recursive: true, force: true });
@@ -436,4 +453,54 @@ export async function readPrototypeFile(
   } catch {
     return null;
   }
+}
+
+/**
+ * Every file of one stored version, for a fork. The walk takes regular files only (a link planted on
+ * disk is skipped, as serving skips it), each path passes the publish rules, and the count and byte
+ * limits are checked as it goes, so a damaged version cannot make the copy larger than a publish.
+ */
+export async function readPrototypeVersionFiles(
+  workspaceId: string,
+  id: string,
+  version: number
+): Promise<PrototypeFile[] | null> {
+  if (!IdSchema.safeParse(workspaceId).success || !isPrototypeId(id)) return null;
+  if (!Number.isInteger(version) || version < 1) return null;
+  const root = versionDir(workspaceId, id, version);
+  const files: PrototypeFile[] = [];
+  let total = 0;
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const item of await readdir(dir, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${item.name}` : item.name;
+      if (item.isDirectory()) {
+        if (!item.name.startsWith('.')) await walk(join(dir, item.name), path);
+        continue;
+      }
+      if (!item.isFile()) continue;
+      const info = await stat(join(dir, item.name));
+      if (prototypeFileRefusal(path, info.size)) continue;
+      total += info.size;
+      if (files.length >= PROTOTYPE_MAX_FILES || total > PROTOTYPE_MAX_VERSION_BYTES)
+        throw new PrototypeRefusedError(
+          'size',
+          `Version ${version} of "${id}" is larger than one prototype version may be`
+        );
+      files.push({ path, data: await readFile(join(dir, item.name)) });
+    }
+  };
+  try {
+    await walk(root, '');
+  } catch (error) {
+    if (error instanceof PrototypeRefusedError) throw error;
+    return null;
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** A free prototype id for a fork of `source`: `<source>-fork`, then `-fork-2`, `-fork-3` and so on. */
+export function forkId(source: string, taken: ReadonlySet<string>): string {
+  const stem = `${source.slice(0, 50).replace(/-+$/, '')}-fork`;
+  if (!taken.has(stem)) return stem;
+  for (let n = 2; ; n++) if (!taken.has(`${stem}-${n}`)) return `${stem}-${n}`;
 }

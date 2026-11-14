@@ -8,6 +8,9 @@
  * - `GET    /api/canvas/:workspaceId/prototypes` and `.../prototypes/:id` — records, versions, and the
  *   objects that show each one.
  * - `DELETE /api/canvas/:workspaceId/prototypes/:id` — refused while a live embed shows it.
+ * - `POST   /api/canvas/:workspaceId/prototypes/:id/fork` — a NEW prototype (new id) from one stored
+ *   version of this one, through the same store, limits, request identity and embed placement as a
+ *   publish. Copies the files server side; nothing is fetched.
  * - `POST   /api/canvas/:workspaceId/prototypes/:id/check` — a picture of one version alone in the
  *   headless browser, with its console errors.
  * - `GET    /canvas-prototype/:cap/*` (capability) — the files of exactly one version, sandboxed.
@@ -41,13 +44,16 @@ import {
   checkPrototypeFiles,
   discardPrototypeVersion,
   findPrototypeFile,
+  forkId,
   listPrototypes,
   prototypeReferences,
   prototypeSlug,
   publishPrototype,
   readPrototype,
   readPrototypeFile,
+  readPrototypeVersionFiles,
   removePrototype,
+  type PrototypeFile,
   type PrototypeMeta,
   type PrototypeReference,
 } from '../../canvas/prototypes.js';
@@ -85,6 +91,21 @@ const PublishSchema = z
       .array(z.object({ path: z.string().max(256), base64: z.string() }).strict())
       .min(1)
       .max(PROTOTYPE_MAX_FILES),
+    objectId: IdSchema.optional(),
+    parentId: IdSchema.nullable().optional(),
+    position: PositionSchema.optional(),
+    size: SizeSchema.optional(),
+  })
+  .strict();
+
+const ForkSchema = z
+  .object({
+    requestId: z.uuid().optional(),
+    /** The source version; the newest stored one by default. */
+    version: z.number().int().positive().optional(),
+    /** The fork's id; `<source>-fork` (then `-fork-2` …) by default. Refused when already stored. */
+    newId: z.string().max(63).optional(),
+    name: z.string().trim().min(1).max(120).optional(),
     objectId: IdSchema.optional(),
     parentId: IdSchema.nullable().optional(),
     position: PositionSchema.optional(),
@@ -155,148 +176,219 @@ export function registerPrototypeRoutes(scope: FastifyInstance, ctx: CanvasPort,
     '/api/canvas/:workspaceId/prototypes',
     { bodyLimit: PROTOTYPE_PUBLISH_BODY_BYTES },
     async (req, reply) => {
-      const { workspaceId } = req.params;
       if (!deployRole.allows('persist'))
         return reply
           .code(409)
           .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
       if (await limited(req, reply, 'publish', PROTOTYPE_PUBLISHES_PER_MINUTE)) return reply;
-      const body = PublishSchema.parse(req.body);
-      const invalid = (message: string) =>
-        reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, message));
-      const conflict = (message: string) => reply.code(409).send(createErrorResponse(ApiErrorCode.CONFLICT, message));
-      if (body.files.some((file) => !/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64)))
-        return invalid('Each file needs its bytes as base64');
-      const files = body.files.map((file) => ({ path: file.path, data: Buffer.from(file.base64, 'base64') }));
-      const store = (await ctx.canvasStores()).get(workspaceId);
-      const state = store.read();
-      const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
-      const { files: _bytes, requestId, ...fields } = body;
-      const digests = files.map((file) => [file.path, createHash('sha256').update(file.data).digest('hex')]);
-      const identity = deps.requestIdentity(store, author, 'canvas_prototype', [fields, digests], requestId);
-      if (identity.previous.length) {
-        if (identity.reused) return conflict('Request identity was already used for a different command');
-        const sequences = identity.previous.map((o) => o.seq);
-        const written = (store.records(sequences) as Operation[]).flatMap((record) => record.prev ?? [])[0];
-        const url = written?.after.content.url;
-        const address = typeof url === 'string' ? parsePrototypeAddress(url) : null;
-        if (!written || !address) return conflict('Request identity was already used for a different command');
-        return {
-          success: true,
-          data: {
-            prototypeId: address.id,
-            version: address.version,
-            objectId: written.objectId,
-            url,
-            seq: state.seq,
-            sequences,
-            replayed: true,
-          },
-        };
-      }
-      // Which object shows the new version: the named one, the only live embed of this prototype, or a new embed.
-      let target = body.objectId;
-      let id = body.id;
-      if (target) {
-        const object = state.objects[target];
-        const shown =
-          object?.deletedAt === null && object.type === 'embed' && typeof object.content.url === 'string'
-            ? parsePrototypeAddress(object.content.url)
-            : null;
-        if (!shown) return conflict('objectId must name a live embed that shows a prototype');
-        id ??= shown.id;
-      }
-      id ??= prototypeSlug(body.name ?? 'prototype');
-      if (!isPrototypeId(id)) return invalid('A prototype id is lower-case letters, digits and dashes, 63 at most');
-      const references = prototypeReferences(state).get(id) ?? [];
-      if (!target) {
-        const live = references.filter((r) => !r.deleted);
-        if (live.length > 1)
-          return conflict(
-            `${live.length} embeds show prototype "${id}". Pass objectId to say which one gets the new version.`
-          );
-        target = live[0]?.objectId;
-      }
-      const existing = await readPrototype(workspaceId, id);
-      const name = body.name ?? existing?.name ?? id;
-      const newObjectId = randomUUID();
-      const command = (version: number, opId: string): Command => {
-        const url = prototypeAddress({ id, version, entry: body.entry });
-        if (target)
-          return CommandSchema.parse({
-            kind: 'update',
-            opId,
-            objectId: target,
-            patch: {
-              content: { type: 'embed', url, ...(body.name ? { label: name } : {}) },
-              ...(body.size ? { size: body.size } : {}),
-            },
-          });
-        const parentId = body.parentId ?? null;
-        const place = placement(state, parentId);
-        return CommandSchema.parse({
-          kind: 'create',
-          opId,
-          objectId: newObjectId,
-          patch: {
-            parentId,
-            order: place.order,
-            position: body.position ?? place.position,
-            size: body.size ?? DEFAULT_PROTOTYPE_SIZE,
-            content: { type: 'embed', url, label: name },
-          },
-        });
+      const { files: sent, ...body } = PublishSchema.parse(req.body);
+      if (sent.some((file) => !/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64)))
+        return reply
+          .code(400)
+          .send(createErrorResponse(ApiErrorCode.INVALID_INPUT, 'Each file needs its bytes as base64'));
+      const files = sent.map((file) => ({ path: file.path, data: Buffer.from(file.base64, 'base64') }));
+      return publishAndShow(req, reply, body, files);
+    }
+  );
+
+  /**
+   * Store a version and append the ONE operation that shows it. Publish and fork both end here, so a
+   * fork goes through the same limits, request identity, rehearsal and embed placement as a publish.
+   */
+  const publishAndShow = async (
+    req: FastifyRequest<{ Params: { workspaceId: string } }>,
+    reply: FastifyReply,
+    body: Omit<z.infer<typeof PublishSchema>, 'files'>,
+    files: PrototypeFile[],
+    forkedFrom?: { id: string; version: number }
+  ) => {
+    const { workspaceId } = req.params;
+    const invalid = (message: string) => reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, message));
+    const conflict = (message: string) => reply.code(409).send(createErrorResponse(ApiErrorCode.CONFLICT, message));
+    const store = (await ctx.canvasStores()).get(workspaceId);
+    const state = store.read();
+    const author: Author = req.canvasAuthor ?? { kind: 'human', userId: getAuthUser(req).username };
+    const { requestId, ...fields } = body;
+    const digests = files.map((file) => [file.path, createHash('sha256').update(file.data).digest('hex')]);
+    const identity = deps.requestIdentity(
+      store,
+      author,
+      'canvas_prototype',
+      forkedFrom ? [fields, digests, forkedFrom] : [fields, digests],
+      requestId
+    );
+    if (identity.previous.length) {
+      if (identity.reused) return conflict('Request identity was already used for a different command');
+      const sequences = identity.previous.map((o) => o.seq);
+      const written = (store.records(sequences) as Operation[]).flatMap((record) => record.prev ?? [])[0];
+      const url = written?.after.content.url;
+      const address = typeof url === 'string' ? parsePrototypeAddress(url) : null;
+      if (!written || !address) return conflict('Request identity was already used for a different command');
+      return {
+        success: true,
+        data: {
+          prototypeId: address.id,
+          version: address.version,
+          objectId: written.objectId,
+          url,
+          seq: state.seq,
+          sequences,
+          replayed: true,
+        },
       };
-      try {
-        checkPrototypeFiles(
-          files.map((file) => ({ path: file.path, bytes: file.data.length })),
-          body.entry
+    }
+    // Which object shows the new version: the named one, the only live embed of this prototype, or a new embed.
+    let target = body.objectId;
+    let id = body.id;
+    if (target) {
+      const object = state.objects[target];
+      const shown =
+        object?.deletedAt === null && object.type === 'embed' && typeof object.content.url === 'string'
+          ? parsePrototypeAddress(object.content.url)
+          : null;
+      if (!shown) return conflict('objectId must name a live embed that shows a prototype');
+      id ??= shown.id;
+    }
+    id ??= prototypeSlug(body.name ?? 'prototype');
+    if (!isPrototypeId(id)) return invalid('A prototype id is lower-case letters, digits and dashes, 63 at most');
+    const references = prototypeReferences(state).get(id) ?? [];
+    if (!target) {
+      const live = references.filter((r) => !r.deleted);
+      if (live.length > 1)
+        return conflict(
+          `${live.length} embeds show prototype "${id}". Pass objectId to say which one gets the new version.`
         );
-        // Refuse a write the canvas would refuse (a lock, a missing parent) before any byte is stored.
-        const rehearsal = validateBatch(state, [command(1, randomUUID())], author, Date.now());
-        if (!rehearsal.ok)
-          return reply.code(409).send({
-            ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
-            reasons: rehearsal.reasons,
-          });
-        const { version } = await publishPrototype(
-          workspaceId,
-          { id, name, entry: body.entry, files, author },
-          new Set(references.map((r) => r.version))
-        );
-        const operation = command(version, identity.prefix ? `${identity.prefix}0` : randomUUID());
-        const result = store.appendExpanded([operation], author);
-        if (!result.ok) {
-          await discardPrototypeVersion(workspaceId, id, version);
-          return reply.code(409).send({
-            ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
-            reasons: result.reasons,
-          });
-        }
-        deps.retireFrames(workspaceId, result.operations);
-        const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
-        ctx.broadcast(SseEvent.CanvasChanged, {
-          workspaceId,
-          seq: result.seq,
-          owner: readWorkspaces().find((w) => w.id === workspaceId)?.owner,
-        });
-        return {
-          success: true,
-          data: {
-            prototypeId: id,
-            version,
-            objectId: operation.objectId,
-            url: prototypeAddress({ id, version, entry: body.entry }),
-            seq: result.seq,
-            sequences: result.sequences,
+      target = live[0]?.objectId;
+    }
+    const existing = await readPrototype(workspaceId, id);
+    if (existing && forkedFrom) return conflict(`A prototype "${id}" is already stored here; give the fork another id`);
+    const name = body.name ?? existing?.name ?? id;
+    const newObjectId = randomUUID();
+    const command = (version: number, opId: string): Command => {
+      const url = prototypeAddress({ id, version, entry: body.entry });
+      if (target)
+        return CommandSchema.parse({
+          kind: 'update',
+          opId,
+          objectId: target,
+          patch: {
+            content: { type: 'embed', url, ...(body.name ? { label: name } : {}) },
+            ...(body.size ? { size: body.size } : {}),
           },
-        };
+        });
+      const parentId = body.parentId ?? null;
+      const place = placement(state, parentId);
+      return CommandSchema.parse({
+        kind: 'create',
+        opId,
+        objectId: newObjectId,
+        patch: {
+          parentId,
+          order: place.order,
+          position: body.position ?? place.position,
+          size: body.size ?? DEFAULT_PROTOTYPE_SIZE,
+          content: { type: 'embed', url, label: name },
+        },
+      });
+    };
+    try {
+      checkPrototypeFiles(
+        files.map((file) => ({ path: file.path, bytes: file.data.length })),
+        body.entry
+      );
+      // Refuse a write the canvas would refuse (a lock, a missing parent) before any byte is stored.
+      const rehearsal = validateBatch(state, [command(1, randomUUID())], author, Date.now());
+      if (!rehearsal.ok)
+        return reply.code(409).send({
+          ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
+          reasons: rehearsal.reasons,
+        });
+      const { version } = await publishPrototype(
+        workspaceId,
+        { id, name, entry: body.entry, files, author, forkedFrom },
+        new Set(references.map((r) => r.version))
+      );
+      const operation = command(version, identity.prefix ? `${identity.prefix}0` : randomUUID());
+      const result = store.appendExpanded([operation], author);
+      if (!result.ok) {
+        await discardPrototypeVersion(workspaceId, id, version);
+        return reply.code(409).send({
+          ...createErrorResponse(ApiErrorCode.CONFLICT, 'Canvas operation rejected'),
+          reasons: result.reasons,
+        });
+      }
+      deps.retireFrames(workspaceId, result.operations);
+      const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
+      ctx.broadcast(SseEvent.CanvasChanged, {
+        workspaceId,
+        seq: result.seq,
+        owner: readWorkspaces().find((w) => w.id === workspaceId)?.owner,
+      });
+      return {
+        success: true,
+        data: {
+          prototypeId: id,
+          version,
+          objectId: operation.objectId,
+          url: prototypeAddress({ id, version, entry: body.entry }),
+          seq: result.seq,
+          sequences: result.sequences,
+        },
+      };
+    } catch (error) {
+      if (!(error instanceof PrototypeRefusedError)) throw error;
+      return reply
+        .code(refusalStatus(error))
+        .send({ ...createErrorResponse(ApiErrorCode.INVALID_INPUT, error.message), refusal: error.reason });
+    }
+  };
+
+  scope.post<{ Params: { workspaceId: string; id: string } }>(
+    '/api/canvas/:workspaceId/prototypes/:id/fork',
+    { bodyLimit: 16 * 1024 },
+    async (req, reply) => {
+      const { workspaceId, id: source } = req.params;
+      if (!deployRole.allows('persist'))
+        return reply
+          .code(409)
+          .send(createErrorResponse(ApiErrorCode.CONFLICT, 'Only the live colour may write canvas data'));
+      const input = ForkSchema.parse(req.body ?? {});
+      const meta = await readPrototype(workspaceId, source);
+      if (!meta) return notStored(reply);
+      const version =
+        input.version === undefined ? meta.versions.at(-1) : meta.versions.find((v) => v.version === input.version);
+      if (!version)
+        return reply
+          .code(404)
+          .send(
+            createErrorResponse(
+              ApiErrorCode.NOT_FOUND,
+              `Version ${input.version ?? 'latest'} of "${source}" is not stored here`
+            )
+          );
+      if (await limited(req, reply, 'publish', PROTOTYPE_PUBLISHES_PER_MINUTE)) return reply;
+      let files: PrototypeFile[] | null;
+      try {
+        files = await readPrototypeVersionFiles(workspaceId, source, version.version);
       } catch (error) {
         if (!(error instanceof PrototypeRefusedError)) throw error;
         return reply
           .code(refusalStatus(error))
           .send({ ...createErrorResponse(ApiErrorCode.INVALID_INPUT, error.message), refusal: error.reason });
       }
+      if (!files?.length)
+        return reply
+          .code(404)
+          .send(createErrorResponse(ApiErrorCode.NOT_FOUND, `Version ${version.version} of "${source}" has no files`));
+      const { version: _version, newId, ...placement } = input;
+      const id = newId ?? forkId(source, new Set((await listPrototypes(workspaceId)).map((m) => m.id)));
+      return publishAndShow(
+        req,
+        reply,
+        { ...placement, id, name: input.name ?? `${meta.name} (fork)`, entry: version.entry },
+        files,
+        { id: source, version: version.version }
+      );
     }
   );
 

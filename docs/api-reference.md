@@ -1724,6 +1724,14 @@ version, 50 prototypes and 256 MB a workspace, 12 publishes a minute (429).
 it. `POST …/prototypes/:id/check` with `{ version?, width?, height?, theme? }` loads one
 version alone in the headless browser, with no network, and answers
 `{ loaded, consoleErrors, pageErrors, failedRequests, dialogs, png }` (`png` is base64).
+`POST …/prototypes/:id/fork` with
+`{ version?, newId?, name?, objectId?, parentId?, position?, size?, requestId? }` copies one
+stored version (the newest by default) into a new prototype and places it, answering as a
+publish does. The new record carries `forkedFrom: { id, version }`. Without `newId` the id is
+`<id>-fork` (then `-fork-2`, ...), and the name `<name> (fork)`; a `newId` already stored is
+409 with `refusal: "exists"`. Capturing a running app into a prototype is not an HTTP route:
+it runs in the agent's own process (`codeman prototype capture`, MCP `canvas_prototype capture`),
+which then publishes the result here.
 
 For an embed that shows a prototype, the frame route above answers
 `{ embedUrl, prototype: { id, version } }` with a `/canvas-prototype/<cap>/<entry>` URL,

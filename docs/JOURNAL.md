@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-14 — A running app becomes a prototype by capture in the agent's process
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{capture-spec,capture-page,capture-runtime,prototype-capture,prototypes}.ts`, `src/cli-prototype.ts`, `src/mcp-server.ts`, `src/web/routes/canvas-prototype-routes.ts`
+**Why:** A real app cannot run in a canvas frame (opaque origin, no cookie, no API), so the only way to review Codeman's own UI on the canvas was screenshots that cannot be clicked, and every new direction began from a blank page.
+**Links:** [intent/2026-11-14-prototype-capture.md](../intent/2026-11-14-prototype-capture.md), [architecture-invariants, "Canvas prototypes"](architecture-invariants.md#canvas-prototypes)
+
+Decision. `codeman prototype capture` and `canvas_prototype capture` drive the app through named states in a headless browser and write each state at each viewport as a static page with its assets copied in, hotspots between states and a state switcher. The folder is then published like any other prototype. `canvas_prototype fork` copies a stored version into a new prototype and records `forkedFrom`.
+
+Why agent-side. Capturing means fetching whatever URL the spec names. Doing it in the server would give it a fetch-anything route reachable by every agent and browser; in the agent's process it has only the reach the agent already has. The server keeps receiving files through the existing publish, with every limit and the sandbox unchanged.
+
+Why static pages. A captured page runs none of the app's code, so it needs no API, no cookie and no network, and it renders the same in the sandboxed frame, in a check and in a screenshot. The cost is that only the captured moments exist: hover, live data and anything behind an unvisited click are absent.
+
+Rejected. Proxying the live app into the frame: the frame cannot hold the app's session and the app would act on real data from a comment board. Recording a DOM stream and replaying it: larger, harder to bound, and still needs the app's styles at replay time.
+
 ## 2026-11-14 — The frame bridge reports a DOM change that moves an element the canvas located
 
 **Type:** intent-refinement
