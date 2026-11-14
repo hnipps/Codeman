@@ -86,6 +86,24 @@ Decisions the intent did not settle. The popover offers Add to chat only; Commen
 
 Three faults found by the browser test. A strict page policy blocked the bridge, so the proxy now adds the bridge's hash to that policy. The hash did not match on a page served without a charset, because the script held non-ASCII comment characters; the script is ASCII only now. A closed loop that ended on its starting point over a selected embed read as a click and handed the page the keyboard; a click is now judged by how far the pointer went. Reload also left a second shield in the stage, which is fixed.
 
+## 2026-11-13 — An agent's messages and background task results render Markdown too
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/assistant.ts`, `packages/canvas/src/tasks-view.ts`
+**Why:** Harry asked for every agent message in the assistant chat and the background task view to render, not only Claude's replies.
+**Links:** [intent/2026-11-13-canvas-agent-markdown.md](../intent/2026-11-13-canvas-agent-markdown.md)
+
+Decision. A rail turn renders unless a person wrote it, so a message an agent sent into a conversation renders like Claude's reply. A task row's result renders through the same `renderMarkdown()`, reused across the list's repaints so its diagram draws once. A person's own prompt still stays plain text.
+
+## 2026-11-13 — Agent text on the canvas renders Markdown and Mermaid
+
+**Type:** intent-refinement
+**Touches:** `packages/canvas/src/markdown.ts`, `packages/canvas/src/assistant.ts`, `packages/canvas/src/comments.ts`, `src/web/public/canvas.html`, `src/web/public/canvas.css`
+**Why:** Claude's replies on the canvas showed raw Markdown and Mermaid source, while the classic Chat rendered both.
+**Links:** [intent/2026-11-13-canvas-agent-markdown.md](../intent/2026-11-13-canvas-agent-markdown.md)
+
+Decision. The rail's Claude turns and agent-authored comments render through the dashboard's own `marked`, DOMPurify allowlist and Mermaid frame, which `canvas.html` now loads. The rule "everything is `textContent`" in the rail and threads now applies to everything except that agent text. A person's prompt and comment stay plain text, since that is what they typed. Without the pipeline a turn falls back to plain text.
+
 ## 2026-11-13 — The assistant rail does not ask for the transcript of a deleted session
 
 **Type:** drift

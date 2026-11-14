@@ -614,6 +614,11 @@ bundles the pinned engine into a self-contained, network-disabled HTML document.
 Postinstall prepares dev assets. The production build prepares the same document
 inside `dist`. The fixed-name HTML response uses `no-cache`.
 
+The canvas page loads the same `mermaid-render.js`, `marked` and sanitizer for
+agent text (Claude's and an agent's rail turns, agent-authored comments and
+background task results), so it gets the same
+frame and the same limits. A person's text on the canvas stays plain.
+
 The dashboard creates one lazy iframe with `sandbox="allow-scripts"`, never
 `allow-same-origin`, and serializes at most 32 queued diagrams. Replies must match
 the frame window, opaque origin, and request id. SVG enters the dashboard only as

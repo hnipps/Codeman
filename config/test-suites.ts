@@ -29,6 +29,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/canvas-comments.browser.test.ts',
   'test/canvas-context.browser.test.ts',
   'test/canvas-assistant.browser.test.ts',
+  'test/canvas-markdown.browser.test.ts',
   'test/canvas-activity.browser.test.ts',
   'test/canvas-threads.browser.test.ts',
   'test/canvas-voice.browser.test.ts',
