@@ -73,6 +73,7 @@ import {
   proxyPrefixFor,
   resolveUpstreamUrl,
   rewriteHtml,
+  allowFrameBridge,
   upstreamWebSocketUrl,
 } from '../webview-proxy.js';
 
@@ -771,7 +772,7 @@ async function proxyRequest(
   const {
     headers: outHeaders,
     setCookie,
-    csp,
+    csp: upstreamCsp,
   } = buildDownstreamResponseHeaders(
     response.headers as unknown as Iterable<[string, string]>,
     response.headers.getSetCookie(),
@@ -780,6 +781,9 @@ async function proxyRequest(
     secureContext,
     basePath
   );
+
+  // A canvas frame carries the injected frame bridge, which the page's own policy must let run.
+  const csp = upstreamCsp && webview.origin.kind === 'canvas' ? allowFrameBridge(upstreamCsp) : upstreamCsp;
 
   reply.code(response.status);
   for (const [key, value] of Object.entries(outHeaders)) reply.header(key, value);
@@ -816,7 +820,7 @@ async function proxyRequest(
       html.length <= MAX_WEBVIEW_HTML_REWRITE_BYTES
         ? rewriteHtml(html, cap, basePath, {
             moduleMap: webview.origin.kind === 'session',
-            escapeRelay: webview.origin.kind === 'canvas',
+            frameBridge: webview.origin.kind === 'canvas',
           })
         : html
     );
