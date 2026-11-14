@@ -1,3 +1,4 @@
+import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import {
   splitPrompt,
   threadOrigin,
@@ -8,7 +9,7 @@ import {
 /** One prompt or reply row as the session's transcript reports it. */
 export type TranscriptRow = { role: 'user' | 'assistant'; text: string; queued?: boolean };
 /** A message the person sent that the transcript has not shown yet. */
-export type SentMessage = { messageId: string; text: string; refIds: string[] };
+export type SentMessage = { messageId: string; text: string; refIds: string[]; elements?: ElementRef[] };
 export type Turn = {
   key: string;
   who: 'you' | 'agent' | 'claude';

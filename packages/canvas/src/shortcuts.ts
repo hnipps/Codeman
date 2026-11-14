@@ -24,7 +24,8 @@ export const shortcuts: Shortcut[] = [
 export const editShortcuts: Shortcut[] = [
   ['Toggle assistant', [['C'], ['Mod', '.']]],
   ['Add selection to chat', [['Mod', 'Enter']]],
-  ['Add objects to chat (hold and drag a loop)', [['Q']]],
+  ['Add objects to chat (hold and drag a loop; inside a live page, its elements)', [['Q']]],
+  ['Pick an element in the selected embed', [['I']]],
   ['Send chat message / line break', [['Enter'], ['Shift', 'Enter']]],
   ['Choose chat provider / model (focus the selector)', [['P'], ['Shift', 'P']]],
   ['Dictate into chat', [['B']]],

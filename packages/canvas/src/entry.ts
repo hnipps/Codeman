@@ -17,10 +17,13 @@ import { VoiceView } from './voice-view.js';
 import { TasksView } from './tasks-view.js';
 import { canvasStorageKeys } from './storage-keys.js';
 import { ContextCapture } from './context-capture.js';
+import { changedPages } from './context.js';
+import type { MediaEditor } from './media.js';
+import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import { ViewSync } from './view-sync.js';
 import { reportClientErrors } from './client-errors.js';
 import { reportClassicLinks, uiEvent, viewEvent } from './ui-events.js';
-import type { ViewAction } from '../../../src/canvas/view-schema.js';
+import { PublishedViewSchema, type ViewAction } from '../../../src/canvas/view-schema.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
 import type { SessionViewRow } from './sessions.js';
@@ -42,6 +45,18 @@ declare global {
   interface Window {
     canvasEdit: ReturnType<DesktopEditor['adapter']>;
     canvasView: { dispatch: (action: ViewCommand) => void; read: () => ViewState };
+    /** The frame bridge as other canvas features and tests reach it: pick an element, find it again, ask what a loop holds. */
+    canvasFrames: {
+      pickElement: MediaEditor['pickElement'];
+      togglePick: MediaEditor['togglePick'];
+      addPickAction: MediaEditor['addPickAction'];
+      onPicked: MediaEditor['onPicked'];
+      onFrameChange: MediaEditor['onFrameChange'];
+      locate: MediaEditor['locate'];
+      screenRect: MediaEditor['screenRect'];
+      elementsIn: MediaEditor['elementsIn'];
+      picking: () => string | null;
+    };
     canvasComments: { read: () => CommentsView['all']; post: (objectId: string, text: string) => Promise<boolean> };
   }
 }
@@ -155,6 +170,18 @@ const assistant: AssistantView = new AssistantView({
     dispatch({ kind: 'focus', id });
     dispatch({ kind: 'selection', ids: [id] });
     reveal(id);
+  },
+  removeElement: (element) => dispatch({ kind: 'context-elements-remove', elements: [element] }),
+  chooseElement: (element) => {
+    dispatch({ kind: 'focus', id: element.objectId });
+    dispatch({ kind: 'selection', ids: [element.objectId] });
+    reveal(element.objectId);
+    // The embed may only now come into view: its frame mounts a moment after the camera settles.
+    const show = (retry: boolean): void =>
+      void editor.media.flash(element).then((shown) => {
+        if (!shown && retry) setTimeout(() => show(false), 900);
+      });
+    requestAnimationFrame(() => requestAnimationFrame(() => show(true)));
   },
   openThread: (id) => {
     dispatch({ kind: 'focus', id });
@@ -817,6 +844,8 @@ const views = new ViewSync({
     focusId: state.focusId,
     rail: state.rail,
     context: state.context,
+    // Published once the server's view schema knows the field; a page ahead of its server publishes without it.
+    ...('contextElements' in PublishedViewSchema.shape ? { contextElements: state.contextElements } : {}),
     conversationId: state.conversationId,
     root: state.root,
     letters: state.letters,
@@ -826,18 +855,31 @@ const views = new ViewSync({
     ...(shell ? { fullView: state.fullView } : {}),
   }),
 });
-new ContextCapture({
+const contextCapture = new ContextCapture({
   board,
   view: () => state,
   objects: () => objects,
   candidates: () => inView(),
   allowed: scope,
   enabled: () => !mobile.matches,
-  capture: (ids) => {
+  capture: (ids, inPage) => {
     dispatch({ kind: 'context-add', ids });
-    openAssistant(true);
+    openAssistant(!inPage);
   },
+  frames: {
+    boxes: () => editor.media.frameBoxes(),
+    elements: (objectId, points) => editor.media.elementsIn(objectId, points),
+    hold: (objectId) => editor.media.holdShield(objectId),
+    release: (objectId) => editor.media.releaseShield(objectId),
+    hasKeys: (objectId) => editor.media.frameHasKeys(objectId),
+  },
+  captureElements: (elements, inPage) => addElementsToChat(elements, !inPage),
 });
+/** Adds elements picked or looped inside a live frame as pending context. It sends nothing and writes nothing. */
+function addElementsToChat(elements: ElementRef[], focusComposer = true): void {
+  dispatch({ kind: 'context-elements-add', elements });
+  openAssistant(focusComposer);
+}
 function parent(): void {
   const o = objects.find((o) => o.id === state.focusId);
   if (o?.parentId) {
@@ -1038,6 +1080,10 @@ document.addEventListener('keydown', (e) => {
     } else if (key === 'g' && !e.shiftKey && !e.repeat && !mobile.matches) {
       e.preventDefault();
       toggleTasks();
+    } else if (key === 'i' && !e.shiftKey && !e.repeat && !mobile.matches) {
+      const target = state.selected.length === 1 ? objects.find((o) => o.id === state.selected[0]) : undefined;
+      if (target?.type === 'embed') editor.media.togglePick(target.id);
+      else node('announcement').textContent = 'Select one embed to pick an element in its page';
     } else if (key === 'p' && !e.repeat && !mobile.matches) {
       e.preventDefault();
       openAssistant(false);
@@ -1202,7 +1248,10 @@ const editor = new DesktopEditor({
   },
   assetUrl,
   display: (displayed) => {
+    const repaged = state.contextElements.length ? changedPages(objects, displayed) : [];
     objects = displayed;
+    // An embed that now shows another page: what was picked in the old one names nothing in the new one.
+    if (repaged.length) state = command(state, { kind: 'context-elements-drop', objectIds: repaged }, objects);
     // A returning phone reopens the sub-canvas it left, before the view is first drawn.
     if (initial && pendingTicket?.root && objects.some((o) => o.id === pendingTicket?.root && o.type === 'subcanvas'))
       state = { ...state, root: pendingTicket.root };
@@ -1219,6 +1268,7 @@ const editor = new DesktopEditor({
     comments.mark(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
+    const first = initial;
     const restore = initial ? assistant.restoredContext() : [];
     const restoredChoice = initial ? assistant.restoredChoice() : null;
     if (initial) {
@@ -1236,12 +1286,35 @@ const editor = new DesktopEditor({
         'A place for the ideas and references for your project. Add an object to get started.';
     }
     dispatch({ kind: 'viewport', viewport: state.viewport });
+    const restoredElements = first ? assistant.restoredElements() : [];
     dispatch({ kind: 'context-add', ids: restore });
+    if (restoredElements.length) dispatch({ kind: 'context-elements-add', elements: restoredElements });
     if (restoredChoice) dispatch({ kind: 'assistant-choice', choice: restoredChoice });
     assistant.restoreDone();
   },
 });
 window.canvasEdit = editor.adapter();
+editor.media.connect({
+  key: (objectId, phase) => contextCapture.frameKey(objectId, phase),
+  escape: () => contextCapture.frameEscape(),
+});
+editor.media.addPickAction({
+  id: 'add-to-chat',
+  label: 'Add to chat',
+  primary: true,
+  run: (e) => addElementsToChat([e]),
+});
+window.canvasFrames = {
+  pickElement: (objectId) => editor.media.pickElement(objectId),
+  togglePick: (objectId) => editor.media.togglePick(objectId),
+  addPickAction: (action) => editor.media.addPickAction(action),
+  onPicked: (listener) => editor.media.onPicked(listener),
+  onFrameChange: (listener) => editor.media.onFrameChange(listener),
+  locate: (objectId, selectors) => editor.media.locate(objectId, selectors),
+  screenRect: (objectId, rect) => editor.media.screenRect(objectId, rect),
+  elementsIn: (objectId, points) => editor.media.elementsIn(objectId, points),
+  picking: () => editor.media.pickingId,
+};
 window.canvasComments = {
   read: () => structuredClone(comments.all),
   post: async (objectId, text) => {

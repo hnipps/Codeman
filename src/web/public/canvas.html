@@ -269,6 +269,10 @@
     <p id="actionMessage" class="edit-control" role="status" hidden></p>
     <p id="moveHint" class="edit-control" hidden>Move · arrows 10 · Shift+arrows 1 · Enter save · Escape cancel</p>
     <span id="dropName" class="edit-control" hidden></span>
+    <div id="elementMark" aria-hidden="true" hidden></div>
+    <div id="elementPopover" class="edit-control" role="group" aria-label="Picked element" hidden>
+      <span id="elementPopoverLabel"></span><span id="elementPopoverActions"></span>
+    </div>
     <div class="dock-area">
       <div id="dock" role="toolbar" aria-label="Canvas tools">
         <div id="contextRow" class="edit-control" role="toolbar" aria-label="Selection actions" hidden>
@@ -420,7 +424,7 @@
         <ul id="contextChips" aria-labelledby="contextHeading"></ul>
         <p id="contextEmpty" class="secondary">
           Nothing attached. Select objects and press <kbd>Cmd/Ctrl</kbd> <kbd>Enter</kbd>, or hold <kbd>Q</kbd> and drag
-          around them.
+          around them. Inside a live page, the loop takes its elements.
         </p>
         <div
           id="assistantChoice"

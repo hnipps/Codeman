@@ -2,6 +2,7 @@ import { targets, inPolygon } from './select.js';
 import { worldBounds } from './tree.js';
 import { screenToCanvas, type Point, type Viewport } from './viewport.js';
 import { label, type ViewObject } from './model.js';
+import { elementLabel, MAX_ELEMENT_REFS, type ElementRef } from '../../../src/canvas/element-ref.js';
 
 /** Most objects one assistant message may carry as direct context. */
 export const MAX_CONTEXT_OBJECTS = 200;
@@ -48,6 +49,50 @@ export function chips(objects: ViewObject[], ids: string[]): Chip[] {
     return o && o.deletedAt === null
       ? [{ id, label: label(o).slice(0, 80), type: o.type, descendants: descendantCount(objects, id) }]
       : [];
+  });
+}
+
+/** One pending element is one place in one frame: the same selector in the same embed is the same element. */
+export type ElementKey = Pick<ElementRef, 'objectId' | 'selector'>;
+export const sameElement = (a: ElementKey, b: ElementKey): boolean =>
+  a.objectId === b.objectId && a.selector === b.selector;
+/** Pending elements after adding more: a repeat keeps its place and takes the newer description; the newest beyond the cap are dropped. */
+export function elementsAdd(current: ElementRef[], added: ElementRef[]): ElementRef[] {
+  const merged = [...current];
+  for (const ref of added) {
+    const at = merged.findIndex((kept) => sameElement(kept, ref));
+    if (at >= 0) merged[at] = ref;
+    else merged.push(ref);
+  }
+  return merged.slice(0, MAX_ELEMENT_REFS);
+}
+export const elementsRemove = (current: ElementRef[], removed: ElementKey[]): ElementRef[] =>
+  current.filter((kept) => !removed.some((r) => sameElement(kept, r)));
+const pageOf = (o: ViewObject | undefined): string | null =>
+  o && o.deletedAt === null && o.type === 'embed' && typeof o.content.url === 'string' ? o.content.url : null;
+/** Drops elements whose embed is gone or is no longer an embed. */
+export function elementsPrune(objects: ViewObject[], current: ElementRef[]): ElementRef[] {
+  if (!current.length) return current;
+  const pages = new Map(objects.map((o) => [o.id, pageOf(o)]));
+  return current.filter((ref) => (pages.get(ref.objectId) ?? null) !== null);
+}
+/** Embeds whose page changed between two readings of the canvas: an element picked in the old page names nothing in the new one. */
+export function changedPages(before: ViewObject[], after: ViewObject[]): string[] {
+  const now = new Map(after.map((o) => [o.id, pageOf(o)]));
+  return before.flatMap((o) => {
+    const was = pageOf(o);
+    return was !== null && now.get(o.id) !== was ? [o.id] : [];
+  });
+}
+export type ElementChip = ElementKey & { label: string; page: string };
+/** Shelf rows for pending elements: the element's own label over the name of the embed it is in. */
+export function elementChips(objects: ViewObject[], refs: ElementRef[]): ElementChip[] {
+  const byId = new Map(objects.map((o) => [o.id, o]));
+  return refs.flatMap((ref) => {
+    const o = byId.get(ref.objectId);
+    return pageOf(o) === null
+      ? []
+      : [{ objectId: ref.objectId, selector: ref.selector, label: elementLabel(ref), page: label(o!).slice(0, 80) }];
   });
 }
 
