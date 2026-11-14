@@ -40,6 +40,7 @@ import { watchPresence } from './presence.js';
 import { PrototypesView } from './prototypes-view.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
+import { installPanelResize } from './panel-widths.js';
 import type { SessionViewRow } from './sessions.js';
 import {
   FullView,
@@ -119,6 +120,20 @@ const mobile = phoneMode();
 uiEvent('page.open', mobile.matches ? 'phone' : 'desktop');
 trackKeyboard();
 state = command(state, { kind: 'outline', open: !mobile.matches }, objects);
+let storage: Storage | null = null;
+try {
+  storage = window.localStorage;
+} catch {
+  storage = null;
+}
+const panels = installPanelResize({
+  root: document.documentElement,
+  handles: { outline: node('outlineResize'), rail: node('railResize') },
+  isOpen: (panel) => (panel === 'outline' ? state.outlineOpen : state.rail.length > 0),
+  isPhone: () => mobile.matches,
+  storage,
+  onResize: () => elementComments?.sync(),
+});
 const assetUrl = (assetId: string): string | null =>
   /^[a-f0-9]{64}$/.test(assetId) ? url(`/api/canvas/${workspaceId}/assets/${assetId}`) : null;
 const renderer = new Renderer(layer, tree, choose, { assetUrl });
@@ -344,9 +359,9 @@ function area(): Rect {
     ]);
   }
   return {
-    x: state.outlineOpen && !mobile.matches ? 192 : 0,
+    x: state.outlineOpen ? panels.width('outline') : 0,
     y: 0,
-    width: innerWidth - (state.outlineOpen && !mobile.matches ? 192 : 0),
+    width: innerWidth - (state.outlineOpen ? panels.width('outline') : 0),
     height: innerHeight,
   };
 }
@@ -518,6 +533,7 @@ function paint(): void {
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
+  panels.layout();
   node('keysView').hidden = state.rail.at(-1) !== 'keys';
   node('readerView').hidden = state.rail.at(-1) !== 'reader';
   node('threadView').hidden = state.rail.at(-1) !== 'thread';
@@ -562,7 +578,6 @@ function paint(): void {
               : top === 'page'
                 ? pageTitle(state.page)
                 : 'Keys';
-  document.documentElement.style.setProperty('--outline-space', state.outlineOpen && !mobile.matches ? '192px' : '0px');
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
   board.classList.toggle('panning', state.tool === 'pan' || spaceHeld);
