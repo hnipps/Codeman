@@ -64,6 +64,10 @@ export function registerReviewRoutes(scope: FastifyInstance, ctx: CanvasPort): v
   scope.put<{ Params: { workspaceId: string; commentId: string } }>(
     '/api/canvas/:workspaceId/review-notes/:commentId',
     async (req, reply) => {
+      if (req.canvasAuthor?.kind === 'agent')
+        return reply
+          .code(403)
+          .send(createErrorResponse(ApiErrorCode.FORBIDDEN, 'Review notes are set by a person only'));
       if (!deployRole.allows('persist'))
         return reply
           .code(409)

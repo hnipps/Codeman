@@ -337,6 +337,29 @@ describe('sending review notes', () => {
     }
   });
 
+  it('refuses an agent caller that would set or resolve a note', async () => {
+    const h = await harness();
+    try {
+      const a = await h.comment('A note');
+      await h.setNote(a, { kind: 'general' });
+      h.sessions.set('other', {
+        id: 'other',
+        workingDir: await resolveCasePath('review-case'),
+        writeViaMux: vi.fn(async () => true),
+      });
+      const agent = await h.app.inject({
+        method: 'PUT',
+        url: `/api/canvas/current/review-notes/${a}`,
+        headers: { 'x-codeman-parent-session': 'other' },
+        payload: { note: { kind: 'general' }, resolved: true },
+      });
+      expect(agent.statusCode).toBe(403);
+      expect((await h.notes())[a]!.resolvedAt).toBeUndefined();
+    } finally {
+      await h.app.close();
+    }
+  });
+
   it('refuses more notes than one prompt carries', () => {
     const notes = Array.from({ length: MAX_NOTES_PER_SEND + 1 }, (_, i) => ({
       commentId: `n${i}`,
