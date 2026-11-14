@@ -4,6 +4,7 @@
  * auto-clear, auto-compact, image watcher, flicker filter, and logout.
  */
 
+import { prototypeFrames } from '../../canvas/prototype-frames.js';
 import { claudeProjectDirName } from '../../case-rename.js';
 import { FastifyInstance, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -1097,6 +1098,7 @@ export function registerSessionRoutes(
     // login keeps relaying without one (WebviewCapabilityStore.revokeOwner).
     webviewCapabilities.revokeOwner(ownerFor(req));
     htmlViewCapabilities.revokeOwner(ownerFor(req));
+    prototypeFrames.revokeOwner(ownerFor(req));
     reply.clearCookie(AUTH_COOKIE_NAME, { path: '/' });
     return {};
   });

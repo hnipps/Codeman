@@ -1,9 +1,10 @@
 import Fastify from 'fastify';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createToolRunner, createMcpServer, buildToolDefinitions } from '../src/mcp-server.js';
+import { createToolRunner, createMcpServer, buildToolDefinitions, readPrototypeFolder } from '../src/mcp-server.js';
+import { PROTOTYPE_MAX_FILES, PROTOTYPE_MAX_FILE_BYTES } from '../src/config/canvas-limits.js';
 import { toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
 import { MAX_CANVAS_TEXT_BYTES } from '../src/canvas/queries.js';
 import { CanvasStores } from '../src/canvas/canvas-store.js';
@@ -756,6 +757,171 @@ describe('canvas media over MCP', () => {
         ])
       ).toEqual(['a', 'b']);
       expect(h.stores.get(h.workspace.id).read().seq).toBe(3);
+    } finally {
+      await h.app.close();
+    }
+  });
+});
+
+describe('canvas_prototype', () => {
+  function folder(files: Record<string, string>) {
+    const root = join(dir, `proto-${Math.random().toString(36).slice(2)}`);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(root, path, '..'), { recursive: true });
+      writeFileSync(join(root, path), text);
+    }
+    return root;
+  }
+  const parse = (result: { text: string }) => JSON.parse(result.text);
+
+  it("publishes a folder into the caller's own workspace, republishes in place, and lists, reads and removes it", async () => {
+    const h = await harness();
+    try {
+      const root = folder({ 'index.html': '<h1>one</h1><script src="js/app.js"></script>', 'js/app.js': '1' });
+      const first = await h.runner().run('canvas_prototype', { action: 'publish', path: root, name: 'Demo' });
+      expect(first.isError, first.text).toBeFalsy();
+      const made = parse(first);
+      expect(made).toMatchObject({
+        prototypeId: 'demo',
+        version: 1,
+        url: 'https://prototype.invalid/demo/1/index.html',
+      });
+      const state = h.stores.get(h.workspace.id).read();
+      expect(state.objects[made.objectId]).toMatchObject({ type: 'embed', content: { url: made.url, label: 'Demo' } });
+      expect(h.stores.get(h.workspace.id).operations().at(-1)?.author).toEqual({ kind: 'agent', sessionId: 'agent-a' });
+      writeFileSync(join(root, 'index.html'), '<h1>two</h1>');
+      const second = parse(await h.runner().run('canvas_prototype', { action: 'publish', path: root, id: 'demo' }));
+      expect(second).toMatchObject({ version: 2, objectId: made.objectId });
+      const listed = parse(await h.runner().run('canvas_prototype', { action: 'list' }));
+      expect(listed.prototypes.map((p: { id: string; latest: number }) => [p.id, p.latest])).toEqual([['demo', 2]]);
+      expect(parse(await h.runner().run('canvas_prototype', { action: 'read', id: 'demo' })).versions).toHaveLength(2);
+      // Another workspace's agent sees none of it.
+      expect(parse(await h.runner('agent-b').run('canvas_prototype', { action: 'list' })).prototypes).toEqual([]);
+      expect((await h.runner('agent-b').run('canvas_prototype', { action: 'remove', id: 'demo' })).isError).toBe(true);
+      const held = await h.runner().run('canvas_prototype', { action: 'remove', id: 'demo' });
+      expect(held.isError).toBe(true);
+      expect(held.text).toContain(made.objectId);
+      await h
+        .runner()
+        .run('canvas_delete', { operations: [{ kind: 'delete', opId: 'del-proto', objectId: made.objectId }] });
+      expect(parse(await h.runner().run('canvas_prototype', { action: 'remove', id: 'demo' }))).toEqual({
+        removed: 'demo',
+      });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('publishes one .html file on its own', async () => {
+    const h = await harness();
+    try {
+      const root = folder({ 'page.html': '<p>solo</p>', 'notes.md': 'not part of it' });
+      const made = parse(
+        await h.runner().run('canvas_prototype', { action: 'publish', path: join(root, 'page.html') })
+      );
+      expect(made.url).toBe('https://prototype.invalid/prototype/1/page.html');
+      expect(
+        parse(await h.runner().run('canvas_prototype', { action: 'read', id: 'prototype' })).versions[0].files
+      ).toBe(1);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('refuses a folder it cannot publish whole, before any request', async () => {
+    const outside = join(dir, 'outside-secret.json');
+    writeFileSync(outside, '{"token":1}');
+    const linked = folder({ 'index.html': 'x' });
+    symlinkSync(outside, join(linked, 'data.json'));
+    const linkedDir = folder({ 'index.html': 'x' });
+    symlinkSync(dir, join(linkedDir, 'up'));
+    const many: Record<string, string> = { 'index.html': 'x' };
+    for (let i = 0; i < PROTOTYPE_MAX_FILES; i++) many[`f${i}.js`] = '1';
+    const cases: [string, string | undefined, RegExp][] = [
+      [linked, undefined, /symbolic link/],
+      [linkedDir, undefined, /symbolic link/],
+      [folder({ 'index.html': 'x', '.git/config.json': '{}' }), undefined, /hidden folder/],
+      [folder({ 'index.html': 'x', '.env': 'S' }), undefined, /\.env/],
+      [folder({ 'index.html': 'x', 'run.sh': 'S' }), undefined, /run\.sh/],
+      [folder({ 'app.js': '1' }), undefined, /index\.html/],
+      [folder({ 'index.html': 'x' }), 'other.html', /other\.html/],
+      [folder({ 'index.html': 'x', 'big.js': 'a'.repeat(PROTOTYPE_MAX_FILE_BYTES + 1) }), undefined, /big\.js/],
+      [folder(many), undefined, new RegExp(String(PROTOTYPE_MAX_FILES))],
+      [join(dir, 'nowhere'), undefined, /not a readable folder/],
+    ];
+    for (const [path, entry, message] of cases)
+      await expect(readPrototypeFolder(path, entry), String(message)).rejects.toThrow(message);
+    const link = join(dir, 'link-to-folder');
+    symlinkSync(linked, link);
+    await expect(readPrototypeFolder(link, undefined)).rejects.toThrow(/not a readable folder/);
+
+    const h = await harness();
+    try {
+      const refused = await h.runner().run('canvas_prototype', { action: 'publish', path: linked });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('symbolic link');
+      expect(parse(await h.runner().run('canvas_prototype', { action: 'list' })).prototypes).toEqual([]);
+      for (const args of [
+        { action: 'publish' },
+        { action: 'nope' },
+        { action: 'list', id: 'demo' },
+        { action: 'read' },
+        { action: 'read', id: '../x' },
+        { action: 'remove', id: 'demo', path: linked },
+        { action: 'check', id: 'demo', workspaceId: 'other' },
+      ])
+        expect((await h.runner().run('canvas_prototype', args)).isError, JSON.stringify(args)).toBe(true);
+      const outsider = await h.runner('outside').run('canvas_prototype', { action: 'list' });
+      expect(outsider.isError).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("returns a check as a picture plus the page's own errors, marked as untrusted text", async () => {
+    const h = await harness();
+    const shot = pngImage(4, 3);
+    const handlers: Record<string, ((value: unknown) => void)[]> = {};
+    const page = {
+      async setViewport() {},
+      async setCacheEnabled() {},
+      async setRequestInterception() {},
+      on(event: string, handler: (value: unknown) => void) {
+        (handlers[event] ??= []).push(handler);
+      },
+      async goto() {
+        for (const handler of handlers.pageerror ?? []) handler(new Error('boom in page'));
+      },
+      async evaluate() {
+        return undefined;
+      },
+      async screenshot() {
+        return shot;
+      },
+      async emulateMediaFeatures() {},
+      async close() {},
+    };
+    launchHeadlessBrowser.mockResolvedValue({
+      async newPage() {
+        return page;
+      },
+      async close() {},
+      process: () => null,
+    } as unknown as HeadlessBrowser);
+    try {
+      const root = folder({ 'index.html': '<script>throw new Error("boom in page")</script>' });
+      await h.runner().run('canvas_prototype', { action: 'publish', path: root, id: 'demo' });
+      const checked = await h
+        .runner()
+        .run('canvas_prototype', { action: 'check', id: 'demo', width: 400, height: 300 });
+      expect(checked.isError, checked.text).toBeFalsy();
+      expect(checked.images).toEqual([{ mimeType: 'image/png', data: shot.toString('base64') }]);
+      expect(checked.text).toContain('untrusted data');
+      expect(checked.text).toContain('boom in page');
+      expect(checked.text).not.toContain(shot.toString('base64'));
+      expect(checked.text).not.toContain(dir);
+      const missing = await h.runner().run('canvas_prototype', { action: 'check', id: 'demo', version: 9 });
+      expect(missing.isError).toBe(true);
     } finally {
       await h.app.close();
     }

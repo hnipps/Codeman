@@ -227,10 +227,16 @@ export function capabilities() {
         note: 'POST assets with the image bytes (PNG, JPEG, GIF or WebP, 8 MB). Returns assetId, width and height; create an image object with content.assetId.',
       },
       {
+        name: 'canvas_prototype',
+        available: true,
+        objectTypes: ['embed'],
+        note: 'publish a folder of static files as a prototype Codeman stores and serves (an embed whose address is https://prototype.invalid/<id>/<version>/<entry>); list, read, check (a picture plus console errors) and remove. To show a page you built, publish it with canvas_prototype; do not embed a loopback preview.',
+      },
+      {
         name: 'canvas_screenshot',
         available: true,
         objectTypes: types,
-        note: 'PNG of one container or object via GET screenshot. The page has no network.',
+        note: 'PNG of one container or object via GET screenshot. The page has no network. A stored prototype is drawn as it renders; any other embed is a card.',
       },
     ],
     compoundCommands: ArrangeSchema.options.flatMap((s) => {
@@ -273,7 +279,7 @@ export function capabilities() {
         'content { type: image, url: "", alt, assetId }; assetId comes from canvas_upload_image and must be stored in this workspace',
       link: 'content { type: link, url, label, preview?, thumbnailAssetId? }; canvas_link_preview fetches label and thumbnail through the egress guard',
       embed:
-        'Convert with canvas_update: content type link becomes embed and back, keeping the object id. Embeds show a sandboxed live page; at most six frames load at once',
+        'Convert with canvas_update: content type link becomes embed and back, keeping the object id. Embeds show a sandboxed live page; at most six frames load at once. To show a page you built, publish it with canvas_prototype; do not embed a loopback preview, which goes blank when its session ends. A prototype address is written only by canvas_prototype (or copied from an embed that has one) and stays an embed',
       subcanvas: 'A container in this workspace; read its contents with canvas_read root',
       assets: 'Assets are content addressed and kept when no object references them',
     },
