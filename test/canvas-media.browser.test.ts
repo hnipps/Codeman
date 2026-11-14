@@ -339,6 +339,8 @@ describe('canvas media', () => {
     ).toEqual([
       ['Pick element', 'Pick element', ''],
       ['Reload page', 'Reload page', ''],
+      ['Dock in rail', 'Dock in rail', ''],
+      ['Open in full view', 'Open in full view', ''],
       ['Open in new tab', 'Open in new tab', ''],
       ['Back to link', 'Back to link', ''],
     ]);

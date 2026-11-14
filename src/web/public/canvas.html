@@ -154,6 +154,11 @@
         <ul id="sessionRows" aria-labelledby="sessionsTitle"></ul>
         <p id="sessionsAnnounce" class="sr" role="status"></p>
       </section>
+      <!-- Page slots and prototypes: the pages Codeman stores for this workspace. Not drawn while there are none. -->
+      <section id="prototypes" aria-labelledby="prototypesTitle" hidden>
+        <div class="section-head"><h2 id="prototypesTitle">Prototypes</h2></div>
+        <ul id="prototypeRows" aria-labelledby="prototypesTitle"></ul>
+      </section>
       <nav id="tree" aria-label="Canvas objects"></nav>
       <p id="shellLine" class="shell-only" hidden><a id="shellLineLink" href="classic"></a></p>
       <div class="outline-foot">
@@ -360,7 +365,11 @@
         ><button id="sheetParent" class="quiet">Focus parent</button>
       </div>
     </section>
-    <aside id="rail" aria-label="Canvas assistant, background tasks, reader, comments, history and Keys" hidden>
+    <aside
+      id="rail"
+      aria-label="Canvas assistant, background tasks, reader, comments, history, a docked page and Keys"
+      hidden
+    >
       <div class="panel-head">
         <span id="railTitle">Keys</span
         ><button id="closeRail" aria-label="Close current rail view" title="Close · Escape"></button>
@@ -517,6 +526,17 @@
             </button>
           </div>
         </form>
+      </div>
+      <!-- Page slots: one embed's live page docked in the rail. The frame is mounted by slots.ts, sandboxed. -->
+      <div id="pageView" class="rail-body" hidden>
+        <div class="page-bar">
+          <span id="pageOrigin" class="page-origin"></span
+          ><button id="pageReload" type="button" class="quiet">Reload</button
+          ><button id="pageShow" type="button" class="quiet" title="Select this embed and bring it into view">
+            Show on board
+          </button>
+        </div>
+        <div id="pageStage" class="slot-stage"></div>
       </div>
       <div id="tasksView" class="rail-body" tabindex="-1" hidden>
         <p class="secondary">

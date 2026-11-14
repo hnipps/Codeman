@@ -26,6 +26,7 @@ export const editShortcuts: Shortcut[] = [
   ['Add selection to chat', [['Mod', 'Enter']]],
   ['Add objects to chat (hold and drag a loop; inside a live page, its elements)', [['Q']]],
   ['Pick an element in the selected embed', [['I']]],
+  ['Dock the selected embed in the rail / open it in the full view', [['D'], ['F']]],
   ['Send chat message / line break', [['Enter'], ['Shift', 'Enter']]],
   ['Choose chat provider / model (focus the selector)', [['P'], ['Shift', 'P']]],
   ['Dictate into chat', [['B']]],

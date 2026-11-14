@@ -27,6 +27,9 @@ import { isLoopbackUrl, linkHost, pastedUrl } from './objects/link.js';
 import { embedStage, paintEmbed } from './objects/embed.js';
 import { screenToCanvas, type Point, type Rect } from './viewport.js';
 import { elementLabel, type ElementRef } from '../../../src/canvas/element-ref.js';
+import { parsePrototypeAddress } from '../../../src/canvas/prototype-address.js';
+import type { PageSlot } from '../../../src/canvas/view-schema.js';
+import { FrameLoader } from './frame-loader.js';
 import {
   clipToFrame,
   FRAME_ORIGIN,
@@ -47,6 +50,19 @@ export const MAX_LIVE_FRAMES = 6;
  * Codeman's origin with the login cookie.
  */
 export const EMBED_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads allow-modals';
+/**
+ * The one place a frame for an embed's page is made, for the board and for the page slots: the sandbox, the
+ * referrer policy and the tab order are the same wherever the page is shown.
+ */
+export function createEmbedFrame(title: string, embedUrl: string): HTMLIFrameElement {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', EMBED_SANDBOX);
+  frame.referrerPolicy = 'no-referrer';
+  frame.tabIndex = -1;
+  frame.title = title;
+  frame.src = embedUrl;
+  return frame;
+}
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_PASTED_IMAGES = 10;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -79,6 +95,22 @@ export type FrameHooks = {
   key?: (objectId: string, phase: 'down' | 'up') => void;
   /** Escape was pressed inside a frame. True when it was used up and the frame keeps the keyboard. */
   escape?: () => boolean;
+  /** Publishes this tab's view now; resolves when the server has answered. */
+  publishView?: () => Promise<void>;
+  /** A person asked for an embed's page in the rail or the full view, from the control they pressed. */
+  openPage?: (objectId: string, slot: PageSlot, opener: HTMLElement) => void;
+  /** The frames of the page slots. They are mounted elsewhere and heard here, through the one receiver. */
+  slots?: SlotFrameRegistry;
+};
+/**
+ * What the one message receiver needs from the page slots. A slot frame is heard for two things only, that
+ * its bridge runs and that Escape was pressed in it: it has no pick, no lasso and no element reply.
+ */
+export type SlotFrameRegistry = {
+  find(source: MessageEventSource): { frame: HTMLIFrameElement; objectId: string } | null;
+  heard(frame: HTMLIFrameElement, type: 'ready' | 'escape'): void;
+  /** An embed's Reload reloads the slots that show it too. */
+  reload(objectId: string): void;
 };
 const FLASH_MS = 1200;
 
@@ -95,7 +127,6 @@ const PreviewSchema = z.object({
     thumbnailAssetId: z.string().optional(),
   }),
 });
-const FrameSchema = z.object({ success: z.literal(true), data: z.object({ embedUrl: z.string() }) });
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 const node = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -107,8 +138,10 @@ export class MediaEditor {
   private pointer: Point | null = null;
   private pasteTimer: ReturnType<typeof setTimeout> | undefined;
   private replaceTarget: string | null = null;
-  private frameUrls = new Map<string, { url: string; embedUrl: string }>();
-  private frameRequests = new Map<string, Promise<string | null>>();
+  /** Frame addresses, shared with the page slots so an embed has one address wherever it shows. */
+  readonly loader: FrameLoader;
+  /** The tab is in the background: no frame is live until it is shown again. */
+  private suspended = false;
   private interacting: string | null = null;
   private dropTarget: HTMLElement | null = null;
   private fileInput: HTMLInputElement;
@@ -125,6 +158,11 @@ export class MediaEditor {
   private flashTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private host: MediaHost) {
+    this.loader = new FrameLoader({
+      url: host.url,
+      workspace: host.workspace,
+      publishView: () => this.hooks.publishView?.() ?? Promise.resolve(),
+    });
     const board = node('board');
     this.fileInput = document.createElement('input');
     this.fileInput.type = 'file';
@@ -211,7 +249,8 @@ export class MediaEditor {
     const web = o && (o.type === 'link' || o.type === 'embed') && o.content.type === o.type;
     const embed = document.getElementById('embedSelection');
     if (embed) {
-      embed.hidden = this.host.mobile.matches || !web;
+      // A prototype has no address a link card could open, and the server refuses the switch.
+      embed.hidden = this.host.mobile.matches || !web || !!parsePrototypeAddress(text(o.content.url));
       embed.textContent = o?.type === 'embed' ? 'Back to link' : 'Embed';
       embed.title = o?.type === 'embed' ? 'Show as a link card' : 'Show the live page';
     }
@@ -542,11 +581,17 @@ export class MediaEditor {
         break;
       case 'reload': {
         // Ask for the frame again: the address this page holds may have been retired by the server.
-        this.frameUrls.delete(object.id);
+        this.loader.reload(object.id);
         this.unmount(this.frameOf(object.id));
         this.frames();
+        this.hooks.slots?.reload(object.id);
         break;
       }
+      case 'dock':
+      case 'full':
+        this.hooks.openPage?.(object.id, control.dataset.mediaAction === 'dock' ? 'rail' : 'full', control);
+        // The slot decides where the keyboard goes; the board does not take it back below.
+        return;
       case 'pick':
         this.host.dispatch({ kind: 'selection', ids: [object.id] });
         this.togglePick(object.id);
@@ -587,7 +632,9 @@ export class MediaEditor {
           Math.hypot(a.rect.x + a.rect.width / 2 - middle.x, a.rect.y + a.rect.height / 2 - middle.y) -
           Math.hypot(b.rect.x + b.rect.width / 2 - middle.x, b.rect.y + b.rect.height / 2 - middle.y)
       );
-    const live = new Set(this.host.mobile.matches ? [] : candidates.slice(0, MAX_LIVE_FRAMES).map(({ el }) => el));
+    const live = new Set(
+      this.host.mobile.matches || this.suspended ? [] : candidates.slice(0, MAX_LIVE_FRAMES).map(({ el }) => el)
+    );
     const byId = new Map(this.host.objects().map((o) => [o.id, o]));
     for (const el of embeds) {
       const body = el.querySelector<HTMLElement>(':scope > .object-body');
@@ -603,6 +650,7 @@ export class MediaEditor {
     if (!(frame instanceof HTMLIFrameElement)) return;
     this.elementReplies.drop(frame);
     this.rectReplies.drop(frame);
+    this.loader.release(frame);
     frame.remove();
   }
   private pause(body: HTMLElement, stage: HTMLElement, object: ViewObject | undefined): void {
@@ -617,30 +665,25 @@ export class MediaEditor {
   }
   private mount(body: HTMLElement, stage: HTMLElement, object: ViewObject, url: string): void {
     const current = stage.querySelector<HTMLIFrameElement>(':scope > iframe');
-    const known = this.frameUrls.get(object.id);
-    if (current && known && known.url === url) return;
-    if (stage.dataset.note !== 'Loading') {
-      stage.dataset.note = 'Loading';
+    if (current && this.loader.held(object.id, url)) return;
+    const note = (words: string): void => {
+      if (stage.dataset.note === words) return;
+      stage.dataset.note = words;
       paintEmbed(body, object, { assetUrl: this.host.assetUrl });
-    }
-    void this.frameUrl(object.id, url).then((embedUrl) => {
-      if (!embedUrl || !stage.isConnected) {
-        if (!embedUrl && stage.isConnected) {
-          stage.dataset.note = 'Unavailable';
-          paintEmbed(body, object, { assetUrl: this.host.assetUrl });
-        }
+    };
+    // Two frames in a row never spoke: the page stays unavailable until Reload asks again.
+    if (this.loader.unavailable(object.id, url)) return note('Unavailable');
+    note('Loading');
+    void this.loader.address(object.id, url).then((embedUrl) => {
+      if (!embedUrl || !stage.isConnected || this.suspended) {
+        if (!embedUrl && stage.isConnected) note('Unavailable');
         return;
       }
       if (stage.querySelector(':scope > iframe')?.getAttribute('src') === embedUrl) return;
       this.unmount(stage.querySelector(':scope > iframe'));
       stage.querySelector(':scope > .embed-card')?.remove();
       stage.querySelector(':scope > .embed-shield')?.remove();
-      const frame = document.createElement('iframe');
-      frame.setAttribute('sandbox', EMBED_SANDBOX);
-      frame.referrerPolicy = 'no-referrer';
-      frame.tabIndex = -1;
-      frame.title = label(object) || linkHost(url);
-      frame.src = embedUrl;
+      const frame = createEmbedFrame(label(object) || linkHost(url), embedUrl);
       frame.addEventListener('load', () => {
         if (document.activeElement === frame && this.interacting !== object.id)
           node('board').focus({ preventScroll: true });
@@ -651,28 +694,21 @@ export class MediaEditor {
       stage.append(frame, shield);
       stage.classList.add('live');
       stage.dataset.note = '';
+      // A prototype whose frame never reports its bridge holds an address the server has retired.
+      this.loader.watch(frame, object.id, url, () => {
+        this.unmount(frame);
+        stage.classList.remove('live', 'interacting', 'picking', 'shielded');
+        if (this.interacting === object.id) this.interacting = null;
+        this.frames();
+      });
     });
   }
-  private frameUrl(id: string, url: string): Promise<string | null> {
-    const known = this.frameUrls.get(id);
-    if (known?.url === url) return Promise.resolve(known.embedUrl);
-    const key = `${id}\n${url}`;
-    const pending = this.frameRequests.get(key);
-    if (pending) return pending;
-    const request = fetch(this.host.url(`/api/canvas/${this.host.workspace}/objects/${encodeURIComponent(id)}/frame`), {
-      method: 'POST',
-    })
-      .then(async (response) => {
-        const parsed = FrameSchema.safeParse(await response.json());
-        if (!parsed.success) return null;
-        const embedUrl = this.host.url(parsed.data.data.embedUrl);
-        this.frameUrls.set(id, { url, embedUrl });
-        return embedUrl;
-      })
-      .catch(() => null)
-      .finally(() => this.frameRequests.delete(key));
-    this.frameRequests.set(key, request);
-    return request;
+  /** A hidden tab keeps no live frame; showing it again mounts them afresh. A page's own state is lost. */
+  suspend(on: boolean): void {
+    if (this.suspended === on) return;
+    this.suspended = on;
+    if (on) this.loader.forgetAll();
+    this.frames();
   }
   /** A click (not a drag) on an embed that was already selected hands the pointer and keys to its page. */
   private down: { x: number; y: number; selected: string[]; shield: HTMLElement | null; moved: boolean } | null = null;
@@ -712,6 +748,14 @@ export class MediaEditor {
     const frame = [...document.querySelectorAll<HTMLIFrameElement>('.embed-stage > iframe')].find(
       (candidate) => candidate.contentWindow === e.source
     );
+    if (!frame) {
+      // A page slot's frame goes through the same parser and is heard for less: no pick, no lasso, no reply.
+      const slot = this.hooks.slots?.find(e.source);
+      const said = slot ? parseFrameMessage(e.data, slot.objectId) : null;
+      if (slot && said?.type === 'ready') this.loader.spoke(slot.frame);
+      if (slot && (said?.type === 'ready' || said?.type === 'escape')) this.hooks.slots?.heard(slot.frame, said.type);
+      return;
+    }
     const objectId = frame?.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
     const message = frame && objectId ? parseFrameMessage(e.data, objectId) : null;
     if (!frame || !objectId || !message) return;
@@ -720,6 +764,7 @@ export class MediaEditor {
         this.bridged.add(frame);
         // A page that just loaded has new rectangles for whoever holds some.
         for (const listener of this.frameListeners) listener(objectId);
+        this.loader.spoke(frame);
         break;
       case 'escape':
         // A lasso the frame armed ends first, and the page keeps the keyboard.
@@ -769,7 +814,7 @@ export class MediaEditor {
 
   // ───────────── the frame bridge: pick, locate, lasso ─────────────
   connect(hooks: FrameHooks): void {
-    this.hooks = hooks;
+    this.hooks = { ...this.hooks, ...hooks };
   }
   private liveFrame(id: string): HTMLIFrameElement | null {
     return this.host.mobile.matches ? null : this.frameOf(id);
@@ -991,6 +1036,6 @@ export class MediaEditor {
   }
   /** Drop frame addresses of objects that are no longer embeds (removed, or switched back to a link): the server retired them. Called after every render. */
   forget(ids: Set<string>): void {
-    for (const id of [...this.frameUrls.keys()]) if (!ids.has(id)) this.frameUrls.delete(id);
+    this.loader.keep(ids);
   }
 }

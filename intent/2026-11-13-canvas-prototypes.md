@@ -20,7 +20,7 @@ Separately, comments, chat context and the hold-Q lasso only know whole canvas o
 
 **A prototype is a folder of static files that Codeman stores and serves.** An agent publishes a folder with the `canvas_prototype` tool. Codeman copies it into the workspace's data as an immutable version and places (or updates) an `embed` object whose address is `https://prototype.invalid/<id>/<version>/<entry>`. The files are served by Codeman on a capability path, sandboxed like every canvas frame. No agent session, port or process is involved, so the prototype outlives the session that made it.
 
-**A prototype is served only while its workspace is open.** A capability is minted only by the frame route, which a browser calls when the embed is on screen. Each request is refused unless some browser view of that workspace has reported in within the view registry's time limit. The browser also unloads every frame while its tab is hidden.
+**A prototype is served only while its workspace is open.** A capability is minted only by the frame route, which a browser calls when the embed is on screen. Each request is refused unless some browser view of that workspace has reported in within the view registry's time limit. The browser also unloads every frame while its tab is hidden. A tab hidden for a few seconds also withdraws its view, so serving stops at once; showing it again publishes the view first and then loads the frames. A frame request refused for want of a view is asked once more after the view is published, and a prototype frame whose page never reports in is asked for again once before it shows as unavailable.
 
 **Publishing again updates the embed in place.** The new version is a new address on the same object, so the frame reloads, undo returns to the earlier version, and comments stay on the object.
 
@@ -34,7 +34,7 @@ Separately, comments, chat context and the hold-Q lasso only know whole canvas o
 - Add to chat puts the element on the context shelf as its own chip. The sent message's context block lists it under its embed.
 - Holding Q and drawing a loop wholly inside one live frame captures the elements whose centres fall in the loop. Any other loop captures objects, as before. Q is heard while keyboard focus is inside a frame.
 
-**A prototype can stand in for chrome.** A prototype can be opened in the full view or docked in the right rail, by a person or by `canvas_view`, so a view under design is seen at its real size and place.
+**A prototype can stand in for chrome.** Any embed can be opened in the full view or docked in the right rail, by a person (two header actions, keys D and F, and the outline's Prototypes section) or by `canvas_view open-page` and `close-page`, so a view under design is seen at its real size and place. A slot shows an embed that is on the board; it is not an object and is not stored. There is one rail slot and one full slot. A slot's frame is sandboxed exactly like a board frame, has no element pick or lasso, and gets the keyboard only when the person clicks it or tabs into it. The full view for an embed is part of the canvas shell.
 
 ## Affected users and systems
 

@@ -354,6 +354,14 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
           return { success: true };
         }
       );
+      workspaceScope.delete<{ Params: { workspaceId: string; viewId: string } }>(
+        '/api/canvas/:workspaceId/views/:viewId',
+        async (req) => {
+          // The tab is hidden: it is no longer an open view, so prototypes stop being served for it.
+          views.remove(req.params.workspaceId, z.uuid().parse(req.params.viewId), ownerFor(req));
+          return { success: true };
+        }
+      );
       workspaceScope.get<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
         async (req, reply) => {
@@ -524,6 +532,15 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
               if ('targetIds' in action && action.targetIds && action.action !== 'context-remove')
                 normalizeTargets(state, action.targetIds);
               if (action.action === 'focus' && action.targetId) normalizeTargets(state, [action.targetId]);
+              if (action.action === 'open-page' && !liveEmbed(state, action.objectId))
+                return reply
+                  .code(400)
+                  .send(
+                    createErrorResponse(
+                      ApiErrorCode.INVALID_INPUT,
+                      'Only a live embed object of this workspace can be opened in the rail or the full view'
+                    )
+                  );
               return applyViewCommand(reply, ctx, views, req.params.workspaceId, viewId, canSee, action, requestId);
             }
             case 'canvas_read':

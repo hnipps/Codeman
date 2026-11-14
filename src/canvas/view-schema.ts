@@ -5,7 +5,10 @@ import { ElementRefSchema, MAX_ELEMENT_REFS } from './element-ref.js';
 
 /** One view publishes at most this often, so a pan cannot flood the server. */
 export const MIN_PUBLISH_GAP_MS = 250;
-export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant', 'tasks'] as const;
+export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant', 'tasks', 'page'] as const;
+/** Where one embed's live page can be shown besides its place on the board: docked in the right rail, or over the whole canvas. */
+export const PAGE_SLOTS = ['rail', 'full'] as const;
+export type PageSlot = (typeof PAGE_SLOTS)[number];
 const ViewportSchema = z
   .object({ x: z.number().finite(), y: z.number().finite(), zoom: z.number().min(0.1).max(4) })
   .strict();
@@ -39,6 +42,8 @@ export const PublishedViewSchema = z
       .regex(/^[a-zA-Z0-9_-]{1,128}$/)
       .nullable()
       .optional(),
+    /** The embed each page slot shows, or null; absent from an earlier page. `full` is null while a session's terminal has the full view. */
+    pages: z.object({ rail: IdSchema.nullable(), full: IdSchema.nullable() }).strict().optional(),
     appliedCommands: z.array(z.uuid()).max(20),
     /** The latest command this view refused, and why in plain words; absent when the latest one was applied. */
     refused: z
@@ -69,6 +74,9 @@ export const ViewActionSchema = z.discriminatedUnion('action', [
         .nullable(),
     })
     .strict(),
+  /** Show one live embed's page in the rail or over the whole canvas. Laptop views only; it takes no keystroke. */
+  z.object({ action: z.literal('open-page'), objectId: IdSchema, slot: z.enum(PAGE_SLOTS) }).strict(),
+  z.object({ action: z.literal('close-page'), slot: z.enum(PAGE_SLOTS) }).strict(),
 ]);
 export type ViewAction = z.infer<typeof ViewActionSchema>;
 /** What the server broadcasts to the tab that owns `viewId`. */
