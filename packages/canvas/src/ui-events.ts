@@ -31,7 +31,10 @@ export function viewEvent(action: ViewCommand, top?: string): [action: string, t
     case 'conversation':
       return ['conversation.show', action.id];
     case 'full-view':
-      return action.sessionId ? ['full-view.open', action.sessionId] : ['full-view.close', null];
+      if (!action.content) return ['full-view.close', null];
+      return action.content.kind === 'session' ? ['full-view.open', action.content.sessionId] : ['page.open', 'full'];
+    case 'page':
+      return action.objectId ? ['page.open', 'rail'] : ['page.close', 'rail'];
     case 'letters':
       return ['letters', action.enabled ? 'on' : 'off'];
     case 'enter':

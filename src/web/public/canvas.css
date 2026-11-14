@@ -2991,3 +2991,165 @@ textarea[readonly] {
   order: -1;
   max-height: 60%;
 }
+
+/* Page slots and prototypes. One embed's live page docked in the rail (`#pageView`) or over the whole canvas
+   (`#fullViewFrame.page`), under a slim bar; and the outline's Prototypes section. A slot's frame is removed
+   when it is not shown, never hidden. A phone shows no live pages, so it has none of the controls. */
+.page-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--panel);
+  font-size: 13px;
+}
+.page-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+.page-origin {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.page-bar button {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.page-bar button:hover,
+.page-bar button:focus-visible {
+  color: var(--text);
+}
+.page-bar button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+#pageView {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.slot-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  background: var(--canvas);
+}
+.slot-stage > iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.slot-stage > iframe:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* Over a slot's page until the person clicks it: a page gets the keyboard only when it is given. */
+.slot-shield {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+}
+.slot-shield[hidden] {
+  display: none;
+}
+.slot-note {
+  margin: auto;
+  padding: 16px;
+  color: var(--secondary);
+  font-size: 12px;
+  text-align: center;
+}
+#fullViewFrame.page {
+  flex-direction: column;
+}
+#fullViewFrame.page .slot-stage > iframe {
+  background: #fff;
+}
+/* The embed header's two slot actions: the full view is part of the shell. */
+:root:not([data-shell]) [data-media-action='full'] {
+  display: none;
+}
+#prototypes {
+  flex: 0 0 auto;
+  max-height: 30%;
+  overflow: auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--divider);
+}
+#prototypeRows {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.prototype-item {
+  display: flex;
+  align-items: center;
+}
+.prototype-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 12px;
+}
+.prototype-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prototype-version {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.prototype-slot {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  color: var(--secondary);
+}
+.prototype-slot svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.prototype-slot:hover,
+.prototype-slot:focus-visible {
+  color: var(--text);
+}
+:is(.prototype-row, .prototype-slot):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+:root[data-phone] .prototype-row {
+  min-height: 44px;
+}

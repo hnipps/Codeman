@@ -12,7 +12,9 @@ import {
 } from './context.js';
 import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import { pan, zoomAt, pinch, fit, type Point, type Rect, type Viewport } from './viewport.js';
-export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant' | 'tasks';
+export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant' | 'tasks' | 'page';
+/** What covers the canvas as a full view: a session's own terminal page, or one embed's live page. Never both. */
+export type FullViewContent = { kind: 'session'; sessionId: string } | { kind: 'embed'; objectId: string };
 export type ViewState = {
   viewport: Viewport;
   focusId: string | null;
@@ -31,8 +33,10 @@ export type ViewState = {
   conversationId: string | null;
   /** The provider and model the NEXT new conversation starts on; null until a person or an agent chooses. A view setting: nothing is written. */
   choice: { cliId: string | null; model: string } | null;
-  /** The session whose terminal covers the canvas as a full view, or null. A view setting: nothing is written. */
-  fullView: string | null;
+  /** What covers the canvas as a full view, or null. A view setting: nothing is written. */
+  fullView: FullViewContent | null;
+  /** The embed whose live page the rail's Page view shows; set exactly while `rail` holds `page`. */
+  page: string | null;
 };
 export type ViewCommand =
   | { kind: 'pan'; delta: Point }
@@ -59,7 +63,9 @@ export type ViewCommand =
   | { kind: 'context-elements-drop'; objectIds: string[] }
   | { kind: 'conversation'; id: string | null }
   | { kind: 'assistant-choice'; choice: ViewState['choice'] }
-  | { kind: 'full-view'; sessionId: string | null }
+  | { kind: 'full-view'; content: FullViewContent | null }
+  /** Dock one embed's page in the rail, or undock it with null. */
+  | { kind: 'page'; objectId: string | null }
   | { kind: 'escape' }
   | { kind: 'letters'; enabled: boolean }
   | { kind: 'enter'; id: string }
@@ -78,7 +84,23 @@ export const initialView = (): ViewState => ({
   conversationId: null,
   choice: null,
   fullView: null,
+  page: null,
 });
+const isEmbed = (objects: ViewObject[], id: string): boolean => objects.some((o) => o.id === id && o.type === 'embed');
+/** The Page view holds a page for as long as it is in the rail, and none after it leaves. */
+const docked = (state: ViewState, rail: RailView[]): ViewState => ({
+  ...state,
+  rail,
+  page: rail.includes('page') ? state.page : null,
+});
+/** Slots whose embed was deleted or turned back into a link show nothing: the state lets go of them. */
+export function slotsPrune(state: ViewState, objects: ViewObject[]): ViewState {
+  const page = state.page !== null && isEmbed(objects, state.page) ? state.page : null;
+  const fullView =
+    state.fullView?.kind === 'embed' && !isEmbed(objects, state.fullView.objectId) ? null : state.fullView;
+  if (page === state.page && fullView === state.fullView) return state;
+  return { ...state, fullView, page, rail: page === null ? state.rail.filter((v) => v !== 'page') : state.rail };
+}
 export function command(state: ViewState, action: ViewCommand, objects: ViewObject[]): ViewState {
   switch (action.kind) {
     case 'pan':
@@ -125,9 +147,22 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
     case 'outline':
       return { ...state, outlineOpen: action.open };
     case 'rail':
+      // The Page view has nothing to show until an embed is docked in it.
+      if (action.view === 'page' && state.page === null) return state;
       return { ...state, rail: [...state.rail.filter((v) => v !== action.view), action.view] };
     case 'rail-close':
-      return { ...state, rail: state.rail.filter((v) => v !== action.view) };
+      return docked(
+        state,
+        state.rail.filter((v) => v !== action.view)
+      );
+    case 'page':
+      if (action.objectId === null)
+        return docked(
+          state,
+          state.rail.filter((v) => v !== 'page')
+        );
+      if (!isEmbed(objects, action.objectId)) return state;
+      return { ...state, page: action.objectId, rail: [...state.rail.filter((v) => v !== 'page'), 'page'] };
     case 'context-add':
       return {
         ...state,
@@ -163,9 +198,10 @@ export function command(state: ViewState, action: ViewCommand, objects: ViewObje
     case 'assistant-choice':
       return { ...state, choice: action.choice };
     case 'full-view':
-      return { ...state, fullView: action.sessionId };
+      if (action.content?.kind === 'embed' && !isEmbed(objects, action.content.objectId)) return state;
+      return { ...state, fullView: action.content };
     case 'escape':
-      return { ...state, rail: state.rail.slice(0, -1) };
+      return docked(state, state.rail.slice(0, -1));
     case 'letters':
       return { ...state, letters: action.enabled };
     case 'enter': {

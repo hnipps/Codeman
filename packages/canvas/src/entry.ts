@@ -1,7 +1,16 @@
 import { wheelFactor } from './viewport.js';
 import { DesktopEditor } from './edit.js';
 import { joinBasePath } from '../../../src/config/base-path.js';
-import { command, initialView, subcanvasIndex, viewPath, type ViewCommand, type ViewState } from './commands.js';
+import {
+  command,
+  initialView,
+  slotsPrune,
+  subcanvasIndex,
+  viewPath,
+  type FullViewContent,
+  type ViewCommand,
+  type ViewState,
+} from './commands.js';
 import { container, label, readable, type ViewObject } from './model.js';
 import { Renderer } from './render.js';
 import { CanvasSync } from './sync.js';
@@ -23,7 +32,11 @@ import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import { ViewSync } from './view-sync.js';
 import { reportClientErrors } from './client-errors.js';
 import { reportClassicLinks, uiEvent, viewEvent } from './ui-events.js';
-import { PublishedViewSchema, type ViewAction } from '../../../src/canvas/view-schema.js';
+import { PublishedViewSchema, type PageSlot, type ViewAction } from '../../../src/canvas/view-schema.js';
+import { SlotFrames, agentPageCloseRefusal, agentPageOpenRefusal } from './slots.js';
+import { embedOrigin } from './objects/embed.js';
+import { watchPresence } from './presence.js';
+import { PrototypesView } from './prototypes-view.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
 import type { SessionViewRow } from './sessions.js';
@@ -375,11 +388,13 @@ function choose(id: string, toggle: boolean, bring: boolean): void {
 function dispatch(action: ViewCommand): void {
   // A full view is a frame as well as a field: the command goes through the functions that own both.
   if (action.kind === 'full-view' && !settingFullView) {
-    if (action.sessionId === null) closeFullView(true);
-    else openFullView(action.sessionId, null, true);
+    if (action.content === null) closeFullView(true);
+    else if (action.content.kind === 'session') openFullView(action.content.sessionId, null, true);
+    else openPageFullView(action.content.objectId, null, true);
     return;
   }
   if (action.kind === 'rail' && state.rail.at(-1) !== action.view) railOrigins.set(action.view, opener());
+  if (action.kind === 'page' && action.objectId && state.rail.at(-1) !== 'page') railOrigins.set('page', opener());
   // An agent's view command already leaves a request line; this stream is what the person did.
   const event = agentActing ? null : viewEvent(action, state.rail.at(-1));
   if (event) uiEvent(...event);
@@ -486,6 +501,8 @@ function paint(): void {
   node('historyView').hidden = state.rail.at(-1) !== 'history';
   node('assistantView').hidden = state.rail.at(-1) !== 'assistant';
   node('tasksView').hidden = state.rail.at(-1) !== 'tasks';
+  node('pageView').hidden = state.rail.at(-1) !== 'page';
+  paintPage();
   button('tasksTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'tasks'));
   tasks.sync();
   button('assistantTool').setAttribute('aria-pressed', String(state.rail.at(-1) === 'assistant'));
@@ -517,7 +534,9 @@ function paint(): void {
             ? 'History'
             : top === 'reader'
               ? readerTitle
-              : 'Keys';
+              : top === 'page'
+                ? pageTitle(state.page)
+                : 'Keys';
   document.documentElement.style.setProperty('--outline-space', state.outlineOpen && !mobile.matches ? '192px' : '0px');
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
@@ -538,6 +557,24 @@ function paint(): void {
   editor.paint();
 }
 let railView: string | undefined;
+/** An embed's name as a slot's bar says it. */
+function pageTitle(objectId: string | null): string {
+  const object = objects.find((o) => o.id === objectId);
+  return object ? label(object) || embedOrigin(pageAddress(object)) : 'Page';
+}
+const pageAddress = (object: ViewObject): string => (typeof object.content.url === 'string' ? object.content.url : '');
+/** The rail's Page view and the full view's page follow the objects: a new address loads a fresh frame. */
+function paintPage(): void {
+  const docked = objects.find((o) => o.id === state.page);
+  if (docked && !mobile.matches) slots.show('rail', node('pageStage'), docked.id);
+  else slots.clear('rail');
+  node('pageOrigin').textContent = docked ? embedOrigin(pageAddress(docked)) : '';
+  if (state.fullView?.kind === 'embed' && fullView) {
+    const covering = objects.find((o) => o.id === (state.fullView?.kind === 'embed' ? state.fullView.objectId : ''));
+    if (covering) fullView.describe(pageTitle(covering.id), embedOrigin(pageAddress(covering)));
+  }
+  slots.sync();
+}
 function paintSheet(): void {
   const o = objects.find((o) => o.id === state.focusId);
   const show =
@@ -828,6 +865,27 @@ function applyViewAction(action: ViewAction): string | void {
           openFullView(sessionId, null, false);
         }
         break;
+      case 'open-page': {
+        // An agent's open shows a page to the person where it would live: it takes no focus and no keystroke.
+        const refusal = agentPageOpenRefusal({
+          slot: action.slot,
+          shell: !!fullView,
+          embed: objects.some((o) => o.id === action.objectId && o.type === 'embed'),
+          touch: mobile.matches || mobile.touch,
+          typing: typingIn(document.activeElement),
+        });
+        if (refusal) return refusal;
+        if (action.slot === 'rail') dispatch({ kind: 'page', objectId: action.objectId });
+        else openPageFullView(action.objectId, null, false);
+        break;
+      }
+      case 'close-page': {
+        const refusal = agentPageCloseRefusal(slots.using(action.slot));
+        if (refusal) return refusal;
+        if (action.slot === 'rail') dispatch({ kind: 'page', objectId: null });
+        else if (state.fullView?.kind === 'embed') closeFullView(false);
+        break;
+      }
     }
   } finally {
     keyboard = was;
@@ -852,7 +910,11 @@ const views = new ViewSync({
     draftBytes: assistant.draftBytes(),
     phone: mobile.matches,
     choice: state.choice ?? { cliId: null, model: '' },
-    ...(shell ? { fullView: state.fullView } : {}),
+    ...(shell ? { fullView: state.fullView?.kind === 'session' ? state.fullView.sessionId : null } : {}),
+    // Published once the server's view schema knows the field, like `contextElements` above.
+    ...('pages' in PublishedViewSchema.shape
+      ? { pages: { rail: state.page, full: state.fullView?.kind === 'embed' ? state.fullView.objectId : null } }
+      : {}),
   }),
 });
 const contextCapture = new ContextCapture({
@@ -1084,6 +1146,12 @@ document.addEventListener('keydown', (e) => {
       const target = state.selected.length === 1 ? objects.find((o) => o.id === state.selected[0]) : undefined;
       if (target?.type === 'embed') editor.media.togglePick(target.id);
       else node('announcement').textContent = 'Select one embed to pick an element in its page';
+    } else if ((key === 'd' || key === 'f') && !e.shiftKey && !e.repeat && !mobile.matches) {
+      const target = state.selected.length === 1 ? objects.find((o) => o.id === state.selected[0]) : undefined;
+      if (target?.type !== 'embed')
+        node('announcement').textContent = 'Select one embed to open its page in the rail or the full view';
+      else if (key === 'f' && !fullView) node('announcement').textContent = 'The full view is part of the canvas shell';
+      else openPage(target.id, key === 'd' ? 'rail' : 'full', null);
     } else if (key === 'p' && !e.repeat && !mobile.matches) {
       e.preventDefault();
       openAssistant(false);
@@ -1265,6 +1333,10 @@ const editor = new DesktopEditor({
     renderer.root(state.root);
     paintedRoot = state.root;
     editor.media.forget(new Set(objects.filter((o) => o.type === 'embed').map((o) => o.id)));
+    // A slot whose embed was deleted or turned back into a link shows nothing: it closes.
+    const kept = slotsPrune(state, objects);
+    if (state.fullView !== kept.fullView) closeFullView(false);
+    if (state.page !== kept.page) dispatch({ kind: 'page', objectId: null });
     comments.mark(renderer.elements);
     if (lostFocus) board.focus({ preventScroll: true });
     renderer.filter(input('search').value);
@@ -1294,9 +1366,77 @@ const editor = new DesktopEditor({
   },
 });
 window.canvasEdit = editor.adapter();
+/** The page slots: one embed's live page docked in the rail, and one over the whole canvas. */
+const slots = new SlotFrames({
+  loader: editor.media.loader,
+  objects: () => objects,
+  live: () => !mobile.matches && !away,
+  release: (slot) => {
+    // Escape in a slot's page, or a page that took focus unasked: the keyboard comes back to the canvas.
+    if (slot === 'full') fullView?.focusBar();
+    else board.focus({ preventScroll: true });
+  },
+});
+/** A person's own open of an embed's page in a slot. A phone shows no live pages, so it has no slots. */
+function openPage(objectId: string, slot: PageSlot, from: HTMLElement | null): void {
+  if (mobile.matches || mobile.touch) {
+    node('announcement').textContent = 'Live pages are not shown on a phone or touch device';
+    return;
+  }
+  if (slot === 'full') return openPageFullView(objectId, from, true);
+  // The same embed docked again closes the view, as the dock's own toggles do.
+  if (state.page === objectId && state.rail.at(-1) === 'page') dispatch({ kind: 'escape' });
+  else dispatch({ kind: 'page', objectId });
+}
+/** Brings an object onto the screen from wherever the view is: its own sub-canvas opens first. */
+function showOnBoard(objectId: string): void {
+  const home = subcanvasIndex(objects).get(objectId) ?? null;
+  for (let guard = 0; home === null && state.root !== null && guard < 64; guard++) dispatch({ kind: 'leave' });
+  if (home !== null && state.root !== home) dispatch({ kind: 'enter', id: home });
+  choose(objectId, false, true);
+}
+const prototypes = new PrototypesView({
+  url,
+  workspace: workspaceId,
+  held: (objectId) => objects.some((o) => o.id === objectId && o.type === 'embed'),
+  show: showOnBoard,
+  open: (objectId, slot, from) => openPage(objectId, slot, from),
+  slots: () => (mobile.matches || mobile.touch ? [] : fullView ? ['rail', 'full'] : ['rail']),
+  say: (message) => (node('announcement').textContent = message),
+});
+button('pageReload').onclick = () => {
+  if (state.page) slots.reload(state.page);
+};
+button('pageShow').onclick = () => {
+  if (state.page) showOnBoard(state.page);
+};
+/**
+ * A tab in the background keeps no live frame and is not an open view: the server stops serving the
+ * workspace's prototypes for it. Showing the tab again publishes the view first, then mounts the frames.
+ */
+let away = false;
+watchPresence({
+  suspend: () => {
+    away = true;
+    editor.media.suspend(true);
+    slots.sync();
+    views.pause();
+  },
+  resume: () => {
+    void views.resume().then(() => {
+      away = false;
+      editor.media.suspend(false);
+      slots.sync();
+      prototypes.changed();
+    });
+  },
+});
 editor.media.connect({
   key: (objectId, phase) => contextCapture.frameKey(objectId, phase),
   escape: () => contextCapture.frameEscape(),
+  publishView: () => views.flush(),
+  openPage: (objectId, slot, from) => openPage(objectId, slot, from),
+  slots,
 });
 editor.media.addPickAction({
   id: 'add-to-chat',
@@ -1331,10 +1471,10 @@ window.canvasComments = {
  * them; a terminal, and Open terminal on any row, is the session's own page. The canvas sends that page nothing.
  */
 let settingFullView = false;
-function setFullView(sessionId: string | null): void {
+function setFullView(content: FullViewContent | null): void {
   settingFullView = true;
   try {
-    dispatch({ kind: 'full-view', sessionId });
+    dispatch({ kind: 'full-view', content });
   } finally {
     settingFullView = false;
   }
@@ -1358,6 +1498,11 @@ const fullView = shell
       conceal: () => voice.conceal(),
       closed: () => {
         setFullView(null);
+      },
+      page: {
+        show: (stage, objectId) => slots.show('full', stage, objectId),
+        reload: (objectId) => slots.reload(objectId),
+        clear: () => slots.clear('full'),
       },
     })
   : null;
@@ -1397,7 +1542,7 @@ function openFullView(sessionId: string, opener: HTMLElement | null, focus: bool
     return;
   }
   fullView.open(
-    sessionId,
+    { kind: 'session', sessionId },
     row.name,
     opener ??
       (document.activeElement instanceof HTMLElement && document.activeElement !== document.body
@@ -1405,7 +1550,26 @@ function openFullView(sessionId: string, opener: HTMLElement | null, focus: bool
         : null),
     focus
   );
-  setFullView(sessionId);
+  setFullView({ kind: 'session', sessionId });
+}
+/**
+ * Shows one embed's live page over the whole canvas, under a slim bar. The frame is the slots': sandboxed like
+ * the one on the board, from the same capability address. `focus: false` is an agent's open.
+ */
+function openPageFullView(objectId: string, from: HTMLElement | null, focus: boolean): void {
+  const object = objects.find((o) => o.id === objectId && o.type === 'embed');
+  if (!fullView || !object || mobile.matches || mobile.touch) return;
+  fullView.open(
+    { kind: 'embed', objectId },
+    pageTitle(objectId),
+    from ??
+      (document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+        ? document.activeElement
+        : null),
+    focus,
+    embedOrigin(pageAddress(object))
+  );
+  setFullView({ kind: 'embed', objectId });
 }
 function closeFullView(focus: boolean): void {
   if (!fullView || fullView.current() === null) return;
@@ -1470,6 +1634,7 @@ const sync = new CanvasSync(
     editor.receive(snapshot);
     comments.mark(renderer.elements);
     history.changed();
+    prototypes.changed();
     if (!frame) frame = requestAnimationFrame(paint);
   },
   (status) => {
@@ -1548,6 +1713,7 @@ window.addEventListener(
     sync.stop();
     shellView?.stop();
     views.stop();
+    prototypes.stop();
     assistant.stop();
     tasks.stop();
   },

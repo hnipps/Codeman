@@ -48,6 +48,10 @@ export class ViewSync {
   private seen: string[] = [];
   private refused: { commandId: string; reason: string } | null = null;
   private beat: ReturnType<typeof setInterval> | undefined;
+  /** The tab is in the background: nothing is published and the server no longer lists this view. */
+  private paused = false;
+  /** Callers waiting for the next publish to be answered. */
+  private waiting: (() => void)[] = [];
   constructor(
     private options: {
       url: (path: string) => string;
@@ -80,7 +84,52 @@ export class ViewSync {
     if (!reason) this.applied = [...this.applied, event.commandId].slice(-20);
     this.schedule(true);
   }
+  /** Publishes now, whatever changed, and resolves once the server has answered (or the publish was given up). */
+  flush(): Promise<void> {
+    if (this.paused) return Promise.resolve();
+    return new Promise((done) => {
+      this.waiting.push(done);
+      this.schedule(true);
+    });
+  }
+  /**
+   * The tab went to the background. The heartbeat stops and the server is told this view is closed, so it
+   * stops serving the workspace's prototypes for it without waiting out the registry's time limit.
+   */
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    clearInterval(this.beat);
+    this.beat = undefined;
+    this.queued = undefined;
+    this.settle();
+    // A publish still travelling would list the view again after the leave: the leave follows its answer.
+    if (!this.inFlight) this.leave();
+  }
+  /** The tab is in front again: publish at once and resolve when the server lists this view. */
+  resume(): Promise<void> {
+    if (!this.paused) return Promise.resolve();
+    this.paused = false;
+    this.beat = setInterval(() => this.schedule(true), HEARTBEAT_MS);
+    return this.flush();
+  }
+  private leave(): void {
+    void fetch(this.options.url(`/api/canvas/${this.options.workspace}/views/${this.viewId}`), {
+      method: 'DELETE',
+      keepalive: true,
+    }).catch(() => {
+      /* The registry's own time limit drops the view. */
+    });
+  }
+  private settle(): void {
+    const waiting = this.waiting;
+    this.waiting = [];
+    for (const done of waiting) done();
+  }
   private schedule(force: boolean): void {
+    if (this.paused) return;
     if (this.inFlight) {
       this.queued = this.queued || force;
       return;
@@ -94,14 +143,18 @@ export class ViewSync {
       Math.max(publishDelay(Date.now(), this.lastAnsweredAt, MIN_PUBLISH_GAP_MS + 50), 50)
     );
   }
-  private async send(force: boolean): Promise<void> {
+  private async send(asked: boolean): Promise<void> {
+    // A caller waiting on `flush()` is owed a real publish, even when a quiet one was already timed.
+    const force = asked || this.waiting.length > 0;
     const body = JSON.stringify({
       ...this.options.read(),
       appliedCommands: this.applied,
       ...(this.refused ? { refused: this.refused } : {}),
     });
     if (!force && body === this.last) return;
-    if (!PublishedViewSchema.safeParse(JSON.parse(body)).success) return;
+    if (!PublishedViewSchema.safeParse(JSON.parse(body)).success) return this.settle();
+    const waiting = this.waiting;
+    this.waiting = [];
     this.inFlight = true;
     let limited = false;
     const abort = new AbortController();
@@ -121,6 +174,8 @@ export class ViewSync {
     clearTimeout(giveUp);
     this.lastAnsweredAt = Date.now();
     this.inFlight = false;
+    for (const done of waiting) done();
+    if (this.paused) return this.leave();
     const queued = this.queued;
     this.queued = undefined;
     if (limited || queued !== undefined) this.schedule((limited && force) || queued === true);
