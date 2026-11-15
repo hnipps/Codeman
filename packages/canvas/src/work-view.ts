@@ -524,7 +524,6 @@ export class WorkView {
     }
   }
 
-  /** Items or Routines in the full view; the choice is kept while the page is open. */
   setMode(mode: 'items' | 'routines'): void {
     if (this.mode === mode) return;
     this.mode = mode;

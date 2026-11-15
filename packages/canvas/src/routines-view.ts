@@ -92,7 +92,6 @@ const known = (t: { kind: string }): t is RoutineTrigger =>
   ['interval', 'daily', 'weekly', 'work-item'].includes(t.kind);
 const knownGate = (g: { kind: string }): g is RoutineGate => g.kind === 'work-count';
 
-/** "Ready for work, unassigned: at least 1" style, the words the form uses. */
 export function gateLabel(gate: RoutineGate): string {
   const who = ASSIGNEES.find(([value]) => value === gate.assignee)?.[1] ?? gate.assignee;
   const bounds = [
@@ -155,7 +154,7 @@ export class RoutinesView {
         this.failed = '';
       } else this.failed = body?.error ?? 'Routines could not be read';
     } catch {
-      // Offline: the routines already shown stay.
+      // Offline: keep the rows already shown.
     }
     this.paint();
   }
@@ -233,8 +232,6 @@ export class RoutinesView {
     return li;
   }
 
-  // ---- Writes -----------------------------------------------------------------
-
   private async request(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
     if (!this.host.online()) {
       this.host.say('Routines cannot change while Codeman cannot be reached');
@@ -268,8 +265,6 @@ export class RoutinesView {
     if (data?.fire) this.host.say(`${row.key}: ${fireLabel(data.fire)}`);
     await this.load();
   }
-
-  // ---- The form ---------------------------------------------------------------
 
   private edit(row: RoutineRow | null): void {
     this.draft = {
@@ -513,7 +508,6 @@ export class RoutinesView {
               ? { kind: 'work-item', status: WORK_STATUSES.find((s) => s !== 'backlog') ?? WORK_STATUSES[0] }
               : { kind: 'weekly', days: [1], time: '07:00' };
       repaint();
-      // The rows were rebuilt; the new kind's select keeps the keyboard.
       this.form?.querySelectorAll<HTMLSelectElement>('.routine-trigger select')[index]?.focus();
     };
     row.append(kind);

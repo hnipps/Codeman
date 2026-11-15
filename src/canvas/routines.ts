@@ -38,7 +38,6 @@ export const MAX_KEPT_FIRES = 20;
 export const KEEP_FINISHED_RUNS = 3;
 /** A fire still marked pending after this long was cut off (a crash or restart) and is recorded as failed. */
 export const PENDING_FIRE_MS = 10 * 60_000;
-/** Work items a routine remembers firing for; one no longer in its status is forgotten, so this is rarely reached. */
 export const MAX_FIRED_ITEMS = 500;
 
 export const routineKey = (number: number): string => `R-${number}`;
@@ -46,8 +45,6 @@ export function parseRoutineKey(key: string): number | null {
   const match = /^(?:[rR]-)?([1-9][0-9]{0,8})$/.exec(key.trim());
   return match ? Number(match[1]) : null;
 }
-
-// ---- Triggers -------------------------------------------------------------
 
 const Time = z.string().refine((value) => parseHHMM(value) !== null, 'A time looks like 07:30');
 export const TriggerSchema = z.discriminatedUnion('kind', [
@@ -186,8 +183,6 @@ export function latestDue(triggers: readonly ScheduleTrigger[], after: number, n
   return best;
 }
 
-// ---- Stored shapes --------------------------------------------------------
-
 const at = z.number().int().nonnegative();
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
@@ -298,8 +293,6 @@ export const RoutineStateFileSchema = z
   .passthrough();
 export type RoutineStateFile = z.infer<typeof RoutineStateFileSchema>;
 export const emptyRoutineState = (): RoutineStateFile => ({ version: 1, routines: {} });
-
-// ---- Planning -------------------------------------------------------------
 
 /** A routine's runs as the task list shows them, found by `startedBy.routineId`. Derived, never stored. */
 export type RunView = {
@@ -581,8 +574,6 @@ export function pruneFiredItems(state: RoutineStateFile, items: readonly WorkIte
   return changed ? { ...state, routines } : null;
 }
 
-// ---- Requests and edits ---------------------------------------------------
-
 const Title = z.string().transform(oneLine).pipe(z.string().min(1, 'A title is needed').max(MAX_ROUTINE_TITLE_CHARS));
 const Description = z.string().transform(multiLine).pipe(z.string().max(MAX_ROUTINE_DESCRIPTION_CHARS));
 const Prompt = z
@@ -651,9 +642,9 @@ export type RoutineRefusal = keyof typeof ROUTINE_REFUSALS;
 
 /**
  * Who may do what. An agent may read, create (saved disabled), switch one off and change its fields; enabling, Run
- * now and delete are a person's, and an agent's change to what an enabled routine runs switches it off
- * (`updateRoutine`), so a person enables the prompt that will actually run: enabling is the moment a person authorises prompts with no human message
- * (docs/self-building.md rule 4), and an agent that could enable one would start work with no lineage to walk.
+ * now and delete are a person's. Enabling is the moment a person authorises prompts with no human message
+ * (docs/self-building.md rule 4), so an agent's change to what an enabled routine runs switches it off
+ * (`updateRoutine`) and a person enables the prompt that will actually run.
  */
 export function routineRefusal(
   caller: 'person' | 'agent',
