@@ -13,7 +13,7 @@ A message typed in the canvas assistant box reaches the session as a `<canvas-co
 - Normal messages are unchanged. A path such as `/home/x/file.ts is broken` is not a command.
 - An agent's message (`canvas_conversation send`) and an Ask agent request from a comment thread stay wrapped whatever they start with. This is a prompt-injection boundary, pinned by route tests.
 - Only a CLI that declares `capabilities.slashCommands` gets it (claude, set in `stock.ts`). Every other CLI keeps the wrapper. There is no branch on a CLI id.
-- Delivery: a command such as `/help` replaces the composer with its own panel and fires no prompt hook. For a command, a composer no longer on screen after the write counts as confirmation. The thread drops a delivered command, because Claude Code writes no prompt row for one.
+- Delivery: a command such as `/help` replaces the composer with its own panel and fires no prompt hook. For a command, a composer no longer on screen after the write counts as confirmation. Claude Code writes no prompt row for a command (nothing at all for `/help`), so the thread shows a delivered command from the sending browser's own copy as `You · Command`, with a note that its output is in the terminal, ordered by its write time among the transcript rows. (The first release dropped it, and the person saw nothing after sending `/help`.)
 
 ## Affected users and systems
 
@@ -29,6 +29,8 @@ A message typed in the canvas assistant box reaches the session as a `<canvas-co
 - The user-message hook, the stuck-composer guard, the approval guard and the rate limit are unchanged.
 
 ## Open questions
+
+- Command output (`<local-command-stdout>`, e.g. "Session renamed to: …") is in the transcript but the shared reader drops it; showing it in the thread needs an opt-in on that reader.
 
 - A multi-line command reaches the CLI whole, with its line breaks. This release did not measure how Claude Code splits a command's arguments across lines.
 - Other CLIs that have slash commands (codex, copilot) can declare the capability once someone has measured them.

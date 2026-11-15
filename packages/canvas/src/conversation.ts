@@ -7,7 +7,7 @@ import {
 } from '../../../src/canvas/conversation-schema.js';
 
 /** One prompt or reply row as the session's transcript reports it. */
-export type TranscriptRow = { role: 'user' | 'assistant'; text: string; queued?: boolean };
+export type TranscriptRow = { role: 'user' | 'assistant'; text: string; queued?: boolean; at?: number };
 /** A message the person sent that the transcript has not shown yet. */
 export type SentMessage = { messageId: string; text: string; refIds: string[]; elements?: ElementRef[] };
 export type Turn = {
@@ -23,6 +23,10 @@ export type Turn = {
   messageId?: string;
   /** Set for a prompt asked from a comment thread: the rail links back to it. */
   origin?: ThreadOrigin;
+  /** When it happened (ms), where known: `weave()` places a turn the transcript does not hold by it. */
+  at?: number;
+  /** A slash command the person ran: its output, if any, is in the session's terminal. */
+  command?: boolean;
 };
 const refLabel = (m: ConversationMessage['refs'][number]): string =>
   m.descendants.length ? `${m.label} +${m.descendants.length}` : m.label;
@@ -46,7 +50,9 @@ export function buildThread(
   const byId = new Map(messages.map((m) => [m.messageId.toLowerCase(), m]));
   const seen = new Set<string>();
   const turns: Turn[] = rows.map((row, index): Turn => {
-    if (row.role === 'assistant') return { key: `r${index}`, who: 'claude', label: agent, text: row.text, refs: [] };
+    const at = row.at !== undefined ? { at: row.at } : {};
+    if (row.role === 'assistant')
+      return { key: `r${index}`, who: 'claude', label: agent, text: row.text, refs: [], ...at };
     const { messageId, text } = splitPrompt(row.text);
     if (messageId) seen.add(messageId.toLowerCase());
     const record = messageId ? byId.get(messageId.toLowerCase()) : undefined;
@@ -58,6 +64,7 @@ export function buildThread(
       text,
       refs: record?.refs.map(refLabel) ?? [],
       ...(record && threadOrigin(record) ? { origin: threadOrigin(record) } : {}),
+      ...at,
     };
   });
   const local = new Map(sent.map((m) => [m.messageId.toLowerCase(), m]));
@@ -67,8 +74,9 @@ export function buildThread(
     const state = stateOf(m);
     const text = local.get(id)?.text;
     // A delivered message the transcript has not caught up with yet still shows, if this page knows its text. A
-    // delivered slash command never gets a row of its own (the CLI writes its output instead), so it is not kept.
-    if (state === 'delivered' && (text === undefined || m.command === true)) continue;
+    // slash command never gets a prompt row, so a delivered one stays, placed by when it was written.
+    if (state === 'delivered' && text === undefined) continue;
+    const command = m.command === true;
     const kind = who(m);
     const word =
       state === 'queued'
@@ -81,12 +89,13 @@ export function buildThread(
     turns.push({
       key: `s${m.messageId}`,
       who: kind,
-      label: labelFor(kind, word),
+      label: labelFor(kind, command && state === 'delivered' ? ' · Command' : word),
       text: text ?? 'This message was sent from another page; its text is not kept here.',
       refs: m.refs.map(refLabel),
       ...(state === 'delivered' ? {} : { pending: state }),
       messageId: m.messageId,
       ...(threadOrigin(m) ? { origin: threadOrigin(m) } : {}),
+      ...(command ? { command: true, at: m.submittedAt ?? m.sentAt } : {}),
     });
   }
   return turns;
