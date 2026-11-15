@@ -15,13 +15,18 @@ import {
   createWork,
   CreateWorkSchema,
   emptyWorkFile,
+  encodeWorkFile,
   parseWorkKey,
+  readyQueue,
   reportWork,
   ReportWorkSchema,
   updateWork,
   UpdateWorkSchema,
   workLine,
   workRelated,
+  WorkFileSchema,
+  workPosition,
+  WORK_STATUSES,
   WorkToolSchema,
   type WorkFile,
 } from '../src/canvas/work.js';
@@ -50,7 +55,7 @@ describe('work items: pure changes', () => {
     let file = emptyWorkFile();
     const a = made(file, 'First');
     file = a.file;
-    const b = made(file, 'Second', { status: 'todo' });
+    const b = made(file, 'Second', { status: 'needs-refinement' });
     expect(a.item.number).toBe(1);
     expect(a.item.status).toBe('backlog');
     expect(b.item.number).toBe(2);
@@ -162,14 +167,27 @@ describe('work items: pure changes', () => {
       expect(workRelated(result.file, result.filed[0]!).createdFrom?.key).toBe('W-1');
     });
 
-    it('ask: records the question as Needs you and leaves the status alone; answering clears it', () => {
+    it('ask: records the question as Needs you and moves to Human required; answering sends it to Needs refinement', () => {
       const { file } = made(emptyWorkFile(), 'Unsure', { status: 'in-progress' });
       const asked = report(file, { outcome: 'ask', note: 'Two orders conflict.', question: 'Keep the saved one?' });
       if (!asked.ok) throw new Error(asked.message);
-      expect(asked.item.status).toBe('in-progress');
+      expect(asked.item.status).toBe('human-required');
+      expect(asked.item.history[1]!.text).toBe('Moved from In progress to Human required');
       expect(asked.item.needs).toMatchObject({ question: 'Keep the saved one?', sessionId: agent.sessionId });
+      // Not straight to Ready for work, neither with the answer nor before it.
+      for (const body of [{ needs: null, status: 'ready-for-work' }, { status: 'ready-for-work' }])
+        expect(updateWork(asked.file, 1, UpdateWorkSchema.parse(body), ctx())).toMatchObject({
+          ok: false,
+          code: 'INVALID_INPUT',
+        });
       const answered = updateWork(asked.file, 1, UpdateWorkSchema.parse({ needs: null }), ctx());
-      expect(answered.ok && answered.item.needs).toBeUndefined();
+      if (!answered.ok) throw new Error(answered.message);
+      expect(answered.item.needs).toBeUndefined();
+      expect(answered.item.status).toBe('needs-refinement');
+      expect(answered.item.history.map((e) => e.text).slice(0, 2)).toEqual([
+        'Marked the question answered',
+        'Moved from Human required to Needs refinement',
+      ]);
     });
 
     it('refuses a report whose parts do not fit its outcome', () => {
@@ -180,6 +198,144 @@ describe('work items: pure changes', () => {
         ok: false,
         code: 'INVALID_INPUT',
       });
+    });
+  });
+
+  describe('Backlog: only a person promotes out of it', () => {
+    it('refuses an agent that moves an item out of Backlog without the instruction, and records it when given', () => {
+      const { file } = made(emptyWorkFile(), 'Idea');
+      for (const status of ['needs-refinement', 'ready-for-work', 'not-doing'])
+        expect(updateWork(file, 1, UpdateWorkSchema.parse({ status }), ctx(agent))).toMatchObject({
+          ok: false,
+          code: 'INVALID_INPUT',
+        });
+      const result = updateWork(
+        file,
+        1,
+        UpdateWorkSchema.parse({ status: 'needs-refinement', instruction: 'Harry: pick up the idea  about lanes' }),
+        ctx(agent)
+      );
+      if (!result.ok) throw new Error(result.message);
+      expect(result.item.history.map((e) => e.text).slice(0, 2)).toEqual([
+        `Moved out of Backlog on the person's instruction: "Harry: pick up the idea about lanes"`,
+        'Moved from Backlog to Needs refinement',
+      ]);
+      // A person needs no instruction; an agent may put items into Backlog freely.
+      expect(updateWork(file, 1, UpdateWorkSchema.parse({ status: 'done' }), ctx(person)).ok).toBe(true);
+      const back = updateWork(result.file, 1, UpdateWorkSchema.parse({ status: 'backlog' }), ctx(agent));
+      expect(back.ok && back.item.status).toBe('backlog');
+    });
+
+    it('holds a report that would move an item out of Backlog to the same rule', () => {
+      const { file } = made(emptyWorkFile(), 'Idea');
+      const at = (body: Record<string, unknown>) => reportWork(file, 1, ReportWorkSchema.parse(body), ctx(agent));
+      expect(at({ outcome: 'done', note: 'n' })).toMatchObject({ ok: false, code: 'INVALID_INPUT' });
+      expect(at({ outcome: 'ask', note: 'n', question: 'q?' })).toMatchObject({ ok: false, code: 'INVALID_INPUT' });
+      expect(at({ outcome: 'continue', note: 'n' }).ok).toBe(true);
+      const done = at({ outcome: 'done', note: 'n', instruction: 'Do W-1 now' });
+      expect(done.ok && done.item.status).toBe('done');
+    });
+  });
+
+  describe('Ready for work: priority is position', () => {
+    function lane() {
+      let file = emptyWorkFile();
+      for (const title of ['A', 'B', 'C']) file = made(file, title, { status: 'ready-for-work' }).file;
+      return file;
+    }
+    const keys = (file: WorkFile) => readyQueue(file).map((i) => i.number);
+
+    it('puts an item entering the lane at the bottom, and moves it by position', () => {
+      let file = lane();
+      expect(keys(file)).toEqual([1, 2, 3]);
+      expect(workPosition(file, 3)).toBe(3);
+      const top = updateWork(file, 3, UpdateWorkSchema.parse({ position: 1 }), ctx(agent));
+      if (!top.ok) throw new Error(top.message);
+      file = top.file;
+      expect(keys(file)).toEqual([3, 1, 2]);
+      expect(top.item.history[0]!.text).toBe('Moved to position 1 in Ready for work');
+      // Only the moved item changes; the others keep their revisions.
+      expect(file.items.map((i) => i.revision)).toEqual([1, 1, 2]);
+      // Past the end is the bottom; the same place changes nothing.
+      const bottom = updateWork(file, 3, UpdateWorkSchema.parse({ position: 99 }), ctx());
+      expect(bottom.ok && keys(bottom.file)).toEqual([1, 2, 3]);
+      const same = updateWork(file, 3, UpdateWorkSchema.parse({ position: 1 }), ctx());
+      expect(same.ok && same.file).toBe(file);
+    });
+
+    it('places an item entering at a position, drops one leaving, and refuses a position outside the lane', () => {
+      let file = lane();
+      file = made(file, 'D', { status: 'needs-refinement' }).file;
+      const enter = updateWork(file, 4, UpdateWorkSchema.parse({ status: 'ready-for-work', position: 2 }), ctx());
+      if (!enter.ok) throw new Error(enter.message);
+      expect(keys(enter.file)).toEqual([1, 4, 2, 3]);
+      const leave = updateWork(enter.file, 1, UpdateWorkSchema.parse({ status: 'in-progress' }), ctx());
+      if (!leave.ok) throw new Error(leave.message);
+      expect(keys(leave.file)).toEqual([4, 2, 3]);
+      expect(workPosition(leave.file, 1)).toBeNull();
+      expect(updateWork(leave.file, 1, UpdateWorkSchema.parse({ position: 1 }), ctx())).toMatchObject({
+        ok: false,
+        code: 'INVALID_INPUT',
+      });
+    });
+  });
+
+  describe('migration of Todo and the stored form', () => {
+    const stored = (items: Record<string, unknown>[], extra: Record<string, unknown> = {}) => ({
+      version: 1,
+      next: items.length + 1,
+      items: items.map((i, n) => ({
+        number: n + 1,
+        title: `T${n + 1}`,
+        author: person,
+        createdAt: 1,
+        updatedAt: 1,
+        revision: 1,
+        history: [],
+        ...i,
+      })),
+      ...extra,
+    });
+
+    it('reads a Todo item by its assignee, and a split one by its todoStatus', () => {
+      const file = WorkFileSchema.parse(
+        stored([
+          { status: 'todo', assignee: { kind: 'person' } },
+          { status: 'todo', assignee: null },
+          { status: 'todo', assignee: { kind: 'session', sessionId: 's-1' }, sessions: ['s-1'] },
+          { status: 'todo', assignee: { kind: 'person' }, todoStatus: 'ready-for-work' },
+          { status: 'in-progress', todoStatus: 'human-required' },
+        ])
+      );
+      expect(file.items.map((i) => i.status)).toEqual([
+        'human-required',
+        'needs-refinement',
+        'needs-refinement',
+        'ready-for-work',
+        'in-progress',
+      ]);
+      expect(file.items[2]!.assignee).toEqual({ kind: 'session', sessionId: 's-1' });
+      expect(file.readyOrder).toEqual([4]);
+      expect(file.items.every((i) => !('todoStatus' in i))).toBe(true);
+    });
+
+    it('writes only the five statuses the previous release reads, and reads back what it wrote', () => {
+      let file = emptyWorkFile();
+      for (const status of WORK_STATUSES) file = made(file, status, { status }).file;
+      const disk = encodeWorkFile(file) as { version: number; items: { status: string; todoStatus?: string }[] };
+      expect(disk.version).toBe(1);
+      expect(disk.items.map((i) => [i.status, i.todoStatus])).toEqual([
+        ['backlog', undefined],
+        ['todo', 'needs-refinement'],
+        ['todo', 'human-required'],
+        ['todo', 'ready-for-work'],
+        ['in-progress', undefined],
+        ['done', undefined],
+        ['not-doing', undefined],
+      ]);
+      const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(disk)));
+      expect(back.items.map((i) => i.status)).toEqual([...WORK_STATUSES]);
+      expect(back.readyOrder).toEqual([4]);
     });
   });
 
@@ -220,9 +376,21 @@ describe('work items: routes and side file', () => {
   });
 
   it('creates, changes and reads an item, keeping the file private', async () => {
-    const created = await inject({ method: 'POST', url: api(), payload: { title: 'Outline order', status: 'todo' } });
+    const created = await inject({
+      method: 'POST',
+      url: api(),
+      payload: { title: 'Outline order', status: 'needs-refinement' },
+    });
     expect(created.statusCode).toBe(201);
-    expect(created.json().data?.item).toMatchObject({ key: 'W-1', status: 'todo', author: { kind: 'human' } });
+    expect(created.json().data?.item).toMatchObject({
+      key: 'W-1',
+      status: 'needs-refinement',
+      author: { kind: 'human' },
+    });
+    expect(JSON.parse(readFileSync(workPath(ws), 'utf8')).items[0]).toMatchObject({
+      status: 'todo',
+      todoStatus: 'needs-refinement',
+    });
     expect(statSync(workPath(ws)).mode & 0o077).toBe(0);
     const moved = await inject({
       method: 'PATCH',
@@ -268,12 +436,27 @@ describe('work items: routes and side file', () => {
     expect(read.json().data).toMatchObject({ related: { created: [{ key: 'W-2' }] } });
   });
 
+  it('lists Ready for work in pickup order, with positions', async () => {
+    const tool = (args: Record<string, unknown>) =>
+      inject({ method: 'POST', url: `/api/canvas/${ws}/command`, payload: { tool: 'canvas_work', arguments: args } });
+    for (const title of ['R1', 'R2'])
+      await tool({ action: 'create', title, status: 'ready-for-work', requestId: crypto.randomUUID() });
+    const moved = await tool({ action: 'update', key: 'W-4', position: 1 });
+    expect(moved.json().data).toMatchObject({ item: { key: 'W-4', position: 1 } });
+    const listed = await tool({ action: 'list', status: 'ready-for-work' });
+    const items = (listed.json().data as { items: { key: string; position: number }[] }).items;
+    expect(items.map((i) => [i.key, i.position])).toEqual([
+      ['W-4', 1],
+      ['W-3', 2],
+    ]);
+  });
+
   it('keeps unknown keys on write, and never writes over a file it cannot read', async () => {
     const raw = JSON.parse(readFileSync(workPath(ws), 'utf8'));
     raw.future = { kept: true };
     raw.items[0].later = 'kept';
     writeFileSync(workPath(ws), JSON.stringify(raw));
-    await inject({ method: 'PATCH', url: api('/W-2'), payload: { status: 'todo' } });
+    await inject({ method: 'PATCH', url: api('/W-2'), payload: { status: 'human-required' } });
     const after = JSON.parse(readFileSync(workPath(ws), 'utf8'));
     expect(after.future).toEqual({ kept: true });
     expect(after.items[0].later).toBe('kept');

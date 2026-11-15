@@ -1,5 +1,5 @@
 /**
- * @fileoverview Work on the canvas page: the outline's Work section, the full view of five lanes (Shift+W) and an
+ * @fileoverview Work on the canvas page: the outline's Work section, the full view of seven lanes (Shift+W) and an
  * item's detail in the rail (rail view `work`). The pure part is `work-model.ts`; the server is
  * `routes/canvas-work-routes.ts`.
  *
@@ -7,6 +7,10 @@
  * `canvas.html` carries only the stylesheet link. Every string from an item or a session is set with `textContent`.
  * Nothing here changes an item without a person's press: a move is a drag, Shift+Left/Right on a focused card or the
  * Status select; linked sessions are read for display only. The board, its camera and its selection are untouched.
+ *
+ * Seven lanes (W-48): on a desktop Done and Not doing share the last column (`.work-closed`), so six columns fit and
+ * the rest scrolls sideways; a phone shows one lane behind wrapping tabs. Ready for work is in pickup order: a drag
+ * within it, Shift+Up/Down on a card or Move up/down in the detail sets the item's `position`.
  */
 import { uuid } from './ids.js';
 import { STATE_GLYPHS, STATE_WORDS, parseSessions } from './sessions.js';
@@ -18,7 +22,9 @@ import {
   itemState,
   laneItems,
   openCount,
+  outlineItems,
   parseWork,
+  readyStep,
   sessionLabel,
   stepStatus,
   workCounts,
@@ -49,7 +55,9 @@ const FILTERS: [WorkFilter, string][] = [
 ];
 const EMPTY: Record<WorkStatus, string> = {
   backlog: 'Ideas and later work land here',
-  todo: 'Nothing queued. Pull something from Backlog',
+  'needs-refinement': 'Nothing waiting for detail. New captures land here',
+  'human-required': 'Nothing waiting on a person',
+  'ready-for-work': 'Nothing ready. Refine an item and move it here',
   'in-progress': 'Nobody is working on anything',
   done: 'Finished work shows here',
   'not-doing': 'Decided against',
@@ -98,6 +106,7 @@ export class WorkView {
   private menu = false;
   private phoneLane: WorkStatus = 'in-progress';
   private showAllDone = false;
+  private lanesStale = false;
   private opener: HTMLElement | null = null;
   private asked = 0;
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -196,7 +205,7 @@ export class WorkView {
       this.query = this.search.value;
       this.paintLanes();
     };
-    const hint = el('span', 'work-hint', 'Drag cards, or ⇧← ⇧→ on a focused card');
+    const hint = el('span', 'work-hint', 'Drag cards, ⇧← ⇧→ to move, ⇧↑ ⇧↓ to reorder Ready for work');
     const add = btn('primary work-new', 'New item', () => this.startAdding('backlog'));
     add.title = 'New item · N';
     const close = btn('work-close', '', () => this.closeFull());
@@ -328,21 +337,45 @@ export class WorkView {
   // ---- Actions ----------------------------------------------------------------
 
   /** Moves an item to another lane. A person's move is undoable from the notice for a few seconds. */
-  async move(item: WorkRow, to: WorkStatus, undoable = true): Promise<void> {
-    if (item.status === to) return;
+  async move(item: WorkRow, to: WorkStatus, undoable = true, position?: number): Promise<void> {
+    if (item.status === to) {
+      if (position !== undefined) await this.reorder(item, position);
+      return;
+    }
     const from = item.status;
     // Shown at once; the server's answer replaces it, a refusal reloads.
-    this.replace({ ...item, status: to });
+    const shown = position !== undefined ? position - 0.5 : 1e9;
+    this.replace({ ...item, status: to, ...(to === 'ready-for-work' ? { position: shown } : {}) });
     this.paint();
-    const saved = await this.send('PATCH', `/${item.key}`, { status: to, expectedRevision: item.revision });
+    const saved = await this.send('PATCH', `/${item.key}`, {
+      status: to,
+      ...(position !== undefined ? { position } : {}),
+      expectedRevision: item.revision,
+    });
     if (!saved) return;
     this.replace(saved);
     this.paint();
+    // Entering or leaving Ready for work shifts the positions of the cards around it.
+    if (to === 'ready-for-work' || from === 'ready-for-work') void this.load();
     if (undoable)
       this.notify(`${item.key} moved to ${WORK_STATUS_NAMES[to]}`, () => {
         const now = this.items.find((i) => i.number === item.number);
         if (now && now.status === to) void this.move(now, from, false);
       });
+  }
+  /**
+   * Puts a Ready for work item at `position` (1 is the top). Other cards shift, so the lane is read again once the
+   * server answers: their positions changed without a change of their own.
+   */
+  private async reorder(item: WorkRow, position: number): Promise<void> {
+    if (item.status !== 'ready-for-work' || item.position === position) return;
+    this.replace({ ...item, position: position < (item.position ?? 0) ? position - 0.5 : position + 0.5 });
+    this.paint();
+    const saved = await this.send('PATCH', `/${item.key}`, { position, expectedRevision: item.revision });
+    if (!saved) return;
+    this.replace(saved);
+    await this.load();
+    this.host.say(`${item.key} is number ${saved.position ?? position} in Ready for work`);
   }
   private async create(title: string, status: WorkStatus): Promise<void> {
     const made = await this.send('POST', '', { title, status, requestId: uuid() });
@@ -466,7 +499,9 @@ export class WorkView {
   paint(): void {
     this.paintSection();
     this.view.hidden = !this.full;
-    if (this.full) this.paintLanes();
+    // A repaint during a drag would replace the card holding the pointer and lose the drop; it waits for the end.
+    if (this.full && this.drag) this.lanesStale = true;
+    else if (this.full) this.paintLanes();
     if (!this.detail.hidden) this.paintDetail();
   }
 
@@ -483,7 +518,7 @@ export class WorkView {
         row.dataset.workControl = `count-${c.status}`;
         row.dataset.status = c.status;
         row.append(el('span', 'work-count-name', WORK_STATUS_NAMES[c.status]));
-        if (c.unassigned) row.append(el('span', 'work-flag', `${c.unassigned} unassigned`));
+        // The outline is narrow: the unassigned count is in the label here and on the lane's head.
         row.append(el('span', 'work-n', String(c.count)));
         row.setAttribute(
           'aria-label',
@@ -493,7 +528,7 @@ export class WorkView {
         return li;
       })
     );
-    const progress = laneItems(this.items, 'in-progress', this.sessions);
+    const progress = outlineItems(this.items, this.sessions);
     this.active.hidden = !this.loaded;
     this.active.replaceChildren(
       ...(progress.length
@@ -507,11 +542,15 @@ export class WorkView {
             glyph.setAttribute('aria-hidden', 'true');
             const title = el('span', 'work-active-title');
             title.append(el('span', 'work-key', item.key), ' ', item.title);
-            row.append(glyph, title, el('span', 'work-active-meta', state ? STATE_WORDS[state] : 'In progress'));
+            row.append(
+              glyph,
+              title,
+              el('span', 'work-active-meta', state ? STATE_WORDS[state] : WORK_STATUS_NAMES[item.status])
+            );
             li.append(row);
             return li;
           })
-        : [el('li', 'work-none', 'Nothing in progress')])
+        : [el('li', 'work-none', 'Nothing in progress or waiting on you')])
     );
     if (focusKey)
       this.section
@@ -531,7 +570,10 @@ export class WorkView {
       b.textContent = `${WORK_STATUS_NAMES[status]} ${this.items.filter((i) => i.status === status).length}`;
       b.setAttribute('aria-pressed', String(this.phoneLane === status));
     }
-    this.lanes.replaceChildren(...WORK_STATUSES.map((status) => this.lane(status)));
+    // Done and Not doing share one column on a desktop; a phone shows one lane at a time either way.
+    const closed = el('div', 'work-closed');
+    closed.append(this.lane('done'), this.lane('not-doing'));
+    this.lanes.replaceChildren(...WORK_STATUSES.filter((s) => !workClosed(s)).map((s) => this.lane(s)), closed);
     if (focusCard)
       this.lanes.querySelector<HTMLElement>(`.work-card[data-number="${focusCard}"]`)?.focus({ preventScroll: true });
     else if (focusAdd) this.lanes.querySelector<HTMLElement>(`[data-work-add="${focusAdd}"]`)?.focus();
@@ -546,8 +588,9 @@ export class WorkView {
     lane.setAttribute('aria-label', WORK_STATUS_NAMES[status]);
     const head = el('div', 'work-lane-head');
     head.append(el('h2', '', WORK_STATUS_NAMES[status]), el('span', 'work-n', String(all.length)));
-    const unassigned = status === 'todo' ? all.filter((i) => i.assignee === null).length : 0;
+    const unassigned = status === 'ready-for-work' ? all.filter((i) => i.assignee === null).length : 0;
     if (unassigned) head.append(el('span', 'work-flag', `${unassigned} unassigned`));
+    if (status === 'ready-for-work' && all.length) head.append(el('span', 'work-lane-note', 'Top first'));
     const body = el('div', 'work-lane-body');
     let hidden = 0;
     if (status === 'done' && !this.showAllDone && cards.length > DONE_SHOWN + 2) {
@@ -565,7 +608,7 @@ export class WorkView {
           this.paintLanes();
         })
       );
-    if (status === 'backlog' || status === 'todo') body.append(this.adder(status));
+    if (status === 'backlog' || status === 'needs-refinement') body.append(this.adder(status));
     lane.append(head, body);
     return lane;
   }
@@ -649,10 +692,15 @@ export class WorkView {
     card.setAttribute('aria-selected', String(this.open === item.number && !this.detail.hidden));
     card.setAttribute(
       'aria-label',
-      `${item.key} ${item.title}. ${assigneeLabel(item, this.sessions)}${state ? `, ${STATE_WORDS[state]}` : ''}`
+      `${item.position !== undefined && item.status === 'ready-for-work' ? `Number ${item.position}. ` : ''}${item.key} ${item.title}. ${assigneeLabel(item, this.sessions)}${state ? `, ${STATE_WORDS[state]}` : ''}`
     );
     const top = el('div', 'work-card-top');
     top.append(el('span', 'work-key', item.key), el('span', 'work-card-title', item.title));
+    if (item.position !== undefined && item.status === 'ready-for-work') {
+      const rank = el('span', 'work-rank', String(item.position));
+      rank.title = `Number ${item.position} in Ready for work`;
+      top.prepend(rank);
+    }
     card.append(top);
     if (!quiet) {
       const meta = el('div', 'work-card-meta');
@@ -703,6 +751,16 @@ export class WorkView {
         this.lanes
           .querySelector<HTMLElement>(`.work-card[data-number="${item.number}"]`)
           ?.focus({ preventScroll: false })
+      );
+    } else if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      // Ready for work only: priority is position.
+      stop();
+      if (e.repeat) return;
+      const to = readyStep(this.items, item, e.key === 'ArrowDown' ? 1 : -1);
+      if (to === null) return;
+      void this.reorder(item, to);
+      requestAnimationFrame(() =>
+        this.lanes.querySelector<HTMLElement>(`.work-card[data-number="${item.number}"]`)?.focus()
       );
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       stop();
@@ -756,7 +814,10 @@ export class WorkView {
       if (!d.on) return this.openItem(d.number);
       const item = this.items.find((i) => i.number === d.number);
       const to = d.over?.dataset.lane as WorkStatus | undefined;
-      if (item && to) void this.move(item, to);
+      if (!item || !to) return;
+      // Into or within Ready for work, the drop point is the position; elsewhere the lane is enough.
+      const position = to === 'ready-for-work' && d.over ? this.dropPosition(d.over, d.y, item.number) : undefined;
+      void this.move(item, to, true, position);
     };
     card.addEventListener('pointermove', move);
     card.addEventListener('pointerup', end, { once: true });
@@ -777,6 +838,7 @@ export class WorkView {
       this.view.append(ghost);
       d.ghost = ghost;
     }
+    d.y = e.clientY;
     d.ghost!.style.left = `${e.clientX - 20}px`;
     d.ghost!.style.top = `${e.clientY - 16}px`;
     const lane =
@@ -789,6 +851,23 @@ export class WorkView {
       d.over = lane;
     }
   }
+  /** The position a drop at `y` means in a Ready for work lane: before the first card whose middle is below it. */
+  private dropPosition(lane: HTMLElement, y: number, dragged: number): number {
+    const cards = [...lane.querySelectorAll<HTMLElement>('.work-card')].filter(
+      (c) => c.dataset.number !== String(dragged)
+    );
+    const before = cards.findIndex((c) => {
+      const box = c.getBoundingClientRect();
+      return y < box.top + box.height / 2;
+    });
+    const anchor = before === -1 ? null : this.items.find((i) => String(i.number) === cards[before]!.dataset.number);
+    if (!anchor?.position) return cards.length + 1;
+    const own = this.items.find((i) => i.number === dragged);
+    // Dragged from above the anchor inside the lane: the anchor moves up one when the card leaves.
+    return own?.status === 'ready-for-work' && own.position !== undefined && own.position < anchor.position
+      ? anchor.position - 1
+      : anchor.position;
+  }
   private cancelDrag(): void {
     const d = this.drag;
     if (!d) return;
@@ -796,6 +875,10 @@ export class WorkView {
     d.over?.classList.remove('over');
     d.ghost?.remove();
     this.drag = null;
+    if (this.lanesStale) {
+      this.lanesStale = false;
+      if (this.full) this.paintLanes();
+    }
   }
 
   // ---- Detail -----------------------------------------------------------------
@@ -850,6 +933,19 @@ export class WorkView {
     }
     status.onchange = () => void this.move(item, status.value as WorkStatus);
     parts.push(this.field('Status', status));
+    if (item.status === 'ready-for-work' && item.position !== undefined) {
+      const size = this.items.filter((i) => i.status === 'ready-for-work').length;
+      const place = el('div', 'work-place');
+      place.append(el('span', 'work-place-n', `${item.position} of ${size}, top is picked up first`));
+      const up = btn('line', 'Move up', () => void this.reorder(item, item.position! - 1));
+      up.dataset.workDetail = 'up';
+      up.disabled = readyStep(this.items, item, -1) === null;
+      const down = btn('line', 'Move down', () => void this.reorder(item, item.position! + 1));
+      down.dataset.workDetail = 'down';
+      down.disabled = readyStep(this.items, item, 1) === null;
+      place.append(up, down);
+      parts.push(this.field('Position', place));
+    }
 
     const pick = el('button', 'work-pick');
     pick.type = 'button';
@@ -886,7 +982,9 @@ export class WorkView {
         go.dataset.workDetail = 'answer';
         actions.append(go);
       }
+      // Answered, a Human required item goes back to Needs refinement so its readiness is checked again.
       const answered = btn('line', 'Mark answered', () => void this.patch(item, { needs: null }));
+      if (item.status === 'human-required') answered.title = 'Moves it to Needs refinement';
       answered.dataset.workDetail = 'answered';
       actions.append(answered);
       box.append(

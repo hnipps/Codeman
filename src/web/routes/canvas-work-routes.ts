@@ -92,8 +92,8 @@ async function answer(ctx: CanvasPort, workspaceId: string, result: Result, crea
   }
   if (!result.duplicate) await announce(ctx, workspaceId);
   const outcome = ok({
-    item: workRow(result.item),
-    ...(result.filed.length ? { filed: result.filed.map(workRow) } : {}),
+    item: workRow(result.item, result.file),
+    ...(result.filed.length ? { filed: result.filed.map((i) => workRow(i, result.file)) } : {}),
     ...(result.duplicate ? { duplicate: true } : {}),
   });
   return created && !result.duplicate ? { ...outcome, code: 201 } : outcome;
@@ -104,7 +104,7 @@ export function listWork(workspaceId: string, brief = false): Outcome {
   if (!read.ok) return refuse(409, ApiErrorCode.CONFLICT, workFileProblem(read.reason));
   return ok({
     next: workKey(read.file.next),
-    items: brief ? read.file.items.map(workBrief) : read.file.items.map(workRow),
+    items: read.file.items.map((i) => (brief ? workBrief(i, read.file) : workRow(i, read.file))),
   });
 }
 export function readWorkItem(workspaceId: string, number: number): Outcome {
@@ -112,7 +112,7 @@ export function readWorkItem(workspaceId: string, number: number): Outcome {
   if (!read.ok) return refuse(409, ApiErrorCode.CONFLICT, workFileProblem(read.reason));
   const item = findWork(read.file, number);
   if (!item) return refuse(404, ApiErrorCode.NOT_FOUND, `NOT_FOUND: ${workKey(number)} does not exist`);
-  return ok({ item: workRow(item), related: workRelated(read.file, item) });
+  return ok({ item: workRow(item, read.file), related: workRelated(read.file, item) });
 }
 export async function createWorkItem(
   ctx: CanvasPort,
@@ -191,8 +191,11 @@ export async function workTool(
     case 'list': {
       const listed = listWork(workspaceId, true);
       if (!input.status || listed.code !== 200) return listed;
-      const data = (listed.body as { data: { next: string; items: { status: string }[] } }).data;
-      return ok({ ...data, items: data.items.filter((i) => i.status === input.status) });
+      const data = (listed.body as { data: { next: string; items: { status: string; position?: number }[] } }).data;
+      // Ready for work answers in pickup order, top first.
+      const items = data.items.filter((i) => i.status === input.status);
+      if (input.status === 'ready-for-work') items.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+      return ok({ ...data, items });
     }
     case 'read':
       return readWorkItem(workspaceId, input.key);

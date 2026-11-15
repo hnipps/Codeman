@@ -1,6 +1,7 @@
 /**
  * @fileoverview The Work view's pure part (`packages/canvas/src/work-model.ts`): an item's live state in the
- * Sessions vocabulary, lane order, filters, counts and the lane step Shift+Left/Right takes.
+ * Sessions vocabulary, lane order (Ready for work by position), filters, counts, the outline's list and the steps
+ * Shift+Left/Right and Shift+Up/Down take.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,7 +10,9 @@ import {
   laneItems,
   matchesFilter,
   openCount,
+  outlineItems,
   parseWork,
+  readyStep,
   stepStatus,
   workCounts,
   type WorkRow,
@@ -20,7 +23,7 @@ const row = (number: number, patch: Partial<WorkRow> = {}): WorkRow => ({
   key: `W-${number}`,
   number,
   title: `Item ${number}`,
-  status: 'todo',
+  status: 'needs-refinement',
   description: '',
   assignee: null,
   sessions: [],
@@ -68,8 +71,29 @@ describe('work model', () => {
       row(4, { status: 'done', updatedAt: 5, sessions: ['a'] }),
       row(5, { status: 'done', updatedAt: 9 }),
     ];
-    expect(laneItems(items, 'todo', sessions).map((i) => i.number)).toEqual([2, 1, 3]);
+    expect(laneItems(items, 'needs-refinement', sessions).map((i) => i.number)).toEqual([2, 1, 3]);
     expect(laneItems(items, 'done', sessions).map((i) => i.number)).toEqual([5, 4]);
+  });
+
+  it('orders Ready for work by position, never by urgency, and steps a card one place up or down', () => {
+    const sessions = [session('a', 'needs')];
+    const ready = (number: number, position: number, extra: Partial<WorkRow> = {}) =>
+      row(number, { status: 'ready-for-work', position, ...extra });
+    const items = [ready(1, 2), ready(2, 3, { sessions: ['a'], updatedAt: 99 }), ready(3, 1)];
+    expect(laneItems(items, 'ready-for-work', sessions).map((i) => i.number)).toEqual([3, 1, 2]);
+    expect(readyStep(items, items[2]!, -1)).toBeNull();
+    expect(readyStep(items, items[2]!, 1)).toBe(2);
+    expect(readyStep(items, items[1]!, 1)).toBeNull();
+    expect(readyStep(items, row(9), 1)).toBeNull();
+  });
+
+  it('lists Human required before In progress in the outline', () => {
+    const items = [
+      row(1, { status: 'in-progress' }),
+      row(2, { status: 'human-required' }),
+      row(3, { status: 'needs-refinement' }),
+    ];
+    expect(outlineItems(items, []).map((i) => i.number)).toEqual([2, 1]);
   });
 
   it('filters by assignee kind and by title or key', () => {
@@ -85,22 +109,36 @@ describe('work model', () => {
     expect(matchesFilter(none, 'all', 'rail')).toBe(false);
   });
 
-  it('counts each status, how many Todo items have nobody, and what is open', () => {
+  it('counts each status, how many Ready for work items have nobody, and what is open', () => {
     const items = [
-      row(1),
-      row(2, { assignee: { kind: 'person' } }),
+      row(1, { status: 'ready-for-work' }),
+      row(2, { status: 'ready-for-work', assignee: { kind: 'person' } }),
       row(3, { status: 'in-progress' }),
       row(4, { status: 'done' }),
       row(5, { status: 'not-doing' }),
     ];
-    expect(workCounts(items).find((c) => c.status === 'todo')).toEqual({ status: 'todo', count: 2, unassigned: 1 });
+    expect(workCounts(items).map((c) => c.status)).toEqual([
+      'backlog',
+      'needs-refinement',
+      'human-required',
+      'ready-for-work',
+      'in-progress',
+      'done',
+      'not-doing',
+    ]);
+    expect(workCounts(items).find((c) => c.status === 'ready-for-work')).toEqual({
+      status: 'ready-for-work',
+      count: 2,
+      unassigned: 1,
+    });
     expect(workCounts(items).find((c) => c.status === 'in-progress')?.unassigned).toBe(0);
     expect(openCount(items)).toBe(3);
   });
 
   it('steps one lane left or right and stops at either end', () => {
-    expect(stepStatus('todo', 1)).toBe('in-progress');
-    expect(stepStatus('todo', -1)).toBe('backlog');
+    expect(stepStatus('ready-for-work', 1)).toBe('in-progress');
+    expect(stepStatus('needs-refinement', -1)).toBe('backlog');
+    expect(stepStatus('needs-refinement', 1)).toBe('human-required');
     expect(stepStatus('backlog', -1)).toBeNull();
     expect(stepStatus('not-doing', 1)).toBeNull();
   });
