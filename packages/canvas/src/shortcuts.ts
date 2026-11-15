@@ -34,6 +34,15 @@ export const editShortcuts: Shortcut[] = [
   ['Dictate into chat', [['B']]],
   ['Voice conversation in chat (press again to send the turn)', [['Shift', 'B']]],
   ['Inspect chat background agents', [['G']]],
+  ['Open or close Work (lanes of work items)', [['Shift', 'W']]],
+  [
+    'Move the focused work card one lane left / right',
+    [
+      ['Shift', '←'],
+      ['Shift', '→'],
+    ],
+  ],
+  ['New work item / filter (in Work)', [['N'], ['/']]],
   ['Run chat message in the background', [['Mod', 'Shift', 'Enter']]],
   ['Selection lasso (hold and drag)', [['Alt']]],
   ['Group selection', [['Mod', 'G']]],

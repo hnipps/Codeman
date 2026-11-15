@@ -5,7 +5,7 @@ import { ElementRefSchema, MAX_ELEMENT_REFS } from './element-ref.js';
 
 /** One view publishes at most this often, so a pan cannot flood the server. */
 export const MIN_PUBLISH_GAP_MS = 250;
-export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant', 'tasks', 'page'] as const;
+export const RAIL_VIEWS = ['keys', 'reader', 'thread', 'history', 'assistant', 'tasks', 'page', 'work'] as const;
 /** Where one embed's live page can be shown besides its place on the board: docked in the right rail, or over the whole canvas. */
 export const PAGE_SLOTS = ['rail', 'full'] as const;
 export type PageSlot = (typeof PAGE_SLOTS)[number];

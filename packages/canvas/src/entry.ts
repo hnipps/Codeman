@@ -39,6 +39,8 @@ import { SlotFrames, agentPageCloseRefusal, agentPageOpenRefusal } from './slots
 import { embedOrigin } from './objects/embed.js';
 import { watchPresence } from './presence.js';
 import { PrototypesView } from './prototypes-view.js';
+import { WorkView } from './work-view.js';
+import { sessionRows } from './sessions.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
 import { installPanelResize } from './panel-widths.js';
@@ -618,6 +620,7 @@ function paint(): void {
   node('assistantView').hidden = state.rail.at(-1) !== 'assistant';
   node('tasksView').hidden = state.rail.at(-1) !== 'tasks';
   node('pageView').hidden = state.rail.at(-1) !== 'page';
+  work.sync(state.rail.at(-1) === 'work');
   paintPage();
   // After the panels: a pin hides where the rail or outline now covers its frame, and that is read from the page.
   elementComments?.sync();
@@ -654,7 +657,9 @@ function paint(): void {
               ? readerTitle
               : top === 'page'
                 ? pageTitle(state.page)
-                : 'Keys';
+                : top === 'work'
+                  ? work.railTitle()
+                  : 'Keys';
   button('selectTool').setAttribute('aria-pressed', String(state.tool === 'select'));
   button('panTool').setAttribute('aria-pressed', String(state.tool === 'pan'));
   board.classList.toggle('panning', state.tool === 'pan' || spaceHeld);
@@ -1143,6 +1148,8 @@ document.addEventListener('keydown', (e) => {
     dispatch({ kind: 'escape' });
     return;
   }
+  // Shift+W opens and closes Work from the board, the outline or the lanes; never in a text field.
+  if (state.letters && work.key(e)) return;
   // G closes the task list from inside it too: opening the list leaves the keyboard on its controls, none of which
   // takes a letter, and the board's own G below only hears keys pressed on the board.
   if (
@@ -1554,6 +1561,29 @@ function showOnBoard(objectId: string): void {
   if (home !== null && state.root !== home) dispatch({ kind: 'enter', id: home });
   choose(objectId, false, true);
 }
+let workOnline = true;
+/** Work items: the outline's Work section, the lanes on Shift+W and an item's detail in the rail. */
+const work = new WorkView({
+  url,
+  workspace: workspaceId,
+  phone: () => mobile.matches,
+  online: () => workOnline,
+  rail: (open) => {
+    if (open) {
+      if (state.rail.at(-1) !== 'work') dispatch({ kind: 'rail', view: 'work' });
+    } else if (state.rail.at(-1) === 'work') dispatch({ kind: 'escape' });
+  },
+  railOpen: () => state.rail.length > 0,
+  openSession: (row, sessionId, opener) => {
+    if (row && shellView?.read().some((r) => r.id === sessionId)) {
+      if (work.isFull() && row.kind === 'conversation') work.closeFull();
+      openSessionRow(sessionRows([row])[0]!, 'row', opener);
+    } else window.open(url(`session/${encodeURIComponent(sessionId)}`), '_blank', 'noopener');
+  },
+  focusBoard: () => board.focus({ preventScroll: true }),
+  say: (message) => (node('announcement').textContent = message),
+});
+void work.load();
 const prototypes = new PrototypesView({
   url,
   workspace: workspaceId,
@@ -1855,6 +1885,8 @@ const sync = new CanvasSync(
       canvasOnline = status !== 'offline';
       prototypeCards.repaint();
     }
+    if (status === 'ready' && !workOnline) void work.load();
+    workOnline = status !== 'offline';
     shellView?.setOnline(status !== 'offline');
     node('notice').hidden = status !== 'offline';
     node('notice').textContent = 'Connection lost. Your canvas is still here; reconnecting…';
@@ -1872,6 +1904,7 @@ sync.on('canvas:viewCommand', (data) => views.receive(data));
 sync.on('canvas:changed', (data) => {
   elementComments?.serverChanged(data);
   review.serverChanged(data);
+  work.serverChanged(data);
 });
 for (const name of [
   'canvas:conversation',
@@ -1891,6 +1924,7 @@ for (const name of [
   sync.on(name, (data) => {
     assistant.event(name, data);
     tasks.event(name, data);
+    work.event();
     shellView?.event();
   });
 // The Sessions section also hears a session being made or changed; the rail views do not need those.

@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-15 — Canvas work items live in a side file, and only a press or an agent's report moves one
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{work,work-store}.ts`, `src/web/routes/canvas-work-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/{work-model,work-view,entry}.ts`, `src/web/public/canvas-work.css`
+**Why:** The owner tracked work for agents outside Codeman, so nothing on the canvas said what was queued, who was on it, or which item was waiting for an answer.
+**Links:** [intent/2026-11-15-work-tracker.md](../intent/2026-11-15-work-tracker.md), [architecture-invariants, "Canvas work"](architecture-invariants.md#canvas-work)
+
+Decision. Work items are stored per workspace in `work.json`, beside the canvas, not as canvas objects. People and agents reach them through the same functions (HTTP and `canvas_work`). An agent ends a run with `report`: done, continue, split or ask.
+
+Why a side file. The previous release must keep reading the canvas (self-building rule 5); a new object type or operation kind would make it refuse the log. The board stays untouched, as the brief asked.
+
+Why no automation. The brief says not to build anything that moves items by itself. A session going idle or exiting does not mean its item is done. The run-end rule is written into the tool description and applied by the agent, which knows whether it verified the work.
+
+Rejected. Moving an item when its linked session ends: that would mark unverified work Done. Storing the question only in the conversation: the board could not show Needs you. A reply box in the rail: deferred, because the answer belongs in the agent's conversation, which Open conversation reaches.
+
 ## 2026-11-15 — A phone reviews a prototype in one full-screen frame, and comments remember their version
 
 **Type:** intent-refinement
