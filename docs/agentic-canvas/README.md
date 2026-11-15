@@ -11,6 +11,8 @@ These are the source documents. Where they disagree, the higher one wins.
 
 The minimal version has been built. [`docs/self-building.md`](../self-building.md) documents it.
 
+[Positioning](positioning.md) (Nov 15, 2026) records how the canvas compares with block/buzz, and two owner decisions: this fork diverges from upstream Codeman permanently, and users evolve the whole app rather than extending it through plugins.
+
 ## Initial canvas design
 
 The completed minimal-version source documents above remain the deployment and
