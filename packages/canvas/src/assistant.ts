@@ -787,8 +787,19 @@ export class AssistantView {
       const messages = data.messages;
       if (this.current?.id !== c.id || !Array.isArray(messages)) return;
       this.rows = messages
-        .filter((m): m is { role: 'user' | 'assistant'; text: string; queued?: boolean } => typeof m?.text === 'string')
-        .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', text: m.text, queued: m.queued }));
+        .filter(
+          (m): m is { role: 'user' | 'assistant'; text: string; queued?: boolean; timestamp?: unknown } =>
+            typeof m?.text === 'string'
+        )
+        .map((m) => {
+          const at = typeof m.timestamp === 'string' ? Date.parse(m.timestamp) : NaN;
+          return {
+            role: m.role === 'user' ? 'user' : 'assistant',
+            text: m.text,
+            queued: m.queued,
+            ...(Number.isFinite(at) ? { at } : {}),
+          };
+        });
     } catch {
       /* A failed read keeps the thread as it was. */
     }
@@ -1078,6 +1089,13 @@ export class AssistantView {
         refs.textContent = turn.refs.join(' · ');
         refs.setAttribute('aria-label', 'Context sent with this message');
         item.append(refs);
+      }
+      if (turn.command && !turn.pending) {
+        // Claude Code writes a command's output to its own screen, and often nothing to the transcript.
+        const ran = document.createElement('p');
+        ran.className = 'turn-refs';
+        ran.textContent = 'Ran as a command. Its output is in the session terminal.';
+        item.append(ran);
       }
       if (turn.origin) {
         const { objectId } = turn.origin;

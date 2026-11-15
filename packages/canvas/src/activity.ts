@@ -110,8 +110,19 @@ export function weave(turns: readonly Turn[], rowCount: number, activity: Activi
       if (release) items.push({ kind: 'release', key: `release:${row.id}`, view: release });
     }
   };
+  // A turn the transcript does not hold (a slash command) that knows its time goes before the first newer row.
+  const timed = turns
+    .slice(rowCount)
+    .filter((t) => t.at !== undefined)
+    .sort((a, b) => a.at! - b.at!);
+  const placed = new Set<Turn>();
   for (let index = 0; index < rowCount && index < turns.length; index += 1) {
     const turn = turns[index];
+    while (timed.length && turn.at !== undefined && timed[0].at! < turn.at) {
+      const early = timed.shift()!;
+      placed.add(early);
+      items.push({ kind: 'turn', turn: early });
+    }
     tools(index);
     const prompt = turn.who !== 'claude';
     if (prompt && (index === 0 || turns[index - 1].who === 'claude')) {
@@ -123,7 +134,7 @@ export function weave(turns: readonly Turn[], rowCount: number, activity: Activi
   }
   tools(rowCount);
   closeSegment();
-  for (const turn of turns.slice(rowCount)) items.push({ kind: 'turn', turn });
+  for (const turn of turns.slice(rowCount)) if (!placed.has(turn)) items.push({ kind: 'turn', turn });
   return items;
 }
 
