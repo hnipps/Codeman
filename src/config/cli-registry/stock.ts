@@ -250,6 +250,8 @@ const CLAUDE: CliEntry = {
     // The composer's own hint text (`⏵⏵ … (shift+tab to cycle)`), not `❯`, which the
     // trust dialog's selected row also carries. Measured by the agent skill's spawn_worker.
     composerReadyMark: 'shift+tab',
+    // A prompt that starts with `/` runs as a command or skill; a canvas chat command is sent bare for it.
+    slashCommands: true,
     // The historical hard-coded pair, now stated as data. `workingLine` matches both the
     // `✻ Actualizing… (39s · ↓ 2.0k tokens)` status line and the bare `esc to interrupt`
     // footer, because tmux repaints partially and only one of the two may land in a chunk.

@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-15 — A person's slash command from the canvas chat box is sent bare
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/conversation-schema.ts`, `src/canvas/conversation-delivery.ts`, `src/web/routes/canvas-conversation-routes.ts`, `src/config/cli-registry/{types,schema,stock}.ts`, `packages/canvas/src/{assistant,conversation}.ts`
+**Why:** Claude Code runs a prompt as a command only when it starts with `/`. Every canvas message started with the context block, so `/compact`, `/clear` and user-only skills such as `/pstack:poteto-mode` could not be run from the canvas.
+**Links:** [intent/2026-11-15-canvas-slash-commands.md](../intent/2026-11-15-canvas-slash-commands.md), [architecture-invariants, "Canvas conversations"](architecture-invariants.md#canvas-conversations)
+
+Decision. The command is sent on its own, with no block before or after it. Text after a command is its arguments, so context placed after it would reach `/compact` or a skill as instructions. Only the person's own chat box text qualifies. An agent's message and a comment thread request stay wrapped, because forwarding them would let canvas text run commands in the session. A CLI declares support with `capabilities.slashCommands`; only claude does.
+
+Rejected. Sending the command with the context after it: the context becomes the command's arguments. Dropping the chips silently: they stay in the composer for the next message.
+
 ## 2026-11-15 — The fork never reconverges with upstream, and users evolve the whole app
 
 **Type:** intent-refinement

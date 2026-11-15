@@ -26,15 +26,22 @@ export type ConfirmInput = {
   sinceEnterMs: number;
   /** A retry of text already in the composer may press Enter at once. */
   immediate?: boolean;
+  /**
+   * The prompt is a slash command. A command such as `/help` or `/model` replaces the composer with its own panel and
+   * fires no prompt hook, so a composer that is no longer on screen after the write is the evidence that it ran.
+   */
+  command?: boolean;
 };
 /**
  * What to do next for a prompt that was pasted: a submitted hook after the write, or an empty composer, is
  * confirmation; text still in the composer earns an Enter (never another paste) on a schedule; no readable
- * composer earns nothing but waiting, since a blind Enter could confirm a dialog nobody asked about.
+ * composer earns nothing but waiting, since a blind Enter could confirm a dialog nobody asked about, except for a
+ * command, whose own panel is what takes the composer's place.
  */
 export function confirmStep(i: ConfirmInput): ConfirmStep {
   if (i.hookAt > i.wroteAt) return 'confirmed';
   if (i.composerEmpty === true) return 'confirmed';
+  if (i.command && i.composerEmpty === undefined) return 'confirmed';
   if (i.elapsedMs >= CONFIRM_MAX_MS || i.enters >= MAX_ENTERS) return 'timeout';
   if (i.composerEmpty === false) {
     if (i.enters === 0 ? i.immediate || i.elapsedMs >= FIRST_ENTER_MS : i.sinceEnterMs >= ENTER_EVERY_MS)
@@ -59,6 +66,8 @@ export interface DeliveryDeps {
   hookAt(): number;
   glyph: string;
   readyMark: string;
+  /** The prompt is a slash command (`ConfirmInput.command`). */
+  command?: boolean;
   now(): number;
   sleep(ms: number): Promise<void>;
   /**
@@ -108,6 +117,7 @@ export async function deliver(
       enters,
       sinceEnterMs: deps.now() - lastEnter,
       immediate: mode === 'enter-only',
+      command: deps.command,
     });
     if (step === 'confirmed') return 'confirmed';
     if (step === 'timeout') return 'timeout';

@@ -66,8 +66,9 @@ export function buildThread(
     if (seen.has(id)) continue;
     const state = stateOf(m);
     const text = local.get(id)?.text;
-    // A delivered message the transcript has not caught up with yet still shows, if this page knows its text.
-    if (state === 'delivered' && text === undefined) continue;
+    // A delivered message the transcript has not caught up with yet still shows, if this page knows its text. A
+    // delivered slash command never gets a row of its own (the CLI writes its output instead), so it is not kept.
+    if (state === 'delivered' && (text === undefined || m.command === true)) continue;
     const kind = who(m);
     const word =
       state === 'queued'

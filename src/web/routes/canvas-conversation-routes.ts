@@ -34,6 +34,7 @@ import {
   MAX_COMPOSED_BYTES,
   MAX_CONVERSATIONS_PER_WORKSPACE,
   normalizePrompt,
+  slashCommand,
   promptRefusal,
   SendBodySchema,
   replyExtendable,
@@ -941,7 +942,7 @@ export async function deliveryEnded(
   return { ended, left: stuck.has(key) };
 }
 
-export function deliveryDeps(session: CanvasSession, composed: string): DeliveryDeps {
+export function deliveryDeps(session: CanvasSession, composed: string, command = false): DeliveryDeps {
   const capabilities = getCli(session.mode ?? 'claude')?.capabilities;
   return {
     snapshot: () => session.paneSnapshot?.(true) ?? null,
@@ -950,6 +951,7 @@ export function deliveryDeps(session: CanvasSession, composed: string): Delivery
     hookAt: () => session.hookPromptSubmittedAt ?? 0,
     glyph: capabilities?.workDetect?.promptGlyph ?? '',
     readyMark: capabilities?.composerReadyMark ?? '',
+    command,
     now: Date.now,
     sleep: delay,
   };
@@ -991,7 +993,7 @@ function enqueue(
     };
     if (cancelled()) return set('failed');
     set('sending');
-    const base = deliveryDeps(session, composed);
+    const base = deliveryDeps(session, composed, message.command === true);
     const deps: DeliveryDeps = {
       ...base,
       paste: async () => (cancelled() ? false : base.paste()),
@@ -1086,7 +1088,13 @@ export async function sendMessage(
     body.refIds,
     contextElements(workspaceId, state, body)
   );
-  const composed = resolved.block + text;
+  // A person's own `/command` goes in bare: the block in front would make the CLI read it as plain text.
+  const command = slashCommand(text, {
+    author,
+    origin: body.origin,
+    slashCommands: getCli(session.mode ?? 'claude')?.capabilities.slashCommands === true,
+  });
+  const composed = command ?? resolved.block + text;
   if (byteLength(composed) > MAX_COMPOSED_BYTES)
     return refuse(413, ApiErrorCode.INVALID_INPUT, 'TOO_LARGE: the message and its context are too large to send');
 
@@ -1123,9 +1131,11 @@ export async function sendMessage(
       textSha256: sha256(text),
       textBytes: byteLength(text),
       namedSha256: namedHash(named),
-      refs: resolved.refs,
+      // A command carries no context, so its record names none; the sender's chips stay for the next message.
+      refs: command ? [] : resolved.refs,
       seq: state.seq,
       ...(body.origin ? { origin: body.origin } : {}),
+      ...(command ? { command: true } : {}),
     },
     named
   );
@@ -1177,6 +1187,7 @@ function accepted(messageId: string, message: ConversationMessage, missing: stri
     duplicate,
     refs: message.refs,
     missing,
+    ...(message.command ? { command: true } : {}),
   });
 }
 

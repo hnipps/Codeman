@@ -52,6 +52,8 @@ export const ConversationMessageSchema = z
       .optional(),
     refs: z.array(ConversationRefSchema).max(MAX_CONTEXT_OBJECTS),
     seq: z.number().int().nonnegative(),
+    /** Sent bare as the CLI's own slash command (`slashCommand()`): no context block, so no transcript row names its id. */
+    command: z.boolean().optional().catch(undefined),
     /** Where the request was asked (`ThreadOriginSchema`) and what became of its reply (`ThreadReply`). Read through `threadOrigin()` and `threadReply()`, so a shape a later release writes never makes the file unreadable. */
     origin: z.unknown().optional(),
     reply: z.unknown().optional(),
@@ -193,6 +195,25 @@ export function promptRefusal(text: string): string | undefined {
   const control = text.replace(/\r\n?/g, '\n').match(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
   if (control) return 'A message is printable text only; remove the control character';
   return undefined;
+}
+/** A command word as a CLI takes it: `/compact`, `/plugin:skill`. A path such as `/home/x` is not one (a second `/`). */
+const COMMAND_HEAD = /^\/[A-Za-z][A-Za-z0-9_:.-]*(?=\s|$)/;
+export type CommandSource = {
+  author: { kind: 'human' | 'agent' };
+  /** A thread request carries the comment's text, which is canvas content, not the person's composer. */
+  origin?: unknown;
+  /** The session's CLI runs a prompt that starts with `/` as a command (`capabilities.slashCommands`). */
+  slashCommands: boolean;
+};
+/**
+ * The text to send bare, without the context block in front of it, when a message is a slash command; undefined keeps
+ * the wrapper. Only a person's own message from the chat box qualifies: an agent's message and a request asked from a
+ * comment stay reference data, since forwarding them as a command would let canvas text steer the session.
+ */
+export function slashCommand(text: string, source: CommandSource): string | undefined {
+  if (source.author.kind !== 'human' || source.origin !== undefined || !source.slashCommands) return undefined;
+  const command = text.trim();
+  return COMMAND_HEAD.test(command) ? command : undefined;
 }
 /** Line breaks as the pane takes them: one style, none at the ends. */
 export const normalizePrompt = (text: string): string => text.replace(/\r\n?/g, '\n').replace(/^\n+|\n+$/g, '');

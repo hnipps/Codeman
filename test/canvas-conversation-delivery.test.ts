@@ -26,6 +26,9 @@ describe('delivery decisions', () => {
     expect(confirmStep({ ...base, enters: 1, sinceEnterMs: 1000, elapsedMs: 4000 })).toBe('wait');
     expect(confirmStep({ ...base, enters: 1, sinceEnterMs: 5000, elapsedMs: 8000 })).toBe('press-enter');
     expect(confirmStep({ ...base, composerEmpty: undefined, elapsedMs: 30_000 })).toBe('wait');
+    // A command's own panel (`/help`) takes the composer's place: that is the evidence it ran, and still no Enter.
+    expect(confirmStep({ ...base, composerEmpty: undefined, command: true })).toBe('confirmed');
+    expect(confirmStep({ ...base, command: true, elapsedMs: 2000 })).toBe('press-enter');
     expect(confirmStep({ ...base, elapsedMs: CONFIRM_MAX_MS })).toBe('timeout');
     expect(confirmStep({ ...base, enters: MAX_ENTERS })).toBe('timeout');
     expect(confirmStep({ ...base, immediate: true })).toBe('press-enter');
