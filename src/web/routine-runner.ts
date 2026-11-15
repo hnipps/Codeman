@@ -12,12 +12,16 @@
 import type { FastifyInstance } from 'fastify';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
 import { changeRoutineState, readRoutines, readRoutineState } from '../canvas/routine-store.js';
-import { readWork } from '../canvas/work-store.js';
+import { changeWork, readWork } from '../canvas/work-store.js';
+import { findWork, updateWork, type WorkItem } from '../canvas/work.js';
 import { readConversations } from '../canvas/conversations.js';
 import { startedBy } from '../canvas/agent-start.js';
 import {
+  CLAIM_STATUS,
   countWork,
   noRuns,
+  pruneFiredItems,
+  workItemTriggers,
   planFire,
   planManualFire,
   recordFire,
@@ -42,8 +46,8 @@ export type RoutineRunnerDeps = {
   /** The workspace owner as a signed-in user, or undefined when that user is gone or disabled. */
   ownerUser: (workspace: Workspace) => Promise<AuthUser | undefined>;
   mayAutomate: () => boolean;
-  /** Tells open canvases that routines or their fires changed. */
-  announce: (workspaceId: string) => Promise<void>;
+  /** Tells open canvases that routines or their fires changed, and with `work` that a Work item did too. */
+  announce: (workspaceId: string, changed?: { work?: true }) => Promise<void>;
 };
 
 type BriefTask = { id: string; requestId: string; createdAt: number; state: TaskState; startedBy?: unknown };
@@ -83,9 +87,14 @@ export class RoutineRunner {
     if (!owner) return;
     const runs = await this.runViews(workspace, owner);
     if (!runs) return;
-    const work = due.some((r) => r.gates?.length) ? workCounts(workspace.id, state.file) : undefined;
+    const needsWork = due.some((r) => r.gates?.length || workItemTriggers(r).length);
+    const items = needsWork ? workItems(workspace.id) : undefined;
+    let file = state.file;
+    const pruned = items && pruneFiredItems(file, items);
+    if (pruned && this.deps.mayAutomate() && changeRoutineState(workspace.id, () => pruned)) file = pruned;
+    const work = items ? workCounts(workspace.id, items, file) : undefined;
     for (const routine of due) {
-      const plan = planFire(routine, state.file.routines[routine.id] ?? { fires: [] }, runs(routine.id), now, work);
+      const plan = planFire(routine, file.routines[routine.id] ?? { fires: [] }, runs(routine.id), now, work, items);
       await this.carryOut(workspace, routine, owner, plan);
     }
   }
@@ -104,7 +113,8 @@ export class RoutineRunner {
     const prior = readRoutineState(workspace.id);
     const known = prior.ok ? prior.file.routines[routine.id]?.fires.find((f) => f.runId === requestId) : undefined;
     if (known && known.outcome.kind !== 'pending') return known;
-    const work = routine.gates?.length && !ignoreGates && prior.ok ? workCounts(workspace.id, prior.file) : undefined;
+    const items = routine.gates?.length && !ignoreGates && prior.ok ? workItems(workspace.id) : undefined;
+    const work = items && prior.ok ? workCounts(workspace.id, items, prior.file) : undefined;
     const plan = planManualFire(routine, runs(routine.id), requestId, Date.now(), work, ignoreGates);
     return this.carryOut(workspace, routine, owner, plan);
   }
@@ -161,10 +171,16 @@ export class RoutineRunner {
         .catch(() => undefined);
     }
     if (!this.deps.mayAutomate()) return undefined;
-    const outcome = await this.start(workspace, routine, plan.fire, principal());
+    let outcome = await this.start(workspace, routine, plan.fire, principal());
+    const claimFor = plan.fire.work?.claim ? plan.fire.work : undefined;
+    let claimed = false;
+    if (claimFor && outcome.kind === 'started') {
+      claimed = !!outcome.sessionId && this.deps.mayAutomate() && claim(workspace.id, claimFor, outcome.sessionId);
+      outcome = { ...outcome, claimed };
+    }
     const fire: RoutineFire = { ...plan.fire, outcome };
     this.record(workspace, routine, fire);
-    await this.deps.announce(workspace.id);
+    await this.deps.announce(workspace.id, claimed ? { work: true } : undefined);
     return fire;
   }
 
@@ -181,7 +197,7 @@ export class RoutineRunner {
         headers,
         payload: {
           requestId: fire.runId,
-          text: routineRequestText(routine, fire.dueAt),
+          text: routineRequestText(routine, fire.dueAt, fire.work),
           name: routineTaskName(routine),
           ...(routine.cliId ? { cliId: routine.cliId } : {}),
           ...(routine.model ? { model: routine.model } : {}),
@@ -200,14 +216,48 @@ export class RoutineRunner {
   }
 }
 
-/**
- * The canvas's Work items counted for gates, or undefined when `work.json` cannot be read (a gate then says no).
- * A routine run's session is known from the task records (`startedBy` with a routine) and, for runs whose record was
- * removed since, from the started fires the state keeps.
- */
-function workCounts(workspaceId: string, state: RoutineStateFile): WorkCounts | undefined {
+/** The canvas's Work items, or undefined when `work.json` cannot be read (a gate then says no, and no item is due). */
+function workItems(workspaceId: string): WorkItem[] | undefined {
   const work = readWork(workspaceId);
-  if (!work.ok) return undefined;
+  return work.ok ? work.file.items : undefined;
+}
+
+/**
+ * A claiming fire's item assigned to the run's session and moved to `CLAIM_STATUS`, attributed to that session.
+ * Refused (false) when the item left the status it fired on, or someone holds it (a claim never takes an item from a
+ * person or another session), or it changed under the write (`expectedRevision`). A repeated start whose item this session already holds counts as claimed.
+ */
+function claim(workspaceId: string, work: NonNullable<RoutineFire['work']>, sessionId: string): boolean {
+  const result = changeWork(workspaceId, (file) => {
+    const item = findWork(file, work.number);
+    if (
+      item &&
+      item.status === CLAIM_STATUS &&
+      item.assignee?.kind === 'session' &&
+      item.assignee.sessionId === sessionId
+    )
+      return { ok: true, file, item, filed: [], duplicate: true };
+    if (!item || item.status !== work.status || item.assignee !== null)
+      return {
+        ok: false,
+        code: 'CONFLICT',
+        message: 'The item left its status or was taken before the run claimed it',
+      };
+    return updateWork(
+      file,
+      work.number,
+      { expectedRevision: item.revision, status: CLAIM_STATUS, assignee: { kind: 'session', sessionId } },
+      { author: { kind: 'agent', sessionId }, now: Date.now() }
+    );
+  });
+  return result.ok;
+}
+
+/**
+ * The canvas's Work items counted for gates. A routine run's session is known from the task records (`startedBy`
+ * with a routine) and, for runs whose record was removed since, from the started fires the state keeps.
+ */
+function workCounts(workspaceId: string, items: readonly WorkItem[], state: RoutineStateFile): WorkCounts {
   const sessions = new Set<string>();
   const conversations = readConversations(workspaceId);
   if (conversations.ok)
@@ -215,5 +265,5 @@ function workCounts(workspaceId: string, state: RoutineStateFile): WorkCounts | 
   for (const routine of Object.values(state.routines))
     for (const fire of routine.fires)
       if (fire.outcome.kind === 'started' && fire.outcome.sessionId) sessions.add(fire.outcome.sessionId);
-  return countWork(work.file.items, sessions);
+  return countWork(items, sessions);
 }

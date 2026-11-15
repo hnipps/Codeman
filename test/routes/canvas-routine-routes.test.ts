@@ -22,7 +22,8 @@ import { CanvasStores } from '../../src/canvas/canvas-store.js';
 import { workspaceForCase } from '../../src/canvas/workspace-registry.js';
 import { readConversations } from '../../src/canvas/conversations.js';
 import { routineStatePath } from '../../src/canvas/routine-store.js';
-import { runRequestId, type RoutineRow } from '../../src/canvas/routines.js';
+import { CLAIM_STATUS, runRequestId, type RoutineRow } from '../../src/canvas/routines.js';
+import { WORK_STATUSES, type WorkRow } from '../../src/canvas/work.js';
 import type { TaskRow } from '../../src/canvas/tasks.js';
 import { deployRole } from '../../src/deploy-role.js';
 import { safeRmHomeTree } from '../mocks/test-helpers.js';
@@ -98,7 +99,7 @@ async function harness() {
     canvasEnabled: async () => true,
     ownerUser: async () => ({ username: 'admin', role: 'admin' }),
     mayAutomate: () => deployRole.allows('automate'),
-    announce: (workspaceId) => announceRoutines(port as never, workspaceId),
+    announce: (workspaceId, changed) => announceRoutines(port as never, workspaceId, changed),
   });
   port.runRoutine = (workspace: never, routine: never, requestId: string, ignoreGates?: boolean) =>
     runner.runNow(workspace, routine, requestId, ignoreGates);
@@ -435,6 +436,46 @@ describe('the schedule', () => {
       expect((h.sessions.get(task!.sessionId)!.writeViaMux as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toContain(
         'assignee "me"'
       );
+    } finally {
+      await h.app.close();
+    }
+  });
+  it('a claiming work-item trigger takes one item per fire, claims it, and a WIP gate stops the next', async () => {
+    const h = await harness();
+    try {
+      const lane = WORK_STATUSES.find((s) => s !== 'backlog' && s !== CLAIM_STATUS)!;
+      for (const title of ['First', 'Second'])
+        expect((await h.call('POST', '/work', { title, status: lane })).statusCode).toBe(201);
+      await h.create({
+        triggers: [{ kind: 'work-item', status: lane, unassignedOnly: true, claim: true }],
+        gates: [{ kind: 'work-count', status: CLAIM_STATUS, assignee: 'routine', max: 1 }],
+      });
+      await h.enable('R-1');
+      await h.tick(Date.now());
+      const [task] = await h.tasks();
+      expect(task).toBeDefined();
+      const prompt = (h.sessions.get(task!.sessionId)!.writeViaMux as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+      expect(prompt).toContain('W-1');
+      expect(prompt).not.toContain('First');
+      const items = async () => (await h.call('GET', '/work')).json().data.items as WorkRow[];
+      expect((await items())[0]).toMatchObject({
+        status: CLAIM_STATUS,
+        assignee: { kind: 'session', sessionId: task!.sessionId },
+      });
+      expect((await h.routines())[0]!.fires[0]).toMatchObject({
+        trigger: 'work-item',
+        work: { number: 1 },
+        outcome: { kind: 'started', claimed: true, sessionId: task!.sessionId },
+      });
+      expect(h.port.broadcast).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ work: true }));
+
+      // W-2 is due, but one claimed item already fills the gate: recorded once, no agent woken, and it stays due.
+      await h.tick(Date.now());
+      await h.tick(Date.now());
+      expect(await h.tasks()).toHaveLength(1);
+      const fires = (await h.routines())[0]!.fires;
+      expect(fires).toHaveLength(2);
+      expect(fires[0]).toMatchObject({ work: { number: 2 }, outcome: { kind: 'skipped', reason: 'gate', count: 1 } });
     } finally {
       await h.app.close();
     }

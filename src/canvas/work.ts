@@ -323,6 +323,14 @@ function touch(item: WorkItem, ctx: WorkContext): void {
   item.revision += 1;
 }
 
+/**
+ * The order items are taken from a lane, first first. The one place a reader of lane order asks, so a priority order
+ * changes here alone. TODO(W-48): lane position is priority; order by it once items carry a position.
+ */
+export function laneOrder<T extends Pick<WorkItem, 'number'>>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => a.number - b.number);
+}
+
 export function findWork(file: WorkFile, number: number): WorkItem | undefined {
   return file.items.find((i) => i.number === number);
 }

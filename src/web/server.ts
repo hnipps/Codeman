@@ -1474,7 +1474,7 @@ export class WebServer extends EventEmitter {
         return user && !user.disabled ? { username: user.username, role: user.role } : undefined;
       },
       mayAutomate: () => deployRole.allows('automate'),
-      announce: (workspaceId) => announceRoutines(canvasPort, workspaceId),
+      announce: (workspaceId, changed) => announceRoutines(canvasPort, workspaceId, changed),
     });
     registerPushRoutes(this.app, ctx);
     registerTeamRoutes(this.app, ctx);

@@ -59,7 +59,11 @@ const notFound = (number: number): Outcome =>
   refuse(404, ApiErrorCode.NOT_FOUND, `NOT_FOUND: ${routineKey(number)} does not exist`);
 
 /** Tells open canvases that routines or their fires changed (`canvas:changed` with `routines: true`). */
-export async function announceRoutines(ctx: Pick<CanvasPort, 'broadcast' | 'canvasStores'>, workspaceId: string) {
+export async function announceRoutines(
+  ctx: Pick<CanvasPort, 'broadcast' | 'canvasStores'>,
+  workspaceId: string,
+  changed?: { work?: true }
+) {
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const seq = (await ctx.canvasStores()).get(workspaceId).read().seq;
   ctx.broadcast(SseEvent.CanvasChanged, {
@@ -67,6 +71,7 @@ export async function announceRoutines(ctx: Pick<CanvasPort, 'broadcast' | 'canv
     seq,
     owner: readWorkspaces().find((w) => w.id === workspaceId)?.owner,
     routines: true,
+    ...changed,
   });
 }
 

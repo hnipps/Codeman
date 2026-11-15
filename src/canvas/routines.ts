@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { computeNextRunAt, parseHHMM, type CronSchedule } from '../cron/cron-time.js';
 import { AuthorSchema, type Author } from './model.js';
 import type { TaskState } from './tasks.js';
-import { WORK_STATUSES, type WorkStatus } from './work.js';
+import { laneOrder, WORK_STATUS_NAMES, WORK_STATUSES, workKey, type WorkItem, type WorkStatus } from './work.js';
 
 export const MAX_ROUTINES = 20;
 export const MAX_ROUTINE_TRIGGERS = 4;
@@ -30,6 +30,8 @@ export const MAX_KEPT_FIRES = 20;
 export const KEEP_FINISHED_RUNS = 3;
 /** A fire still marked pending after this long was cut off (a crash or restart) and is recorded as failed. */
 export const PENDING_FIRE_MS = 10 * 60_000;
+/** Work items a routine remembers firing for; one no longer in its status is forgotten, so this is rarely reached. */
+export const MAX_FIRED_ITEMS = 500;
 
 export const routineKey = (number: number): string => `R-${number}`;
 export function parseRoutineKey(key: string): number | null {
@@ -59,11 +61,29 @@ export const TriggerSchema = z.discriminatedUnion('kind', [
       time: Time,
     })
     .strict(),
+  /**
+   * Fires once for each Work item that enters `status` (and is unassigned, with `unassignedOnly`), one item per fire.
+   * With `claim`, the runner assigns the item to the run's session and moves it to `CLAIM_STATUS` once the run starts.
+   */
+  z
+    .object({
+      kind: z.literal('work-item'),
+      status: z.enum(WORK_STATUSES),
+      unassignedOnly: z.boolean().optional(),
+      claim: z.boolean().optional(),
+    })
+    .strict(),
 ]);
-/** When a routine wants to run. Adding a kind is one union member, one `asCronSchedule` case and one form row. */
+/**
+ * When a routine wants to run. Adding a schedule kind is one union member, one `asCronSchedule` case and one form row.
+ */
 export type RoutineTrigger = z.infer<typeof TriggerSchema>;
+export type ScheduleTrigger = Exclude<RoutineTrigger, { kind: 'work-item' }>;
+export type WorkItemTrigger = Extract<RoutineTrigger, { kind: 'work-item' }>;
+/** Where a claimed item goes: the lane a pickup routine's gate counts (`{ status: CLAIM_STATUS, assignee: 'routine' }`). */
+export const CLAIM_STATUS: WorkStatus = 'in-progress';
 
-export function asCronSchedule(trigger: RoutineTrigger): CronSchedule {
+export function asCronSchedule(trigger: ScheduleTrigger): CronSchedule {
   switch (trigger.kind) {
     case 'interval':
       return { scheduleType: 'interval', intervalMinutes: trigger.minutes };
@@ -73,7 +93,6 @@ export function asCronSchedule(trigger: RoutineTrigger): CronSchedule {
       return { scheduleType: 'weekly', weeklyDays: trigger.days, weeklyTime: trigger.time };
   }
 }
-/** The triggers this release understands; one a later release added is kept on disk and ignored here. */
 /**
  * A gate is a check the server makes before a fire, so no agent (and no tokens) is spent when it says no (owner
  * requirement, 2026-11-15). `work-count` counts the canvas's Work items with one status and assignee filter and
@@ -114,14 +133,19 @@ export function gateRefusal(routine: Pick<Routine, 'gates'>, work: WorkCounts | 
   return null;
 }
 
+/** The triggers this release understands; one a later release added is kept on disk and ignored here. */
 export const knownTriggers = (routine: Pick<Routine, 'triggers'>): RoutineTrigger[] =>
   routine.triggers.flatMap((t) => {
     const parsed = TriggerSchema.safeParse(t);
     return parsed.success ? [parsed.data] : [];
   });
+export const scheduleTriggers = (routine: Pick<Routine, 'triggers'>): ScheduleTrigger[] =>
+  knownTriggers(routine).filter((t): t is ScheduleTrigger => t.kind !== 'work-item');
+export const workItemTriggers = (routine: Pick<Routine, 'triggers'>): WorkItemTrigger[] =>
+  knownTriggers(routine).filter((t): t is WorkItemTrigger => t.kind === 'work-item');
 
 /** The first due time strictly after `after` across the triggers, or null when none has one. */
-export function dueAt(triggers: readonly RoutineTrigger[], after: number): number | null {
+export function dueAt(triggers: readonly ScheduleTrigger[], after: number): number | null {
   let best: number | null = null;
   for (const trigger of triggers) {
     const next = computeNextRunAt(asCronSchedule(trigger), after);
@@ -134,7 +158,7 @@ export function dueAt(triggers: readonly RoutineTrigger[], after: number): numbe
  * server that was down for a day runs a routine once, not once per missed interval. An interval counts from `after`;
  * a daily or weekly time repeats within a week, so only the last eight days are walked.
  */
-export function latestDue(triggers: readonly RoutineTrigger[], after: number, now: number): number | null {
+export function latestDue(triggers: readonly ScheduleTrigger[], after: number, now: number): number | null {
   let best: number | null = null;
   for (const trigger of triggers) {
     let latest: number | null = null;
@@ -215,6 +239,8 @@ const FireOutcome = z.discriminatedUnion('kind', [
       taskId: z.string().min(1).max(128),
       /** The run's session, so a gate can count items assigned to it after its task record is gone. */
       sessionId: z.string().min(1).max(128).optional().catch(undefined),
+      /** A claiming work-item fire: whether the item was assigned to the run and moved to `CLAIM_STATUS`. */
+      claimed: z.boolean().optional().catch(undefined),
     })
     .passthrough(),
   /** One variant per kind (a discriminated union needs that): a gate skip carries the gate and the count it saw. */
@@ -229,21 +255,33 @@ const FireOutcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('refused'), code: z.string().max(64), message: z.string().max(400) }).passthrough(),
   z.object({ kind: z.literal('failed'), message: z.string().max(400) }).passthrough(),
 ]);
+/** A Work item a work-item fire was for: the item, the status it fired on and when it entered that status. */
+const FiredItem = z
+  .object({ number: z.number().int().positive(), status: z.enum(WORK_STATUSES), enteredAt: at })
+  .passthrough();
+export type FiredItem = z.infer<typeof FiredItem>;
 const StoredFire = z
   .object({
     at,
-    /** The due time it was for; a manual fire uses its own time. */
+    /** The due time it was for; a manual fire uses its own time, a work-item fire the time its item entered the lane. */
     dueAt: at,
-    trigger: z.enum(['schedule', 'manual']),
+    trigger: z.enum(['schedule', 'manual', 'work-item']),
     /** The task's `requestId`, so the task row and the fire name each other. */
     runId: z.uuid(),
+    /** A work-item fire's item, and whether the runner claims it once the run starts. */
+    work: FiredItem.extend({ claim: z.boolean().optional() }).optional().catch(undefined),
     outcome: FireOutcome,
   })
   .passthrough();
 export type RoutineFire = z.infer<typeof StoredFire>;
 export type FireOutcome = RoutineFire['outcome'];
 const StoredRoutineState = z
-  .object({ lastDueAt: at.optional().catch(undefined), fires: z.array(StoredFire).max(MAX_KEPT_FIRES).catch([]) })
+  .object({
+    lastDueAt: at.optional().catch(undefined),
+    fires: z.array(StoredFire).max(MAX_KEPT_FIRES).catch([]),
+    /** Items already fired for since they entered their status; an item is due again only once it re-enters. */
+    items: z.array(FiredItem).max(MAX_FIRED_ITEMS).optional().catch(undefined),
+  })
   .passthrough();
 export type RoutineState = z.infer<typeof StoredRoutineState>;
 /** `routine-state.json`, keyed by routine id. An entry for a deleted routine is ignored. */
@@ -278,48 +316,125 @@ const baseOf = (routine: Routine, state: RoutineState): number =>
 
 /** The next run time a person sees, or null when the routine is off or has no trigger this release knows. */
 export function nextRunAt(routine: Routine, state: RoutineState): number | null {
-  return routine.enabled ? dueAt(knownTriggers(routine), baseOf(routine, state)) : null;
+  return routine.enabled ? dueAt(scheduleTriggers(routine), baseOf(routine, state)) : null;
 }
 
 const surplus = (runs: RunView): string[] => runs.finished.slice(KEEP_FINISHED_RUNS - 1).map((r) => r.taskId);
 
+/** What a work-item trigger reads of an item. */
+export type WorkItemView = Pick<WorkItem, 'number' | 'status' | 'assignee' | 'createdAt' | 'history'>;
+
+/**
+ * When the item entered its current status, read from its history (newest first): the newest move or creation event
+ * decides. Null when the history no longer holds it (it keeps MAX_WORK_HISTORY events) or names another status.
+ * TODO(W-48): a status split must keep writing these events, or give items an `enteredAt` this reads instead.
+ */
+export function enteredAt(item: Pick<WorkItem, 'status' | 'history'>): number | null {
+  for (const event of item.history) {
+    const into = /^Moved from .+ to (.+)$/.exec(event.text) ?? /^Created(?: from W-\d+)? in (.+)$/.exec(event.text);
+    if (into) return into[1] === WORK_STATUS_NAMES[item.status] ? event.at : null;
+  }
+  return null;
+}
+
+/** Whether the routine already fired for this item since it entered `status`; an unknown entry time matches any. */
+const firedFor = (state: RoutineState, number: number, status: WorkStatus, entered: number | null): boolean =>
+  (state.items ?? []).some(
+    (r) => r.number === number && r.status === status && (entered === null || r.enteredAt === entered)
+  );
+
+/** The first item, in lane order, that a work-item trigger of the routine has not fired for since it entered. */
+export function dueWorkItem(
+  routine: Pick<Routine, 'triggers'>,
+  state: RoutineState,
+  items: readonly WorkItemView[]
+): { item: WorkItemView; trigger: WorkItemTrigger; enteredAt: number } | null {
+  const triggers = workItemTriggers(routine);
+  if (triggers.length === 0) return null;
+  for (const item of laneOrder(items))
+    for (const trigger of triggers) {
+      if (item.status !== trigger.status || (trigger.unassignedOnly && item.assignee !== null)) continue;
+      const entered = enteredAt(item);
+      if (!firedFor(state, item.number, trigger.status, entered))
+        return { item, trigger, enteredAt: entered ?? item.createdAt };
+    }
+  return null;
+}
+
 /**
  * The tick's decision for one routine at `now`. First match wins:
- *   1. the newest fire is pending      -> settle it as started when its task exists, as failed once it is stale,
- *                                         else start it again with the same runId (the task route answers duplicate)
+ *   1. the newest fire is pending      -> settle it as started when its task exists (a claiming work-item fire is
+ *                                         started again instead, so the duplicate answer names the session to claim
+ *                                         for), as failed once it is stale, else start it again with the same runId
+ *                                         (the task route answers duplicate)
  *   2. disabled                        -> idle
- *   3. no due time in (base, now]      -> idle until the next one
- *   4. a run of this routine is active -> skip (the due time is consumed)
- *   5. a gate says no                  -> skip with the gate and its count (the due time is consumed)
- *   6. otherwise                       -> start, removing finished runs beyond KEEP_FINISHED_RUNS first
+ *   3. a schedule due time in (base, now]:
+ *      a. a run of this routine is active -> skip (the due time is consumed)
+ *      b. a gate says no                  -> skip with the gate and its count (the due time is consumed)
+ *      c. otherwise                       -> start, removing finished runs beyond KEEP_FINISHED_RUNS first
+ *   4. a Work item due for a work-item trigger (the first in lane order; one per tick):
+ *      a. a gate says no                  -> skip, recorded once per item and gate count; the item stays due
+ *      b. otherwise                       -> start, as 3c. Another item's active run does not hold it back.
+ *   5. otherwise                       -> idle until the next schedule due time
  * The caps are not checked here: the task route checks them inside its create queue and its refusal becomes a
- * `refused` fire. A second copy of the rule here could drift from the one agents are held to.
+ * `refused` fire, which leaves a work item due for the next tick. A second copy of the rule here could drift from the
+ * one agents are held to.
  */
 export function planFire(
   routine: Routine,
   state: RoutineState,
   runs: RunView,
   now: number,
-  work?: WorkCounts
+  work?: WorkCounts,
+  items?: readonly WorkItemView[]
 ): FirePlan {
   const pending = state.fires.at(-1);
   if (pending?.outcome.kind === 'pending') {
     const run = [...runs.active, ...runs.finished].find((r) => r.runId === pending.runId);
-    if (run) return { kind: 'settle', fire: { ...pending, outcome: { kind: 'started', taskId: run.taskId } } };
-    if (now - pending.at > PENDING_FIRE_MS)
+    if (run && !pending.work?.claim)
+      return { kind: 'settle', fire: { ...pending, outcome: { kind: 'started', taskId: run.taskId } } };
+    if (!run && now - pending.at > PENDING_FIRE_MS)
       return {
         kind: 'settle',
         fire: { ...pending, outcome: { kind: 'failed', message: 'The start was interrupted before it finished' } },
       };
-    return { kind: 'start', fire: { ...pending, at: now }, removeFirst: surplus(runs) };
+    return { kind: 'start', fire: { ...pending, at: now }, removeFirst: run ? [] : surplus(runs) };
   }
   if (!routine.enabled) return { kind: 'idle', nextRunAt: null };
-  const triggers = knownTriggers(routine);
+  const triggers = scheduleTriggers(routine);
   const base = baseOf(routine, state);
   const due = latestDue(triggers, base, now);
-  if (due === null) return { kind: 'idle', nextRunAt: dueAt(triggers, base) };
-  const fire = { at: now, dueAt: due, trigger: 'schedule' as const, runId: runRequestId(routine.id, due) };
-  return admit(routine, fire, runs, work);
+  if (due !== null) {
+    const fire = { at: now, dueAt: due, trigger: 'schedule' as const, runId: runRequestId(routine.id, due) };
+    return admit(routine, fire, runs, work);
+  }
+  const next = dueAt(triggers, base);
+  const pick = items ? dueWorkItem(routine, state, items) : null;
+  if (!pick) return { kind: 'idle', nextRunAt: next };
+  const number = pick.item.number;
+  const fire = {
+    at: now,
+    dueAt: pick.enteredAt,
+    trigger: 'work-item' as const,
+    runId: nameUuid(`${routine.id}:${workKey(number)}:${pick.enteredAt}`),
+    work: {
+      number,
+      status: pick.trigger.status,
+      enteredAt: pick.enteredAt,
+      ...(pick.trigger.claim ? { claim: true } : {}),
+    },
+  };
+  const gate = gateRefusal(routine, work);
+  if (!gate) return { kind: 'start', fire: { ...fire, outcome: { kind: 'pending' } }, removeFirst: surplus(runs) };
+  const last = state.fires.at(-1);
+  const repeat =
+    last?.runId === fire.runId &&
+    last.outcome.kind === 'skipped' &&
+    last.outcome.gate === gate.gate &&
+    last.outcome.count === gate.count;
+  return repeat
+    ? { kind: 'idle', nextRunAt: next }
+    : { kind: 'skip', fire: { ...fire, outcome: { kind: 'skipped', reason: 'gate', ...gate } } };
 }
 
 function admit(
@@ -373,37 +488,86 @@ export function countWork(
 }
 
 /**
- * The task `requestId` for one due time of one routine: a name-based UUID (SHA-256 of `routineId:dueAt`, version 8,
- * RFC variant). The same due time planned twice asks the task route for the same request, which answers `duplicate`.
+ * The task `requestId` for one due time of one routine: a name-based UUID of `routineId:dueAt`. The same due time
+ * planned twice asks the task route for the same request, which answers `duplicate`.
  */
-export function runRequestId(routineId: string, due: number): string {
-  const hex = createHash('sha256').update(`${routineId}:${due}`).digest('hex').slice(0, 32).split('');
+export const runRequestId = (routineId: string, due: number): string => nameUuid(`${routineId}:${due}`);
+
+/** A name-based UUID: SHA-256 of `name`, version 8, RFC variant. */
+function nameUuid(name: string): string {
+  const hex = createHash('sha256').update(name).digest('hex').slice(0, 32).split('');
   hex[12] = '8';
   hex[16] = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
   const h = hex.join('');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-/** What a run is sent: the prompt, then one line naming the routine, the due time and what it may not do. */
-export function routineRequestText(routine: Routine, due: number): string {
-  // A gate counting items "assigned to a routine run" only sees an item the run assigned to itself.
-  const claim = (routine.gates ?? []).some((g) => (g as { assignee?: unknown }).assignee === 'routine')
-    ? ' Assign each Work item you take to yourself (assignee "me"); this routine counts them before it wakes an agent.'
+/**
+ * What a run is sent: the prompt, then one line naming the routine, the due time and what it may not do. A work-item
+ * run is told its item's key only, never the item's text: it reads the item with canvas_work, as any agent would.
+ */
+export function routineRequestText(routine: Routine, due: number, work?: RoutineFire['work']): string {
+  const item = work
+    ? ` This run is for Work item ${workKey(work.number)}: read it with canvas_work first.${
+        work.claim
+          ? ` The routine assigns it to you and moves it to ${WORK_STATUS_NAMES[CLAIM_STATUS]} as this run starts.`
+          : ''
+      }`
     : '';
-  return `${routine.prompt}\n\n(Routine ${routineKey(routine.number)} "${routine.title}", run for ${new Date(due).toISOString()}. You were started by a routine: you cannot start canvas conversations or tasks; work in this worktree, use canvas_work for Work items, and end with a report.${claim})`;
+  // A gate counting items "assigned to a routine run" only sees an item the run assigned to itself.
+  const assign =
+    !work?.claim && (routine.gates ?? []).some((g) => (g as { assignee?: unknown }).assignee === 'routine')
+      ? ' Assign each Work item you take to yourself (assignee "me"); this routine counts them before it wakes an agent.'
+      : '';
+  return `${routine.prompt}\n\n(Routine ${routineKey(routine.number)} "${routine.title}", run for ${new Date(due).toISOString()}.${item} You were started by a routine: you cannot start canvas conversations or tasks; work in this worktree, use canvas_work for Work items, and end with a report.${assign})`;
 }
 export const routineTaskName = (routine: Routine): string =>
   `Routine ${routineKey(routine.number)} · ${routine.title}`.slice(0, 100);
 
-/** A fire added to the state, replacing one with the same runId; schedule fires advance `lastDueAt`. */
+/**
+ * A fire added to the state, replacing one with the same runId; schedule fires advance `lastDueAt`. A work-item fire
+ * that is starting or started marks its item fired; one refused or failed unmarks it, so the item is due next tick.
+ */
 export function recordFire(state: RoutineStateFile, routineId: string, fire: RoutineFire): RoutineStateFile {
   const current = state.routines[routineId] ?? { fires: [] };
   const fires = [...current.fires.filter((f) => f.runId !== fire.runId), fire].slice(-MAX_KEPT_FIRES);
   const lastDueAt = fire.trigger === 'schedule' ? Math.max(current.lastDueAt ?? 0, fire.dueAt) : current.lastDueAt;
+  let items = current.items;
+  if (fire.work) {
+    const { number, status, enteredAt } = fire.work;
+    const others = (items ?? []).filter(
+      (r) => !(r.number === number && r.status === status && r.enteredAt === enteredAt)
+    );
+    const kind = fire.outcome.kind;
+    if (kind === 'pending' || kind === 'started')
+      items = [...others, { number, status, enteredAt }].slice(-MAX_FIRED_ITEMS);
+    else if (kind === 'refused' || kind === 'failed') items = others;
+  }
   return {
     ...state,
-    routines: { ...state.routines, [routineId]: { ...current, fires, ...(lastDueAt ? { lastDueAt } : {}) } },
+    routines: {
+      ...state.routines,
+      [routineId]: { ...current, fires, ...(lastDueAt ? { lastDueAt } : {}), ...(items ? { items } : {}) },
+    },
   };
+}
+
+/**
+ * The state without fired-item marks for items no longer in the status they fired on (moved, or deleted), or null
+ * when none is stale. An item that comes back has a new entry time and is due again either way.
+ */
+export function pruneFiredItems(state: RoutineStateFile, items: readonly WorkItemView[]): RoutineStateFile | null {
+  const status = new Map(items.map((i) => [i.number, i.status]));
+  let changed = false;
+  const routines = Object.fromEntries(
+    Object.entries(state.routines).map(([id, entry]) => {
+      const kept = entry.items?.filter((r) => status.get(r.number) === r.status);
+      if (!entry.items || kept!.length === entry.items.length) return [id, entry];
+      changed = true;
+      return [id, { ...entry, items: kept }];
+    })
+  );
+  return changed ? { ...state, routines } : null;
 }
 
 // ---- Requests and edits ---------------------------------------------------

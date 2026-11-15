@@ -33,7 +33,7 @@ Base: architect candidate A ("a routine run is a background task sent through th
 - `src/web/routes/canvas-routine-routes.ts`: list, create, update (expectedRevision), delete, run-now, and `routineTool` for `canvas_routine`.
 - `packages/canvas/src/routines-view.ts`: the Routines tab.
 
-Grafts from B considered and not taken for the first PR: a Work-item trigger (level-triggered on a `workKey@revision` ledger), a synced global kill switch, and `{{item.*}}` prompt substitution (rejected: template injection from item text). The first two are follow-ups.
+Grafts from B considered: a Work-item trigger was taken (see As built; keyed on when the item entered its status rather than a `workKey@revision` ledger, so an intake run's own edits never refire it). Not taken: a synced global kill switch (a follow-up), and `{{item.*}}` prompt substitution (rejected: template injection from item text).
 
 ## Affected users and systems
 
@@ -66,3 +66,4 @@ Harry and anyone owning a canvas. Canvas task routes, the auth hook, the canvas 
 - The `canvas_work` capability note was shortened to fit `canvas_routine` under the 60,000-byte cap.
 - The Routines tab is a second tab of the Work view (Items | Routines), not a separate panel.
 - Gates were added after the first two commits, on the owner's requirement. Two choices beyond the brief: a gate that cannot be evaluated says no (a doubt keeps the agent asleep), and gates are among the fields whose change by an agent switches an enabled routine off (removing a cap loosens it). A started fire records the run's session so items a run took still count after its task record is removed, and a run whose gates count `routine` items is told to assign its items to itself.
+- A `work-item` trigger and a server-side claim were added on the owner's requirement (pickup and intake routines acting on items within WIP and task limits). Level-triggered, once per item per entry into its status (`enteredAt()` from the item's history, else `createdAt`), one item per fire, first in `laneOrder()`. A refused start leaves the item due; a gate skip is recorded once per item and count. `claim` assigns the item to the run's session and moves it to In progress after the start. Lane order is item number until W-48 gives lanes a position; W-48 must keep writing "Moved from X to Y" events (or expose an entry time) for `enteredAt()`.

@@ -8,8 +8,21 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  createWork,
+  emptyWorkFile,
+  laneOrder,
+  updateWork,
+  WORK_STATUSES,
+  type WorkFile,
+  type WorkStatus,
+} from '../src/canvas/work.js';
+import {
+  CLAIM_STATUS,
   countWork,
   createRoutine,
+  dueWorkItem,
+  enteredAt,
+  pruneFiredItems,
   gateRefusal,
   CreateRoutineSchema,
   dueAt,
@@ -271,6 +284,144 @@ describe('gates', () => {
     expect(routineRequestText(routine(), T0)).not.toContain('assignee "me"');
     const capped = routine({ gates: [gate({ status: 'in-progress', assignee: 'routine', max: 2 })] });
     expect(routineRequestText(capped, T0)).toContain('assignee "me"');
+  });
+});
+
+describe('work-item triggers', () => {
+  // Any lane but Backlog and the claim lane, taken from the exported list so a status split keeps this meaningful.
+  const LANE = WORK_STATUSES.find((s) => s !== 'backlog' && s !== CLAIM_STATUS)!;
+  const OTHER: WorkStatus = 'backlog';
+  const agent = { kind: 'agent' as const, sessionId: 'sess-a' };
+  const file = (...entries: { status: WorkStatus; at: number; assigned?: boolean }[]): WorkFile => {
+    let f = emptyWorkFile();
+    for (const [i, e] of entries.entries()) {
+      const made = createWork(f, { title: `Item ${i + 1}`, status: e.status }, { author: human, now: e.at });
+      if (!made.ok) throw new Error(made.message);
+      f = made.file;
+      if (e.assigned) {
+        const assigned = updateWork(f, i + 1, { assignee: { kind: 'person' } }, { author: human, now: e.at });
+        if (!assigned.ok) throw new Error(assigned.message);
+        f = assigned.file;
+      }
+    }
+    return f;
+  };
+  const move = (f: WorkFile, n: number, status: WorkStatus, now: number): WorkFile => {
+    const moved = updateWork(f, n, { status }, { author: human, now });
+    if (!moved.ok) throw new Error(moved.message);
+    return moved.file;
+  };
+  const picker = (fields: Record<string, unknown> = {}) =>
+    routine({ triggers: [{ kind: 'work-item', status: LANE, ...fields } as never] });
+  const empty = { fires: [] };
+
+  it('validates the status against the Work statuses', () => {
+    expect(TriggerSchema.safeParse({ kind: 'work-item', status: LANE, claim: true }).success).toBe(true);
+    expect(TriggerSchema.safeParse({ kind: 'work-item', status: 'someday' }).success).toBe(false);
+  });
+
+  it('reads when an item entered its status: the newest move, else its creation, never a later edit', () => {
+    let f = file({ status: OTHER, at: T0 });
+    expect(enteredAt(f.items[0]!)).toBe(T0);
+    f = move(f, 1, LANE, T0 + HOUR);
+    expect(enteredAt(f.items[0]!)).toBe(T0 + HOUR);
+    const edited = updateWork(f, 1, { title: 'Renamed' }, { author: agent, now: T0 + 2 * HOUR });
+    expect(edited.ok && enteredAt(edited.item)).toBe(T0 + HOUR);
+    // A history that no longer holds the move (capped) gives no time; the planner then keys on createdAt.
+    expect(enteredAt({ ...f.items[0]!, history: [] })).toBeNull();
+  });
+
+  it('takes the first item in lane order that it has not fired for, and skips assigned ones when asked', () => {
+    const f = file({ status: LANE, at: T0, assigned: true }, { status: OTHER, at: T0 }, { status: LANE, at: T0 });
+    expect(laneOrder(f.items).map((i) => i.number)).toEqual([1, 2, 3]);
+    expect(dueWorkItem(picker(), empty, f.items)?.item.number).toBe(1);
+    expect(dueWorkItem(picker({ unassignedOnly: true }), empty, f.items)?.item.number).toBe(3);
+    expect(dueWorkItem(routine(), empty, f.items)).toBeNull();
+  });
+
+  it('fires once per entry: a started fire marks the item, a re-entry makes it due again', () => {
+    let f = file({ status: LANE, at: T0 });
+    const r = picker({ claim: true });
+    const plan = planFire(r, empty, noRuns(), T0 + MIN, undefined, f.items);
+    expect(plan.kind).toBe('start');
+    if (plan.kind !== 'start') return;
+    expect(plan.fire).toMatchObject({
+      trigger: 'work-item',
+      dueAt: T0,
+      work: { number: 1, status: LANE, claim: true },
+    });
+    let state = recordFire(emptyRoutineState(), r.id, plan.fire);
+    state = recordFire(state, r.id, { ...plan.fire, outcome: { kind: 'started', taskId: 't1' } });
+    const own = () => state.routines[r.id]!;
+    expect(planFire(r, own(), noRuns(), T0 + 2 * MIN, undefined, f.items).kind).toBe('idle');
+    // An edit that is not a move leaves it fired.
+    const edited = updateWork(f, 1, { title: 'Sharper' }, { author: agent, now: T0 + 3 * MIN });
+    if (edited.ok) f = edited.file;
+    expect(planFire(r, own(), noRuns(), T0 + 4 * MIN, undefined, f.items).kind).toBe('idle');
+    // Out and back in: due again with a new run id.
+    f = move(move(f, 1, OTHER, T0 + 5 * MIN), 1, LANE, T0 + 6 * MIN);
+    const again = planFire(r, own(), noRuns(), T0 + 7 * MIN, undefined, f.items);
+    expect(again.kind === 'start' && again.fire.runId !== plan.fire.runId && again.fire.dueAt).toBe(T0 + 6 * MIN);
+  });
+
+  it('leaves the item due after a refused start, and a run of another item does not hold it back', () => {
+    const f = file({ status: LANE, at: T0 }, { status: LANE, at: T0 });
+    const r = picker();
+    const first = planFire(r, empty, noRuns(), T0, undefined, f.items);
+    if (first.kind !== 'start') throw new Error('expected a start');
+    let state = recordFire(emptyRoutineState(), r.id, first.fire);
+    state = recordFire(state, r.id, { ...first.fire, outcome: { kind: 'refused', code: 'AGENT_CAP', message: 'x' } });
+    const retry = planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, undefined, f.items);
+    expect(retry.kind === 'start' && retry.fire.runId).toBe(first.fire.runId);
+    state = recordFire(state, r.id, { ...first.fire, outcome: { kind: 'started', taskId: 't1' } });
+    const busy: RunView = { active: [{ runId: first.fire.runId, taskId: 't1', state: 'working' }], finished: [] };
+    const second = planFire(r, state.routines[r.id]!, busy, T0 + 2 * MIN, undefined, f.items);
+    expect(second.kind === 'start' && second.fire.work?.number).toBe(2);
+  });
+
+  it('records a gate skip once per item and count, and never consumes the item', () => {
+    const f = file({ status: LANE, at: T0 });
+    const r = { ...picker(), gates: [{ kind: 'work-count', status: CLAIM_STATUS, assignee: 'routine', max: 1 }] };
+    const full: WorkCounts = () => 1;
+    const skip = planFire(r, empty, noRuns(), T0, full, f.items);
+    expect(skip.kind === 'skip' && skip.fire.outcome).toMatchObject({ kind: 'skipped', reason: 'gate', count: 1 });
+    if (skip.kind !== 'skip') return;
+    const state = recordFire(emptyRoutineState(), r.id, skip.fire);
+    expect(state.routines[r.id]!.items ?? []).toEqual([]);
+    expect(planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, full, f.items).kind).toBe('idle');
+    expect(planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, () => 0, f.items).kind).toBe('start');
+  });
+
+  it('a pending claiming fire whose task exists starts again, so the duplicate answer names the session', () => {
+    const f = file({ status: LANE, at: T0 });
+    const r = picker({ claim: true });
+    const plan = planFire(r, empty, noRuns(), T0, undefined, f.items);
+    if (plan.kind !== 'start') throw new Error('expected a start');
+    const state = recordFire(emptyRoutineState(), r.id, plan.fire);
+    const runs: RunView = { active: [{ runId: plan.fire.runId, taskId: 't1', state: 'working' }], finished: [] };
+    expect(planFire(r, state.routines[r.id]!, runs, T0 + MIN, undefined, f.items)).toMatchObject({
+      kind: 'start',
+      removeFirst: [],
+    });
+  });
+
+  it('forgets fired items that left their status, and schedules ignore work-item triggers', () => {
+    let f = file({ status: LANE, at: T0 });
+    const r = picker();
+    const plan = planFire(r, empty, noRuns(), T0, undefined, f.items);
+    if (plan.kind !== 'start') throw new Error('expected a start');
+    const state = recordFire(emptyRoutineState(), r.id, plan.fire);
+    expect(pruneFiredItems(state, f.items)).toBeNull();
+    f = move(f, 1, OTHER, T0 + MIN);
+    expect(pruneFiredItems(state, f.items)!.routines[r.id]!.items).toEqual([]);
+    expect(routineRow(r, undefined).nextRunAt).toBeNull();
+  });
+
+  it('names the item in the request, never its text', () => {
+    const text = routineRequestText(picker(), T0, { number: 7, status: LANE, enteredAt: T0, claim: true });
+    expect(text).toContain('W-7');
+    expect(text).toContain('canvas_work');
+    expect(text).not.toContain('assignee "me"');
   });
 });
 

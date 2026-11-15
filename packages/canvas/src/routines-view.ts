@@ -58,15 +58,24 @@ export function triggerLabel(trigger: RoutineTrigger): string {
         .sort()
         .map((d) => DAYS[d])
         .join(', ')} at ${trigger.time}`;
+    case 'work-item':
+      return `Each item entering ${WORK_STATUS_NAMES[trigger.status]}${trigger.unassignedOnly ? ', unassigned' : ''}${
+        trigger.claim ? ', claimed' : ''
+      }`;
   }
 }
 export function fireLabel(fire: RoutineFire): string {
-  const how = fire.trigger === 'manual' ? 'Run now' : 'Scheduled';
+  const how =
+    fire.trigger === 'manual'
+      ? 'Run now'
+      : fire.trigger === 'work-item' && fire.work
+        ? `W-${fire.work.number}`
+        : 'Scheduled';
   switch (fire.outcome.kind) {
     case 'pending':
       return `${how} · starting`;
     case 'started':
-      return `${how} · started`;
+      return `${how} · started${fire.outcome.claimed === false ? ', item not claimed' : ''}`;
     case 'skipped':
       return fire.outcome.reason === 'gate'
         ? `${how} · skipped: gate ${(fire.outcome.gate ?? 0) + 1}${
@@ -79,7 +88,8 @@ export function fireLabel(fire: RoutineFire): string {
       return `${how} · failed: ${fire.outcome.message}`;
   }
 }
-const known = (t: { kind: string }): t is RoutineTrigger => ['interval', 'daily', 'weekly'].includes(t.kind);
+const known = (t: { kind: string }): t is RoutineTrigger =>
+  ['interval', 'daily', 'weekly', 'work-item'].includes(t.kind);
 const knownGate = (g: { kind: string }): g is RoutineGate => g.kind === 'work-count';
 
 /** "Todo, unassigned: at least 1" style, the words the form uses. */
@@ -486,6 +496,7 @@ export class RoutinesView {
       ['interval', 'Every'],
       ['daily', 'Daily at'],
       ['weekly', 'Weekly on'],
+      ['work-item', 'Each Work item entering'],
     ] as const) {
       const option = el('option', '', label);
       option.value = value;
@@ -498,7 +509,9 @@ export class RoutinesView {
           ? { kind: 'interval', minutes: 60 }
           : kind.value === 'daily'
             ? { kind: 'daily', time: '07:00' }
-            : { kind: 'weekly', days: [1], time: '07:00' };
+            : kind.value === 'work-item'
+              ? { kind: 'work-item', status: WORK_STATUSES.find((s) => s !== 'backlog') ?? WORK_STATUSES[0] }
+              : { kind: 'weekly', days: [1], time: '07:00' };
       repaint();
       // The rows were rebuilt; the new kind's select keeps the keyboard.
       this.form?.querySelectorAll<HTMLSelectElement>('.routine-trigger select')[index]?.focus();
@@ -523,6 +536,34 @@ export class RoutinesView {
       row.append(minutes, el('span', '', 'minutes'));
     } else if (trigger.kind === 'daily') {
       row.append(time(trigger.time, (v) => (trigger.time = v)));
+    } else if (trigger.kind === 'work-item') {
+      const status = el('select');
+      status.setAttribute('aria-label', `Trigger ${index + 1} status`);
+      for (const value of WORK_STATUSES) {
+        const option = el('option', '', WORK_STATUS_NAMES[value]);
+        option.value = value;
+        option.selected = trigger.status === value;
+        status.append(option);
+      }
+      status.onchange = () => (trigger.status = status.value as typeof trigger.status);
+      const flag = (label: string, key: 'unassignedOnly' | 'claim', hint: string) => {
+        const wrap = el('label');
+        const box = el('input');
+        box.type = 'checkbox';
+        box.checked = trigger[key] === true;
+        box.title = hint;
+        box.onchange = () => {
+          if (box.checked) trigger[key] = true;
+          else delete trigger[key];
+        };
+        wrap.append(box, label);
+        return wrap;
+      };
+      row.append(
+        status,
+        flag('unassigned only', 'unassignedOnly', 'Skip items someone is assigned to'),
+        flag('claim it', 'claim', 'Assign the item to the run and move it to In progress when the run starts')
+      );
     } else {
       const days = el('span', 'routine-days');
       DAYS.forEach((name, day) => {
