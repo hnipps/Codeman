@@ -337,6 +337,7 @@ const capabilitiesSchema = z
     transcriptGutter: z.number().int().min(1).max(8).optional(),
     // Literal text matched by a `wait-output` long-poll, never compiled as a regex.
     composerReadyMark: z.string().min(1).max(64).optional(),
+    slashCommands: z.boolean().optional(),
     workDetect: z
       .object({
         promptGlyph: z.string().min(1).max(8),

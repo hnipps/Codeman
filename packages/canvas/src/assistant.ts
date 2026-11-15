@@ -954,7 +954,8 @@ export class AssistantView {
       const now = this.draft.value;
       if (now.startsWith(text)) this.draft.value = now.slice(text.length).replace(/^\s+/, '');
       write(this.keys.assistantDraft, this.draft.value || null);
-      this.options.dispatch({ kind: 'context-clear-sent', ids, elements });
+      // A slash command went in bare, carrying nothing: its chips stay for the next message.
+      if (this.data(answer.body).command !== true) this.options.dispatch({ kind: 'context-clear-sent', ids, elements });
       this.say('');
       this.syncRun();
       this.options.sent?.(attempt.messageId, text, conversationId);

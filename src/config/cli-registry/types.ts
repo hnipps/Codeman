@@ -502,6 +502,13 @@ export interface CliCapabilities {
    * the caller synchronizes on `wait-output` markers.
    */
   composerReadyMark?: string;
+  /**
+   * The composer runs a submitted prompt that STARTS with `/` as one of the CLI's own slash commands
+   * (claude's `/compact`, `/clear`, skills such as `/plugin:skill args`). A canvas chat message the person
+   * typed that starts with a command is then sent bare, without the canvas context block in front of it,
+   * because a block in front would make the command plain text. Absent means the canvas keeps wrapping it.
+   */
+  slashCommands?: boolean;
   /** No direct-PTY fallback: the CLI must run inside tmux (secrets ride tmux setenv). */
   requiresMux: boolean;
   /**

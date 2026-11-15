@@ -178,6 +178,21 @@ describe('canvas thread requests', () => {
     }
   });
 
+  it('never runs a comment as a slash command: a request asked from a thread stays reference data', async () => {
+    const h = await harness();
+    try {
+      const conversation = await h.start();
+      const asked = await h.ask(conversation.id, 'note1', '/clear');
+      const write = h.sessions.get(conversation.sessionId)!.writeViaMux as ReturnType<typeof vi.fn>;
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write.mock.calls[0][0].startsWith('<canvas-context ')).toBe(true);
+      expect(write.mock.calls[0][0].endsWith(`${CONTEXT_NOTICE}\n/clear\r`)).toBe(true);
+      expect(h.message(asked.messageId)?.command).toBeUndefined();
+    } finally {
+      await h.app.close();
+    }
+  });
+
   it('records the origin on the message, sends through the ordinary path and lists the request', async () => {
     const h = await harness();
     try {
