@@ -2,6 +2,24 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-15 — The fork never reconverges with upstream, and users evolve the whole app
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/`
+**Why:** A comparison with block/buzz raised what sets the canvas apart, and whether keeping up with upstream Codeman was a cost.
+**Links:** [Positioning](agentic-canvas/positioning.md)
+
+Decision. Upstream Codeman was a foundation only. The fork diverges for good,
+so upstream compatibility is never a design constraint or a cost.
+
+Decision. The differentiator is that users and their agents change the whole
+app at the source level. Buzz's plugins can own whole pages, but inside a
+host that keeps its core, data model and protocol fixed.
+
+Open. In multiplayer, a source change reaches every user, and one user's
+change can break another's work. Review, roles and per-change rollback are
+deferred.
+
 ## 2026-11-15 — Canvas work items live in a side file, and only a press or an agent's report moves one
 
 **Type:** intent-refinement
