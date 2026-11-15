@@ -8,8 +8,9 @@
  * `DELETE /api/canvas/:workspaceId/routines/:key`      delete (a person only); its runs stay as ordinary tasks
  * `POST   /api/canvas/:workspaceId/routines/:key/run`  Run now (a person only), body `{ requestId }`
  *
- * The `canvas_routine` tool calls the same functions. An agent may read, create (saved disabled) and change any field
- * but `enabled`; switching one on, Run now and delete are a person's (`routineRefusal`). Writes need the live colour
+ * The `canvas_routine` tool calls the same functions. An agent may read, create (saved disabled), switch one off and
+ * change fields; switching one on, Run now and delete are a person's (`routineRefusal`), and an agent's change to the
+ * prompt, triggers or launch of an enabled routine switches it off (`updateRoutine`). Writes need the live colour
  * and the workspace owner (`writeGuard`). A routine's own runs never reach these routes: the canvas pre-handler admits
  * the routine principal on the task routes only.
  */
@@ -137,7 +138,7 @@ export async function updateRoutineRoute(
   return answer(
     ctx,
     workspaceId,
-    changeRoutines(workspaceId, (file) => updateRoutine(file, number, patch, now))
+    changeRoutines(workspaceId, (file) => updateRoutine(file, number, patch, now, callerOf(req)))
   );
 }
 export async function deleteRoutineRoute(

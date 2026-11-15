@@ -5,6 +5,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   createRoutine,
   CreateRoutineSchema,
@@ -229,6 +231,30 @@ describe('edits', () => {
     if (!edited.ok) throw new Error('refused');
     expect(edited.routine.enabledAt).toBe(T0 + HOUR);
   });
+  it('switches an enabled routine off when an agent changes what it runs, and only then', () => {
+    const made = createRoutine(emptyRoutineFile(), body(), { author: human, now: T0 });
+    if (!made.ok) throw new Error('refused');
+    const on = updateRoutine(made.file, 1, { expectedRevision: 1, enabled: true }, T0);
+    if (!on.ok) throw new Error('refused');
+    const renamed = updateRoutine(on.file, 1, { expectedRevision: 2, title: 'Renamed' }, T0, 'agent');
+    if (!renamed.ok) throw new Error('refused');
+    expect(renamed.routine.enabled).toBe(true);
+    const same = updateRoutine(
+      renamed.file,
+      1,
+      { expectedRevision: 3, prompt: 'Take the oldest Todo item' },
+      T0,
+      'agent'
+    );
+    if (!same.ok) throw new Error('refused');
+    expect(same.routine.enabled).toBe(true);
+    const rewritten = updateRoutine(same.file, 1, { expectedRevision: 4, prompt: 'Something else' }, T0, 'agent');
+    if (!rewritten.ok) throw new Error('refused');
+    expect(rewritten.routine.enabled).toBe(false);
+    const byPerson = updateRoutine(same.file, 1, { expectedRevision: 4, prompt: 'Something else' }, T0, 'person');
+    if (!byPerson.ok) throw new Error('refused');
+    expect(byPerson.routine.enabled).toBe(true);
+  });
   it('keeps fields and trigger kinds a later release wrote', () => {
     const made = createRoutine(emptyRoutineFile(), body(), { author: human, now: T0 });
     if (!made.ok) throw new Error('refused');
@@ -243,5 +269,33 @@ describe('edits', () => {
     expect(out.flag).toBe(1);
     expect(out.routines[0].colour).toBe('red');
     expect(out.routines[0].triggers).toContainEqual({ kind: 'work', status: 'todo' });
+  });
+});
+
+describe('the Routines tab', () => {
+  it('labels triggers and fires in words', async () => {
+    const { triggerLabel, fireLabel } = await import('../packages/canvas/src/routines-view.js');
+    expect(triggerLabel({ kind: 'interval', minutes: 120 })).toBe('Every 2 h');
+    expect(triggerLabel({ kind: 'interval', minutes: 45 })).toBe('Every 45 min');
+    expect(triggerLabel({ kind: 'daily', time: '07:30' })).toBe('Daily at 07:30');
+    expect(triggerLabel({ kind: 'weekly', days: [5, 1], time: '09:00' })).toBe('Mon, Fri at 09:00');
+    const fire = { runId: 'r', dueAt: 0, at: 0 };
+    expect(fireLabel({ ...fire, trigger: 'manual', outcome: { kind: 'skipped' } } as never)).toBe(
+      'Run now · skipped, the last run was still going'
+    );
+    expect(
+      fireLabel({
+        ...fire,
+        trigger: 'schedule',
+        outcome: { kind: 'refused', code: 'AGENT_CAP', message: 'x' },
+      } as never)
+    ).toBe('Scheduled · refused (AGENT_CAP)');
+  });
+
+  it('sets every routine string as text and starts nothing by itself', () => {
+    const source = readFileSync(resolve(__dirname, '../packages/canvas/src/routines-view.ts'), 'utf8');
+    expect(source).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML/);
+    // The only writes are the person's presses: Enabled, Run now, Save/Create and Delete.
+    expect(source.match(/this\.request\('(POST|PATCH|DELETE)'/g)?.length).toBe(5);
   });
 });

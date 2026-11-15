@@ -359,8 +359,9 @@ export const ROUTINE_REFUSALS = {
 export type RoutineRefusal = keyof typeof ROUTINE_REFUSALS;
 
 /**
- * Who may do what. An agent may read, create (saved disabled) and change any field but `enabled`. Enabling, Run now
- * and delete are a person's: enabling is the moment a person authorises prompts with no human message
+ * Who may do what. An agent may read, create (saved disabled), switch one off and change its fields; enabling, Run
+ * now and delete are a person's, and an agent's change to what an enabled routine runs switches it off
+ * (`updateRoutine`), so a person enables the prompt that will actually run: enabling is the moment a person authorises prompts with no human message
  * (docs/self-building.md rule 4), and an agent that could enable one would start work with no lineage to walk.
  */
 export function routineRefusal(
@@ -410,17 +411,31 @@ export function createRoutine(
   return { ok: true, file: { ...file, next: file.next + 1, routines: [...file.routines, routine] }, routine };
 }
 
-export function updateRoutine(file: RoutineFile, number: number, patch: UpdateRoutine, now: number): RoutineChange {
+/** The fields that decide what a run does; an agent changing one on an enabled routine switches it off. */
+const RUN_FIELDS = ['prompt', 'triggers', 'cliId', 'model'] as const;
+
+export function updateRoutine(
+  file: RoutineFile,
+  number: number,
+  patch: UpdateRoutine,
+  now: number,
+  caller: 'person' | 'agent' = 'person'
+): RoutineChange {
   const current = file.routines.find((r) => r.number === number);
   if (!current) return { ok: false, code: 'NOT_FOUND' };
   if (current.revision !== patch.expectedRevision) return { ok: false, code: 'CONFLICT' };
   const { expectedRevision: _revision, ...fields } = patch;
   void _revision;
   const switchedOn = patch.enabled === true && !current.enabled;
+  const rewritten =
+    caller === 'agent' &&
+    current.enabled &&
+    RUN_FIELDS.some((f) => patch[f] !== undefined && JSON.stringify(patch[f]) !== JSON.stringify(current[f]));
   const routine: Routine = {
     ...current,
     ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
     ...(switchedOn ? { enabledAt: now } : {}),
+    ...(rewritten ? { enabled: false } : {}),
     updatedAt: now,
     revision: current.revision + 1,
   };
