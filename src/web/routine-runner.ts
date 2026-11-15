@@ -13,7 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
 import { changeRoutineState, readRoutines, readRoutineState } from '../canvas/routine-store.js';
 import { changeWork, readWork } from '../canvas/work-store.js';
-import { findWork, updateWork, type WorkItem } from '../canvas/work.js';
+import { findWork, updateWork, type WorkFile, type WorkItem } from '../canvas/work.js';
 import { readConversations } from '../canvas/conversations.js';
 import { startedBy } from '../canvas/agent-start.js';
 import {
@@ -88,13 +88,14 @@ export class RoutineRunner {
     const runs = await this.runViews(workspace, owner);
     if (!runs) return;
     const needsWork = due.some((r) => r.gates?.length || workItemTriggers(r).length);
-    const items = needsWork ? workItems(workspace.id) : undefined;
+    const workFile = needsWork ? readWorkFile(workspace.id) : undefined;
     let file = state.file;
-    const pruned = items && pruneFiredItems(file, items);
+    const pruned = workFile && pruneFiredItems(file, workFile.items);
     if (pruned && this.deps.mayAutomate() && changeRoutineState(workspace.id, () => pruned)) file = pruned;
-    const work = items ? workCounts(workspace.id, items, file) : undefined;
+    const work = workFile ? workCounts(workspace.id, workFile.items, file) : undefined;
     for (const routine of due) {
-      const plan = planFire(routine, file.routines[routine.id] ?? { fires: [] }, runs(routine.id), now, work, items);
+      const own = file.routines[routine.id] ?? { fires: [] };
+      const plan = planFire(routine, own, runs(routine.id), now, work, workFile);
       await this.carryOut(workspace, routine, owner, plan);
     }
   }
@@ -113,8 +114,8 @@ export class RoutineRunner {
     const prior = readRoutineState(workspace.id);
     const known = prior.ok ? prior.file.routines[routine.id]?.fires.find((f) => f.runId === requestId) : undefined;
     if (known && known.outcome.kind !== 'pending') return known;
-    const items = routine.gates?.length && !ignoreGates && prior.ok ? workItems(workspace.id) : undefined;
-    const work = items && prior.ok ? workCounts(workspace.id, items, prior.file) : undefined;
+    const workFile = routine.gates?.length && !ignoreGates && prior.ok ? readWorkFile(workspace.id) : undefined;
+    const work = workFile && prior.ok ? workCounts(workspace.id, workFile.items, prior.file) : undefined;
     const plan = planManualFire(routine, runs(routine.id), requestId, Date.now(), work, ignoreGates);
     return this.carryOut(workspace, routine, owner, plan);
   }
@@ -216,10 +217,10 @@ export class RoutineRunner {
   }
 }
 
-/** The canvas's Work items, or undefined when `work.json` cannot be read (a gate then says no, and no item is due). */
-function workItems(workspaceId: string): WorkItem[] | undefined {
+/** The canvas's Work file, or undefined when `work.json` cannot be read (a gate then says no, and no item is due). */
+function readWorkFile(workspaceId: string): WorkFile | undefined {
   const work = readWork(workspaceId);
-  return work.ok ? work.file.items : undefined;
+  return work.ok ? work.file : undefined;
 }
 
 /**

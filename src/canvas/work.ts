@@ -324,11 +324,12 @@ function touch(item: WorkItem, ctx: WorkContext): void {
 }
 
 /**
- * The order items are taken from a lane, first first. The one place a reader of lane order asks, so a priority order
- * changes here alone. TODO(W-48): lane position is priority; order by it once items carry a position.
+ * The items of one lane in the order they are taken, first first: Ready for work in its queue order (`readyQueue`,
+ * the pickup order a person sets), every other lane by item number. The one place a reader of lane order asks.
  */
-export function laneOrder<T extends Pick<WorkItem, 'number'>>(items: readonly T[]): T[] {
-  return [...items].sort((a, b) => a.number - b.number);
+export function laneOrder(file: WorkFile, status: WorkStatus): WorkItem[] {
+  if (status === 'ready-for-work') return readyQueue(file);
+  return file.items.filter((i) => i.status === status).sort((a, b) => a.number - b.number);
 }
 
 export function findWork(file: WorkFile, number: number): WorkItem | undefined {

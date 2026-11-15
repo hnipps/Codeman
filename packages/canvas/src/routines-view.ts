@@ -92,7 +92,7 @@ const known = (t: { kind: string }): t is RoutineTrigger =>
   ['interval', 'daily', 'weekly', 'work-item'].includes(t.kind);
 const knownGate = (g: { kind: string }): g is RoutineGate => g.kind === 'work-count';
 
-/** "Todo, unassigned: at least 1" style, the words the form uses. */
+/** "Ready for work, unassigned: at least 1" style, the words the form uses. */
 export function gateLabel(gate: RoutineGate): string {
   const who = ASSIGNEES.find(([value]) => value === gate.assignee)?.[1] ?? gate.assignee;
   const bounds = [
@@ -352,7 +352,7 @@ export class RoutinesView {
       addGate.disabled = draft.gates.length >= MAX_GATES;
     };
     const addGate = btn('', 'Add gate', () => {
-      draft.gates.push({ kind: 'work-count', status: 'todo', assignee: 'none', min: 1 });
+      draft.gates.push({ kind: 'work-count', status: 'ready-for-work', assignee: 'none', min: 1 });
       paintGates();
       gateRows.querySelectorAll<HTMLSelectElement>('select')[(draft.gates.length - 1) * 2]?.focus();
     });

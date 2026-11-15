@@ -176,15 +176,15 @@ describe('the planner', () => {
 describe('gates', () => {
   const gate = (fields: Partial<RoutineGate>): RoutineGate => ({
     kind: 'work-count',
-    status: 'todo',
+    status: 'ready-for-work',
     assignee: 'any',
     ...fields,
   });
   const ROUTINE_RUN = 'sess-routine-run';
   const items = [
-    { status: 'todo', assignee: null },
-    { status: 'todo', assignee: null },
-    { status: 'todo', assignee: { kind: 'person' } },
+    { status: 'ready-for-work', assignee: null },
+    { status: 'ready-for-work', assignee: null },
+    { status: 'ready-for-work', assignee: { kind: 'person' } },
     { status: 'in-progress', assignee: { kind: 'session', sessionId: ROUTINE_RUN } },
     { status: 'in-progress', assignee: { kind: 'session', sessionId: 'sess-person-chat' } },
     { status: 'done', assignee: { kind: 'session', sessionId: ROUTINE_RUN } },
@@ -192,9 +192,9 @@ describe('gates', () => {
   const work = countWork(items, new Set([ROUTINE_RUN]));
 
   it('counts by status and each assignee filter', () => {
-    expect(work('todo', 'any')).toBe(3);
-    expect(work('todo', 'none')).toBe(2);
-    expect(work('todo', 'routine')).toBe(0);
+    expect(work('ready-for-work', 'any')).toBe(3);
+    expect(work('ready-for-work', 'none')).toBe(2);
+    expect(work('ready-for-work', 'routine')).toBe(0);
     expect(work('in-progress', 'any')).toBe(2);
     expect(work('in-progress', 'none')).toBe(0);
     expect(work('in-progress', 'routine')).toBe(1);
@@ -221,10 +221,10 @@ describe('gates', () => {
 
   it("Harry's two cases: a cap on items picked up, and nothing to pick", () => {
     const cap = gate({ status: 'in-progress', assignee: 'routine', max: 2 });
-    const something = gate({ status: 'todo', assignee: 'none', min: 1 });
+    const something = gate({ status: 'ready-for-work', assignee: 'none', min: 1 });
     const busy = countWork(
       [
-        { status: 'todo', assignee: null },
+        { status: 'ready-for-work', assignee: null },
         { status: 'in-progress', assignee: { kind: 'session', sessionId: 'a' } },
         { status: 'in-progress', assignee: { kind: 'session', sessionId: 'b' } },
       ],
@@ -251,7 +251,7 @@ describe('gates', () => {
   });
 
   it('skips a due time a gate refuses, consuming it, after the active-run rule', () => {
-    const gated = routine({ gates: [gate({ status: 'todo', assignee: 'none', min: 5 })] });
+    const gated = routine({ gates: [gate({ status: 'ready-for-work', assignee: 'none', min: 5 })] });
     const plan = planFire(gated, { fires: [] }, runs(), T0 + HOUR, work);
     expect(plan).toMatchObject({
       kind: 'skip',
@@ -331,18 +331,47 @@ describe('work-item triggers', () => {
     expect(enteredAt({ ...f.items[0]!, history: [] })).toBeNull();
   });
 
+  it('keys a Todo item from before the split on createdAt, and a reorder is not a move', () => {
+    const legacy = {
+      ...file({ status: LANE, at: T0 + HOUR }).items[0]!,
+      createdAt: T0,
+      history: [{ at: T0, author: human, text: 'Created in Todo' }],
+    };
+    expect(enteredAt(legacy)).toBeNull();
+    const f = { ...emptyWorkFile(), items: [legacy] };
+    expect(dueWorkItem(picker(), empty, f)?.enteredAt).toBe(T0);
+    const reordered = {
+      ...legacy,
+      history: [{ at: T0 + 2 * HOUR, author: human, text: 'Moved to position 1 in Ready for work' }, ...legacy.history],
+    };
+    expect(enteredAt(reordered)).toBeNull();
+  });
+
+  it('takes Ready for work in its queue order, top first', () => {
+    const READY: WorkStatus = 'ready-for-work';
+    let f = file({ status: READY, at: T0 }, { status: READY, at: T0, assigned: true }, { status: READY, at: T0 });
+    const top = updateWork(f, 3, { position: 1 }, { author: human, now: T0 + MIN });
+    if (!top.ok) throw new Error(top.message);
+    f = top.file;
+    expect(laneOrder(f, READY).map((i) => i.number)).toEqual([3, 1, 2]);
+    const ready = routine({ triggers: [{ kind: 'work-item', status: READY, unassignedOnly: true }] });
+    expect(dueWorkItem(ready, empty, f)?.item.number).toBe(3);
+    // The reorder logged no move, so W-3 still keys on when it entered the lane.
+    expect(dueWorkItem(ready, empty, f)?.enteredAt).toBe(T0);
+  });
+
   it('takes the first item in lane order that it has not fired for, and skips assigned ones when asked', () => {
     const f = file({ status: LANE, at: T0, assigned: true }, { status: OTHER, at: T0 }, { status: LANE, at: T0 });
-    expect(laneOrder(f.items).map((i) => i.number)).toEqual([1, 2, 3]);
-    expect(dueWorkItem(picker(), empty, f.items)?.item.number).toBe(1);
-    expect(dueWorkItem(picker({ unassignedOnly: true }), empty, f.items)?.item.number).toBe(3);
-    expect(dueWorkItem(routine(), empty, f.items)).toBeNull();
+    expect(laneOrder(f, LANE).map((i) => i.number)).toEqual([1, 3]);
+    expect(dueWorkItem(picker(), empty, f)?.item.number).toBe(1);
+    expect(dueWorkItem(picker({ unassignedOnly: true }), empty, f)?.item.number).toBe(3);
+    expect(dueWorkItem(routine(), empty, f)).toBeNull();
   });
 
   it('fires once per entry: a started fire marks the item, a re-entry makes it due again', () => {
     let f = file({ status: LANE, at: T0 });
     const r = picker({ claim: true });
-    const plan = planFire(r, empty, noRuns(), T0 + MIN, undefined, f.items);
+    const plan = planFire(r, empty, noRuns(), T0 + MIN, undefined, f);
     expect(plan.kind).toBe('start');
     if (plan.kind !== 'start') return;
     expect(plan.fire).toMatchObject({
@@ -353,29 +382,29 @@ describe('work-item triggers', () => {
     let state = recordFire(emptyRoutineState(), r.id, plan.fire);
     state = recordFire(state, r.id, { ...plan.fire, outcome: { kind: 'started', taskId: 't1' } });
     const own = () => state.routines[r.id]!;
-    expect(planFire(r, own(), noRuns(), T0 + 2 * MIN, undefined, f.items).kind).toBe('idle');
+    expect(planFire(r, own(), noRuns(), T0 + 2 * MIN, undefined, f).kind).toBe('idle');
     // An edit that is not a move leaves it fired.
     const edited = updateWork(f, 1, { title: 'Sharper' }, { author: agent, now: T0 + 3 * MIN });
     if (edited.ok) f = edited.file;
-    expect(planFire(r, own(), noRuns(), T0 + 4 * MIN, undefined, f.items).kind).toBe('idle');
+    expect(planFire(r, own(), noRuns(), T0 + 4 * MIN, undefined, f).kind).toBe('idle');
     // Out and back in: due again with a new run id.
     f = move(move(f, 1, OTHER, T0 + 5 * MIN), 1, LANE, T0 + 6 * MIN);
-    const again = planFire(r, own(), noRuns(), T0 + 7 * MIN, undefined, f.items);
+    const again = planFire(r, own(), noRuns(), T0 + 7 * MIN, undefined, f);
     expect(again.kind === 'start' && again.fire.runId !== plan.fire.runId && again.fire.dueAt).toBe(T0 + 6 * MIN);
   });
 
   it('leaves the item due after a refused start, and a run of another item does not hold it back', () => {
     const f = file({ status: LANE, at: T0 }, { status: LANE, at: T0 });
     const r = picker();
-    const first = planFire(r, empty, noRuns(), T0, undefined, f.items);
+    const first = planFire(r, empty, noRuns(), T0, undefined, f);
     if (first.kind !== 'start') throw new Error('expected a start');
     let state = recordFire(emptyRoutineState(), r.id, first.fire);
     state = recordFire(state, r.id, { ...first.fire, outcome: { kind: 'refused', code: 'AGENT_CAP', message: 'x' } });
-    const retry = planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, undefined, f.items);
+    const retry = planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, undefined, f);
     expect(retry.kind === 'start' && retry.fire.runId).toBe(first.fire.runId);
     state = recordFire(state, r.id, { ...first.fire, outcome: { kind: 'started', taskId: 't1' } });
     const busy: RunView = { active: [{ runId: first.fire.runId, taskId: 't1', state: 'working' }], finished: [] };
-    const second = planFire(r, state.routines[r.id]!, busy, T0 + 2 * MIN, undefined, f.items);
+    const second = planFire(r, state.routines[r.id]!, busy, T0 + 2 * MIN, undefined, f);
     expect(second.kind === 'start' && second.fire.work?.number).toBe(2);
   });
 
@@ -383,23 +412,23 @@ describe('work-item triggers', () => {
     const f = file({ status: LANE, at: T0 });
     const r = { ...picker(), gates: [{ kind: 'work-count', status: CLAIM_STATUS, assignee: 'routine', max: 1 }] };
     const full: WorkCounts = () => 1;
-    const skip = planFire(r, empty, noRuns(), T0, full, f.items);
+    const skip = planFire(r, empty, noRuns(), T0, full, f);
     expect(skip.kind === 'skip' && skip.fire.outcome).toMatchObject({ kind: 'skipped', reason: 'gate', count: 1 });
     if (skip.kind !== 'skip') return;
     const state = recordFire(emptyRoutineState(), r.id, skip.fire);
     expect(state.routines[r.id]!.items ?? []).toEqual([]);
-    expect(planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, full, f.items).kind).toBe('idle');
-    expect(planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, () => 0, f.items).kind).toBe('start');
+    expect(planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, full, f).kind).toBe('idle');
+    expect(planFire(r, state.routines[r.id]!, noRuns(), T0 + MIN, () => 0, f).kind).toBe('start');
   });
 
   it('a pending claiming fire whose task exists starts again, so the duplicate answer names the session', () => {
     const f = file({ status: LANE, at: T0 });
     const r = picker({ claim: true });
-    const plan = planFire(r, empty, noRuns(), T0, undefined, f.items);
+    const plan = planFire(r, empty, noRuns(), T0, undefined, f);
     if (plan.kind !== 'start') throw new Error('expected a start');
     const state = recordFire(emptyRoutineState(), r.id, plan.fire);
     const runs: RunView = { active: [{ runId: plan.fire.runId, taskId: 't1', state: 'working' }], finished: [] };
-    expect(planFire(r, state.routines[r.id]!, runs, T0 + MIN, undefined, f.items)).toMatchObject({
+    expect(planFire(r, state.routines[r.id]!, runs, T0 + MIN, undefined, f)).toMatchObject({
       kind: 'start',
       removeFirst: [],
     });
@@ -408,7 +437,7 @@ describe('work-item triggers', () => {
   it('forgets fired items that left their status, and schedules ignore work-item triggers', () => {
     let f = file({ status: LANE, at: T0 });
     const r = picker();
-    const plan = planFire(r, empty, noRuns(), T0, undefined, f.items);
+    const plan = planFire(r, empty, noRuns(), T0, undefined, f);
     if (plan.kind !== 'start') throw new Error('expected a start');
     const state = recordFire(emptyRoutineState(), r.id, plan.fire);
     expect(pruneFiredItems(state, f.items)).toBeNull();
@@ -473,7 +502,7 @@ describe('edits', () => {
     CreateRoutineSchema.parse({
       requestId: crypto.randomUUID(),
       title: 'Ship one',
-      prompt: 'Take the oldest Todo item',
+      prompt: 'Take the top Ready for work item',
       triggers: [{ kind: 'daily', time: '07:00' }],
       ...fields,
     });
@@ -517,7 +546,7 @@ describe('edits', () => {
     const same = updateRoutine(
       renamed.file,
       1,
-      { expectedRevision: 3, prompt: 'Take the oldest Todo item' },
+      { expectedRevision: 3, prompt: 'Take the top Ready for work item' },
       T0,
       'agent'
     );
@@ -553,8 +582,8 @@ describe('the Routines tab', () => {
     expect(gateLabel({ kind: 'work-count', status: 'in-progress', assignee: 'routine', max: 2 })).toBe(
       'In progress, a routine run: fewer than 2'
     );
-    expect(gateLabel({ kind: 'work-count', status: 'todo', assignee: 'none', min: 1, max: 5 })).toBe(
-      'Todo, unassigned: at least 1 and fewer than 5'
+    expect(gateLabel({ kind: 'work-count', status: 'ready-for-work', assignee: 'none', min: 1, max: 5 })).toBe(
+      'Ready for work, unassigned: at least 1 and fewer than 5'
     );
     const gated = { runId: 'r', dueAt: 0, at: 0, trigger: 'schedule' };
     expect(fireLabel({ ...gated, outcome: { kind: 'skipped', reason: 'gate', gate: 1, count: 2 } } as never)).toBe(

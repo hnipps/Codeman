@@ -13,7 +13,15 @@ import { z } from 'zod';
 import { computeNextRunAt, parseHHMM, type CronSchedule } from '../cron/cron-time.js';
 import { AuthorSchema, type Author } from './model.js';
 import type { TaskState } from './tasks.js';
-import { laneOrder, WORK_STATUS_NAMES, WORK_STATUSES, workKey, type WorkItem, type WorkStatus } from './work.js';
+import {
+  laneOrder,
+  WORK_STATUS_NAMES,
+  WorkStatusSchema,
+  workKey,
+  type WorkFile,
+  type WorkItem,
+  type WorkStatus,
+} from './work.js';
 
 export const MAX_ROUTINES = 20;
 export const MAX_ROUTINE_TRIGGERS = 4;
@@ -68,7 +76,7 @@ export const TriggerSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('work-item'),
-      status: z.enum(WORK_STATUSES),
+      status: WorkStatusSchema,
       unassignedOnly: z.boolean().optional(),
       claim: z.boolean().optional(),
     })
@@ -102,7 +110,7 @@ export function asCronSchedule(trigger: ScheduleTrigger): CronSchedule {
 export const GateSchema = z
   .object({
     kind: z.literal('work-count'),
-    status: z.enum(WORK_STATUSES),
+    status: WorkStatusSchema,
     assignee: z.enum(['any', 'none', 'routine']),
     min: z.number().int().nonnegative().max(10_000).optional(),
     max: z.number().int().nonnegative().max(10_000).optional(),
@@ -257,7 +265,7 @@ const FireOutcome = z.discriminatedUnion('kind', [
 ]);
 /** A Work item a work-item fire was for: the item, the status it fired on and when it entered that status. */
 const FiredItem = z
-  .object({ number: z.number().int().positive(), status: z.enum(WORK_STATUSES), enteredAt: at })
+  .object({ number: z.number().int().positive(), status: WorkStatusSchema, enteredAt: at })
   .passthrough();
 export type FiredItem = z.infer<typeof FiredItem>;
 const StoredFire = z
@@ -325,9 +333,11 @@ const surplus = (runs: RunView): string[] => runs.finished.slice(KEEP_FINISHED_R
 export type WorkItemView = Pick<WorkItem, 'number' | 'status' | 'assignee' | 'createdAt' | 'history'>;
 
 /**
- * When the item entered its current status, read from its history (newest first): the newest move or creation event
- * decides. Null when the history no longer holds it (it keeps MAX_WORK_HISTORY events) or names another status.
- * TODO(W-48): a status split must keep writing these events, or give items an `enteredAt` this reads instead.
+ * When the item entered its current status, read from its history (newest first): the newest "Moved from X to Y" or
+ * creation event decides; "Moved to position N" and "Moved out of Backlog on the person's instruction" are not moves
+ * between statuses and are passed over. Null when the history no longer holds it (it keeps MAX_WORK_HISTORY events) or
+ * names another status, as for a Todo item from before W-48 split Todo; the planner then keys on `createdAt`, never
+ * `updatedAt`, which every edit changes (an intake run's own edits would refire the item forever).
  */
 export function enteredAt(item: Pick<WorkItem, 'status' | 'history'>): number | null {
   for (const event of item.history) {
@@ -343,17 +353,18 @@ const firedFor = (state: RoutineState, number: number, status: WorkStatus, enter
     (r) => r.number === number && r.status === status && (entered === null || r.enteredAt === entered)
   );
 
-/** The first item, in lane order, that a work-item trigger of the routine has not fired for since it entered. */
+/**
+ * The first item, in its lane's order (`laneOrder`), that a work-item trigger of the routine has not fired for since
+ * it entered; the triggers are tried in their order.
+ */
 export function dueWorkItem(
   routine: Pick<Routine, 'triggers'>,
   state: RoutineState,
-  items: readonly WorkItemView[]
+  file: WorkFile
 ): { item: WorkItemView; trigger: WorkItemTrigger; enteredAt: number } | null {
-  const triggers = workItemTriggers(routine);
-  if (triggers.length === 0) return null;
-  for (const item of laneOrder(items))
-    for (const trigger of triggers) {
-      if (item.status !== trigger.status || (trigger.unassignedOnly && item.assignee !== null)) continue;
+  for (const trigger of workItemTriggers(routine))
+    for (const item of laneOrder(file, trigger.status)) {
+      if (trigger.unassignedOnly && item.assignee !== null) continue;
       const entered = enteredAt(item);
       if (!firedFor(state, item.number, trigger.status, entered))
         return { item, trigger, enteredAt: entered ?? item.createdAt };
@@ -386,7 +397,7 @@ export function planFire(
   runs: RunView,
   now: number,
   work?: WorkCounts,
-  items?: readonly WorkItemView[]
+  file?: WorkFile
 ): FirePlan {
   const pending = state.fires.at(-1);
   if (pending?.outcome.kind === 'pending') {
@@ -409,7 +420,7 @@ export function planFire(
     return admit(routine, fire, runs, work);
   }
   const next = dueAt(triggers, base);
-  const pick = items ? dueWorkItem(routine, state, items) : null;
+  const pick = file ? dueWorkItem(routine, state, file) : null;
   if (!pick) return { kind: 'idle', nextRunAt: next };
   const number = pick.item.number;
   const fire = {

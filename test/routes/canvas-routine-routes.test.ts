@@ -379,7 +379,7 @@ describe('the schedule', () => {
     const h = await harness();
     try {
       const gates = [
-        { kind: 'work-count', status: 'todo', assignee: 'none', min: 1 },
+        { kind: 'work-count', status: 'ready-for-work', assignee: 'none', min: 1 },
         { kind: 'work-count', status: 'in-progress', assignee: 'routine', max: 2 },
       ];
       // An agent drafts the gated routine through the tool; gates are not the enable switch.
@@ -392,7 +392,7 @@ describe('the schedule', () => {
             action: 'create',
             requestId: uuid(),
             title: 'Pick up',
-            prompt: 'Take one Todo item',
+            prompt: 'Take one Ready for work item',
             triggers: [{ kind: 'interval', minutes: 30 }],
             gates,
           },
@@ -407,7 +407,7 @@ describe('the schedule', () => {
       const enabled = (await h.routines())[0]!;
       const due = enabled.enabledAt! + 30 * MIN;
 
-      // Nothing in Todo: the due time is consumed and no task, session or prompt is made.
+      // Nothing in Ready for work: the due time is consumed and no task, session or prompt is made.
       await h.tick(due + MIN);
       expect(await h.tasks()).toHaveLength(0);
       expect(h.started).toHaveLength(0);
@@ -423,8 +423,8 @@ describe('the schedule', () => {
       const agentIgnores = await h.call('POST', '/routines/R-1/run', { requestId: uuid(), ignoreGates: true }, true);
       expect(agentIgnores.statusCode).toBe(403);
 
-      // An unassigned Todo item opens the gate at the next due time; the started fire names the run's session.
-      expect((await h.call('POST', '/work', { title: 'Ready item', status: 'todo' })).statusCode).toBe(201);
+      // An unassigned Ready for work item opens the gate at the next due time; the started fire names the run's session.
+      expect((await h.call('POST', '/work', { title: 'Ready item', status: 'ready-for-work' })).statusCode).toBe(201);
       await h.tick(due + 31 * MIN);
       const [task] = await h.tasks();
       expect(task).toBeDefined();
@@ -483,7 +483,7 @@ describe('the schedule', () => {
   it('Run now with ignoreGates starts a run the gates would hold', async () => {
     const h = await harness();
     try {
-      await h.create({ gates: [{ kind: 'work-count', status: 'todo', assignee: 'any', min: 1 }] });
+      await h.create({ gates: [{ kind: 'work-count', status: 'ready-for-work', assignee: 'any', min: 1 }] });
       await h.enable('R-1');
       const ran = await h.call('POST', '/routines/R-1/run', { requestId: uuid(), ignoreGates: true });
       expect(ran.json().data.fire.outcome.kind).toBe('started');
