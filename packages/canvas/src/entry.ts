@@ -44,6 +44,10 @@ import { ShellView } from './shell-view.js';
 import { installPanelResize } from './panel-widths.js';
 import { ReviewView, REVIEW_RAIL_WIDTH } from './review.js';
 import { uuid } from './ids.js';
+import { PrototypeVersions } from './prototype-versions.js';
+import { PrototypeCards } from './prototype-card.js';
+import { PrototypeReview } from './prototype-review.js';
+import { parsePrototypeAddress } from '../../../src/canvas/prototype-address.js';
 import type { SessionViewRow } from './sessions.js';
 import {
   FullView,
@@ -142,7 +146,26 @@ const panels = installPanelResize({
 });
 const assetUrl = (assetId: string): string | null =>
   /^[a-f0-9]{64}$/.test(assetId) ? url(`/api/canvas/${workspaceId}/assets/${assetId}`) : null;
-const renderer = new Renderer(layer, tree, choose, { assetUrl });
+/** Who published each stored prototype version and when: the phone card's line and the review bar. */
+const prototypeVersions = new PrototypeVersions({
+  url,
+  workspace: workspaceId,
+  changed: () => {
+    prototypeCards.repaint();
+    protoReview?.sync();
+  },
+});
+let canvasOnline = true;
+/** A stored prototype's card on a phone: a picture of the version its embed shows. */
+const prototypeCards: PrototypeCards = new PrototypeCards({
+  url,
+  workspace: workspaceId,
+  phone: () => mobile.matches,
+  online: () => canvasOnline,
+  versions: prototypeVersions,
+});
+let protoReview: PrototypeReview | null = null;
+const renderer = new Renderer(layer, tree, choose, { assetUrl, prototypeCard: prototypeCards.paint });
 /** Objects drawn in the current view: the open sub-canvas's contents, or the workspace level. */
 function inView(all: ViewObject[] = objects): ViewObject[] {
   const enclosing = subcanvasIndex(all);
@@ -190,6 +213,12 @@ const comments: CommentsView = new CommentsView({
     },
     cancelPick: () => void (editor.media.pickingId && editor.media.escape()),
     anchored: (commentId, element) => elementComments?.anchored(commentId, element),
+    versions: (commentId, objectId) => {
+      const object = objectId ? objects.find((o) => o.id === objectId && o.type === 'embed') : undefined;
+      const address = typeof object?.content.url === 'string' ? parsePrototypeAddress(object.content.url) : null;
+      return { made: elementComments?.versionOf(commentId) ?? null, shown: address?.version ?? null };
+    },
+    cropUrl: (commentId) => url(`/api/canvas/${workspaceId}/comments/${encodeURIComponent(commentId)}/crop`),
   },
   open: (id) => {
     dispatch({ kind: 'focus', id });
@@ -572,6 +601,7 @@ function paint(): void {
   }
   renderer.view(state, keyboard);
   editor.media.frames();
+  protoReview?.sync();
   node('outline').hidden = !state.outlineOpen;
   node('openOutline').hidden = state.outlineOpen;
   node('rail').hidden = !state.rail.length;
@@ -670,7 +700,8 @@ function paintSheet(): void {
     state.selected.length === 1 &&
     state.selected[0] === o.id &&
     !state.rail.length &&
-    !state.outlineOpen;
+    !state.outlineOpen &&
+    !protoReview?.isOpen;
   const sheet = node('sheet');
   if (sheet.hidden === !show && (!show || sheet.dataset.sheetFor === o?.id)) {
     if (show && o) paintSheetCount(o.id);
@@ -684,6 +715,8 @@ function paintSheet(): void {
   sheet.dataset.sheetFor = o.id;
   node('sheetTitle').textContent = label(o);
   button('sheetReview').hidden = o.type !== 'text';
+  button('sheetPrototypeReview').hidden =
+    o.type !== 'embed' || !parsePrototypeAddress(typeof o.content.url === 'string' ? o.content.url : '');
   const count = siblings(objects, o.id).length;
   const excerpt = readable(o).replace(/\s+/g, ' ').trim();
   node('sheetMeta').textContent = container(o)
@@ -836,6 +869,9 @@ button('chatTool').onclick = openThread;
 button('readerComments').onclick = openThread;
 button('sheetComments').onclick = openThread;
 button('sheetRead').onclick = () => dispatch({ kind: 'rail', view: 'reader' });
+button('sheetPrototypeReview').onclick = () => {
+  if (state.focusId) protoReview?.open(state.focusId, button('sheetPrototypeReview'));
+};
 button('sheetReview').onclick = () => {
   if (state.focusId) review.open(state.focusId, 'full');
 };
@@ -1435,6 +1471,7 @@ const editor = new DesktopEditor({
     if (!frame) frame = requestAnimationFrame(paint);
   },
   assetUrl,
+  prototypeCard: prototypeCards.paint,
   display: (displayed) => {
     const repaged = state.contextElements.length ? changedPages(objects, displayed) : [];
     objects = displayed;
@@ -1560,6 +1597,33 @@ editor.media.connect({
   openPage: (objectId, slot, from) => openPage(objectId, slot, from),
   slots,
 });
+/** Review a stored prototype from a phone: its live page full screen, Pick, and the thread over it. */
+protoReview = new PrototypeReview({
+  loader: editor.media.loader,
+  objects: () => objects,
+  versions: prototypeVersions,
+  live: () => !away,
+  commentCount: (objectId) => commentCounts(comments.all).get(objectId) ?? 0,
+  pick: (objectId) => editor.media.pickElement(objectId),
+  cancelPick: () => void (editor.media.pickingId && editor.media.escape()),
+  picked: (element) => {
+    comments.about(element);
+    openReviewThread(element.objectId);
+    requestAnimationFrame(() => comments.focusComposer());
+  },
+  openComments: (objectId) => openReviewThread(objectId),
+  changed: () => {
+    elementComments?.sync();
+    paintSheet();
+  },
+});
+editor.media.connect({ review: protoReview });
+/** The thread of the embed under review, over the review as a sheet; the board's camera stays where it was. */
+function openReviewThread(objectId: string): void {
+  dispatch({ kind: 'focus', id: objectId });
+  dispatch({ kind: 'selection', ids: [objectId] });
+  if (state.rail.at(-1) !== 'thread') dispatch({ kind: 'rail', view: 'thread' });
+}
 editor.media.addPickAction({
   id: 'add-to-chat',
   label: 'Add to chat',
@@ -1571,7 +1635,7 @@ elementComments = new ElementComments({
   url,
   workspace: workspaceId,
   media: editor.media,
-  phone: () => mobile.matches,
+  phone: () => mobile.matches && !protoReview?.isOpen,
   open: (objectId, commentId) => {
     dispatch({ kind: 'focus', id: objectId });
     dispatch({ kind: 'selection', ids: [objectId] });
@@ -1782,10 +1846,15 @@ const sync = new CanvasSync(
     comments.mark(renderer.elements);
     history.changed();
     prototypes.changed();
+    prototypeVersions.refresh();
     if (!frame) frame = requestAnimationFrame(paint);
   },
   (status) => {
     editor.online(status === 'ready');
+    if (canvasOnline !== (status !== 'offline')) {
+      canvasOnline = status !== 'offline';
+      prototypeCards.repaint();
+    }
     shellView?.setOnline(status !== 'offline');
     node('notice').hidden = status !== 'offline';
     node('notice').textContent = 'Connection lost. Your canvas is still here; reconnecting…';

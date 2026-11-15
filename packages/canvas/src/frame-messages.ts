@@ -13,6 +13,17 @@ import { hit, type Point, type Rect } from './viewport.js';
 /** A sandboxed frame without `allow-same-origin` has an opaque origin, which a message reports as this. */
 export const FRAME_ORIGIN = 'null';
 export const MAX_LOCATE_SELECTORS = 64;
+/**
+ * What `codeman:locate` sends beside a selector so the bridge can find the element again when the selector no
+ * longer does: its tag, its text and where it was when it was picked, in the frame's own pixels.
+ */
+export type LocateHint = { tag: string; text: string; x: number; y: number };
+export const locateHint = (element: { tag: string; text: string; rect: { x: number; y: number } }): LocateHint => ({
+  tag: element.tag,
+  text: element.text,
+  x: element.rect.x,
+  y: element.rect.y,
+});
 export const MAX_POLYGON_POINTS = 1024;
 /** How long the canvas waits for a frame to answer before it acts as if the frame had nothing to say. */
 export const FRAME_REPLY_MS = 800;

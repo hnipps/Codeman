@@ -159,6 +159,13 @@ export type ElementsPort = {
   cancelPick(): void;
   /** The server kept this element with the comment just posted. */
   anchored(commentId: string, element: ElementRef): void;
+  /**
+   * For a comment on a stored prototype: the version it was made on and the version its embed shows now.
+   * Both null for a comment on anything else.
+   */
+  versions(commentId: string, objectId: string | null): { made: number | null; shown: number | null };
+  /** The address of the picture of where a comment's element was in the version it was made on. */
+  cropUrl(commentId: string): string;
 };
 const NEW_TARGET = '';
 const ASK_INTERRUPTED =
@@ -534,13 +541,25 @@ export class CommentsView {
   private paintElements(): void {
     for (const [id, li] of this.rendered) {
       const anchor = this.options.elements.of(id);
+      const { made, shown } = this.options.elements.versions(id, this.shown);
+      this.paintVersion(li, made);
       let chip = li.querySelector<HTMLButtonElement>(':scope > .comment-element');
       if (!anchor) {
         chip?.remove();
+        li.querySelector(':scope > .comment-crop')?.remove();
         continue;
       }
       const { element, number, state } = anchor;
-      const signature = JSON.stringify([element.selector, element.tag, element.text, element.source, number, state]);
+      const signature = JSON.stringify([
+        element.selector,
+        element.tag,
+        element.text,
+        element.source,
+        number,
+        state,
+        made,
+        shown,
+      ]);
       if (chip?.dataset.signature === signature) continue;
       if (!chip) {
         chip = document.createElement('button');
@@ -564,12 +583,59 @@ export class CommentsView {
       name.textContent = elementLabel(element);
       name.dataset.i18nSkip = '';
       const missing = state === 'missing';
-      where.textContent = missing ? 'No longer on the page' : (element.source ?? element.selector);
+      where.textContent = missing
+        ? shown !== null
+          ? `Not in v${shown}`
+          : 'No longer on the page'
+        : (element.source ?? element.selector);
       where.toggleAttribute('data-i18n-skip', !missing);
       chip.title = [element.selector, element.source, missing ? '' : 'Show this element on the canvas']
         .filter(Boolean)
         .join('\n');
+      this.paintCrop(id, li, chip, missing && made !== null && made !== shown ? made : null);
     }
+  }
+
+  /** "on v2" in the head of a comment made on a stored prototype's version. */
+  private paintVersion(li: HTMLElement, made: number | null): void {
+    const head = li.querySelector(':scope > .comment-head');
+    let mark = head?.querySelector<HTMLElement>(':scope > .comment-version') ?? null;
+    if (made === null || !head) return void mark?.remove();
+    if (!mark) {
+      mark = document.createElement('span');
+      mark.className = 'comment-version';
+      head.querySelector(':scope > .comment-time')?.before(mark);
+    }
+    const words = `on v${made}`;
+    if (mark.textContent !== words) mark.textContent = words;
+    mark.title = `Made on version ${made} of this prototype`;
+  }
+
+  /**
+   * Where an element the shown version no longer has was in the version the comment was made on: a picture the
+   * server draws from that stored version. Nothing shows when it cannot (that version was dropped, or the element
+   * was not found in it either).
+   */
+  private paintCrop(id: string, li: HTMLElement, chip: HTMLElement, version: number | null): void {
+    const crop = li.querySelector<HTMLElement>(':scope > .comment-crop');
+    if (version === null) return void crop?.remove();
+    const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+    const src = `${this.options.elements.cropUrl(id)}?theme=${theme}`;
+    if (crop?.dataset.src === src) return;
+    crop?.remove();
+    const figure = document.createElement('figure');
+    figure.className = 'comment-crop';
+    figure.dataset.src = src;
+    const img = document.createElement('img');
+    img.alt = `Where the element was in version ${version}`;
+    img.decoding = 'async';
+    img.loading = 'lazy';
+    img.addEventListener('error', () => figure.remove());
+    img.src = src;
+    const caption = document.createElement('figcaption');
+    caption.textContent = `Where it was in v${version}`;
+    figure.append(img, caption);
+    chip.after(figure);
   }
 
   /** The state line on each asking comment, with Open conversation and, for one not delivered, Retry. */

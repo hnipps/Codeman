@@ -397,7 +397,8 @@
       </div>
       <p id="sheetMeta" class="secondary"></p>
       <div class="sheet-actions">
-        <button id="sheetRead" class="quiet">Read</button><button id="sheetReview" class="quiet" hidden>Review</button
+        <button id="sheetPrototypeReview" class="primary" hidden>Review</button
+        ><button id="sheetRead" class="quiet">Read</button><button id="sheetReview" class="quiet" hidden>Review</button
         ><button id="sheetComments" class="quiet">Comments</button
         ><button id="sheetParent" class="quiet">Focus parent</button
         ><button id="sheetExport" class="quiet" data-export-open>Export</button>
@@ -657,6 +658,53 @@
         <button id="reviewClose" type="button" aria-label="Close review" title="Close · Escape"></button>
       </div>
       <div id="reviewFullBody"></div>
+    </section>
+    <section id="protoReview" aria-labelledby="protoReviewTitle" hidden>
+      <div class="proto-review-bar">
+        <button id="protoReviewBack" type="button" aria-label="Back to the canvas" title="Back">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4.5L6.5 10l5.5 5.5" /></svg>
+        </button>
+        <div class="proto-review-title">
+          <p id="protoReviewTitle" data-i18n-skip></p>
+          <span id="protoReviewMeta" data-i18n-skip></span>
+        </div>
+        <button id="protoReviewReload" type="button" aria-label="Reload the page" title="Reload">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7.5A6 6 0 1 0 16 11M16 3.5v4h-4" /></svg>
+        </button>
+        <button
+          id="protoReviewPick"
+          type="button"
+          data-review-pick
+          aria-pressed="false"
+          title="Tap an element to comment on it"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M10 4.5a5.5 5.5 0 1 0 0 11a5.5 5.5 0 0 0 0-11M10 2v4M10 14v4M2 10h4M14 10h4" />
+          </svg>
+          Pick
+        </button>
+        <button id="protoReviewComments" type="button" aria-label="Comments" title="Comments">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M4 4.5h12v8.5H9l-3.5 3v-3H4z" />
+          </svg>
+          <span id="protoReviewCount" class="proto-review-count"></span>
+        </button>
+      </div>
+      <div class="proto-review-sub">
+        <div class="proto-review-seg" role="group" aria-label="Page width">
+          <button id="protoReviewPhone" type="button" aria-pressed="true">Phone</button
+          ><button id="protoReviewDesktop" type="button" aria-pressed="false">Desktop</button>
+        </div>
+        <span id="protoReviewWidthNote" class="proto-review-width"></span>
+        <div id="protoReviewHint" hidden>
+          <span>Tap the element to comment on</span>
+          <button id="protoReviewCancelPick" type="button" data-review-pick>Cancel</button>
+        </div>
+      </div>
+      <div id="protoReviewStage"></div>
+      <div id="protoReviewNew" role="status" hidden>
+        <span id="protoReviewNewText"></span><button id="protoReviewNewReload" type="button">Reload</button>
+      </div>
     </section>
     <span id="announcement" class="sr" role="status" aria-live="polite"></span>
   </body>

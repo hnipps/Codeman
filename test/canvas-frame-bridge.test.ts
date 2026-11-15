@@ -391,3 +391,41 @@ describe('a page policy that restricts inline scripts', () => {
     expect(allowFrameBridge("script-src 'unsafe-inline' 'nonce-abc'")).toMatch(hash);
   });
 });
+
+describe('locate hints: an element a later version moved or renamed', () => {
+  const locateHinted = (selector: string, hint: unknown) =>
+    (ask({ type: 'codeman:locate', requestId: 'h', selectors: [selector], hints: [hint] }).rects as unknown[])[0];
+  it('finds an element its selector misses by tag and text, the nearest one', () => {
+    const go = document.querySelector('[data-testid="go"]')!;
+    place(go, 10, 40, 80, 20);
+    expect(locateHinted('#start', { tag: 'button', text: 'Start  task', x: 300, y: 300 })).toEqual({
+      x: 10,
+      y: 40,
+      width: 80,
+      height: 20,
+    });
+    // Text decides: a button with other words is not it, however near.
+    expect(locateHinted('#start', { tag: 'button', text: 'Start over', x: 10, y: 40 })).toBeNull();
+    // The selector still wins when it finds something.
+    place(document.querySelector('#app')!, 0, 0, 300, 200);
+    expect(locateHinted('#app', { tag: 'button', text: 'Start task', x: 0, y: 0 })).toEqual({
+      x: 0,
+      y: 0,
+      width: 300,
+      height: 200,
+    });
+  });
+  it('finds an element with no text only near where it was, and refuses a hint that is not a plain tag', () => {
+    const img = document.querySelector('img')!;
+    place(img, 100, 100, 40, 30);
+    expect(locateHinted('img.gone', { tag: 'img', text: '', x: 110, y: 105 })).toEqual({
+      x: 100,
+      y: 100,
+      width: 40,
+      height: 30,
+    });
+    expect(locateHinted('img.gone', { tag: 'img', text: '', x: 200, y: 105 })).toBeNull();
+    expect(locateHinted('img.gone', { tag: 'img, button', text: '', x: 100, y: 100 })).toBeNull();
+    expect(locateHinted('img.gone', 'img')).toBeNull();
+  });
+});

@@ -92,6 +92,7 @@ export function paintEmbed(body: HTMLElement, o: ViewObject, ctx: MediaContext):
     const card = stage.querySelector<HTMLElement>(':scope > .embed-card') ?? document.createElement('div');
     card.className = 'embed-card';
     if (!card.parentElement) stage.append(card);
+    if (ctx.prototypeCard?.(card, o)) return;
     paintLinkCard(
       card,
       { ...o, content: { ...o.content, type: 'link', preview: 'ready' } },

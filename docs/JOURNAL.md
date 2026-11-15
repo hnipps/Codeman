@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-15 — A phone reviews a prototype in one full-screen frame, and comments remember their version
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{comment-versions,prototype-pictures,canvas-screenshot,frame-bridge}.ts`, `src/web/routes/{canvas-routes,canvas-prototype-routes}.ts`, `packages/canvas/src/{prototype-review,prototype-card,prototype-versions,media,element-comments,comments,entry}.ts`
+**Why:** On a phone a prototype was a card that said "Paused": no picture, no way to use it, no way to comment on an element of it. A comment on an element also lost its place when a new version changed the selector.
+**Links:** [intent/2026-11-15-phone-prototype-review.md](../intent/2026-11-15-phone-prototype-review.md), [architecture-invariants, "Canvas prototypes"](architecture-invariants.md#canvas-prototypes), [architecture-invariants, "Element comments and pins"](architecture-invariants.md#element-comments-and-pins)
+
+Decision. A phone board stays frameless and shows a server-drawn picture of the version an embed shows. Review mounts exactly one live frame, full screen, through the same frame route and message checks as the board. The version a comment was made on is kept in a side file, `comment-versions.json`, and an element that is gone in a later version shows a crop of where it was. Comments are never resolved by an agent (owner decision, 2026-11-15): no resolved state, no auto-resolve, no fold-away.
+
+Rejected. A version key on the stored comment: the previous release would refuse the log. Reloading the review when a version lands: it throws away what the person was doing; a note offers Reload instead. Drawing pictures in the phone's browser: a phone runs no frames, and the check browser already loads stored versions.
+
 ## 2026-11-14 — Review notes on a canvas text object are comments plus a side file
 
 **Type:** intent-refinement
