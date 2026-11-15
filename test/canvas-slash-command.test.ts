@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { slashCommand } from '../src/canvas/conversation-schema.js';
 import { buildThread } from '../packages/canvas/src/conversation.js';
+import { weave } from '../packages/canvas/src/activity.js';
 import { getCli } from '../src/config/cli-registry/registry.js';
 
 const person = { author: { kind: 'human' as const }, slashCommands: true };
@@ -22,19 +23,43 @@ describe('slash commands from the canvas chat box', () => {
     expect(getCli('claude')?.capabilities.slashCommands).toBe(true);
     expect(getCli('shell')?.capabilities.slashCommands).toBeUndefined();
   });
-  it('drops a delivered command from the thread, which never gets a transcript row, but shows one still travelling', () => {
+  it('keeps a delivered command in the thread, placed by when it was written among the transcript rows', () => {
     const id = '11111111-1111-4111-8111-111111111111';
     const record = (extra: object) =>
       ({
         messageId: id,
-        deliveredAt: 1,
+        sentAt: 150,
+        submittedAt: 160,
+        deliveredAt: 170,
         author: { kind: 'human', userId: 'u' },
         refs: [],
         command: true,
         ...extra,
       }) as never;
     const sent = [{ messageId: id, text: '/help', refIds: [] }];
-    expect(buildThread([], [record({ state: 'delivered' })], sent)).toEqual([]);
+    const rows = [
+      { role: 'user' as const, text: 'first', at: 100 },
+      { role: 'assistant' as const, text: 'one', at: 120 },
+      { role: 'user' as const, text: 'second', at: 200 },
+      { role: 'assistant' as const, text: 'two', at: 220 },
+    ];
+    const turns = buildThread(rows, [record({ state: 'delivered' })], sent);
+    const command = turns.at(-1)!;
+    expect(command).toMatchObject({ label: 'You · Command', text: '/help', command: true, at: 160 });
+    expect(command.pending).toBeUndefined();
+    const order = weave(turns, rows.length, { tools: [], releases: [], dropped: 0 } as never).flatMap((item) =>
+      item.kind === 'turn' ? [item.turn.text] : []
+    );
+    expect(order).toEqual(['first', 'one', '/help', 'second', 'two']);
+    // Rows with no time (an older server) leave it at the end, as before.
+    const untimed = rows.map(({ role, text }) => ({ role, text }));
+    const tail = weave(buildThread(untimed, [record({ state: 'delivered' })], sent), 4, {
+      tools: [],
+      releases: [],
+      dropped: 0,
+    } as never).flatMap((item) => (item.kind === 'turn' ? [item.turn.text] : []));
+    expect(tail).toEqual(['first', 'one', 'second', 'two', '/help']);
+    // One still travelling or not delivered says so, with no command label.
     const failed = buildThread([], [record({ state: 'failed', deliveredAt: null })], sent);
     expect(failed.map((t) => [t.label, t.text])).toEqual([['You · Not delivered', '/help']]);
   });
