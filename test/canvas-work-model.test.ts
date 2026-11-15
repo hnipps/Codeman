@@ -1,0 +1,115 @@
+/**
+ * @fileoverview The Work view's pure part (`packages/canvas/src/work-model.ts`): an item's live state in the
+ * Sessions vocabulary, lane order, filters, counts and the lane step Shift+Left/Right takes.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  assigneeLabel,
+  itemState,
+  laneItems,
+  matchesFilter,
+  openCount,
+  parseWork,
+  stepStatus,
+  workCounts,
+  type WorkRow,
+} from '../packages/canvas/src/work-model.js';
+import type { ShellSessionRow } from '../src/canvas/shell-sessions.js';
+
+const row = (number: number, patch: Partial<WorkRow> = {}): WorkRow => ({
+  key: `W-${number}`,
+  number,
+  title: `Item ${number}`,
+  status: 'todo',
+  description: '',
+  assignee: null,
+  sessions: [],
+  author: { kind: 'human', userId: 'me' },
+  createdAt: number,
+  updatedAt: number,
+  revision: 1,
+  history: [],
+  ...patch,
+});
+const session = (id: string, state: ShellSessionRow['state'], name = id): ShellSessionRow => ({
+  id,
+  name,
+  mode: 'claude',
+  kind: 'terminal',
+  state,
+  since: 0,
+  lastActivityAt: 0,
+  lastSubmitAt: 0,
+});
+
+describe('work model', () => {
+  it('reads the list answer and leaves out a row it cannot read', () => {
+    const body = { success: true, data: { next: 'W-3', items: [row(1), { number: 'two' }] } };
+    const parsed = parseWork(body);
+    expect(parsed?.next).toBe('W-3');
+    expect(parsed?.items.map((i) => i.key)).toEqual(['W-1']);
+    expect(parseWork({ success: false, error: 'x' })).toBeNull();
+  });
+
+  it('says Needs you while the item holds a question, else the most urgent linked session, Ended when gone', () => {
+    const sessions = [session('a', 'idle'), session('b', 'working')];
+    expect(itemState(row(1), sessions)).toBeNull();
+    expect(itemState(row(1, { sessions: ['a', 'b'] }), sessions)).toBe('working');
+    expect(itemState(row(1, { sessions: ['gone'] }), sessions)).toBe('done');
+    expect(itemState(row(1, { sessions: ['a'], needs: { question: 'Which?', at: 1 } }), sessions)).toBe('needs');
+  });
+
+  it('orders open lanes urgent first and closed lanes newest change first', () => {
+    const sessions = [session('a', 'needs'), session('b', 'idle')];
+    const items = [
+      row(1, { updatedAt: 30, sessions: ['b'] }),
+      row(2, { updatedAt: 10, sessions: ['a'] }),
+      row(3, { updatedAt: 20 }),
+      row(4, { status: 'done', updatedAt: 5, sessions: ['a'] }),
+      row(5, { status: 'done', updatedAt: 9 }),
+    ];
+    expect(laneItems(items, 'todo', sessions).map((i) => i.number)).toEqual([2, 1, 3]);
+    expect(laneItems(items, 'done', sessions).map((i) => i.number)).toEqual([5, 4]);
+  });
+
+  it('filters by assignee kind and by title or key', () => {
+    const mine = row(1, { assignee: { kind: 'person' }, title: 'Fix the rail' });
+    const agent = row(12, { assignee: { kind: 'session', sessionId: 's' } });
+    const none = row(3);
+    expect(matchesFilter(mine, 'you', '')).toBe(true);
+    expect(matchesFilter(agent, 'you', '')).toBe(false);
+    expect(matchesFilter(agent, 'agents', '')).toBe(true);
+    expect(matchesFilter(none, 'none', '')).toBe(true);
+    expect(matchesFilter(mine, 'all', 'RAIL')).toBe(true);
+    expect(matchesFilter(agent, 'all', 'w-12')).toBe(true);
+    expect(matchesFilter(none, 'all', 'rail')).toBe(false);
+  });
+
+  it('counts each status, how many Todo items have nobody, and what is open', () => {
+    const items = [
+      row(1),
+      row(2, { assignee: { kind: 'person' } }),
+      row(3, { status: 'in-progress' }),
+      row(4, { status: 'done' }),
+      row(5, { status: 'not-doing' }),
+    ];
+    expect(workCounts(items).find((c) => c.status === 'todo')).toEqual({ status: 'todo', count: 2, unassigned: 1 });
+    expect(workCounts(items).find((c) => c.status === 'in-progress')?.unassigned).toBe(0);
+    expect(openCount(items)).toBe(3);
+  });
+
+  it('steps one lane left or right and stops at either end', () => {
+    expect(stepStatus('todo', 1)).toBe('in-progress');
+    expect(stepStatus('todo', -1)).toBe('backlog');
+    expect(stepStatus('backlog', -1)).toBeNull();
+    expect(stepStatus('not-doing', 1)).toBeNull();
+  });
+
+  it('names the assignee from the session list, else a short id', () => {
+    const sessions = [session('abcdef1234', 'idle', 'w4-codeman')];
+    expect(assigneeLabel({ assignee: null }, sessions)).toBe('Unassigned');
+    expect(assigneeLabel({ assignee: { kind: 'person' } }, sessions)).toBe('You');
+    expect(assigneeLabel({ assignee: { kind: 'session', sessionId: 'abcdef1234' } }, sessions)).toBe('w4-codeman');
+    expect(assigneeLabel({ assignee: { kind: 'session', sessionId: 'zzzzzzzzzzzz' } }, sessions)).toBe('zzzzzzzz');
+  });
+});

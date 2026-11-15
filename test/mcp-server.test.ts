@@ -189,7 +189,7 @@ describe('protocol: both eras', () => {
       'remove_extension',
       'logs_query',
     ];
-    expect(names).toHaveLength(31);
+    expect(names).toHaveLength(32);
     expect(legacy.tools.map((t) => t.name)).toEqual(names);
     expect(modern.tools.map((t) => t.name)).toEqual(names);
     expect(legacy.resultType).toBeUndefined();

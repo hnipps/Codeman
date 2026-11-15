@@ -12,7 +12,7 @@ import {
 } from './context.js';
 import type { ElementRef } from '../../../src/canvas/element-ref.js';
 import { pan, zoomAt, pinch, fit, type Point, type Rect, type Viewport } from './viewport.js';
-export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant' | 'tasks' | 'page';
+export type RailView = 'keys' | 'reader' | 'thread' | 'history' | 'assistant' | 'tasks' | 'page' | 'work';
 /** What covers the canvas as a full view: a session's own terminal page, or one embed's live page. Never both. */
 export type FullViewContent = { kind: 'session'; sessionId: string } | { kind: 'embed'; objectId: string };
 export type ViewState = {
