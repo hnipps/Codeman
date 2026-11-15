@@ -16,7 +16,7 @@ The spec is the canvas frame `phone-study` (decisions note `phone-brief`, round 
 - Pick is one-shot: the next tap chooses an element instead of pressing it, then the thread opens with the element attached, as Pick element does on desktop. A numbered pin marks each commented element the page still has.
 - Opening always shows the version the embed shows now. If a version lands while the review is open, a prominent "v<n> is ready · Reload" note appears; nothing reloads by itself.
 - Each comment on a prototype embed says which version it was made on ("on v2"). An anchor is looked for by its selector, then by the element's tag and text, nearest its old position. Found: the pin follows it. Not found: no pin, the chip says "not in v<n>", and the thread shows a crop of where it was in the version it was made on.
-- Comments are never resolved by an agent. Canvas comments have no resolved state today and this change adds none: no auto-resolve, no fold-away, and no agent tool gains a resolve field (decision, Harry, 2026-11-15; the brief-review notes already refuse an agent's resolve).
+- Comments are never resolved by an agent. Canvas comments have no resolved state today and this change adds none: no auto-resolve, no fold-away, and no agent tool gains a resolve field (owner decision, 2026-11-15; the brief-review notes already refuse an agent's resolve).
 
 ## Affected users and systems
 

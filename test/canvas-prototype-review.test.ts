@@ -265,14 +265,14 @@ describe('the client pieces', () => {
           {
             id: 'work',
             versions: [
-              { version: 1, createdAt: 5, author: { kind: 'human', userId: 'harry' } },
+              { version: 1, createdAt: 5, author: { kind: 'human', userId: 'alice' } },
               { version: 2, createdAt: 9, author: { kind: 'agent', sessionId: '1a2b3c4d5e6f' } },
             ],
           },
         ],
       },
     });
-    expect(info.get('work/1')).toEqual({ createdAt: 5, author: 'harry' });
+    expect(info.get('work/1')).toEqual({ createdAt: 5, author: 'alice' });
     expect(info.get('work/2')).toEqual({ createdAt: 9, author: 'Agent 1a2b3c4d' });
     expect(parseVersionInfo({ success: false }).size).toBe(0);
   });
@@ -282,13 +282,13 @@ describe('the client pieces', () => {
   it('says on the card what is known: who published it, that it is drawing, gone, failed or offline', () => {
     const base = {
       version: 3,
-      published: { createdAt: 0, author: 'harry' },
+      published: { createdAt: 0, author: 'alice' },
       pictureAt: null,
       now: 10_000,
       online: true,
     };
-    expect(cardLine({ ...base, picture: 'ready' })).toBe('Published just now by harry');
-    expect(cardLine({ ...base, picture: 'loading' })).toBe('Published just now by harry · drawing a picture');
+    expect(cardLine({ ...base, picture: 'ready' })).toBe('Published just now by alice');
+    expect(cardLine({ ...base, picture: 'loading' })).toBe('Published just now by alice · drawing a picture');
     expect(cardLine({ ...base, picture: 'loading', published: null })).toBe('Drawing a picture');
     expect(cardLine({ ...base, picture: 'gone' })).toBe('v3 is no longer stored');
     expect(cardLine({ ...base, picture: 'failed' })).toBe('The picture could not be drawn');
