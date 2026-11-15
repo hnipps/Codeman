@@ -1,6 +1,7 @@
 /** @fileoverview Pure parts of a canvas background task: the `task` part a conversation record carries, the name a task gets, and the one function that derives its state from evidence the server holds. Shared by the server and the browser; nothing here touches disk, git or a session. */
 import { z } from 'zod';
 import { IdSchema } from './model.js';
+import type { StartedBy } from './agent-start.js';
 import { MAX_CONTEXT_OBJECTS, ThreadOriginSchema } from './conversation-schema.js';
 
 /** Tasks of one workspace that may be queued, running or waiting at once. */
@@ -240,8 +241,8 @@ export type TaskRow = {
   excludeWarning?: true;
   /** The objects the request carried, as recorded when it was sent. */
   refs: { id: string; label: string }[];
-  /** An agent started this task (through `canvas_task start`); absent for a person's. */
-  startedBy?: { kind: 'agent'; sessionId: string };
+  /** An agent (through `canvas_task start`) or a routine started this task; absent for a person's. */
+  startedBy?: StartedBy;
   origin?: { objectId: string; commentId: string };
   parentConversationId?: string;
   /** The task was removed and its worktree is still there. */

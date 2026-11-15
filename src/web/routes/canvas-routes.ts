@@ -325,6 +325,13 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
         const workspace = readWorkspaces().find((w) => w.id === workspaceId);
         if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner))
           return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
+        // A routine principal acts on its own canvas only, and only through the background-task routes.
+        const routine = req.internalPrincipal?.routine;
+        if (routine) {
+          if (routine.workspaceId !== workspaceId || !/^\/api\/canvas\/[^/]+\/tasks(\/|\?|$)/.test(req.url))
+            return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
+          req.canvasRoutine = routine;
+        }
       });
       registerConversationRoutes(workspaceScope, ctx);
       registerTaskRoutes(workspaceScope, ctx);

@@ -12,6 +12,7 @@ import {
   MAX_AGENT_TASKS,
   MAX_LINEAGE_HOPS,
   startedBy,
+  storedStartedBy,
 } from '../src/canvas/agent-start.js';
 import { ConversationsFileSchema } from '../src/canvas/conversation-schema.js';
 import { MAX_ACTIVE_TASKS, taskPart } from '../src/canvas/tasks.js';
@@ -91,5 +92,16 @@ describe('who started a record', () => {
     const back = ConversationsFileSchema.parse(JSON.parse(JSON.stringify(previous)));
     expect(startedBy(back.conversations[0])).toEqual({ kind: 'agent', sessionId: 'agent-1' });
     expect(taskPart(back.conversations[0])?.name).toBe('Fix it');
+  });
+  it('a routine run is stored as an agent start that the previous release counts and depth-limits', () => {
+    const stored = storedStartedBy({ kind: 'routine', routineId: 'r1', runId: 'run1' }, 'run-session');
+    // The previous release's reader, verbatim: kind 'agent' with passthrough, read back as the agent's session.
+    const PreviousStartedBy = z
+      .object({ kind: z.literal('agent'), sessionId: z.string().min(1).max(128) })
+      .passthrough();
+    const previous = PreviousStartedBy.safeParse(JSON.parse(JSON.stringify(stored)));
+    expect(previous.success && previous.data.sessionId).toBe('run-session');
+    expect(startedBy({ startedBy: stored })).toEqual({ kind: 'routine', routineId: 'r1', runId: 'run1' });
+    expect(storedStartedBy({ kind: 'agent', sessionId: 'a1' }, 'ignored')).toEqual({ kind: 'agent', sessionId: 'a1' });
   });
 });

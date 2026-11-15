@@ -115,6 +115,7 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import { INTERNAL_PRINCIPAL_HEADER } from './internal-principal.js';
 import {
   canvasOn,
   decideLanding,
@@ -2574,7 +2575,7 @@ export class WebServer extends EventEmitter {
     }
   ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
     const forwarded: Record<string, string> = { 'content-type': 'application/json' };
-    for (const name of ['authorization', 'cookie', 'host']) {
+    for (const name of ['authorization', 'cookie', 'host', INTERNAL_PRINCIPAL_HEADER]) {
       const value = headers[name];
       if (typeof value === 'string') forwarded[name] = value;
     }
@@ -2612,7 +2613,7 @@ export class WebServer extends EventEmitter {
     sessionId: string
   ): Promise<void> {
     const forwarded: Record<string, string> = {};
-    for (const name of ['authorization', 'cookie', 'host']) {
+    for (const name of ['authorization', 'cookie', 'host', INTERNAL_PRINCIPAL_HEADER]) {
       const value = headers[name];
       if (typeof value === 'string') forwarded[name] = value;
     }

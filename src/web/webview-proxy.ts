@@ -77,6 +77,8 @@ const DROP_REQUEST_HEADERS = new Set([
   'origin',
   'referer',
   'x-codeman-hook-secret',
+  // The server's own principal (internal-principal.ts); a page must never receive one.
+  'x-codeman-internal',
 ]);
 
 /** Response headers dropped on the way back to the browser. */
