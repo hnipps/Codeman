@@ -12,7 +12,11 @@
 import type { FastifyInstance } from 'fastify';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
 import { changeRoutineState, readRoutines, readRoutineState } from '../canvas/routine-store.js';
+import { readWork } from '../canvas/work-store.js';
+import { readConversations } from '../canvas/conversations.js';
+import { startedBy } from '../canvas/agent-start.js';
 import {
+  countWork,
   noRuns,
   planFire,
   planManualFire,
@@ -22,7 +26,9 @@ import {
   type FirePlan,
   type Routine,
   type RoutineFire,
+  type RoutineStateFile,
   type RunView,
+  type WorkCounts,
 } from '../canvas/routines.js';
 import { taskActive, type TaskState } from '../canvas/tasks.js';
 import { getErrorMessage, type AuthUser } from '../types.js';
@@ -77,14 +83,20 @@ export class RoutineRunner {
     if (!owner) return;
     const runs = await this.runViews(workspace, owner);
     if (!runs) return;
+    const work = due.some((r) => r.gates?.length) ? workCounts(workspace.id, state.file) : undefined;
     for (const routine of due) {
-      const plan = planFire(routine, state.file.routines[routine.id] ?? { fires: [] }, runs(routine.id), now);
+      const plan = planFire(routine, state.file.routines[routine.id] ?? { fires: [] }, runs(routine.id), now, work);
       await this.carryOut(workspace, routine, owner, plan);
     }
   }
 
   /** Run now: a person's request, held to the same overlap rule and the same route as a scheduled run. */
-  async runNow(workspace: Workspace, routine: Routine, requestId: string): Promise<RoutineFire | undefined> {
+  async runNow(
+    workspace: Workspace,
+    routine: Routine,
+    requestId: string,
+    ignoreGates = false
+  ): Promise<RoutineFire | undefined> {
     const owner = await this.deps.ownerUser(workspace);
     if (!owner) return undefined;
     const runs = await this.runViews(workspace, owner);
@@ -92,7 +104,9 @@ export class RoutineRunner {
     const prior = readRoutineState(workspace.id);
     const known = prior.ok ? prior.file.routines[routine.id]?.fires.find((f) => f.runId === requestId) : undefined;
     if (known && known.outcome.kind !== 'pending') return known;
-    return this.carryOut(workspace, routine, owner, planManualFire(runs(routine.id), requestId, Date.now()));
+    const work = routine.gates?.length && !ignoreGates && prior.ok ? workCounts(workspace.id, prior.file) : undefined;
+    const plan = planManualFire(routine, runs(routine.id), requestId, Date.now(), work, ignoreGates);
+    return this.carryOut(workspace, routine, owner, plan);
   }
 
   /** The runs of each routine of a canvas, read from its task list; undefined when the list could not be read. */
@@ -173,8 +187,10 @@ export class RoutineRunner {
           ...(routine.model ? { model: routine.model } : {}),
         },
       });
-      const body = response.json() as { data?: { task?: { id?: string } }; error?: string };
-      if (response.statusCode === 200 && body.data?.task?.id) return { kind: 'started', taskId: body.data.task.id };
+      const body = response.json() as { data?: { task?: { id?: string; sessionId?: string } }; error?: string };
+      const task = body.data?.task;
+      if (response.statusCode === 200 && task?.id)
+        return { kind: 'started', taskId: task.id, ...(task.sessionId ? { sessionId: task.sessionId } : {}) };
       const message = (body.error ?? `The task route answered ${response.statusCode}`).slice(0, 400);
       const code = refusalCode(message);
       return response.statusCode < 500 && code ? { kind: 'refused', code, message } : { kind: 'failed', message };
@@ -182,4 +198,22 @@ export class RoutineRunner {
       return { kind: 'failed', message: getErrorMessage(err).slice(0, 400) };
     }
   }
+}
+
+/**
+ * The canvas's Work items counted for gates, or undefined when `work.json` cannot be read (a gate then says no).
+ * A routine run's session is known from the task records (`startedBy` with a routine) and, for runs whose record was
+ * removed since, from the started fires the state keeps.
+ */
+function workCounts(workspaceId: string, state: RoutineStateFile): WorkCounts | undefined {
+  const work = readWork(workspaceId);
+  if (!work.ok) return undefined;
+  const sessions = new Set<string>();
+  const conversations = readConversations(workspaceId);
+  if (conversations.ok)
+    for (const c of conversations.conversations) if (startedBy(c)?.kind === 'routine') sessions.add(c.sessionId);
+  for (const routine of Object.values(state.routines))
+    for (const fire of routine.fires)
+      if (fire.outcome.kind === 'started' && fire.outcome.sessionId) sessions.add(fire.outcome.sessionId);
+  return countWork(work.file.items, sessions);
 }

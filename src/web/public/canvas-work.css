@@ -935,6 +935,13 @@ body:has(#outline:not([hidden])) #workView {
 .routine-trigger input[type='number'] {
   width: 80px;
 }
+.routine-gate + .routine-gate {
+  padding-top: 6px;
+  border-top: 1px solid var(--divider);
+}
+.routine-gate input[type='number'] {
+  width: 72px;
+}
 .routine-days {
   display: inline-flex;
   flex-wrap: wrap;

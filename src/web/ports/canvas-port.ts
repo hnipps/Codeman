@@ -39,7 +39,12 @@ export interface CanvasPort {
    * Run now for one routine (W-44): the runner's start under the routine's own principal, so a person's Run now meets
    * the same route and bounds as a scheduled run. Undefined when it could not act (not the live colour, owner gone).
    */
-  runRoutine?(workspace: Workspace, routine: Routine, requestId: string): Promise<RoutineFire | undefined>;
+  runRoutine?(
+    workspace: Workspace,
+    routine: Routine,
+    requestId: string,
+    ignoreGates?: boolean
+  ): Promise<RoutineFire | undefined>;
   readonly sessions: ReadonlyMap<string, CanvasSession>;
   canvasEnabled(): Promise<boolean>;
   canvasStores(): Promise<CanvasStores>;

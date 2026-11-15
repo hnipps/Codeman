@@ -8,7 +8,8 @@
  * The form is built once when it opens and is never repainted under the person while they type.
  */
 import { uuid } from './ids.js';
-import type { RoutineFire, RoutineRow, RoutineTrigger } from '../../../src/canvas/routines.js';
+import type { RoutineFire, RoutineGate, RoutineRow, RoutineTrigger } from '../../../src/canvas/routines.js';
+import { WORK_STATUSES, WORK_STATUS_NAMES } from '../../../src/canvas/work.js';
 
 export type RoutinesHost = {
   url(path: string): string;
@@ -24,6 +25,12 @@ const MIN_INTERVAL = 15;
 const MAX_TRIGGERS = 4;
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const FIRES_SHOWN = 5;
+const MAX_GATES = 4;
+const ASSIGNEES: [RoutineGate['assignee'], string][] = [
+  ['any', 'anyone or nobody'],
+  ['none', 'unassigned'],
+  ['routine', 'a routine run'],
+];
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
   const made = document.createElement(tag);
@@ -61,7 +68,11 @@ export function fireLabel(fire: RoutineFire): string {
     case 'started':
       return `${how} · started`;
     case 'skipped':
-      return `${how} · skipped, the last run was still going`;
+      return fire.outcome.reason === 'gate'
+        ? `${how} · skipped: gate ${(fire.outcome.gate ?? 0) + 1}${
+            fire.outcome.count === undefined ? ', items could not be counted' : ` (count ${fire.outcome.count})`
+          }`
+        : `${how} · skipped, the last run was still going`;
     case 'refused':
       return `${how} · refused (${fire.outcome.code})`;
     case 'failed':
@@ -69,6 +80,17 @@ export function fireLabel(fire: RoutineFire): string {
   }
 }
 const known = (t: { kind: string }): t is RoutineTrigger => ['interval', 'daily', 'weekly'].includes(t.kind);
+const knownGate = (g: { kind: string }): g is RoutineGate => g.kind === 'work-count';
+
+/** "Todo, unassigned: at least 1" style, the words the form uses. */
+export function gateLabel(gate: RoutineGate): string {
+  const who = ASSIGNEES.find(([value]) => value === gate.assignee)?.[1] ?? gate.assignee;
+  const bounds = [
+    gate.min !== undefined ? `at least ${gate.min}` : '',
+    gate.max !== undefined ? `fewer than ${gate.max}` : '',
+  ].filter(Boolean);
+  return `${WORK_STATUS_NAMES[gate.status]}, ${who}: ${bounds.join(' and ')}`;
+}
 
 type Draft = {
   key: string | null;
@@ -79,6 +101,8 @@ type Draft = {
   triggers: RoutineTrigger[];
   /** The triggers as loaded, so a save that left them alone never sends them (a later release's kinds survive). */
   loaded: string;
+  gates: RoutineGate[];
+  loadedGates: string;
 };
 
 export class RoutinesView {
@@ -163,6 +187,15 @@ export class RoutinesView {
       }`
     );
     li.append(top, when_);
+    const gates = row.gates ?? [];
+    if (gates.length)
+      li.append(
+        el(
+          'p',
+          'routine-when',
+          `Gates: ${gates.map((g, i) => `${i + 1}. ${knownGate(g) ? gateLabel(g) : 'not understood, holds every run'}`).join(' · ')}`
+        )
+      );
     if (row.description) li.append(el('p', 'routine-desc', row.description));
     const actions = el('div', 'routine-actions');
     const run = btn('', 'Run now', () => void this.run(row));
@@ -237,6 +270,8 @@ export class RoutinesView {
       prompt: row?.prompt ?? '',
       triggers: row ? structuredClone(row.triggers.filter(known)) : [{ kind: 'interval', minutes: 60 }],
       loaded: row ? JSON.stringify(row.triggers) : '',
+      gates: row ? structuredClone((row.gates ?? []).filter(knownGate)) : [],
+      loadedGates: JSON.stringify(row?.gates ?? []),
     };
     this.confirmDelete = false;
     this.form = this.buildForm();
@@ -292,6 +327,27 @@ export class RoutinesView {
     });
     triggers.append(rows, addTrigger);
     paintTriggers();
+    const gates = el('fieldset', 'routine-triggers routine-gates');
+    gates.append(
+      el('legend', '', 'Gates'),
+      el(
+        'p',
+        'routine-hint',
+        'Checked by the server before each run. A run is skipped, and no agent woken, when one says no.'
+      )
+    );
+    const gateRows = el('div');
+    const paintGates = () => {
+      gateRows.replaceChildren(...draft.gates.map((g, i) => this.gateRow(draft, i, g, paintGates)));
+      addGate.disabled = draft.gates.length >= MAX_GATES;
+    };
+    const addGate = btn('', 'Add gate', () => {
+      draft.gates.push({ kind: 'work-count', status: 'todo', assignee: 'none', min: 1 });
+      paintGates();
+      gateRows.querySelectorAll<HTMLSelectElement>('select')[(draft.gates.length - 1) * 2]?.focus();
+    });
+    gates.append(gateRows, addGate);
+    paintGates();
     const error = el('p', 'routine-error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
@@ -319,6 +375,7 @@ export class RoutinesView {
       field('Description', description),
       field('Prompt', prompt),
       triggers,
+      gates,
       ...(draft.key
         ? []
         : [el('p', 'routine-hint', 'A new routine starts switched off; tick Enabled on its card to run it.')]),
@@ -335,7 +392,9 @@ export class RoutinesView {
             ? 'Add a trigger'
             : draft.triggers.some((t) => t.kind === 'interval' && !(t.minutes >= MIN_INTERVAL))
               ? `An interval is at least ${MIN_INTERVAL} minutes`
-              : '';
+              : draft.gates.some((g) => g.min === undefined && g.max === undefined)
+                ? 'A gate needs at least or fewer than'
+                : '';
       error.hidden = !problem;
       error.textContent = problem;
       if (problem) return;
@@ -344,6 +403,7 @@ export class RoutinesView {
         description: draft.description,
         prompt: draft.prompt,
         ...(JSON.stringify(draft.triggers) !== draft.loaded ? { triggers: draft.triggers } : {}),
+        ...(JSON.stringify(draft.gates) !== draft.loadedGates ? { gates: draft.gates } : {}),
       };
       const saved = draft.key
         ? await this.request('PATCH', `/${draft.key}`, { expectedRevision: draft.revision, ...fields })
@@ -362,6 +422,60 @@ export class RoutinesView {
       this.closeForm(draft.key ? `edit-${draft.key}` : undefined);
     });
     return form;
+  }
+
+  private gateRow(draft: Draft, index: number, gate: RoutineGate, repaint: () => void): HTMLElement {
+    const row = el('div', 'routine-trigger routine-gate');
+    row.append(el('span', '', 'Count items in'));
+    const status = el('select');
+    status.setAttribute('aria-label', `Gate ${index + 1} status`);
+    for (const value of WORK_STATUSES) {
+      const option = el('option', '', WORK_STATUS_NAMES[value]);
+      option.value = value;
+      option.selected = gate.status === value;
+      status.append(option);
+    }
+    status.onchange = () => (gate.status = status.value as RoutineGate['status']);
+    const who = el('select');
+    who.setAttribute('aria-label', `Gate ${index + 1} assigned to`);
+    for (const [value, label] of ASSIGNEES) {
+      const option = el('option', '', label);
+      option.value = value;
+      option.selected = gate.assignee === value;
+      who.append(option);
+    }
+    who.onchange = () => (gate.assignee = who.value as RoutineGate['assignee']);
+    const bound = (label: string, value: number | undefined, set: (v: number | undefined) => void) => {
+      const input = el('input');
+      input.type = 'number';
+      input.min = '0';
+      input.step = '1';
+      input.value = value === undefined ? '' : String(value);
+      input.placeholder = 'any';
+      input.setAttribute('aria-label', `Gate ${index + 1} ${label}`);
+      input.oninput = () => set(input.value === '' ? undefined : Math.max(0, Math.floor(Number(input.value))));
+      return input;
+    };
+    const set = (key: 'min' | 'max') => (v: number | undefined) => {
+      if (v === undefined) delete gate[key];
+      else gate[key] = v;
+    };
+    row.append(
+      status,
+      el('span', '', 'assigned to'),
+      who,
+      el('span', '', 'run when at least'),
+      bound('at least', gate.min, set('min')),
+      el('span', '', 'and fewer than'),
+      bound('fewer than', gate.max, set('max'))
+    );
+    const remove = btn('routine-trigger-remove', 'Remove', () => {
+      draft.gates.splice(index, 1);
+      repaint();
+    });
+    remove.setAttribute('aria-label', `Remove gate ${index + 1}`);
+    row.append(remove);
+    return row;
   }
 
   private triggerRow(draft: Draft, index: number, trigger: RoutineTrigger, repaint: () => void): HTMLElement {

@@ -1461,7 +1461,8 @@ export class WebServer extends EventEmitter {
       },
       voiceRelayAvailable: async () => (await resolveVoiceStatus(await this.getClaudeVoiceEnabled())).available,
       basePath: this.basePath,
-      runRoutine: (workspace, routine, requestId) => this.routineRunner.runNow(workspace, routine, requestId),
+      runRoutine: (workspace, routine, requestId, ignoreGates) =>
+        this.routineRunner.runNow(workspace, routine, requestId, ignoreGates),
     };
     this.routineRunner = new RoutineRunner({
       app: this.app,

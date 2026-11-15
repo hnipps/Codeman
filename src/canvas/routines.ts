@@ -13,9 +13,11 @@ import { z } from 'zod';
 import { computeNextRunAt, parseHHMM, type CronSchedule } from '../cron/cron-time.js';
 import { AuthorSchema, type Author } from './model.js';
 import type { TaskState } from './tasks.js';
+import { WORK_STATUSES, type WorkStatus } from './work.js';
 
 export const MAX_ROUTINES = 20;
 export const MAX_ROUTINE_TRIGGERS = 4;
+export const MAX_ROUTINE_GATES = 4;
 /** Each run is a session, a worktree and real money, so a trigger wakes an agent at most this often. */
 export const MIN_INTERVAL_MINUTES = 15;
 export const MAX_INTERVAL_MINUTES = 7 * 24 * 60;
@@ -72,6 +74,46 @@ export function asCronSchedule(trigger: RoutineTrigger): CronSchedule {
   }
 }
 /** The triggers this release understands; one a later release added is kept on disk and ignored here. */
+/**
+ * A gate is a check the server makes before a fire, so no agent (and no tokens) is spent when it says no (owner
+ * requirement, 2026-11-15). `work-count` counts the canvas's Work items with one status and assignee filter and
+ * passes when `min <= count` (if set) and `count < max` (if set). Assignee `routine` means assigned to the session of
+ * a routine run on this canvas, `none` unassigned, `any` no filter.
+ */
+export const GateSchema = z
+  .object({
+    kind: z.literal('work-count'),
+    status: z.enum(WORK_STATUSES),
+    assignee: z.enum(['any', 'none', 'routine']),
+    min: z.number().int().nonnegative().max(10_000).optional(),
+    max: z.number().int().nonnegative().max(10_000).optional(),
+  })
+  .strict()
+  .refine((g) => g.min !== undefined || g.max !== undefined, 'A work-count gate needs min, max or both');
+export type RoutineGate = z.infer<typeof GateSchema>;
+export type GateAssignee = RoutineGate['assignee'];
+/** The canvas's Work items counted per status and assignee filter, derived by the runner; undefined when unreadable. */
+export type WorkCounts = (status: WorkStatus, assignee: GateAssignee) => number;
+/** Why a gate stopped a fire: its index, and the count when it could be taken. */
+export type GateRefusal = { gate: number; count?: number };
+
+/**
+ * The first gate that says no, or null when all pass. A gate this release does not understand, or Work items that
+ * could not be counted, says no: a gate exists to keep an agent from waking, so a doubt keeps it asleep.
+ */
+export function gateRefusal(routine: Pick<Routine, 'gates'>, work: WorkCounts | undefined): GateRefusal | null {
+  const gates = routine.gates ?? [];
+  for (let index = 0; index < gates.length; index++) {
+    const parsed = GateSchema.safeParse(gates[index]);
+    if (!parsed.success || !work) return { gate: index };
+    const g = parsed.data;
+    const count = work(g.status, g.assignee);
+    if ((g.min !== undefined && count < g.min) || (g.max !== undefined && count >= g.max))
+      return { gate: index, count };
+  }
+  return null;
+}
+
 export const knownTriggers = (routine: Pick<Routine, 'triggers'>): RoutineTrigger[] =>
   routine.triggers.flatMap((t) => {
     const parsed = TriggerSchema.safeParse(t);
@@ -135,6 +177,11 @@ const StoredRoutine = z
     prompt: z.string().min(1).max(MAX_ROUTINE_PROMPT_CHARS),
     /** Loose on disk: a trigger kind a later release adds survives a write by this one (`knownTriggers`). */
     triggers: z.array(z.object({ kind: z.string() }).passthrough()).max(MAX_ROUTINE_TRIGGERS),
+    /** Loose on disk like the triggers; a gate this release cannot read says no (`gateRefusal`). */
+    gates: z
+      .array(z.object({ kind: z.string() }).passthrough())
+      .max(MAX_ROUTINE_GATES)
+      .optional(),
     cliId: z.string().min(1).max(64).optional().catch(undefined),
     model: z.string().max(100).optional().catch(undefined),
     enabled: z.boolean(),
@@ -162,8 +209,23 @@ export const emptyRoutineFile = (): RoutineFile => ({ version: 1, next: 1, routi
 const FireOutcome = z.discriminatedUnion('kind', [
   /** Recorded before the task route is asked, so a crash mid-start is visible to the next tick. */
   z.object({ kind: z.literal('pending') }).passthrough(),
-  z.object({ kind: z.literal('started'), taskId: z.string().min(1).max(128) }).passthrough(),
-  z.object({ kind: z.literal('skipped'), reason: z.literal('previous-run-active') }).passthrough(),
+  z
+    .object({
+      kind: z.literal('started'),
+      taskId: z.string().min(1).max(128),
+      /** The run's session, so a gate can count items assigned to it after its task record is gone. */
+      sessionId: z.string().min(1).max(128).optional().catch(undefined),
+    })
+    .passthrough(),
+  /** One variant per kind (a discriminated union needs that): a gate skip carries the gate and the count it saw. */
+  z
+    .object({
+      kind: z.literal('skipped'),
+      reason: z.enum(['previous-run-active', 'gate']),
+      gate: z.number().int().nonnegative().optional(),
+      count: z.number().int().nonnegative().optional(),
+    })
+    .passthrough(),
   z.object({ kind: z.literal('refused'), code: z.string().max(64), message: z.string().max(400) }).passthrough(),
   z.object({ kind: z.literal('failed'), message: z.string().max(400) }).passthrough(),
 ]);
@@ -228,11 +290,18 @@ const surplus = (runs: RunView): string[] => runs.finished.slice(KEEP_FINISHED_R
  *   2. disabled                        -> idle
  *   3. no due time in (base, now]      -> idle until the next one
  *   4. a run of this routine is active -> skip (the due time is consumed)
- *   5. otherwise                       -> start, removing finished runs beyond KEEP_FINISHED_RUNS first
+ *   5. a gate says no                  -> skip with the gate and its count (the due time is consumed)
+ *   6. otherwise                       -> start, removing finished runs beyond KEEP_FINISHED_RUNS first
  * The caps are not checked here: the task route checks them inside its create queue and its refusal becomes a
  * `refused` fire. A second copy of the rule here could drift from the one agents are held to.
  */
-export function planFire(routine: Routine, state: RoutineState, runs: RunView, now: number): FirePlan {
+export function planFire(
+  routine: Routine,
+  state: RoutineState,
+  runs: RunView,
+  now: number,
+  work?: WorkCounts
+): FirePlan {
   const pending = state.fires.at(-1);
   if (pending?.outcome.kind === 'pending') {
     const run = [...runs.active, ...runs.finished].find((r) => r.runId === pending.runId);
@@ -250,17 +319,57 @@ export function planFire(routine: Routine, state: RoutineState, runs: RunView, n
   const due = latestDue(triggers, base, now);
   if (due === null) return { kind: 'idle', nextRunAt: dueAt(triggers, base) };
   const fire = { at: now, dueAt: due, trigger: 'schedule' as const, runId: runRequestId(routine.id, due) };
+  return admit(routine, fire, runs, work);
+}
+
+function admit(
+  routine: Pick<Routine, 'gates'>,
+  fire: { at: number; dueAt: number; trigger: 'schedule' | 'manual'; runId: string },
+  runs: RunView,
+  work: WorkCounts | undefined,
+  ignoreGates = false
+): FirePlan {
   if (runs.active.length > 0)
     return { kind: 'skip', fire: { ...fire, outcome: { kind: 'skipped', reason: 'previous-run-active' } } };
+  const gate = ignoreGates ? null : gateRefusal(routine, work);
+  if (gate) return { kind: 'skip', fire: { ...fire, outcome: { kind: 'skipped', reason: 'gate', ...gate } } };
   return { kind: 'start', fire: { ...fire, outcome: { kind: 'pending' } }, removeFirst: surplus(runs) };
 }
 
-/** Run now: the same overlap rule as a schedule, and the person's request id as the run id. */
-export function planManualFire(runs: RunView, requestId: string, now: number): FirePlan {
-  const fire = { at: now, dueAt: now, trigger: 'manual' as const, runId: requestId };
-  if (runs.active.length > 0)
-    return { kind: 'skip', fire: { ...fire, outcome: { kind: 'skipped', reason: 'previous-run-active' } } };
-  return { kind: 'start', fire: { ...fire, outcome: { kind: 'pending' } }, removeFirst: surplus(runs) };
+/**
+ * Run now: the same overlap rule and gates as a schedule, and the person's request id as the run id. Only a person
+ * reaches Run now, and they may pass `ignoreGates`.
+ */
+export function planManualFire(
+  routine: Pick<Routine, 'gates'>,
+  runs: RunView,
+  requestId: string,
+  now: number,
+  work?: WorkCounts,
+  ignoreGates = false
+): FirePlan {
+  return admit(routine, { at: now, dueAt: now, trigger: 'manual', runId: requestId }, runs, work, ignoreGates);
+}
+
+/**
+ * Counts Work items for gates. `routineSessions` are the sessions of this canvas's routine runs. An item counts for
+ * `routine` when its assignee is one of them, for `none` when it has no assignee.
+ */
+export function countWork(
+  items: readonly { status: string; assignee: { kind: string; sessionId?: string } | null }[],
+  routineSessions: ReadonlySet<string>
+): WorkCounts {
+  return (status, assignee) =>
+    items.filter(
+      (item) =>
+        item.status === status &&
+        (assignee === 'any' ||
+          (assignee === 'none' && item.assignee === null) ||
+          (assignee === 'routine' &&
+            item.assignee?.kind === 'session' &&
+            !!item.assignee.sessionId &&
+            routineSessions.has(item.assignee.sessionId)))
+    ).length;
 }
 
 /**
@@ -277,7 +386,11 @@ export function runRequestId(routineId: string, due: number): string {
 
 /** What a run is sent: the prompt, then one line naming the routine, the due time and what it may not do. */
 export function routineRequestText(routine: Routine, due: number): string {
-  return `${routine.prompt}\n\n(Routine ${routineKey(routine.number)} "${routine.title}", run for ${new Date(due).toISOString()}. You were started by a routine: you cannot start canvas conversations or tasks; work in this worktree, use canvas_work for Work items, and end with a report.)`;
+  // A gate counting items "assigned to a routine run" only sees an item the run assigned to itself.
+  const claim = (routine.gates ?? []).some((g) => (g as { assignee?: unknown }).assignee === 'routine')
+    ? ' Assign each Work item you take to yourself (assignee "me"); this routine counts them before it wakes an agent.'
+    : '';
+  return `${routine.prompt}\n\n(Routine ${routineKey(routine.number)} "${routine.title}", run for ${new Date(due).toISOString()}. You were started by a routine: you cannot start canvas conversations or tasks; work in this worktree, use canvas_work for Work items, and end with a report.${claim})`;
 }
 export const routineTaskName = (routine: Routine): string =>
   `Routine ${routineKey(routine.number)} · ${routine.title}`.slice(0, 100);
@@ -302,6 +415,7 @@ const Prompt = z
   .transform(multiLine)
   .pipe(z.string().min(1, 'A prompt is needed').max(MAX_ROUTINE_PROMPT_CHARS));
 const Triggers = z.array(TriggerSchema).min(1, 'A routine needs a trigger').max(MAX_ROUTINE_TRIGGERS);
+const Gates = z.array(GateSchema).max(MAX_ROUTINE_GATES);
 const Launch = {
   cliId: z.string().min(1).max(64).optional(),
   model: z.string().max(100).optional(),
@@ -313,6 +427,7 @@ export const CreateRoutineSchema = z
     description: Description.optional(),
     prompt: Prompt,
     triggers: Triggers,
+    gates: Gates.optional(),
     ...Launch,
     enabled: z.boolean().optional(),
   })
@@ -324,6 +439,7 @@ export const UpdateRoutineSchema = z
     description: Description.optional(),
     prompt: Prompt.optional(),
     triggers: Triggers.optional(),
+    gates: Gates.optional(),
     ...Launch,
     enabled: z.boolean().optional(),
   })
@@ -398,6 +514,7 @@ export function createRoutine(
     description: input.description ?? '',
     prompt: input.prompt,
     triggers: input.triggers,
+    ...(input.gates?.length ? { gates: input.gates } : {}),
     ...(input.cliId ? { cliId: input.cliId } : {}),
     ...(input.model ? { model: input.model } : {}),
     enabled,
@@ -411,8 +528,8 @@ export function createRoutine(
   return { ok: true, file: { ...file, next: file.next + 1, routines: [...file.routines, routine] }, routine };
 }
 
-/** The fields that decide what a run does; an agent changing one on an enabled routine switches it off. */
-const RUN_FIELDS = ['prompt', 'triggers', 'cliId', 'model'] as const;
+/** The fields that decide what and when a run does; an agent changing one on an enabled routine switches it off. */
+const RUN_FIELDS = ['prompt', 'triggers', 'gates', 'cliId', 'model'] as const;
 
 export function updateRoutine(
   file: RoutineFile,

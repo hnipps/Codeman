@@ -8,7 +8,9 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  countWork,
   createRoutine,
+  gateRefusal,
   CreateRoutineSchema,
   dueAt,
   emptyRoutineFile,
@@ -24,13 +26,16 @@ import {
   recordFire,
   RoutineFileSchema,
   routineRefusal,
+  routineRequestText,
   routineRow,
   runRequestId,
   TriggerSchema,
   updateRoutine,
   type Routine,
   type RoutineFire,
+  type RoutineGate,
   type RunView,
+  type WorkCounts,
 } from '../src/canvas/routines.js';
 
 const MIN = 60_000;
@@ -145,8 +150,127 @@ describe('the planner', () => {
   });
   it('Run now is held to the same overlap rule', () => {
     const id = crypto.randomUUID();
-    expect(planManualFire(runs(), id, T0)).toMatchObject({ kind: 'start', fire: { runId: id, trigger: 'manual' } });
-    expect(planManualFire(runs({ active: [{ runId: 'x', taskId: 't', state: 'queued' }] }), id, T0).kind).toBe('skip');
+    expect(planManualFire(routine(), runs(), id, T0)).toMatchObject({
+      kind: 'start',
+      fire: { runId: id, trigger: 'manual' },
+    });
+    expect(
+      planManualFire(routine(), runs({ active: [{ runId: 'x', taskId: 't', state: 'queued' }] }), id, T0).kind
+    ).toBe('skip');
+  });
+});
+
+describe('gates', () => {
+  const gate = (fields: Partial<RoutineGate>): RoutineGate => ({
+    kind: 'work-count',
+    status: 'todo',
+    assignee: 'any',
+    ...fields,
+  });
+  const ROUTINE_RUN = 'sess-routine-run';
+  const items = [
+    { status: 'todo', assignee: null },
+    { status: 'todo', assignee: null },
+    { status: 'todo', assignee: { kind: 'person' } },
+    { status: 'in-progress', assignee: { kind: 'session', sessionId: ROUTINE_RUN } },
+    { status: 'in-progress', assignee: { kind: 'session', sessionId: 'sess-person-chat' } },
+    { status: 'done', assignee: { kind: 'session', sessionId: ROUTINE_RUN } },
+  ];
+  const work = countWork(items, new Set([ROUTINE_RUN]));
+
+  it('counts by status and each assignee filter', () => {
+    expect(work('todo', 'any')).toBe(3);
+    expect(work('todo', 'none')).toBe(2);
+    expect(work('todo', 'routine')).toBe(0);
+    expect(work('in-progress', 'any')).toBe(2);
+    expect(work('in-progress', 'none')).toBe(0);
+    expect(work('in-progress', 'routine')).toBe(1);
+    expect(work('backlog', 'any')).toBe(0);
+  });
+
+  it.each([
+    // [gate, count it sees, passes]
+    ['min passes at min', gate({ min: 2, assignee: 'none' }), true],
+    ['min fails below min', gate({ min: 3, assignee: 'none' }), false],
+    ['max passes below max', gate({ status: 'in-progress', assignee: 'routine', max: 2 }), true],
+    ['max fails at max', gate({ status: 'in-progress', assignee: 'routine', max: 1 }), false],
+    ['max 0 always fails', gate({ status: 'backlog', max: 0 }), false],
+    ['both pass inside the range', gate({ min: 1, max: 4 }), true],
+    ['both fail above the range', gate({ min: 1, max: 3 }), false],
+    ['both fail below the range', gate({ status: 'backlog', min: 1, max: 3 }), false],
+    ['any counts every assignee', gate({ status: 'in-progress', assignee: 'any', min: 2 }), true],
+    ['none counts only unassigned', gate({ status: 'in-progress', assignee: 'none', min: 1 }), false],
+  ] as const)('%s', (_name, g, passes) => {
+    const refusal = gateRefusal({ gates: [g] }, work);
+    if (passes) expect(refusal).toBeNull();
+    else expect(refusal).toEqual({ gate: 0, count: work(g.status, g.assignee) });
+  });
+
+  it("Harry's two cases: a cap on items picked up, and nothing to pick", () => {
+    const cap = gate({ status: 'in-progress', assignee: 'routine', max: 2 });
+    const something = gate({ status: 'todo', assignee: 'none', min: 1 });
+    const busy = countWork(
+      [
+        { status: 'todo', assignee: null },
+        { status: 'in-progress', assignee: { kind: 'session', sessionId: 'a' } },
+        { status: 'in-progress', assignee: { kind: 'session', sessionId: 'b' } },
+      ],
+      new Set(['a', 'b'])
+    );
+    expect(gateRefusal({ gates: [something, cap] }, busy)).toEqual({ gate: 1, count: 2 });
+    const empty = countWork([], new Set());
+    expect(gateRefusal({ gates: [something, cap] }, empty)).toEqual({ gate: 0, count: 0 });
+  });
+
+  it('says no for a gate it cannot read, and when the items could not be counted', () => {
+    expect(gateRefusal({ gates: [{ kind: 'label-count' }] }, work)).toEqual({ gate: 0 });
+    expect(gateRefusal({ gates: [gate({ min: 1 })] }, undefined)).toEqual({ gate: 0 });
+    expect(gateRefusal({ gates: [] }, undefined)).toBeNull();
+    expect(gateRefusal({}, undefined)).toBeNull();
+  });
+
+  it('refuses a gate with neither bound, or a negative one', () => {
+    const schema = CreateRoutineSchema.shape.gates;
+    expect(schema.safeParse([gate({})]).success).toBe(false);
+    expect(schema.safeParse([gate({ min: -1 })]).success).toBe(false);
+    expect(schema.safeParse([gate({ min: 1.5 })]).success).toBe(false);
+    expect(schema.safeParse([gate({ max: 0 })]).success).toBe(true);
+  });
+
+  it('skips a due time a gate refuses, consuming it, after the active-run rule', () => {
+    const gated = routine({ gates: [gate({ status: 'todo', assignee: 'none', min: 5 })] });
+    const plan = planFire(gated, { fires: [] }, runs(), T0 + HOUR, work);
+    expect(plan).toMatchObject({
+      kind: 'skip',
+      fire: { dueAt: T0 + HOUR, trigger: 'schedule', outcome: { kind: 'skipped', reason: 'gate', gate: 0, count: 2 } },
+    });
+    if (plan.kind !== 'skip') throw new Error('expected a skip');
+    const state = recordFire(emptyRoutineState(), gated.id, plan.fire).routines[gated.id]!;
+    expect(state.lastDueAt).toBe(T0 + HOUR);
+    expect(planFire(gated, state, runs(), T0 + HOUR + MIN, work).kind).toBe('idle');
+    const active = runs({ active: [{ runId: 'x', taskId: 't', state: 'running' }] });
+    expect(planFire(gated, { fires: [] }, active, T0 + HOUR, work)).toMatchObject({
+      fire: { outcome: { reason: 'previous-run-active' } },
+    });
+    const open: WorkCounts = () => 9;
+    expect(planFire(gated, { fires: [] }, runs(), T0 + HOUR, open).kind).toBe('start');
+  });
+
+  it('holds Run now to the gates unless the person asks to ignore them', () => {
+    const gated = routine({ gates: [gate({ min: 99 })] });
+    const id = crypto.randomUUID();
+    expect(planManualFire(gated, runs(), id, T0, work)).toMatchObject({
+      kind: 'skip',
+      fire: { outcome: { reason: 'gate', gate: 0, count: 3 } },
+    });
+    expect(planManualFire(gated, runs(), id, T0, work, true).kind).toBe('start');
+    expect(planManualFire(gated, runs(), id, T0, undefined, true).kind).toBe('start');
+  });
+
+  it('tells a run to claim its items only when a gate counts routine-assigned items', () => {
+    expect(routineRequestText(routine(), T0)).not.toContain('assignee "me"');
+    const capped = routine({ gates: [gate({ status: 'in-progress', assignee: 'routine', max: 2 })] });
+    expect(routineRequestText(capped, T0)).toContain('assignee "me"');
   });
 });
 
@@ -274,7 +398,17 @@ describe('edits', () => {
 
 describe('the Routines tab', () => {
   it('labels triggers and fires in words', async () => {
-    const { triggerLabel, fireLabel } = await import('../packages/canvas/src/routines-view.js');
+    const { triggerLabel, fireLabel, gateLabel } = await import('../packages/canvas/src/routines-view.js');
+    expect(gateLabel({ kind: 'work-count', status: 'in-progress', assignee: 'routine', max: 2 })).toBe(
+      'In progress, a routine run: fewer than 2'
+    );
+    expect(gateLabel({ kind: 'work-count', status: 'todo', assignee: 'none', min: 1, max: 5 })).toBe(
+      'Todo, unassigned: at least 1 and fewer than 5'
+    );
+    const gated = { runId: 'r', dueAt: 0, at: 0, trigger: 'schedule' };
+    expect(fireLabel({ ...gated, outcome: { kind: 'skipped', reason: 'gate', gate: 1, count: 2 } } as never)).toBe(
+      'Scheduled · skipped: gate 2 (count 2)'
+    );
     expect(triggerLabel({ kind: 'interval', minutes: 120 })).toBe('Every 2 h');
     expect(triggerLabel({ kind: 'interval', minutes: 45 })).toBe('Every 45 min');
     expect(triggerLabel({ kind: 'daily', time: '07:30' })).toBe('Daily at 07:30');

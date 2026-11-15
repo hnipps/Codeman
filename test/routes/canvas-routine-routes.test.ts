@@ -100,8 +100,8 @@ async function harness() {
     mayAutomate: () => deployRole.allows('automate'),
     announce: (workspaceId) => announceRoutines(port as never, workspaceId),
   });
-  port.runRoutine = (workspace: never, routine: never, requestId: string) =>
-    runner.runNow(workspace, routine, requestId);
+  port.runRoutine = (workspace: never, routine: never, requestId: string, ignoreGates?: boolean) =>
+    runner.runNow(workspace, routine, requestId, ignoreGates);
   registerCanvasRoutes(app, port as never);
   installRouteErrorHandler(app);
   await app.ready();
@@ -370,6 +370,83 @@ describe('the schedule', () => {
       deployRole.initFromEnv({});
       expect(await h.tasks()).toHaveLength(0);
       expect(h.started).toHaveLength(0);
+    } finally {
+      await h.app.close();
+    }
+  });
+  it('a gate that says no records the fire and wakes no agent; an agent may set gates', async () => {
+    const h = await harness();
+    try {
+      const gates = [
+        { kind: 'work-count', status: 'todo', assignee: 'none', min: 1 },
+        { kind: 'work-count', status: 'in-progress', assignee: 'routine', max: 2 },
+      ];
+      // An agent drafts the gated routine through the tool; gates are not the enable switch.
+      const drafted = await h.call(
+        'POST',
+        '/command',
+        {
+          tool: 'canvas_routine',
+          arguments: {
+            action: 'create',
+            requestId: uuid(),
+            title: 'Pick up',
+            prompt: 'Take one Todo item',
+            triggers: [{ kind: 'interval', minutes: 30 }],
+            gates,
+          },
+        },
+        true
+      );
+      expect(drafted.statusCode).toBe(200);
+      const routine = (await h.routines())[0]!;
+      expect(routine.gates).toEqual(gates);
+      expect(routine.enabled).toBe(false);
+      await h.enable('R-1');
+      const enabled = (await h.routines())[0]!;
+      const due = enabled.enabledAt! + 30 * MIN;
+
+      // Nothing in Todo: the due time is consumed and no task, session or prompt is made.
+      await h.tick(due + MIN);
+      expect(await h.tasks()).toHaveLength(0);
+      expect(h.started).toHaveLength(0);
+      expect((await h.routines())[0]!.fires[0]).toMatchObject({
+        dueAt: due,
+        outcome: { kind: 'skipped', reason: 'gate', gate: 0, count: 0 },
+      });
+
+      // Run now meets the same gate, unless the person asks to ignore it.
+      const held = await h.call('POST', '/routines/R-1/run', { requestId: uuid() });
+      expect(held.json().data.fire.outcome).toMatchObject({ kind: 'skipped', reason: 'gate', gate: 0 });
+      expect(h.started).toHaveLength(0);
+      const agentIgnores = await h.call('POST', '/routines/R-1/run', { requestId: uuid(), ignoreGates: true }, true);
+      expect(agentIgnores.statusCode).toBe(403);
+
+      // An unassigned Todo item opens the gate at the next due time; the started fire names the run's session.
+      expect((await h.call('POST', '/work', { title: 'Ready item', status: 'todo' })).statusCode).toBe(201);
+      await h.tick(due + 31 * MIN);
+      const [task] = await h.tasks();
+      expect(task).toBeDefined();
+      expect((await h.routines())[0]!.fires[0]!.outcome).toEqual({
+        kind: 'started',
+        taskId: task!.id,
+        sessionId: task!.sessionId,
+      });
+      expect((h.sessions.get(task!.sessionId)!.writeViaMux as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toContain(
+        'assignee "me"'
+      );
+    } finally {
+      await h.app.close();
+    }
+  });
+  it('Run now with ignoreGates starts a run the gates would hold', async () => {
+    const h = await harness();
+    try {
+      await h.create({ gates: [{ kind: 'work-count', status: 'todo', assignee: 'any', min: 1 }] });
+      await h.enable('R-1');
+      const ran = await h.call('POST', '/routines/R-1/run', { requestId: uuid(), ignoreGates: true });
+      expect(ran.json().data.fire.outcome.kind).toBe('started');
+      expect(await h.tasks()).toHaveLength(1);
     } finally {
       await h.app.close();
     }

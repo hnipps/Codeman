@@ -6,7 +6,7 @@
  * `POST   /api/canvas/:workspaceId/routines`           create (`requestId` makes a retry safe)
  * `PATCH  /api/canvas/:workspaceId/routines/:key`      change (`expectedRevision` guards it)
  * `DELETE /api/canvas/:workspaceId/routines/:key`      delete (a person only); its runs stay as ordinary tasks
- * `POST   /api/canvas/:workspaceId/routines/:key/run`  Run now (a person only), body `{ requestId }`
+ * `POST   /api/canvas/:workspaceId/routines/:key/run`  Run now (a person only), body `{ requestId, ignoreGates? }`
  *
  * The `canvas_routine` tool calls the same functions. An agent may read, create (saved disabled), switch one off and
  * change fields; switching one on, Run now and delete are a person's (`routineRefusal`), and an agent's change to the
@@ -165,7 +165,10 @@ export async function runRoutineRoute(
   number: number,
   body: unknown
 ): Promise<Outcome> {
-  const { requestId } = z.object({ requestId: z.uuid() }).strict().parse(body);
+  const { requestId, ignoreGates } = z
+    .object({ requestId: z.uuid(), ignoreGates: z.boolean().optional() })
+    .strict()
+    .parse(body);
   const why = routineRefusal(callerOf(req), 'run');
   if (why) return refused(why);
   const workspace = await writeGuard(req, workspaceId);
@@ -175,7 +178,7 @@ export async function runRoutineRoute(
   if (!read.ok) return refuse(409, ApiErrorCode.CONFLICT, routineFileProblem(read.reason));
   const routine = read.file.routines.find((r) => r.number === number);
   if (!routine) return notFound(number);
-  const fire = await ctx.runRoutine(workspace, routine, requestId);
+  const fire = await ctx.runRoutine(workspace, routine, requestId, ignoreGates === true);
   if (!fire) return refuse(409, ApiErrorCode.CONFLICT, 'The routine could not be run right now; nothing was started');
   return ok({ fire });
 }
