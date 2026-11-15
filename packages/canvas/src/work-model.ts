@@ -23,6 +23,7 @@ const Row = z
     number: z.number(),
     title: z.string(),
     status: z.enum(WORK_STATUSES),
+    position: z.number().int().positive().optional().catch(undefined),
     description: z.string().catch(''),
     assignee: z
       .union([
@@ -101,7 +102,10 @@ export function matchesFilter(item: WorkRow, filter: WorkFilter, query: string):
   return !q || item.title.toLowerCase().includes(q) || item.key.toLowerCase().includes(q);
 }
 
-/** One lane's cards: open lanes urgent first, then newest change; closed lanes newest change only. */
+/**
+ * One lane's cards. Ready for work is in pickup order (its `position`, top first): priority is position. Other open
+ * lanes are urgent first, then newest change; closed lanes newest change only.
+ */
 export function laneItems(
   items: readonly WorkRow[],
   status: WorkStatus,
@@ -109,8 +113,10 @@ export function laneItems(
   filter: WorkFilter = 'all',
   query = ''
 ): WorkRow[] {
-  return items
-    .filter((i) => i.status === status && matchesFilter(i, filter, query))
+  const inLane = items.filter((i) => i.status === status && matchesFilter(i, filter, query));
+  if (status === 'ready-for-work')
+    return inLane.sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || a.number - b.number);
+  return inLane
     .map((item) => ({ item, state: rank(itemState(item, sessions)) }))
     .sort((a, b) =>
       !workClosed(status) && a.state !== b.state ? a.state - b.state : b.item.updatedAt - a.item.updatedAt
@@ -119,18 +125,33 @@ export function laneItems(
 }
 
 export type WorkCount = { status: WorkStatus; count: number; unassigned: number };
-/** A count per status; Todo also says how many have nobody on them. */
+/** A count per status; Ready for work also says how many have nobody on them (what a pickup routine may take). */
 export function workCounts(items: readonly WorkRow[]): WorkCount[] {
   return WORK_STATUSES.map((status) => {
     const inLane = items.filter((i) => i.status === status);
     return {
       status,
       count: inLane.length,
-      unassigned: status === 'todo' ? inLane.filter((i) => i.assignee === null).length : 0,
+      unassigned: status === 'ready-for-work' ? inLane.filter((i) => i.assignee === null).length : 0,
     };
   });
 }
 export const openCount = (items: readonly WorkRow[]): number => items.filter((i) => !workClosed(i.status)).length;
+
+/**
+ * The position one step up or down in Ready for work (1 is the top), or null at either end or outside that lane.
+ * Counted over the whole lane, never the filtered cards, because the server places by the whole lane.
+ */
+export function readyStep(items: readonly WorkRow[], item: WorkRow, step: -1 | 1): number | null {
+  if (item.status !== 'ready-for-work' || item.position === undefined) return null;
+  const size = items.filter((i) => i.status === 'ready-for-work').length;
+  const to = item.position + step;
+  return to < 1 || to > size ? null : to;
+}
+/** What the outline lists: Human required first (a person has to act), then In progress. */
+export function outlineItems(items: readonly WorkRow[], sessions: readonly ShellSessionRow[]): WorkRow[] {
+  return [...laneItems(items, 'human-required', sessions), ...laneItems(items, 'in-progress', sessions)];
+}
 
 /** The status one step left or right, or null past either end. */
 export function stepStatus(status: WorkStatus, step: -1 | 1): WorkStatus | null {

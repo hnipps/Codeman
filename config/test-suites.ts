@@ -38,6 +38,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/canvas-threads.browser.test.ts',
   'test/canvas-voice.browser.test.ts',
   'test/canvas-tasks.browser.test.ts',
+  'test/canvas-work.browser.test.ts',
   'test/canvas-shell.browser.test.ts',
   'test/canvas-shell-outline.browser.test.ts',
   'test/canvas-full-view.browser.test.ts',

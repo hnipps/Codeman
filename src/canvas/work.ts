@@ -6,6 +6,10 @@
  * assignee (the person, an agent session, or nobody), linked sessions, the item it was created from and a short
  * history. Items live in `work.json` per workspace (`work-store.ts`), never on the board or in the operation log.
  *
+ * Statuses follow W-48: Backlog, Needs refinement, Human required, Ready for work, In progress, Done, Not doing. Only a
+ * person moves an item out of Backlog (an agent quotes their `instruction`), an answered question goes back to Needs
+ * refinement, and the order of Ready for work (`readyOrder`, `readyQueue()`) is the pickup order.
+ *
  * Nothing changes an item by itself. `report` is the run-end rule an agent applies to its own work when a run ends
  * (done and verified, keep working, done plus new Backlog items, or ask the person); it is a request the agent makes,
  * and the server only records it.
@@ -13,15 +17,49 @@
 import { z } from 'zod';
 import { AuthorSchema, IdSchema, type Author } from './model.js';
 
-export const WORK_STATUSES = ['backlog', 'todo', 'in-progress', 'done', 'not-doing'] as const;
-export type WorkStatus = (typeof WORK_STATUSES)[number];
+export type WorkAssignee = { kind: 'person' } | { kind: 'session'; sessionId: string };
+
+/**
+ * Board order. Needs refinement, Human required and Ready for work replaced Todo (W-48): Needs refinement is the
+ * intake queue that pickup routines ignore, Human required waits for a person (a question in `needs`, or work only a
+ * person can do), Ready for work is what an agent may pick up, top first.
+ */
+export const WORK_STATUSES = [
+  'backlog',
+  'needs-refinement',
+  'human-required',
+  'ready-for-work',
+  'in-progress',
+  'done',
+  'not-doing',
+] as const;
+export const WorkStatusSchema = z.enum(WORK_STATUSES);
+export type WorkStatus = z.infer<typeof WorkStatusSchema>;
 export const WORK_STATUS_NAMES: Record<WorkStatus, string> = {
   backlog: 'Backlog',
-  todo: 'Todo',
+  'needs-refinement': 'Needs refinement',
+  'human-required': 'Human required',
+  'ready-for-work': 'Ready for work',
   'in-progress': 'In progress',
   done: 'Done',
   'not-doing': 'Not doing',
 };
+/**
+ * The three statuses that replaced Todo. On disk they are `status: "todo"` plus `todoStatus`, so the release before
+ * W-48, which knows only the five old statuses and refuses a whole file over one unknown value, still reads the file
+ * (self-building rule 5). Only `decodeWorkFile`/`encodeWorkFile` see that form.
+ */
+export const TODO_STATUSES = ['needs-refinement', 'human-required', 'ready-for-work'] as const;
+type TodoStatus = (typeof TODO_STATUSES)[number];
+const STORED_STATUSES = ['backlog', 'todo', 'in-progress', 'done', 'not-doing'] as const;
+const isTodoStatus = (status: WorkStatus): status is TodoStatus =>
+  (TODO_STATUSES as readonly string[]).includes(status);
+/**
+ * Where a Todo item from before the split goes: assigned to the person, Human required; unassigned, or assigned to a
+ * session (the assignee is kept), Needs refinement.
+ */
+export const migrateTodo = (assignee: WorkAssignee | null): TodoStatus =>
+  assignee?.kind === 'person' ? 'human-required' : 'needs-refinement';
 /** Done and Not doing: the item is closed and its lane is quiet. */
 export const workClosed = (status: WorkStatus): boolean => status === 'done' || status === 'not-doing';
 
@@ -33,6 +71,8 @@ export const MAX_LINKED_SESSIONS = 16;
 export const MAX_WORK_HISTORY = 50;
 /** New Backlog items one `split` report may file. */
 export const MAX_FILED_ITEMS = 10;
+/** The person's instruction an agent quotes to move an item out of Backlog. */
+export const MAX_INSTRUCTION_CHARS = 300;
 
 export const workKey = (number: number): string => `W-${number}`;
 /** `W-12`, `w-12` or `12`; anything else is not a key. */
@@ -59,6 +99,8 @@ export const workText = (text: string): string =>
 const Title = z.string().transform(workLine).pipe(z.string().min(1, 'A title is needed').max(MAX_WORK_TITLE_CHARS));
 const Description = z.string().transform(workText).pipe(z.string().max(MAX_WORK_DESCRIPTION_CHARS));
 const Note = z.string().transform(workText).pipe(z.string().min(1).max(MAX_WORK_NOTE_CHARS));
+/** The person's words, quoted by an agent that moves an item out of Backlog. */
+const Instruction = z.string().transform(workLine).pipe(z.string().min(1).max(MAX_INSTRUCTION_CHARS));
 const Key = z.union([z.string().max(16), z.number().int()]).transform((value, ctx) => {
   const n = typeof value === 'number' ? (value > 0 ? value : null) : parseWorkKey(value);
   if (n === null) {
@@ -68,7 +110,6 @@ const Key = z.union([z.string().max(16), z.number().int()]).transform((value, ct
   return n;
 });
 
-export type WorkAssignee = { kind: 'person' } | { kind: 'session'; sessionId: string };
 const AssigneeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('person') }).strict(),
   z.object({ kind: z.literal('session'), sessionId: IdSchema }).strict(),
@@ -76,50 +117,104 @@ const AssigneeSchema = z.discriminatedUnion('kind', [
 
 const at = z.number().int().nonnegative();
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
+const itemFields = {
+  number: z.number().int().positive(),
+  title: z.string().min(1).max(MAX_WORK_TITLE_CHARS),
+  description: z.string().max(MAX_WORK_DESCRIPTION_CHARS).catch(''),
+  assignee: AssigneeSchema.nullable().catch(null),
+  sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).catch([]),
+  createdFrom: z.number().int().positive().optional().catch(undefined),
+  requestId: z.uuid().optional().catch(undefined),
+  author: AuthorSchema,
+  createdAt: at,
+  updatedAt: at,
+  revision: z.number().int().positive(),
+  needs: z
+    .object({ question: z.string().min(1).max(MAX_WORK_NOTE_CHARS), sessionId: IdSchema.optional(), at })
+    .passthrough()
+    .optional()
+    .catch(undefined),
+  outcome: z
+    .object({
+      kind: z.enum(['done', 'continue', 'split']),
+      text: z.string().min(1).max(MAX_WORK_NOTE_CHARS),
+      sessionId: IdSchema.optional(),
+      at,
+    })
+    .passthrough()
+    .optional()
+    .catch(undefined),
+  history: z.array(StoredEvent).max(MAX_WORK_HISTORY).catch([]),
+};
+/** An item as `work.json` holds it: the old five statuses, `todoStatus` naming which of the three a Todo is. */
 const StoredItem = z
   .object({
-    number: z.number().int().positive(),
-    title: z.string().min(1).max(MAX_WORK_TITLE_CHARS),
-    status: z.enum(WORK_STATUSES),
-    description: z.string().max(MAX_WORK_DESCRIPTION_CHARS).catch(''),
-    assignee: AssigneeSchema.nullable().catch(null),
-    sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).catch([]),
-    createdFrom: z.number().int().positive().optional().catch(undefined),
-    requestId: z.uuid().optional().catch(undefined),
-    author: AuthorSchema,
-    createdAt: at,
-    updatedAt: at,
-    revision: z.number().int().positive(),
-    needs: z
-      .object({ question: z.string().min(1).max(MAX_WORK_NOTE_CHARS), sessionId: IdSchema.optional(), at })
-      .passthrough()
-      .optional()
-      .catch(undefined),
-    outcome: z
-      .object({
-        kind: z.enum(['done', 'continue', 'split']),
-        text: z.string().min(1).max(MAX_WORK_NOTE_CHARS),
-        sessionId: IdSchema.optional(),
-        at,
-      })
-      .passthrough()
-      .optional()
-      .catch(undefined),
-    history: z.array(StoredEvent).max(MAX_WORK_HISTORY).catch([]),
+    ...itemFields,
+    status: z.enum(STORED_STATUSES),
+    todoStatus: z.enum(TODO_STATUSES).optional().catch(undefined),
   })
   .passthrough();
-export type WorkItem = z.infer<typeof StoredItem>;
+/** An item as every reader above the store sees it: one of the seven statuses. */
+const Item = z.object({ ...itemFields, status: WorkStatusSchema }).passthrough();
+export type WorkItem = z.infer<typeof Item>;
 export type WorkEvent = WorkItem['history'][number];
-/** `work.json`. Unknown keys of the file and of each item are kept on every write. */
+type FileFields = { version: 1; next: number; items: WorkItem[]; readyOrder: number[] };
+export type WorkFile = FileFields & { [key: string]: unknown };
+
+/** The order of Ready for work as stored, cleaned: only items in that lane, once each, missing ones at the bottom. */
+function normalizeReady(file: WorkFile): void {
+  const ready = new Set(file.items.filter((i) => i.status === 'ready-for-work').map((i) => i.number));
+  const order = [...new Set(file.readyOrder)].filter((n) => ready.has(n));
+  for (const n of [...ready].sort((x, y) => x - y)) if (!order.includes(n)) order.push(n);
+  file.readyOrder = order;
+}
+
+/**
+ * `work.json`, decoded: Todo items take their `todoStatus`, or the migration rule when they have none (W-48), and
+ * `readyOrder` is cleaned. Unknown keys of the file and of each item are kept on every write.
+ */
 export const WorkFileSchema = z
   .object({
     version: z.literal(1),
     next: z.number().int().positive(),
     items: z.array(StoredItem).max(MAX_WORK_ITEMS),
+    readyOrder: z.array(z.number().int().positive()).max(MAX_WORK_ITEMS).catch([]).optional(),
   })
-  .passthrough();
-export type WorkFile = z.infer<typeof WorkFileSchema>;
-export const emptyWorkFile = (): WorkFile => ({ version: 1, next: 1, items: [] });
+  .passthrough()
+  .transform((stored): WorkFile => {
+    const items = stored.items.map(({ status, todoStatus, ...rest }) => {
+      const decoded: WorkStatus = status === 'todo' ? (todoStatus ?? migrateTodo(rest.assignee)) : status;
+      return { ...rest, status: decoded } as WorkItem;
+    });
+    const file = { ...stored, items, readyOrder: stored.readyOrder ?? [] } as WorkFile;
+    normalizeReady(file);
+    return file;
+  });
+/** The form written to disk: the three statuses that replaced Todo go back to `status: "todo"` plus `todoStatus`. */
+export function encodeWorkFile(file: WorkFile): unknown {
+  return {
+    ...file,
+    items: file.items.map((item) => {
+      const { todoStatus: _stale, ...rest } = item as WorkItem & { todoStatus?: unknown };
+      void _stale;
+      return isTodoStatus(item.status) ? { ...rest, status: 'todo', todoStatus: item.status } : rest;
+    }),
+  };
+}
+export const emptyWorkFile = (): WorkFile => ({ version: 1, next: 1, items: [], readyOrder: [] });
+
+/** Ready for work in pickup order, top first. Pickup routines take from here and nowhere else. */
+export function readyQueue(file: WorkFile): WorkItem[] {
+  return file.readyOrder.flatMap((n) => {
+    const item = findWork(file, n);
+    return item && item.status === 'ready-for-work' ? [item] : [];
+  });
+}
+/** An item's place in Ready for work, 1 at the top; null outside that lane. */
+export function workPosition(file: WorkFile, number: number): number | null {
+  const at = readyQueue(file).findIndex((i) => i.number === number);
+  return at === -1 ? null : at + 1;
+}
 
 // ---- Requests -------------------------------------------------------------
 
@@ -135,7 +230,7 @@ export const CreateWorkSchema = z
     /** The same id returns the item it made the first time, so a retry never files twice. */
     requestId: z.uuid().optional(),
     title: Title,
-    status: z.enum(WORK_STATUSES).default('backlog'),
+    status: WorkStatusSchema.default('backlog'),
     description: Description.optional(),
     assignee: AssigneeInput.optional(),
     sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).optional(),
@@ -148,13 +243,20 @@ export const UpdateWorkSchema = z
     /** Refused with CONFLICT when the item has changed since this revision was read. */
     expectedRevision: z.number().int().positive().optional(),
     title: Title.optional(),
-    status: z.enum(WORK_STATUSES).optional(),
+    status: WorkStatusSchema.optional(),
     description: Description.optional(),
     assignee: AssigneeInput.optional(),
     linkSessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).optional(),
     unlinkSessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).optional(),
-    /** `null`: the question was answered. A question is asked only through a report. */
+    /**
+     * `null`: the question was answered. A Human required item then goes back to Needs refinement, never straight
+     * to Ready for work. A question is asked only through a report.
+     */
     needs: z.null().optional(),
+    /** Place in Ready for work, 1 at the top; the item is in that lane or moves into it in this call. */
+    position: z.number().int().positive().optional(),
+    /** An agent moving an item out of Backlog quotes the person's instruction to do so; refused without it. */
+    instruction: Instruction.optional(),
   })
   .strict();
 export type UpdateWork = z.infer<typeof UpdateWorkSchema>;
@@ -170,6 +272,8 @@ export const ReportWorkSchema = z
       .array(z.object({ title: Title, description: Description.optional() }).strict())
       .max(MAX_FILED_ITEMS)
       .optional(),
+    /** As for an update: an agent's report that moves an item out of Backlog quotes the person's instruction. */
+    instruction: Instruction.optional(),
     expectedRevision: z.number().int().positive().optional(),
   })
   .strict();
@@ -177,7 +281,7 @@ export type ReportWork = z.infer<typeof ReportWorkSchema>;
 
 /** The `canvas_work` tool. */
 export const WorkToolSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('list'), status: z.enum(WORK_STATUSES).optional() }).strict(),
+  z.object({ action: z.literal('list'), status: WorkStatusSchema.optional() }).strict(),
   z.object({ action: z.literal('read'), key: Key }).strict(),
   CreateWorkSchema.extend({ action: z.literal('create') }).strict(),
   UpdateWorkSchema.extend({ action: z.literal('update'), key: Key }).strict(),
@@ -223,6 +327,37 @@ export function findWork(file: WorkFile, number: number): WorkItem | undefined {
   return file.items.find((i) => i.number === number);
 }
 
+/** Only a person moves an item out of Backlog; an agent may when it quotes the person's instruction. */
+function backlogRefusal(item: WorkItem, to: WorkStatus, ctx: WorkContext, instruction?: string): WorkRefusal | null {
+  if (ctx.author.kind !== 'agent' || item.status !== 'backlog' || to === 'backlog' || instruction) return null;
+  return refuse(
+    'INVALID_INPUT',
+    `Only a person moves ${workKey(item.number)} out of Backlog. Ask them; if they told you to, quote their words in instruction`
+  );
+}
+/**
+ * Moves an item and logs `Moved from <A> to <B>` (routines read when an item entered a status from that event). An
+ * agent's move out of Backlog also logs the instruction it quoted. An item entering Ready for work goes to the bottom.
+ */
+function setStatus(file: WorkFile, item: WorkItem, to: WorkStatus, ctx: WorkContext, instruction?: string): void {
+  log(item, ctx, `Moved from ${WORK_STATUS_NAMES[item.status]} to ${WORK_STATUS_NAMES[to]}`);
+  if (item.status === 'backlog' && ctx.author.kind === 'agent' && instruction)
+    log(item, ctx, `Moved out of Backlog on the person's instruction: "${instruction}"`);
+  item.status = to;
+  file.readyOrder = file.readyOrder.filter((n) => n !== item.number);
+  if (to === 'ready-for-work') file.readyOrder.push(item.number);
+}
+/** Puts a Ready for work item at `position` (1 is the top, past the end is the bottom); true when it moved. */
+function place(file: WorkFile, item: WorkItem, position: number, ctx: WorkContext): boolean {
+  const order = file.readyOrder.filter((n) => n !== item.number);
+  const at = Math.min(position, order.length + 1) - 1;
+  if (file.readyOrder.indexOf(item.number) === at) return false;
+  order.splice(at, 0, item.number);
+  file.readyOrder = order;
+  log(item, ctx, `Moved to position ${at + 1} in Ready for work`);
+  return true;
+}
+
 function newItem(
   file: WorkFile,
   ctx: WorkContext,
@@ -250,6 +385,7 @@ function newItem(
   log(item, ctx, firstEvent);
   file.next += 1;
   file.items.push(item);
+  if (item.status === 'ready-for-work') file.readyOrder.push(item.number);
   return item;
 }
 
@@ -319,9 +455,25 @@ export function updateWork(
     log(item, ctx, 'Edited the description');
     changed = true;
   }
-  if (patch.status !== undefined && patch.status !== item.status) {
-    log(item, ctx, `Moved from ${WORK_STATUS_NAMES[item.status]} to ${WORK_STATUS_NAMES[patch.status]}`);
-    item.status = patch.status;
+  const answering = patch.needs === null && !!item.needs;
+  // An answered question sends a Human required item back to Needs refinement, so readiness is checked again.
+  const to = patch.status ?? (answering && item.status === 'human-required' ? 'needs-refinement' : undefined);
+  if (answering && to === 'ready-for-work')
+    return refuse(
+      'INVALID_INPUT',
+      'An answered question goes back to Needs refinement, not straight to Ready for work; move it on in another change'
+    );
+  if (to === 'ready-for-work' && item.status !== 'ready-for-work' && item.needs)
+    return refuse(
+      'INVALID_INPUT',
+      `${workKey(number)} has an open question; mark it answered, which sends it to Needs refinement, first`
+    );
+  if (patch.position !== undefined && (to ?? item.status) !== 'ready-for-work')
+    return refuse('INVALID_INPUT', 'position is a place in Ready for work; the item is not in that lane');
+  if (to !== undefined && to !== item.status) {
+    const refused = backlogRefusal(item, to, ctx, patch.instruction);
+    if (refused) return refused;
+    setStatus(next, item, to, ctx, patch.instruction);
     changed = true;
   }
   if (patch.assignee !== undefined && !sameAssignee(item.assignee, patch.assignee)) {
@@ -347,11 +499,12 @@ export function updateWork(
     log(item, ctx, `Unlinked ${removing.length === 1 ? `session ${removing[0]}` : `${removing.length} sessions`}`);
     changed = true;
   }
-  if (patch.needs === null && item.needs) {
+  if (answering) {
     delete item.needs;
     log(item, ctx, 'Marked the question answered');
     changed = true;
   }
+  if (patch.position !== undefined && place(next, item, patch.position, ctx)) changed = true;
   if (!changed) return { ok: true, file, item: findWork(file, number)!, filed: [], duplicate: false };
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
@@ -360,7 +513,8 @@ export function updateWork(
 /**
  * The run-end rule, as the agent decided it. `done`: verified, moves to Done. `continue`: not done or not verified,
  * stays where it is with a note. `split`: done and verified, with unrelated work found: moves to Done and files each
- * of `newItems` in Backlog, created from this item. `ask`: unsure: records the question, which shows as Needs you.
+ * of `newItems` in Backlog, created from this item. `ask`: unsure: records the question, which shows as Needs you,
+ * and moves the item to Human required. A report that moves an item out of Backlog needs the person's instruction.
  * The reporting session is linked to the item. A report changes nothing else.
  */
 export function reportWork(
@@ -379,6 +533,11 @@ export function reportWork(
     return refuse('INVALID_INPUT', 'An ask report carries the question for the person (question)');
   if (file.items.length + (report.newItems?.length ?? 0) > MAX_WORK_ITEMS)
     return refuse('FULL', `A canvas keeps at most ${MAX_WORK_ITEMS} items`);
+  const moves = report.outcome === 'continue' ? null : report.outcome === 'ask' ? 'human-required' : 'done';
+  if (moves) {
+    const refused = backlogRefusal(findWork(file, number)!, moves, ctx, report.instruction);
+    if (refused) return refused;
+  }
   const next = structuredClone(file);
   const item = findWork(next, number)!;
   const sessionId = ctx.author.kind === 'agent' ? ctx.author.sessionId : undefined;
@@ -387,12 +546,10 @@ export function reportWork(
     if (failed) return refuse('INVALID_INPUT', failed);
   }
   const filed: WorkItem[] = [];
-  const toDone = (): void => {
-    if (item.status !== 'done') {
-      log(item, ctx, `Moved from ${WORK_STATUS_NAMES[item.status]} to Done`);
-      item.status = 'done';
-    }
+  const moveTo = (to: WorkStatus): void => {
+    if (item.status !== to) setStatus(next, item, to, ctx, report.instruction);
   };
+  const toDone = (): void => moveTo('done');
   switch (report.outcome) {
     case 'done':
       toDone();
@@ -429,6 +586,8 @@ export function reportWork(
       break;
     }
     case 'ask':
+      // A question for the person: the item waits in Human required until it is answered.
+      moveTo('human-required');
       item.needs = { question: report.question!, ...(sessionId ? { sessionId } : {}), at: ctx.now };
       log(item, ctx, 'Asked the person a question');
       break;
@@ -442,11 +601,13 @@ export function reportWork(
 /** An item as the API answers it: its key spelled out, its request id left out. */
 /** The item's declared fields: `Omit` over the passthrough index signature would lose every one of them. */
 type KnownWorkFields = { [K in keyof WorkItem as string extends K ? never : K]: WorkItem[K] };
-export type WorkRow = Omit<KnownWorkFields, 'requestId'> & { key: string };
-export function workRow(item: WorkItem): WorkRow {
+export type WorkRow = Omit<KnownWorkFields, 'requestId'> & { key: string; position?: number };
+/** With the file, an item in Ready for work also carries its `position` there (1 is the top). */
+export function workRow(item: WorkItem, file?: WorkFile): WorkRow {
   const { requestId: _requestId, ...rest } = item;
   void _requestId;
-  return { ...rest, key: workKey(item.number) };
+  const position = file ? workPosition(file, item.number) : null;
+  return { ...rest, key: workKey(item.number), ...(position !== null ? { position } : {}) };
 }
 export type WorkRelated = { key: string; title: string; status: WorkStatus };
 /** The item it was created from, and the items created from it. */
@@ -458,12 +619,14 @@ export function workRelated(file: WorkFile, item: WorkItem): { createdFrom?: Wor
     created: file.items.filter((i) => i.createdFrom === item.number).map(brief),
   };
 }
-/** The list an agent reads: no description or history, newest change first. */
-export function workBrief(item: WorkItem) {
+/** The list an agent reads: no description or history. */
+export function workBrief(item: WorkItem, file?: WorkFile) {
+  const position = file ? workPosition(file, item.number) : null;
   return {
     key: workKey(item.number),
     title: item.title,
     status: item.status,
+    ...(position !== null ? { position } : {}),
     assignee: item.assignee,
     sessions: item.sessions,
     revision: item.revision,

@@ -6,11 +6,22 @@
  * parse, or carries another version, is reported and never written over. Writes are synchronous (read, change,
  * write in one tick, so two requests cannot interleave), 0600 through a temporary file and a rename, and only on the
  * live deploy colour (`atomicWrite`).
+ *
+ * The file stays readable by the release before W-48 (self-building rule 5): `readWork` decodes the stored Todo items
+ * into Needs refinement, Human required or Ready for work (`WorkFileSchema`), and every write encodes them back
+ * (`encodeWorkFile`), so nothing above this module ever sees `todo`.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dataPath } from '../config/instance.js';
 import { atomicWrite } from './canvas-store.js';
-import { emptyWorkFile, WorkFileSchema, type WorkChange, type WorkFile, type WorkRefusal } from './work.js';
+import {
+  emptyWorkFile,
+  encodeWorkFile,
+  WorkFileSchema,
+  type WorkChange,
+  type WorkFile,
+  type WorkRefusal,
+} from './work.js';
 
 export const workPath = (workspaceId: string): string => dataPath('canvas', workspaceId, 'work.json');
 
@@ -44,6 +55,6 @@ export function changeWork(
   const read = readWork(workspaceId);
   if (!read.ok) return { ok: false, code: 'FILE', message: workFileProblem(read.reason) };
   const result = change(read.file);
-  if (result.ok && result.file !== read.file) atomicWrite(workPath(workspaceId), result.file);
+  if (result.ok && result.file !== read.file) atomicWrite(workPath(workspaceId), encodeWorkFile(result.file));
   return result;
 }

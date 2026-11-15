@@ -42,6 +42,13 @@ export const editShortcuts: Shortcut[] = [
       ['Shift', '→'],
     ],
   ],
+  [
+    'Move the focused Ready for work card up / down (its pickup order)',
+    [
+      ['Shift', '↑'],
+      ['Shift', '↓'],
+    ],
+  ],
   ['New work item / filter (in Work)', [['N'], ['/']]],
   ['Run chat message in the background', [['Mod', 'Shift', 'Enter']]],
   ['Selection lasso (hold and drag)', [['Alt']]],

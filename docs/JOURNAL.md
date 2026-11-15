@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-15 — Work's Todo splits into Needs refinement, Human required and Ready for work, stored as Todo
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{work,work-store}.ts`, `src/web/routes/canvas-work-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/{work-model,work-view}.ts`, `src/web/public/canvas-work.css`
+**Why:** W-48 (owner decision). Routines (W-44) and an intake routine need a contract: which items an agent may pick up, which wait for a person, and in what order.
+**Links:** [intent/2026-11-15-work-split-todo.md](../intent/2026-11-15-work-split-todo.md), [architecture-invariants, "Canvas work"](architecture-invariants.md#canvas-work)
+
+Decision. On disk the three new statuses are `status: "todo"` plus `todoStatus`, and the Ready for work order is a file key, `readyOrder`. The previous release's schema refuses a whole file over one unknown status and any version but 1, so a new status value or a version bump would break a rollback (self-building rule 5). Every reader above `work-store.ts` sees the seven statuses.
+
+Decision. The rules live in `work.ts`, so people and agents meet them on one path: `ask` moves to Human required, an answer returns the item to Needs refinement, an agent leaves Backlog only by quoting the person's `instruction`, and position in Ready for work is priority. The Todo migration runs on read and adds no history event, since it has no author and a read must not write.
+
+Rejected. A `rank` number on each item: reordering would bump other items' revisions and turn concurrent edits into conflicts. Five or more full-width columns plus two closed ones on a desktop: Done and Not doing share one column instead.
+
 ## 2026-11-15 — A person's slash command from the canvas chat box is sent bare
 
 **Type:** intent-refinement
