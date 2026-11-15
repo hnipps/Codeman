@@ -46,6 +46,9 @@ tests=(
   test/canvas-failure-routes.test.ts
   test/canvas-client-errors.test.ts
   test/canvas-agent-start.test.ts
+  test/canvas-routines.test.ts
+  test/routes/canvas-routine-routes.test.ts
+  test/internal-principal.test.ts
   test/telemetry.test.ts
   test/routes/telemetry-routes.test.ts
   test/telemetry-server.test.ts

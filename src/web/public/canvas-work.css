@@ -765,3 +765,211 @@ body:has(#outline:not([hidden])) #workView {
 :root[data-work-open] body:has(#rail:not([hidden])) .work-hint {
   display: none;
 }
+
+/* Routines (W-44): the Work view's second tab. Same tokens as the lanes; strings are set with textContent. */
+.work-mode-hidden {
+  display: none !important;
+}
+.routines {
+  max-width: 760px;
+  padding: 16px 24px 32px;
+  overflow-y: auto;
+}
+.routines[hidden] {
+  display: none;
+}
+.routine-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.routine-intro {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 13px;
+  color: var(--secondary);
+}
+.routine-note,
+.routine-hint {
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.routine-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.routine-card {
+  padding: 12px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.routine-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.routine-key,
+.routine-fire-at {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.routine-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.routine-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.routine-when,
+.routine-desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+.routine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.routine-fires {
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--divider);
+  list-style: none;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.routine-fire {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  min-height: 24px;
+}
+.routine-fire.refused,
+.routine-fire.failed {
+  color: var(--text);
+}
+.routine-fire-task {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.routine-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+.routine-field {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.routine-field-name {
+  font-size: 12px;
+  color: var(--secondary);
+}
+.routine-form :is(input, textarea, select) {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--divider);
+  background: var(--canvas);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.routine-form :is(input, textarea, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.routine-form input[type='checkbox'] {
+  min-height: 0;
+}
+.routine-triggers {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+}
+.routine-triggers legend {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.routine-trigger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.routine-head > button {
+  flex: none;
+  white-space: nowrap;
+}
+.routine-trigger select {
+  width: auto;
+}
+.routine-trigger input[type='number'] {
+  width: 80px;
+}
+.routine-gate + .routine-gate {
+  padding-top: 6px;
+  border-top: 1px solid var(--divider);
+}
+.routine-gate input[type='number'] {
+  width: 72px;
+}
+.routine-days {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.routine-days label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.routine-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+@media (max-width: 720px) {
+  .routines {
+    padding: 12px 16px 24px;
+  }
+  .routine-head {
+    flex-direction: column;
+  }
+  .routine-card button,
+  .routine-switch,
+  .routine-form :is(input, select) {
+    min-height: 44px;
+  }
+  .routine-form :is(input, textarea, select) {
+    font-size: 16px;
+  }
+}

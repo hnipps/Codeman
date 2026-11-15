@@ -115,6 +115,7 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import { INTERNAL_PRINCIPAL_HEADER } from './internal-principal.js';
 import {
   canvasOn,
   decideLanding,
@@ -226,7 +227,15 @@ import {
   sendLostWebviewFramePage,
 } from './middleware/auth.js';
 import { isMultiUserMode } from '../config/multiuser.js';
-import { bootstrapInitialAdmin, hasUsers, resolveClaudeModeForUsername } from '../user-store.js';
+import {
+  bootstrapInitialAdmin,
+  findUser,
+  hasUsers,
+  resolveClaudeModeForUsername,
+  SYNTHETIC_ADMIN,
+} from '../user-store.js';
+import { ROUTINE_TICK_MS, RoutineRunner } from './routine-runner.js';
+import { announceRoutines } from './routes/canvas-routine-routes.js';
 import { installRouteErrorHandler } from './route-error-handler.js';
 import { installEmptyApiPostParser } from './request-body-parser.js';
 import { isExplicitlyEnabled, isLoopbackBindHost, buildHostPolicy, type HostPolicy } from './network-auth-policy.js';
@@ -391,6 +400,7 @@ export class WebServer extends EventEmitter {
   private _customModelDisplacedNotified: Set<string> = new Set();
   /** Cron service (assigned in setupRoutes). */
   private cronService!: CronService;
+  private routineRunner!: RoutineRunner;
   // Prompt-cache keep-warm (prompt-cache-keepwarm.ts): the rulebook and timers live in the
   // service; the server only lends it the facts a decision needs. A field initializer, not a
   // setupRoutes() step: cleanup and listener wiring reach it on servers that never set up routes
@@ -1451,7 +1461,21 @@ export class WebServer extends EventEmitter {
       },
       voiceRelayAvailable: async () => (await resolveVoiceStatus(await this.getClaudeVoiceEnabled())).available,
       basePath: this.basePath,
+      runRoutine: (workspace, routine, requestId, ignoreGates) =>
+        this.routineRunner.runNow(workspace, routine, requestId, ignoreGates),
     };
+    this.routineRunner = new RoutineRunner({
+      app: this.app,
+      canvasEnabled: canvasPort.canvasEnabled,
+      ownerUser: async (workspace) => {
+        if (!isMultiUserMode()) return SYNTHETIC_ADMIN;
+        if (!workspace.owner) return undefined;
+        const user = await findUser(workspace.owner).catch(() => undefined);
+        return user && !user.disabled ? { username: user.username, role: user.role } : undefined;
+      },
+      mayAutomate: () => deployRole.allows('automate'),
+      announce: (workspaceId, changed) => announceRoutines(canvasPort, workspaceId, changed),
+    });
     registerPushRoutes(this.app, ctx);
     registerTeamRoutes(this.app, ctx);
     registerMuxRoutes(this.app, ctx);
@@ -2574,7 +2598,7 @@ export class WebServer extends EventEmitter {
     }
   ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
     const forwarded: Record<string, string> = { 'content-type': 'application/json' };
-    for (const name of ['authorization', 'cookie', 'host']) {
+    for (const name of ['authorization', 'cookie', 'host', INTERNAL_PRINCIPAL_HEADER]) {
       const value = headers[name];
       if (typeof value === 'string') forwarded[name] = value;
     }
@@ -2612,7 +2636,7 @@ export class WebServer extends EventEmitter {
     sessionId: string
   ): Promise<void> {
     const forwarded: Record<string, string> = {};
-    for (const name of ['authorization', 'cookie', 'host']) {
+    for (const name of ['authorization', 'cookie', 'host', INTERNAL_PRINCIPAL_HEADER]) {
       const value = headers[name];
       if (typeof value === 'string') forwarded[name] = value;
     }
@@ -3721,6 +3745,20 @@ export class WebServer extends EventEmitter {
         },
         CUSTOM_MODEL_SWAP_CHECK_INTERVAL_MS,
         { description: 'custom model swap-displacement check' }
+      );
+    }
+
+    // Canvas routines (W-44): only the live colour fires, and the runner checks that again before every action.
+    if (!this.testMode) {
+      this.cleanup.setInterval(
+        () => {
+          if (!deployRole.allows('automate')) return;
+          this.routineRunner.tick(Date.now()).catch((err) => {
+            console.error('[routines] tick failed:', getErrorMessage(err));
+          });
+        },
+        ROUTINE_TICK_MS,
+        { description: 'canvas routines due-checker' }
       );
     }
 

@@ -22,6 +22,7 @@ import {
 } from '../../config/auth-config.js';
 import { getHookSecret, HOOK_SECRET_HEADER } from '../../config/hook-secret.js';
 import { isMultiUserMode } from '../../config/multiuser.js';
+import { registerInternalPrincipal } from '../internal-principal.js';
 import { findUser, setPassword, touchLastLogin, verifyPassword } from '../../user-store.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
 import { capabilityFromHtmlViewPath, htmlViewCapabilities } from '../../html-view-capabilities.js';
@@ -334,6 +335,8 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean, bas
   // Always declare req.authUser so downstream reads are safe (single-user leaves it
   // undefined; the ownership helpers then default to a synthetic admin).
   if (!app.hasRequestDecorator('authUser')) app.decorateRequest('authUser', undefined);
+  // First, and with no password too: the server's own calls (canvas routines) carry a principal only it can mint.
+  registerInternalPrincipal(app);
 
   const multiUser = isMultiUserMode();
   const authPassword = process.env.CODEMAN_PASSWORD;
@@ -415,6 +418,10 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean, bas
   const expectedHeader = 'Basic ' + Buffer.from(`${authUsername}:${authPassword}`).toString('base64');
 
   app.addHook('onRequest', (req, reply, done) => {
+    if (req.internalPrincipal) {
+      done();
+      return;
+    }
     const bypass = checkHookSecretBypass(req, reply, hookSecretFailures);
     if (bypass === 'bypass') {
       done();
@@ -638,6 +645,7 @@ function registerMultiUserAuthHook(
   };
 
   app.addHook('onRequest', async (req, reply) => {
+    if (req.internalPrincipal) return;
     const bypass = checkHookSecretBypass(req, reply, hookSecretFailures);
     if (bypass === 'bypass' || bypass === 'rejected') return;
 

@@ -79,6 +79,7 @@ import {
   agentStartedAncestor,
   agentStartRefusal,
   startedBy,
+  storedStartedBy,
   type StartedBy,
 } from '../../canvas/agent-start.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
@@ -751,6 +752,15 @@ export async function agentStartGate(
   kind: 'conversation' | 'task',
   agentLive: number
 ): Promise<Outcome | StartedBy | undefined> {
+  // A routine run is held to the agents' share like any agent; it has no session of its own to walk up from.
+  const routine = req.canvasRoutine;
+  if (routine) {
+    if (kind === 'conversation')
+      return refuse(403, ApiErrorCode.FORBIDDEN, 'A routine starts background tasks only, never a conversation');
+    const refused = agentStartRefusal({ kind, inLineage: undefined, agentLive });
+    if (refused) return conflict(AGENT_START_REFUSALS[refused]);
+    return { kind: 'routine', routineId: routine.routineId, runId: routine.runId };
+  }
   const author = req.canvasAuthor;
   if (author?.kind !== 'agent') return undefined;
   const above = agentStartedAncestor(
@@ -879,7 +889,7 @@ async function start(
     name: `Canvas · ${workspace.caseName}`.slice(0, 100),
     mode: launch.entryId,
     launch: launch.launch,
-    ...(agent ? { parentSessionId: agent.sessionId } : {}),
+    ...(agent?.kind === 'agent' ? { parentSessionId: agent.sessionId } : {}),
   });
   if (!started.ok) return refuse(409, ApiErrorCode.OPERATION_FAILED, `START_FAILED: ${started.message}`);
   if (agent) noteAgentStarted(started.sessionId);
@@ -893,7 +903,7 @@ async function start(
         cliId: launch.entryId,
         ...(launch.model ? { model: launch.model } : {}),
         ...(body.origin ? { origin: body.origin } : {}),
-        ...(agent ? { startedBy: agent } : {}),
+        ...(agent ? { startedBy: storedStartedBy(agent, started.sessionId) } : {}),
         createdAt: Date.now(),
         createdBy: ownerFor(req) ?? '@single',
       }),

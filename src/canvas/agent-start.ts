@@ -13,12 +13,36 @@ export const MAX_AGENT_TASKS = 2;
 /** How far up a spawn chain the depth rule looks before it stops. */
 export const MAX_LINEAGE_HOPS = 32;
 
-export type StartedBy = { kind: 'agent'; sessionId: string };
-const StoredStartedBy = z.object({ kind: z.literal('agent'), sessionId: z.string().min(1).max(128) }).passthrough();
-/** Who started a record: an agent session, or undefined for a person (and for every record of an earlier release). */
+/**
+ * Who started a record. A routine run is an agent for every rule: the shared AGENT_CAP, depth one below it, NOT_YOURS.
+ */
+export type StartedBy = { kind: 'agent'; sessionId: string } | { kind: 'routine'; routineId: string; runId: string };
+const StoredStartedBy = z
+  .object({
+    kind: z.literal('agent'),
+    sessionId: z.string().min(1).max(128),
+    routineId: z.string().min(1).max(128).optional(),
+    runId: z.string().min(1).max(128).optional(),
+  })
+  .passthrough();
+/**
+ * The stored form of `startedBy`. A routine run is stored as `{ kind: 'agent', sessionId: <the run's own session>,
+ * routineId, runId }`, so the previous release (which reads `kind: 'agent'` with passthrough) still counts it toward
+ * AGENT_CAP and still keeps the run's session below agent-started work after a rollback. A `kind: 'routine'` on disk
+ * would read there as a person's task and lift both bounds. This encoder and `startedBy()` are the only two places
+ * that know the stored shape.
+ */
+export function storedStartedBy(starter: StartedBy, runSessionId: string): Record<string, string> {
+  return starter.kind === 'agent'
+    ? { kind: 'agent', sessionId: starter.sessionId }
+    : { kind: 'agent', sessionId: runSessionId, routineId: starter.routineId, runId: starter.runId };
+}
+/** Who started a record: an agent session, a routine, or undefined for a person (and every earlier release's record). */
 export function startedBy(source: { startedBy?: unknown }): StartedBy | undefined {
   const parsed = StoredStartedBy.safeParse(source.startedBy);
-  return parsed.success ? { kind: 'agent', sessionId: parsed.data.sessionId } : undefined;
+  if (!parsed.success) return undefined;
+  const { sessionId, routineId, runId } = parsed.data;
+  return routineId && runId ? { kind: 'routine', routineId, runId } : { kind: 'agent', sessionId };
 }
 
 /**

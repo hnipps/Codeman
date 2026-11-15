@@ -1582,6 +1582,9 @@ const work = new WorkView({
   },
   focusBoard: () => board.focus({ preventScroll: true }),
   say: (message) => (node('announcement').textContent = message),
+  showTasks: () => {
+    if (state.rail.at(-1) !== 'tasks') toggleTasks();
+  },
 });
 void work.load();
 const prototypes = new PrototypesView({

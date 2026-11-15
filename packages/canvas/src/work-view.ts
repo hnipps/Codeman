@@ -31,6 +31,7 @@ import {
   type WorkFilter,
   type WorkRow,
 } from './work-model.js';
+import { RoutinesView } from './routines-view.js';
 
 export type WorkHost = {
   url(path: string): string;
@@ -45,6 +46,8 @@ export type WorkHost = {
   /** Hands the keyboard back to the board. */
   focusBoard(): void;
   say(message: string): void;
+  /** Opens the Tasks list in the rail, where a routine's runs live. */
+  showTasks(): void;
 };
 
 const FILTERS: [WorkFilter, string][] = [
@@ -135,10 +138,21 @@ export class WorkView {
   private lanes = el('div', 'work-lanes');
   private tabs = el('nav', 'work-tabs');
   private toast = el('div', 'work-toast');
+  private mode: 'items' | 'routines' = 'items';
+  private modeSeg = el('div', 'work-seg work-mode');
+  private itemsOnly: HTMLElement[] = [];
+  private routines: RoutinesView;
   // Rail
   private detail = el('div', 'rail-body work-detail');
 
   constructor(private host: WorkHost) {
+    this.routines = new RoutinesView({
+      url: (path) => host.url(path),
+      workspace: host.workspace,
+      online: () => host.online(),
+      showTasks: () => host.showTasks(),
+      say: (message) => host.say(message),
+    });
     this.buildSection();
     this.buildView();
     this.detail.id = 'workDetail';
@@ -212,7 +226,18 @@ export class WorkView {
     close.setAttribute('aria-label', 'Close Work');
     close.title = 'Close · Esc';
     close.append(icon('M5 5l10 10M15 5L5 15'));
-    head.append(h1, seg, this.search, el('span', 'work-grow'), hint, add, close);
+    this.modeSeg.setAttribute('role', 'group');
+    this.modeSeg.setAttribute('aria-label', 'Work or routines');
+    for (const [mode, label] of [
+      ['items', 'Items'],
+      ['routines', 'Routines'],
+    ] as const) {
+      const b = btn('', label, () => this.setMode(mode));
+      b.dataset.workMode = mode;
+      this.modeSeg.append(b);
+    }
+    this.itemsOnly = [seg, this.search, hint, add, this.tabs, this.lanes];
+    head.append(h1, this.modeSeg, seg, this.search, el('span', 'work-grow'), hint, add, close);
     this.tabs.setAttribute('aria-label', 'Lanes');
     // Built once and relabelled on paint, so a tab keeps the keyboard and a press across a refresh.
     for (const status of WORK_STATUSES) {
@@ -225,7 +250,7 @@ export class WorkView {
     }
     this.toast.hidden = true;
     this.toast.setAttribute('role', 'status');
-    v.append(head, this.tabs, this.lanes, this.toast);
+    v.append(head, this.tabs, this.lanes, this.routines.element, this.toast);
     v.addEventListener('keydown', (e) => this.viewKey(e));
   }
 
@@ -263,8 +288,13 @@ export class WorkView {
       } catch {
         return;
       }
-    if (!data || typeof data !== 'object' || !('work' in data) || data.work !== true) return;
+    if (!data || typeof data !== 'object') return;
     if ('workspaceId' in data && data.workspaceId !== this.host.workspace) return;
+    if ('routines' in data && data.routines === true) {
+      if (this.full && this.mode === 'routines') void this.routines.load();
+      return;
+    }
+    if (!('work' in data) || data.work !== true) return;
     clearTimeout(this.reloadTimer);
     this.reloadTimer = setTimeout(() => void this.load(), 150);
   }
@@ -482,7 +512,7 @@ export class WorkView {
       this.closeFull();
       return;
     }
-    if (typing(e.target)) return;
+    if (typing(e.target) || this.mode === 'routines') return;
     if (e.key.toLowerCase() === 'n' && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
@@ -494,14 +524,29 @@ export class WorkView {
     }
   }
 
+  setMode(mode: 'items' | 'routines'): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.paint();
+    if (mode === 'routines') this.routines.show(true);
+  }
+  private paintMode(): void {
+    const routines = this.mode === 'routines';
+    for (const b of this.modeSeg.querySelectorAll<HTMLElement>('[data-work-mode]'))
+      b.setAttribute('aria-pressed', String(b.dataset.workMode === this.mode));
+    for (const part of this.itemsOnly) part.classList.toggle('work-mode-hidden', routines);
+    if (this.routines.element.hidden === routines) this.routines.show(routines);
+  }
+
   // ---- Painting -------------------------------------------------------------
 
   paint(): void {
     this.paintSection();
     this.view.hidden = !this.full;
+    if (this.full) this.paintMode();
     // A repaint during a drag would replace the card holding the pointer and lose the drop; it waits for the end.
-    if (this.full && this.drag) this.lanesStale = true;
-    else if (this.full) this.paintLanes();
+    if (this.full && this.mode === 'items' && this.drag) this.lanesStale = true;
+    else if (this.full && this.mode === 'items') this.paintLanes();
     if (!this.detail.hidden) this.paintDetail();
   }
 

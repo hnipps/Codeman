@@ -4,6 +4,7 @@ import { ViewActionSchema } from './view-schema.js';
 import { ConversationToolSchema } from './conversation-schema.js';
 import { TaskToolSchema } from './tasks.js';
 import { WorkToolSchema } from './work.js';
+import { RoutineToolSchema } from './routines.js';
 import { ElementRefSchema } from './element-ref.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -209,6 +210,7 @@ export const toolSchemas = {
   canvas_conversation: ConversationToolSchema,
   canvas_task: TaskToolSchema,
   canvas_work: WorkToolSchema,
+  canvas_routine: RoutineToolSchema,
   canvas_capabilities: z.object({}).strict(),
   canvas_link_preview: z.object({ url: z.string().min(1).max(8192) }).strict(),
 };
@@ -238,7 +240,7 @@ export function canvasJsonSchema(schema: z.ZodType) {
 /** Tools that act on no canvas object, so the capability document gives them no object types. */
 const OBJECTLESS_TOOLS = new Set<CanvasToolName>(['canvas_capabilities', 'canvas_link_preview']);
 /** Tools listed by name and a note only; their schemas are in the MCP tool listing and the command route checks input. */
-const BRIEF_CAPABILITY = new Set<CanvasToolName>(['canvas_work']);
+const BRIEF_CAPABILITY = new Set<CanvasToolName>(['canvas_work', 'canvas_routine']);
 export function capabilities() {
   const types = ContentSchema.options.map((s) => s.shape.type.value);
   return {
@@ -251,7 +253,8 @@ export function capabilities() {
           ...(OBJECTLESS_TOOLS.has(name) ? {} : { objectTypes: types }),
         })),
       // This document sits at MAX_CANVAS_TEXT_BYTES: a tool listed briefly carries its schema in the MCP tool listing.
-      { name: 'canvas_work', note: 'Work items: list, read, create, update, report. Schema: its tool listing.' },
+      { name: 'canvas_work', note: 'Work items. Schema: its tool listing.' },
+      { name: 'canvas_routine', note: 'Routines. Schema: its tool listing.' },
       {
         name: 'canvas_upload_image',
         available: true,

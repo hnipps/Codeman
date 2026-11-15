@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-15 — Canvas routines run as agent-started background tasks, enabled only by a person
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/{routines,routine-store,agent-start,tasks}.ts`, `src/web/{routine-runner,internal-principal,server}.ts`, `src/web/middleware/auth.ts`, `src/web/routes/{canvas-routine-routes,canvas-routes,canvas-task-routes}.ts`, `src/mcp-server.ts`, `packages/canvas/src/{routines-view,work-view,task,entry}.ts`, `docs/self-building.md`
+**Why:** Work items only moved when a person started an agent by hand; Harry wants agents that refine, pick up and finish items in the background (W-44).
+**Links:** [intent/2026-11-15-canvas-routines.md](../intent/2026-11-15-canvas-routines.md), [architecture-invariants, "Canvas routines"](architecture-invariants.md#canvas-routines)
+
+Decision. A routine is a saved prompt with triggers. Each due time of an enabled routine starts one ordinary canvas background task through the server's own task route, under an in-process principal that the agent rules treat as an agent: the shared `AGENT_CAP`, depth one, a worktree only, `NOT_YOURS`. The run's record is stored as an agent start, so the previous release counts and limits it after a rollback. Only a person enables, runs or deletes a routine, and an agent's edit to what an enabled routine runs switches it off. Gates (a count of Work items by status and assignee, with a minimum and a maximum) are checked by the server before a fire, so a cap on items picked up, or an empty Todo lane, keeps the agent from waking at all (owner requirement, 2026-11-15). Self-building rule 4 now allows cron jobs and canvas routines to prompt agents (owner decision, 2026-11-15) and still forbids respawn, auto-resume and keep-warm.
+
+Work-item triggers (owner requirement, 2026-11-15: pickup and intake routines acting on items within WIP and task limits). A trigger fires once for each item that enters a status, one item per fire, keyed on when the item entered (from its history, else `createdAt`), never on `updatedAt` or a revision, so an intake run's own edits do not refire the item it refined. With `claim`, the runner assigns the item to the run and moves it to In progress once the run starts, so a WIP gate on routine-held In progress items caps pickup without waking an agent.
+
+Why the task route. One path means one set of rules: when W-46 changes the agent rules, routines change with them, with no routine-only budget or bypass to keep in step.
+
+Rejected. Letting the agent decide whether there is work (it spends a session and tokens to learn there is none). A new spawn path from the runner (it would skip the caps and attribution). Cron jobs as the carrier (no canvas, no rules, no knowledge that a run ended). `{{item}}` substitution in prompts (template injection from item text). A global pause switch (each routine starts off; follow-up if wanted).
+
 ## 2026-11-15 — Work's Todo splits into Needs refinement, Human required and Ready for work, stored as Todo
 
 **Type:** intent-refinement

@@ -79,7 +79,7 @@ import {
   type TaskRow,
 } from '../../canvas/tasks.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
-import { AGENT_START_REFUSALS, startedBy } from '../../canvas/agent-start.js';
+import { AGENT_START_REFUSALS, startedBy, storedStartedBy, type StartedBy } from '../../canvas/agent-start.js';
 import {
   agentStartGate,
   caseRunsElsewhere,
@@ -130,9 +130,16 @@ export const forgetLeftBehind = (): void => leftBehindCache.clear();
 
 const HUMAN_ONLY = 'Only a person can remove a left-behind worktree. Ask the person to do it from the canvas.';
 const agentCaller = (req: FastifyRequest): boolean => req.canvasAuthor?.kind === 'agent';
-/** The task an agent caller started itself; a person may act on any task of their canvas. */
-const callerMayAct = (req: FastifyRequest, c: Conversation): boolean =>
-  req.canvasAuthor?.kind !== 'agent' || startedBy(c)?.sessionId === req.canvasAuthor.sessionId;
+/**
+ * The task an agent caller started itself, or a run of the calling routine (its runner removes its own finished runs);
+ * a person may act on any task of their canvas.
+ */
+function callerMayAct(req: FastifyRequest, c: Conversation): boolean {
+  const by = startedBy(c);
+  if (req.canvasRoutine) return by?.kind === 'routine' && by.routineId === req.canvasRoutine.routineId;
+  if (req.canvasAuthor?.kind !== 'agent') return true;
+  return by?.kind === 'agent' && by.sessionId === req.canvasAuthor.sessionId;
+}
 const notYours = (): Outcome => refuse(403, ApiErrorCode.FORBIDDEN, AGENT_START_REFUSALS.NOT_YOURS);
 
 /** One list row. `canSee` is false for a session the caller may not read; its task then reads as gone. */
@@ -255,6 +262,7 @@ export async function listTasks(
         name: task.name,
         createdAt: c.createdAt,
         state: taskStateOf(ctx, c, !session || canAccessOwned(user, session.owner)) ?? 'failed',
+        ...(startedBy(c) ? { startedBy: startedBy(c) } : {}),
       };
     });
     return ok({
@@ -547,8 +555,8 @@ async function launchTask(
     excludeWarning: boolean;
     launch: { entryId: string; model: string; launch: Record<string, unknown> };
     startSession: NonNullable<CanvasPort['startConversationSession']>;
-    /** The agent that asked, once it passed `agentStartGate`; undefined for a person. */
-    agent: { kind: 'agent'; sessionId: string } | undefined;
+    /** The agent or routine that asked, once it passed `agentStartGate`; undefined for a person. */
+    agent: StartedBy | undefined;
     /** The parent conversation the request named is an ordinary conversation of this workspace. */
     parent: boolean;
   }
@@ -578,7 +586,7 @@ async function launchTask(
     name: `Task · ${name}`.slice(0, 100),
     mode: launch.entryId,
     launch: launch.launch,
-    ...(agent ? { parentSessionId: agent.sessionId } : {}),
+    ...(agent?.kind === 'agent' ? { parentSessionId: agent.sessionId } : {}),
   }).catch(() => ({ ok: false as const, message: 'the session could not be started' }));
   if (agent && started.ok) noteAgentStarted(started.sessionId);
   if (!started.ok) {
@@ -607,7 +615,7 @@ async function launchTask(
         ...(launch.model ? { model: launch.model } : {}),
         ...(body.origin ? { origin: body.origin } : {}),
         task,
-        ...(agent ? { startedBy: agent } : {}),
+        ...(agent ? { startedBy: storedStartedBy(agent, started.sessionId) } : {}),
         createdAt: Date.now(),
         createdBy: ownerFor(req) ?? '@single',
       }),

@@ -9,6 +9,12 @@
 
 import type { CronJob } from '../types/cron.js';
 
+/** The schedule fields of a job: all `computeNextRunAt` reads, so canvas routines reuse it without a whole job. */
+export type CronSchedule = Pick<
+  CronJob,
+  'scheduleType' | 'runAt' | 'intervalMinutes' | 'dailyTime' | 'weeklyDays' | 'weeklyTime' | 'completedOnce'
+>;
+
 /** Parse an 'HH:MM' (24-hour) string into hours/minutes, or null if invalid. */
 export function parseHHMM(value: string | undefined): { hours: number; minutes: number } | null {
   if (!value) return null;
@@ -38,7 +44,7 @@ function atLocalTime(base: number, hours: number, minutes: number, dayOffset: nu
  * For `once`, returns the absolute `runAt` (even if already in the past, so a
  * missed one-time job still fires once) until it has `completedOnce`.
  */
-export function computeNextRunAt(job: CronJob, after: number): number | null {
+export function computeNextRunAt(job: CronSchedule, after: number): number | null {
   switch (job.scheduleType) {
     case 'once': {
       if (job.completedOnce) return null;

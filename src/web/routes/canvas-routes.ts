@@ -46,6 +46,7 @@ import { registerTaskRoutes, taskTool } from './canvas-task-routes.js';
 import { registerShellRoutes, sessionCounts } from './canvas-shell-routes.js';
 import { registerReviewRoutes } from './canvas-review-routes.js';
 import { registerWorkRoutes, workTool } from './canvas-work-routes.js';
+import { registerRoutineRoutes, routineTool } from './canvas-routine-routes.js';
 import { ConversationToolSchema } from '../../canvas/conversation-schema.js';
 import { LRUMap } from '../../utils/lru-map.js';
 import { canvasFailure, caseFolderUnavailable } from './canvas-failure.js';
@@ -325,12 +326,20 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
         const workspace = readWorkspaces().find((w) => w.id === workspaceId);
         if (!workspace || !canAccessOwned(getAuthUser(req), workspace.owner))
           return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
+        // A routine principal acts on its own canvas only, and only through the background-task routes.
+        const routine = req.internalPrincipal?.routine;
+        if (routine) {
+          if (routine.workspaceId !== workspaceId || !/^\/api\/canvas\/[^/]+\/tasks(\/|\?|$)/.test(req.url))
+            return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'Workspace not found'));
+          req.canvasRoutine = routine;
+        }
       });
       registerConversationRoutes(workspaceScope, ctx);
       registerTaskRoutes(workspaceScope, ctx);
       registerShellRoutes(workspaceScope, ctx);
       registerReviewRoutes(workspaceScope, ctx);
       registerWorkRoutes(workspaceScope, ctx);
+      registerRoutineRoutes(workspaceScope, ctx);
       registerPrototypeRoutes(workspaceScope, ctx, { views, callerKey, retireFrames, requestIdentity });
       workspaceScope.put<{ Params: { workspaceId: string; viewId: string } }>(
         '/api/canvas/:workspaceId/views/:viewId',
@@ -504,6 +513,11 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             }
             case 'canvas_work': {
               const outcome = await workTool(ctx, req, req.params.workspaceId, toolSchemas.canvas_work.parse(args));
+              return reply.code(outcome.code).send(outcome.body);
+            }
+            case 'canvas_routine': {
+              const input = toolSchemas.canvas_routine.parse(args);
+              const outcome = await routineTool(ctx, req, req.params.workspaceId, input);
               return reply.code(outcome.code).send(outcome.body);
             }
             case 'canvas_view':
