@@ -5,6 +5,8 @@ export type MediaContext = {
   assetUrl: (assetId: string) => string | null;
   /** The note on an embed's card where no live frame will ever replace it (the screenshot page). */
   embedNote?: string;
+  /** Paints a stored prototype's card where no live frame runs (a phone). False leaves the ordinary card. */
+  prototypeCard?: (card: HTMLElement, o: ViewObject) => boolean;
 };
 /** Decoded pixels above this are not drawn; the object keeps its place with a note. */
 export const MAX_IMAGE_PIXELS = 64_000_000;

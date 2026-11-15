@@ -129,6 +129,8 @@ export class DesktopEditor {
       focusMode: (keyboard: boolean) => void;
       display: (objects: ViewObject[]) => void;
       assetUrl: (assetId: string) => string | null;
+      /** A stored prototype's phone card, painted where no live frame runs. */
+      prototypeCard?: (card: HTMLElement, o: ViewObject) => boolean;
     }
   ) {
     const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -238,6 +240,7 @@ export class DesktopEditor {
         }
       },
       assetUrl: options.assetUrl,
+      prototypeCard: options.prototypeCard,
     });
     btn('addTool').onclick = () => {
       if (!this.available()) return;

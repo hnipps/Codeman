@@ -25,6 +25,23 @@ export function parseAnchors(payload: unknown): Map<string, ElementRef> | null {
   return anchors;
 }
 
+const VersionsSchema = z
+  .object({
+    success: z.literal(true),
+    data: z.object({ versions: z.record(z.string(), z.unknown()).optional() }).passthrough(),
+  })
+  .passthrough();
+/** The version of a stored prototype each comment was made on, from the same answer. A release without it gives none. */
+export function parseVersions(payload: unknown): Map<string, number> {
+  const answer = VersionsSchema.safeParse(payload);
+  const versions = new Map<string, number>();
+  if (!answer.success) return versions;
+  for (const [commentId, value] of Object.entries(answer.data.data.versions ?? {}))
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 1_000_000)
+      versions.set(commentId, value);
+  return versions;
+}
+
 export const sameElement = (a: ElementRef | null | undefined, b: ElementRef | null | undefined): boolean =>
   (!a && !b) || (!!a && !!b && a.objectId === b.objectId && a.selector === b.selector);
 

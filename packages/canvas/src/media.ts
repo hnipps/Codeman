@@ -40,6 +40,7 @@ import {
   parseFrameMessage,
   toScreenRect,
   type FrameBox,
+  type LocateHint,
 } from './frame-messages.js';
 
 export const MAX_LIVE_FRAMES = 6;
@@ -85,6 +86,8 @@ export type MediaHost = {
   internalPaste: () => void;
   hasInternalClipboard: () => boolean;
   assetUrl: (assetId: string) => string | null;
+  /** A stored prototype's phone card (`PrototypeCards.paint`). */
+  prototypeCard?: (card: HTMLElement, o: ViewObject) => boolean;
 };
 
 /** Something a person can do with an element they picked; the popover lists these in the order they were added. */
@@ -101,6 +104,21 @@ export type FrameHooks = {
   openPage?: (objectId: string, slot: PageSlot, opener: HTMLElement) => void;
   /** The frames of the page slots. They are mounted elsewhere and heard here, through the one receiver. */
   slots?: SlotFrameRegistry;
+  /** The phone's full-screen review of one prototype: its frame takes the board's place while it is open. */
+  review?: ReviewFrame;
+};
+/**
+ * The one frame of a prototype review. While it is open it is the only live frame: pick, locate and the pins
+ * talk to it, and it is heard for everything a board frame is heard for but the lasso.
+ */
+export type ReviewFrame = {
+  /** The embed under review, or null when the review is closed. */
+  objectId(): string | null;
+  frame(): HTMLIFrameElement | null;
+  /** Where the frame's viewport sits on screen and how far it is scaled. */
+  box(): FrameBox | null;
+  /** The frame's bridge spoke, or a page in it pressed Escape. */
+  heard(frame: HTMLIFrameElement, type: 'ready' | 'escape'): void;
 };
 /**
  * What the one message receiver needs from the page slots. A slot frame is heard for two things only, that
@@ -187,7 +205,8 @@ export class MediaEditor {
           moved: false,
         };
         if (this.offered && !target?.closest('#elementPopover')) this.closeOffer(false);
-        if (this.picking && !target?.closest('.embed-stage.picking, [data-media-action="pick"]')) this.endPick(null);
+        if (this.picking && !target?.closest('.embed-stage.picking, [data-media-action="pick"], [data-review-pick]'))
+          this.endPick(null);
         if (target?.closest('#board [data-media-action]')) e.stopPropagation();
         else if (this.interacting && !target?.closest('.embed-stage.interacting')) this.endInteraction(false);
       },
@@ -661,7 +680,7 @@ export class MediaEditor {
     stage.dataset.note = 'Paused';
     stage.classList.remove('live', 'interacting', 'picking', 'shielded');
     if (object && this.interacting === object.id) this.interacting = null;
-    if (object) paintEmbed(body, object, { assetUrl: this.host.assetUrl });
+    if (object) paintEmbed(body, object, { assetUrl: this.host.assetUrl, prototypeCard: this.host.prototypeCard });
   }
   private mount(body: HTMLElement, stage: HTMLElement, object: ViewObject, url: string): void {
     const current = stage.querySelector<HTMLIFrameElement>(':scope > iframe');
@@ -669,7 +688,7 @@ export class MediaEditor {
     const note = (words: string): void => {
       if (stage.dataset.note === words) return;
       stage.dataset.note = words;
-      paintEmbed(body, object, { assetUrl: this.host.assetUrl });
+      paintEmbed(body, object, { assetUrl: this.host.assetUrl, prototypeCard: this.host.prototypeCard });
     };
     // Two frames in a row never spoke: the page stays unavailable until Reload asks again.
     if (this.loader.unavailable(object.id, url)) return note('Unavailable');
@@ -748,6 +767,10 @@ export class MediaEditor {
     const frame = [...document.querySelectorAll<HTMLIFrameElement>('.embed-stage > iframe')].find(
       (candidate) => candidate.contentWindow === e.source
     );
+    const review = this.hooks.review;
+    const reviewing = review?.objectId();
+    if (!frame && reviewing && review?.frame()?.contentWindow === e.source)
+      return this.heard(review.frame()!, reviewing, e.data);
     if (!frame) {
       // A page slot's frame goes through the same parser and is heard for less: no pick, no lasso, no reply.
       const slot = this.hooks.slots?.find(e.source);
@@ -756,9 +779,20 @@ export class MediaEditor {
       if (slot && (said?.type === 'ready' || said?.type === 'escape')) this.hooks.slots?.heard(slot.frame, said.type);
       return;
     }
-    const objectId = frame?.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
-    const message = frame && objectId ? parseFrameMessage(e.data, objectId) : null;
-    if (!frame || !objectId || !message) return;
+    const objectId = frame.closest<HTMLElement>('[data-object-id]')?.dataset.objectId;
+    if (objectId) this.heard(frame, objectId, e.data);
+  }
+  /** One message from a frame this editor knows, on the board or in the review. */
+  private heard(frame: HTMLIFrameElement, objectId: string, data: unknown): void {
+    const message = parseFrameMessage(data, objectId);
+    if (!message) return;
+    const reviewed = frame === this.hooks.review?.frame();
+    if (reviewed && message.type === 'ready') this.hooks.review?.heard(frame, 'ready');
+    if (reviewed && message.type === 'escape') {
+      if (this.picking?.id === objectId) this.endPick(null);
+      else this.hooks.review?.heard(frame, 'escape');
+      return;
+    }
     switch (message.type) {
       case 'ready':
         this.bridged.add(frame);
@@ -816,8 +850,19 @@ export class MediaEditor {
   connect(hooks: FrameHooks): void {
     this.hooks = { ...this.hooks, ...hooks };
   }
-  private liveFrame(id: string): HTMLIFrameElement | null {
+  /**
+   * The live frame showing this embed here: the review's while one is open (and nothing else then), else the
+   * board's, and none on a phone.
+   */
+  liveFrame(id: string): HTMLIFrameElement | null {
+    const review = this.hooks.review;
+    if (review?.objectId()) return review.objectId() === id ? review.frame() : null;
     return this.host.mobile.matches ? null : this.frameOf(id);
+  }
+  /** A frame of this embed, live or not: the review's or the board's. */
+  private anyFrame(id: string): HTMLIFrameElement | null {
+    const review = this.hooks.review;
+    return (review?.objectId() === id ? review.frame() : null) ?? this.frameOf(id);
   }
   private send(frame: HTMLIFrameElement, message: Record<string, unknown>): void {
     // The frame's origin is opaque, so no target origin can name it; the bridge checks that its parent sent this.
@@ -825,6 +870,11 @@ export class MediaEditor {
   }
   /** Where each live, unrotated frame sits on screen, front-most first. */
   frameBoxes(): FrameBox[] {
+    const review = this.hooks.review;
+    if (review?.objectId()) {
+      const box = review.box();
+      return box ? [box] : [];
+    }
     if (this.host.mobile.matches) return [];
     const byId = new Map(this.host.objects().map((o) => [o.id, o]));
     const boxes: FrameBox[] = [];
@@ -852,11 +902,16 @@ export class MediaEditor {
     return box ? clipToFrame(box, toScreenRect(box, rect)) : null;
   }
   /** Where the frame finds each selector now, in its own pixels. Null when the frame is not live or does not answer. */
-  locate(objectId: string, selectors: string[]): Promise<(Rect | null)[] | null> {
+  locate(objectId: string, selectors: string[], hints?: LocateHint[]): Promise<(Rect | null)[] | null> {
     const frame = this.liveFrame(objectId);
     if (!frame) return Promise.resolve(null);
     return this.rectReplies.ask(frame, (requestId) =>
-      this.send(frame, { type: 'codeman:locate', requestId, selectors: selectors.slice(0, MAX_LOCATE_SELECTORS) })
+      this.send(frame, {
+        type: 'codeman:locate',
+        requestId,
+        selectors: selectors.slice(0, MAX_LOCATE_SELECTORS),
+        ...(hints ? { hints: hints.slice(0, MAX_LOCATE_SELECTORS) } : {}),
+      })
     );
   }
   /** Elements whose centres fall inside a loop drawn on screen. Null when the frame is not live or does not answer. */
@@ -919,7 +974,7 @@ export class MediaEditor {
     const picking = this.picking;
     if (!picking) return;
     this.picking = null;
-    const frame = this.frameOf(picking.id);
+    const frame = this.anyFrame(picking.id);
     frame?.parentElement?.classList.remove('picking');
     if (frame) this.send(frame, { type: 'codeman:pick-stop' });
     this.paintPick();
@@ -936,7 +991,8 @@ export class MediaEditor {
   /** Picking and its popover belong to one selected, live frame at one camera position. */
   private syncPick(): void {
     const view = this.host.view();
-    const only = view.selected.length === 1 ? view.selected[0] : null;
+    // The review is about one embed whatever the board has selected.
+    const only = this.hooks.review?.objectId() ?? (view.selected.length === 1 ? view.selected[0] : null);
     if (this.picking && (only !== this.picking.id || !this.liveFrame(this.picking.id))) this.endPick(null);
     if (this.picking) this.paintPick();
     const offered = this.offered;

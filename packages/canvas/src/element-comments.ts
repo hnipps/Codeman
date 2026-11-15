@@ -18,12 +18,20 @@ import {
   AnchorStore,
   groupOf,
   parseAnchors,
+  parseVersions,
   pinGroups,
   pinPoint,
   Relocator,
   type PinGroup,
 } from './element-anchors.js';
-import { clipToFrame, MAX_LOCATE_SELECTORS, toScreenRect, type FrameBox } from './frame-messages.js';
+import {
+  clipToFrame,
+  locateHint,
+  MAX_LOCATE_SELECTORS,
+  toScreenRect,
+  type FrameBox,
+  type LocateHint,
+} from './frame-messages.js';
 import type { Rect } from './viewport.js';
 
 /** Whether the live page still has an element: `unknown` while its frame is paused, loading or silent. */
@@ -42,6 +50,7 @@ const key = (group: Pick<PinGroup, 'objectId' | 'selector'>): string => `${group
 
 export class ElementComments {
   private store = new AnchorStore();
+  private versions = new Map<string, number>();
   private comments: ViewComment[] = [];
   private commentSignature = '';
   private groups = new Map<string, PinGroup[]>();
@@ -59,11 +68,13 @@ export class ElementComments {
       url: (path: string) => string;
       workspace: string;
       media: {
-        locate: (objectId: string, selectors: string[]) => Promise<(Rect | null)[] | null>;
+        locate: (objectId: string, selectors: string[], hints?: LocateHint[]) => Promise<(Rect | null)[] | null>;
         frameBoxes: () => FrameBox[];
+        /** The live frame of this embed here: the board's, or the review's while one is open. */
+        liveFrame: (objectId: string) => HTMLIFrameElement | null;
         onFrameChange: (listener: (objectId: string) => void) => () => void;
       };
-      /** A phone holds no live frame: no pins there. */
+      /** No live frame here (a phone outside a review): no pins. */
       phone: () => boolean;
       /** A pin was used: open that embed's thread at this comment. */
       open: (objectId: string, commentId: string) => void;
@@ -103,6 +114,11 @@ export class ElementComments {
           : 'missing'
         : 'unknown';
     return { element, number: group.number, state };
+  }
+
+  /** The version of a stored prototype this comment was made on, when the server recorded one. */
+  versionOf(commentId: string): number | null {
+    return this.versions.get(commentId) ?? null;
   }
 
   /** Whether an element can be picked in this embed here and now: its page is live, upright and has answered. */
@@ -148,9 +164,11 @@ export class ElementComments {
     this.reading = true;
     try {
       const response = await fetch(this.options.url(`/api/canvas/${this.options.workspace}/comment-anchors`));
-      const anchors = response.ok ? parseAnchors(await response.json()) : null;
+      const payload: unknown = response.ok ? await response.json() : null;
+      const anchors = parseAnchors(payload);
       if (anchors) {
         this.store.replace(anchors);
+        this.versions = parseVersions(payload);
         this.regroup();
       }
     } catch {
@@ -170,17 +188,21 @@ export class ElementComments {
   }
 
   private frameOf(objectId: string): HTMLIFrameElement | null {
-    return document.querySelector<HTMLIFrameElement>(
-      `#layer [data-object-id="${CSS.escape(objectId)}"] .embed-stage.live > iframe`
-    );
+    return this.options.media.liveFrame(objectId);
   }
 
   /** Ask one frame where its commented elements are now. */
   private async relocate(objectId: string): Promise<void> {
     const frame = this.options.phone() ? null : this.frameOf(objectId);
-    const selectors = (this.groups.get(objectId) ?? []).slice(0, MAX_LOCATE_SELECTORS).map((g) => g.selector);
+    const groups = (this.groups.get(objectId) ?? []).slice(0, MAX_LOCATE_SELECTORS);
+    const selectors = groups.map((g) => g.selector);
     if (!frame || !selectors.length) return;
-    const answer = await this.options.media.locate(objectId, selectors);
+    // A selector a later version no longer matches is looked for again by the element's tag and text.
+    const answer = await this.options.media.locate(
+      objectId,
+      selectors,
+      groups.map((g) => locateHint(g.element))
+    );
     // The frame was replaced while it was asked: the next sync asks the new one.
     if (this.frameOf(objectId) !== frame) return;
     const rects = new Map<string, Rect>();

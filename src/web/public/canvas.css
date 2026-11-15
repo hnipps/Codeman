@@ -3818,3 +3818,288 @@ textarea[readonly] {
 .review:focus {
   outline: none;
 }
+
+/* ───── Prototype review on a phone (prototype-review.ts) and a prototype's phone card (prototype-card.ts) ─────
+   The review covers the canvas with one live page under a slim bar. The comment thread opens over it as a
+   bottom sheet and the element pins sit over the page, so both rise above the review while it is open. */
+#protoReview {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas);
+  animation: review-open 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes review-open {
+  from {
+    clip-path: inset(14% 6% 24% 6% round 12px);
+    opacity: 0.4;
+  }
+  to {
+    clip-path: inset(0 round 0);
+    opacity: 1;
+  }
+}
+.proto-review-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) 6px
+    max(6px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--divider);
+  background: var(--panel);
+}
+.proto-review-bar button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.proto-review-bar button:hover {
+  background: var(--raised);
+}
+.proto-review-bar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: transparent;
+}
+#protoReviewReload {
+  color: var(--secondary);
+}
+#protoReviewPick {
+  padding: 6px 10px;
+  font-size: 14px;
+}
+#protoReviewPick[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--raised);
+}
+.proto-review-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--secondary);
+}
+.proto-review-count:empty {
+  display: none;
+}
+.proto-review-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 4px;
+  line-height: 1.25;
+}
+#protoReviewTitle {
+  margin: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#protoReviewMeta {
+  font-size: 12px;
+  color: var(--secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The pick hint lies over this row, so the page under it never moves when Pick starts. */
+.proto-review-sub {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px max(10px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--divider);
+  background: var(--panel);
+}
+.proto-review-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+}
+.proto-review-seg button {
+  min-height: 36px;
+  padding: 2px 14px;
+  color: var(--secondary);
+}
+.proto-review-seg button[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--raised);
+}
+.proto-review-width {
+  font-size: 12px;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+}
+#protoReviewHint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 max(10px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+  background: var(--raised);
+}
+#protoReviewHint span {
+  flex: 1;
+}
+#protoReviewHint button {
+  min-height: 36px;
+  border-color: var(--divider);
+}
+#protoReviewStage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas);
+}
+#protoReviewStage > iframe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 0;
+  background: #fff;
+  transform-origin: 0 0;
+}
+.proto-review-note {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--secondary);
+}
+.proto-review-note p {
+  margin: 0;
+  max-width: 32ch;
+}
+.proto-review-note button {
+  min-height: 44px;
+  border-color: var(--divider);
+}
+#protoReviewNew {
+  position: absolute;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 4px 4px 14px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 6px 20px #0004;
+  white-space: nowrap;
+  animation: rise 160ms ease-out;
+}
+#protoReviewNew button {
+  min-height: 44px;
+  color: var(--accent);
+  font-weight: 600;
+}
+/* Over the review: the pins of the page in it, and the thread as a sheet that leaves the page in view above it. */
+:root[data-review] #elementPins {
+  display: block !important;
+  z-index: 45;
+}
+:root:has(#protoReviewStage.picking) #elementPins {
+  visibility: hidden;
+}
+:root[data-phone][data-review] #rail {
+  top: auto;
+  bottom: var(--keyboard-inset, 0px);
+  height: min(70dvh, calc(100dvh - var(--keyboard-inset, 0px) - 56px));
+  z-index: 47;
+  border-top: 1px solid var(--divider);
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 -8px 24px #0004;
+  animation: rise 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+:root[data-phone][data-review] #rail .rail-body {
+  height: calc(100% - 69px);
+}
+@media (prefers-reduced-motion: reduce) {
+  #protoReview,
+  #protoReviewNew,
+  :root[data-phone][data-review] #rail {
+    animation: none;
+  }
+}
+.proto-card {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+.proto-pic {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  object-fit: cover;
+  object-position: top;
+  background: var(--raised);
+}
+.proto-card.offline .proto-pic {
+  filter: grayscale(1) opacity(0.7);
+}
+.proto-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(6 * var(--media-px)) calc(10 * var(--media-px));
+  border-top: 1px solid var(--divider);
+  font-size: calc(12 * var(--media-px));
+  color: var(--secondary);
+}
+.proto-foot span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proto-foot button {
+  min-height: 32px;
+  border-color: var(--divider);
+}
+.comment-version {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.comment-crop {
+  margin: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.comment-crop img {
+  display: block;
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  object-position: left top;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  opacity: 0.9;
+}
+.comment-crop figcaption {
+  font-size: 12px;
+  color: var(--muted);
+}
+/* ───── end of prototype review ───── */

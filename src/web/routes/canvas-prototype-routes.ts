@@ -13,6 +13,10 @@
  *   publish. Copies the files server side; nothing is fetched.
  * - `POST   /api/canvas/:workspaceId/prototypes/:id/check` — a picture of one version alone in the
  *   headless browser, with its console errors.
+ * - `GET    /api/canvas/:workspaceId/prototypes/:id/versions/:version/picture` — a phone-width picture of one
+ *   stored version (the phone card), drawn once by the check browser and then served from disk.
+ * - `GET    /api/canvas/:workspaceId/comments/:commentId/crop` — where a comment's element was in the version
+ *   the comment was made on, for a thread whose element the shown version no longer has.
  * - `GET    /canvas-prototype/:cap/*` (capability) — the files of exactly one version, sandboxed.
  *
  * ⚠️ `/canvas-prototype/` is the ONLY path that serves a prototype's files to a browser, and it serves
@@ -31,7 +35,17 @@ import {
   PROTOTYPE_PUBLISHES_PER_MINUTE,
 } from '../../config/canvas-limits.js';
 import { deployRole } from '../../deploy-role.js';
-import { checkPrototype, screenshotFailure } from '../../canvas/canvas-screenshot.js';
+import { checkPrototype, screenshotFailure, type CheckFocus } from '../../canvas/canvas-screenshot.js';
+import { readCommentAnchors } from '../../canvas/comment-anchors.js';
+import { readCommentVersions } from '../../canvas/comment-versions.js';
+import {
+  PHONE_PICTURE,
+  cropPicturePath,
+  cropViewport,
+  keepPicture,
+  readPicture,
+  versionPicturePath,
+} from '../../canvas/prototype-pictures.js';
 import type { CanvasStore } from '../../canvas/canvas-store.js';
 import { injectFrameBridge } from '../../canvas/frame-bridge.js';
 import { IdSchema, PositionSchema, SizeSchema, type Author, type CanvasState } from '../../canvas/model.js';
@@ -121,6 +135,12 @@ const CheckSchema = z
     theme: z.enum(['dark', 'light']).default('dark'),
   })
   .strict();
+
+const PictureQuerySchema = z.object({ theme: z.enum(['dark', 'light']).default('dark') }).passthrough();
+/** Pictures drawn per minute per caller and workspace; one already kept is served without counting. */
+const PICTURES_PER_MINUTE = 20;
+/** One drawing of one picture at a time: a second request for it waits for the first. */
+const drawing = new Map<string, Promise<Buffer | null>>();
 
 const refusalStatus = (error: PrototypeRefusedError): number =>
   error.reason === 'size' || error.reason === 'count' || error.reason === 'quota'
@@ -435,6 +455,124 @@ export function registerPrototypeRoutes(scope: FastifyInstance, ctx: CanvasPort,
         });
       prototypeFrames.retire((frame) => frame.workspaceId === workspaceId && frame.prototypeId === id);
       return { success: true, data: { removed: id } };
+    }
+  );
+
+  /**
+   * A kept picture, or one drawn now and kept. Null when the page drew nothing to keep (a crop whose element is
+   * not in that version). `null` from `draw` is not kept, so a later request tries again.
+   */
+  const picture = async (
+    req: FastifyRequest,
+    reply: FastifyReply,
+    path: string,
+    draw: (signal: AbortSignal) => Promise<Buffer | null>
+  ): Promise<Buffer | null | 'answered'> => {
+    const kept = await readPicture(path);
+    if (kept) return kept;
+    const running = drawing.get(path);
+    if (running) return running;
+    if (await limited(req, reply, 'picture', PICTURES_PER_MINUTE)) return 'answered';
+    const hangup = abortOnClientHangUp(reply);
+    const job = draw(hangup.signal).then(async (png) => {
+      if (png) await keepPicture(path, png).catch(() => undefined);
+      return png;
+    });
+    drawing.set(path, job);
+    try {
+      return await job;
+    } catch (error) {
+      if (hangup.signal.aborted || reply.sent) return 'answered';
+      const failure = screenshotFailure(error);
+      if (failure.status >= 500) await canvasFailure(req, reply, failure.status, error, failure.message);
+      else await reply.code(failure.status).send(createErrorResponse(ApiErrorCode.OPERATION_FAILED, failure.message));
+      return 'answered';
+    } finally {
+      drawing.delete(path);
+    }
+  };
+  const sendPicture = (reply: FastifyReply, png: Buffer, cache: string) =>
+    reply
+      .header('Content-Type', 'image/png')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Cache-Control', cache)
+      .send(png);
+
+  scope.get<{ Params: { workspaceId: string; id: string; version: string }; Querystring: unknown }>(
+    '/api/canvas/:workspaceId/prototypes/:id/versions/:version/picture',
+    async (req, reply) => {
+      const { workspaceId, id } = req.params;
+      const { theme } = PictureQuerySchema.parse(req.query ?? {});
+      const number = /^[1-9][0-9]{0,6}$/.test(req.params.version) ? Number(req.params.version) : NaN;
+      const meta = await readPrototype(workspaceId, id);
+      const version = meta?.versions.find((v) => v.version === number);
+      const path = version ? versionPicturePath(workspaceId, id, version.version, theme) : null;
+      if (!meta || !version || !path)
+        return reply
+          .code(404)
+          .send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'That version of the prototype is not stored here'));
+      const png = await picture(req, reply, path, async (signal) => {
+        const { png } = await checkPrototype(
+          {
+            entry: version.entry,
+            ...PHONE_PICTURE,
+            theme,
+            read: (file) => readPrototypeFile(workspaceId, id, version.version, file),
+          },
+          { signal }
+        );
+        return png;
+      });
+      if (png === 'answered') return reply;
+      if (!png) return reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, 'No picture'));
+      // A version never changes, and the theme is part of the address.
+      return sendPicture(reply, png, 'private, max-age=31536000, immutable');
+    }
+  );
+
+  scope.get<{ Params: { workspaceId: string; commentId: string }; Querystring: unknown }>(
+    '/api/canvas/:workspaceId/comments/:commentId/crop',
+    async (req, reply) => {
+      const { workspaceId, commentId } = req.params;
+      const { theme } = PictureQuerySchema.parse(req.query ?? {});
+      const none = (message: string) => reply.code(404).send(createErrorResponse(ApiErrorCode.NOT_FOUND, message));
+      if (!IdSchema.safeParse(commentId).success) return none('No such comment');
+      const state = (await ctx.canvasStores()).get(workspaceId).read();
+      const comment = state.comments.find((c) => c.id === commentId);
+      const element = comment ? readCommentAnchors(workspaceId, state)[commentId] : undefined;
+      const version = comment ? readCommentVersions(workspaceId, state)[commentId] : undefined;
+      const object = comment ? state.objects[comment.objectId] : undefined;
+      const url = object && typeof object.content.url === 'string' ? object.content.url : '';
+      const address = parsePrototypeAddress(url);
+      if (!comment || !element || !version || !address)
+        return none('That comment is not about an element of a stored prototype');
+      const meta = await readPrototype(workspaceId, address.id);
+      const stored = meta?.versions.find((v) => v.version === version);
+      const path = stored ? cropPicturePath(workspaceId, address.id, commentId, version, theme) : null;
+      if (!stored || !path) return none(`Version ${version} is no longer stored`);
+      const focus: CheckFocus = {
+        selector: element.selector,
+        tag: element.tag,
+        text: element.text,
+        x: element.rect.x,
+        y: element.rect.y,
+      };
+      const png = await picture(req, reply, path, async (signal) => {
+        const check = await checkPrototype(
+          {
+            entry: stored.entry,
+            ...cropViewport(element.rect),
+            theme,
+            focus,
+            read: (file) => readPrototypeFile(workspaceId, address.id, version, file),
+          },
+          { signal }
+        );
+        return check.focus ? check.png : null;
+      });
+      if (png === 'answered') return reply;
+      if (!png) return none(`The element is not in version ${version} either`);
+      return sendPicture(reply, png, 'private, max-age=86400');
     }
   );
 

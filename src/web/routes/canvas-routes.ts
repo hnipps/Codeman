@@ -30,6 +30,7 @@ import { readTree, searchObjects, queryObjects, cycleDiagnostics, boundedCanvasD
 import { CommentSchema, IdSchema, descendants, type Author } from '../../canvas/model.js';
 import { liveEmbed } from '../../canvas/context-resolve.js';
 import { readCommentAnchors, setCommentAnchor } from '../../canvas/comment-anchors.js';
+import { readCommentVersions, stampCommentVersion } from '../../canvas/comment-versions.js';
 import type { ElementRef } from '../../canvas/element-ref.js';
 import { renderContainer, screenshotFailure } from '../../canvas/canvas-screenshot.js';
 import { SseEvent } from '../sse-events.js';
@@ -427,6 +428,12 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
                 !readCommentAnchors(req.params.workspaceId, state)[commentId]
               )
                 setCommentAnchor(req.params.workspaceId, state, commentId, element);
+              if (commentId && !readCommentVersions(req.params.workspaceId, state)[commentId])
+                try {
+                  stampCommentVersion(req.params.workspaceId, state, commentId);
+                } catch {
+                  // The comment is written; one with no version is shown without "on v<n>".
+                }
             }
             return {
               success: true,
@@ -672,6 +679,12 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
             } catch {
               // The comment is written; one without its anchor is still a comment, and the answer says so.
             }
+          if (anchor && result.operations.length)
+            try {
+              stampCommentVersion(req.params.workspaceId, store.read(), anchor.commentId);
+            } catch {
+              // The comment is written; one with no version is shown without "on v<n>".
+            }
           if (result.operations.length) {
             retireFrames(req.params.workspaceId, result.operations);
             const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
@@ -711,7 +724,13 @@ export function registerCanvasRoutes(app: FastifyInstance, ctx: CanvasPort, view
         '/api/canvas/:workspaceId/comment-anchors',
         async (req) => {
           const state = (await ctx.canvasStores()).get(req.params.workspaceId).read();
-          return { success: true, data: { anchors: readCommentAnchors(req.params.workspaceId, state) } };
+          return {
+            success: true,
+            data: {
+              anchors: readCommentAnchors(req.params.workspaceId, state),
+              versions: readCommentVersions(req.params.workspaceId, state),
+            },
+          };
         }
       );
       workspaceScope.post<{ Params: { workspaceId: string } }>(

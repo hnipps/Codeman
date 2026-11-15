@@ -14,6 +14,11 @@
  * `codeman:frame-rects-changed` (on a scroll or resize, and on a DOM change that moves, adds or removes an element
  * the canvas located). Parent to frame: `codeman:pick-start`, `codeman:pick-stop`,
  * `codeman:query-polygon`, `codeman:locate`.
+ *
+ * `codeman:locate` may carry `hints` beside its selectors, one per selector: the tag, text and pick-time position
+ * of the element. A selector that finds nothing is then looked for again by tag and text (or by tag and position
+ * when the element had no text), nearest where it was, so a comment follows its element into a version that
+ * renamed a class or moved it in the tree.
  */
 import { MAX_ELEMENT_REFS } from './element-ref.js';
 
@@ -425,6 +430,37 @@ export function frameBridge(limits: FrameLimits): void {
     }
     return elements;
   };
+  /**
+   * An element whose selector no longer finds it, looked for by what it was: the same tag and the same text,
+   * else (an element with no text) the same tag within a few pixels of where it was. The nearest one wins.
+   * Light DOM only, and never more than `maxScan` elements.
+   */
+  const words = (value: string): string => value.replace(/\s+/g, ' ').trim();
+  const refind = (hint: unknown): Dom => {
+    if (!hint || typeof hint !== 'object') return null;
+    const h = hint as { tag?: unknown; text?: unknown; x?: unknown; y?: unknown };
+    const tag = typeof h.tag === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(h.tag) ? h.tag : null;
+    if (!tag) return null;
+    const text = words(clip(h.text, limits.text));
+    const x = typeof h.x === 'number' && Number.isFinite(h.x) ? h.x : 0;
+    const y = typeof h.y === 'number' && Number.isFinite(h.y) ? h.y : 0;
+    let best: Dom = null;
+    let nearest = Infinity;
+    let scanned = 0;
+    for (const el of Array.from<Dom>(document.querySelectorAll(tag))) {
+      if (++scanned > limits.maxScan) break;
+      if (mine(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) continue;
+      const distance = Math.abs(r.left - x) + Math.abs(r.top - y);
+      if (text ? words(textOf(el)) !== text : distance > 24) continue;
+      if (distance < nearest) {
+        best = el;
+        nearest = distance;
+      }
+    }
+    return best;
+  };
   // ───────────── telling the canvas that rectangles it holds are stale ─────────────
   // Every selector the canvas located lately, with where it was: a change of the DOM is reported only when
   // one of them moved, appeared or went away, so a page that re-renders all the time says nothing new.
@@ -511,8 +547,9 @@ export function frameBridge(limits: FrameLimits): void {
         if (!requestId || !Array.isArray(data.selectors) || data.selectors.length > limits.maxSelectors) break;
         watching = true;
         observe();
-        const rects = data.selectors.map((selector) => {
-          const el = resolve(selector);
+        const hints = Array.isArray((data as { hints?: unknown }).hints) ? (data as { hints: unknown[] }).hints : [];
+        const rects = data.selectors.map((selector, index) => {
+          const el = resolve(selector) ?? refind(hints[index]);
           if (typeof selector === 'string' && selector && selector.length <= limits.selector) track(selector);
           return el && el.isConnected ? boxOf(el) : null;
         });

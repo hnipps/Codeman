@@ -908,6 +908,83 @@ export interface PrototypeCheck {
   /** Requests the page made that got no answer: a file the version does not hold, or any outside address. */
   failedRequests: string[];
   dialogs: string[];
+  /** With `focus`: where the element was found, in page pixels of the picture, or null when it was not. */
+  focus?: { x: number; y: number; width: number; height: number } | null;
+}
+
+/** An element to show in a check's picture: found by selector, else by tag and text (or position), as the frame bridge does. */
+export type CheckFocus = { selector: string; tag: string; text: string; x: number; y: number };
+/** The room left around a focused element, the narrowest and the tallest crop of one. */
+export const FOCUS_MARGIN = 48;
+export const FOCUS_MIN_WIDTH = 390;
+export const FOCUS_MAX_HEIGHT = 480;
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * Runs in the check page (serialized with `toString`, so self-contained): finds the element, scrolls it to the
+ * middle, draws an outline round it and answers its box in viewport pixels, or null. Light DOM, at most 5000
+ * elements of the tag. The page is a throwaway render, so the outline changes nothing anyone keeps.
+ */
+export function focusElement(focus: CheckFocus): { x: number; y: number; width: number; height: number } | null {
+  const document: any = (globalThis as any).document;
+  const words = (value: unknown): string => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '');
+  let el: any = null;
+  try {
+    let scope: any = document;
+    for (const part of focus.selector.split(' >>> ')) {
+      el = scope?.querySelector(part) ?? null;
+      scope = el?.shadowRoot ?? null;
+      if (!el) break;
+    }
+  } catch {
+    el = null;
+  }
+  if (!el && /^[a-z][a-z0-9-]{0,63}$/.test(focus.tag)) {
+    const text = words(focus.text).slice(0, 2000);
+    let nearest = Infinity;
+    let scanned = 0;
+    for (const candidate of Array.from<any>(document.querySelectorAll(focus.tag))) {
+      if (++scanned > 5000) break;
+      const r = candidate.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) continue;
+      const distance = Math.abs(r.left - focus.x) + Math.abs(r.top - focus.y);
+      const shown = words(candidate.innerText ?? candidate.textContent ?? '').slice(0, 2000);
+      if (text ? shown !== text : distance > 24) continue;
+      if (distance < nearest) {
+        el = candidate;
+        nearest = distance;
+      }
+    }
+  }
+  if (!el) return null;
+  el.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+  const r = el.getBoundingClientRect();
+  if (!(r.width > 0 || r.height > 0)) return null;
+  const mark = document.createElement('div');
+  mark.style.cssText = `all:initial;position:fixed;left:${r.left - 4}px;top:${r.top - 4}px;width:${r.width + 8}px;height:${r.height + 8}px;box-sizing:border-box;border:2px solid #f58a45;border-radius:4px;z-index:2147483647;pointer-events:none;`;
+  document.documentElement.append(mark);
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/**
+ * The part of a `width` × `height` picture that shows `box` with what is round it: at least a phone's width
+ * (`FOCUS_MIN_WIDTH`) centred on the element, `FOCUS_MARGIN` above and below, no taller than `FOCUS_MAX_HEIGHT`,
+ * and never outside the picture.
+ */
+export function focusClip(
+  box: { x: number; y: number; width: number; height: number },
+  width: number,
+  height: number
+): { x: number; y: number; width: number; height: number } {
+  const span = (start: number, size: number, want: number, limit: number): [number, number] => {
+    const length = Math.min(limit, Math.ceil(want));
+    const from = Math.round(start + size / 2 - length / 2);
+    return [Math.max(0, Math.min(limit - length, from)), Math.max(1, length)];
+  };
+  const [x, w] = span(box.x, box.width, Math.max(box.width + 2 * FOCUS_MARGIN, FOCUS_MIN_WIDTH), width);
+  const [y, h] = span(box.y, box.height, Math.min(box.height + 2 * FOCUS_MARGIN, FOCUS_MAX_HEIGHT), height);
+  return { x, y, width: w, height: h };
 }
 
 /**
@@ -922,6 +999,8 @@ export async function checkPrototype(
     height: number;
     theme: 'dark' | 'light';
     read: (path: string) => Promise<StoredImage | null>;
+    /** Crop the picture to this element instead of the top of the page. */
+    focus?: CheckFocus;
   },
   options: BrowserJobOptions = {}
 ): Promise<PrototypeCheck> {
@@ -996,10 +1075,23 @@ export async function checkPrototype(
         report.loaded = false;
       }
       await new Promise((resolve) => setTimeout(resolve, CHECK_SETTLE_MS));
-      const png = await page.screenshot({
-        type: 'png',
-        clip: { x: 0, y: 0, width: input.width, height: input.height },
-      });
+      let clip = { x: 0, y: 0, width: input.width, height: input.height };
+      if (input.focus) {
+        const found = await page
+          // `__name` is the helper some TypeScript runners wrap around named functions; the page has none.
+          .evaluate(
+            `(function(){var __name=function(f){return f};return (${focusElement.toString()})(${JSON.stringify(input.focus)})})()`
+          )
+          .catch(() => null);
+        const box = found && typeof found === 'object' ? (found as PrototypeCheck['focus']) : null;
+        report.focus = box ?? null;
+        if (box) {
+          // A scroll the element asked for settles before the picture is taken.
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          clip = focusClip(box, input.width, input.height);
+        }
+      }
+      const png = await page.screenshot({ type: 'png', clip });
       return { ...report, png: Buffer.from(png) };
     }
   );
