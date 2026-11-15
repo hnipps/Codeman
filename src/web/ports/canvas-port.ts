@@ -1,5 +1,7 @@
 /** @fileoverview Lazy opt-in canvas service and notifications. */
 import type { CanvasStores } from '../../canvas/canvas-store.js';
+import type { Routine, RoutineFire } from '../../canvas/routines.js';
+import type { Workspace } from '../../canvas/workspace-registry.js';
 import type { ToolRow } from '../../canvas/transcript-activity.js';
 import type { ReleaseRecord } from '../../canvas/release.js';
 /** What the canvas needs of a live session: identity for scoping, and the one write primitive a prompt uses. */
@@ -33,6 +35,11 @@ export interface CanvasSession {
 }
 export type StartedConversationSession = { ok: true; sessionId: string } | { ok: false; message: string };
 export interface CanvasPort {
+  /**
+   * Run now for one routine (W-44): the runner's start under the routine's own principal, so a person's Run now meets
+   * the same route and bounds as a scheduled run. Undefined when it could not act (not the live colour, owner gone).
+   */
+  runRoutine?(workspace: Workspace, routine: Routine, requestId: string): Promise<RoutineFire | undefined>;
   readonly sessions: ReadonlyMap<string, CanvasSession>;
   canvasEnabled(): Promise<boolean>;
   canvasStores(): Promise<CanvasStores>;
