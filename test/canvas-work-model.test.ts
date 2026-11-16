@@ -62,7 +62,7 @@ describe('work model', () => {
     expect(itemState(row(1, { sessions: ['a'], needs: { question: 'Which?', at: 1 } }), sessions)).toBe('needs');
   });
 
-  it('orders open lanes urgent first and closed lanes newest change first', () => {
+  it('orders open lanes urgent first then oldest first, and closed lanes newest change first', () => {
     const sessions = [session('a', 'needs'), session('b', 'idle')];
     const items = [
       row(1, { updatedAt: 30, sessions: ['b'] }),
@@ -73,6 +73,22 @@ describe('work model', () => {
     ];
     expect(laneItems(items, 'needs-refinement', sessions).map((i) => i.number)).toEqual([2, 1, 3]);
     expect(laneItems(items, 'done', sessions).map((i) => i.number)).toEqual([5, 4]);
+  });
+
+  it('lists a new item last in Backlog and In progress, whatever changed more recently', () => {
+    const a = { createdAt: 1, updatedAt: 50 };
+    const b = { createdAt: 2, updatedAt: 5 };
+    const added = { createdAt: 3, updatedAt: 10 };
+    const items = [
+      row(3, { status: 'backlog', ...added }),
+      row(2, { status: 'backlog', ...b }),
+      row(1, { status: 'backlog', ...a }),
+      row(6, { status: 'in-progress', ...added }),
+      row(5, { status: 'in-progress', ...b }),
+      row(4, { status: 'in-progress', ...a }),
+    ];
+    expect(laneItems(items, 'backlog', []).map((i) => i.number)).toEqual([1, 2, 3]);
+    expect(laneItems(items, 'in-progress', []).map((i) => i.number)).toEqual([4, 5, 6]);
   });
 
   it('orders Ready for work by position, never by urgency, and steps a card one place up or down', () => {
