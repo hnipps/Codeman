@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — The caller writes a review preview request, and the broker is the gate
+
+**Type:** intent-refinement
+**Touches:** `docs/review-instance-address-plan.md`
+**Why:** The plan said only the root-owned supervisor could write a request. The host side was built with the `review` command running as its caller, and Harry approved that.
+**Links:** [docs/review-instance-address-plan.md](review-instance-address-plan.md#how-the-app-asks-for-a-preview)
+
+Any agent in the Codeman VM can now write a request file. It gains nothing over `codeman-deploy review`, which it could already run. The broker checks every request and is the only writer of answers and of the state file.
+
 ## 2026-11-16 — Five supervisor commands for review previews
 
 **Type:** intent-refinement
