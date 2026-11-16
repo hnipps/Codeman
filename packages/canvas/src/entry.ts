@@ -1585,6 +1585,10 @@ const work = new WorkView({
   showTasks: () => {
     if (state.rail.at(-1) !== 'tasks') toggleTasks();
   },
+  askAgent: (text) => {
+    assistant.startConversation(text);
+    openAssistant(true);
+  },
 });
 void work.load();
 const prototypes = new PrototypesView({

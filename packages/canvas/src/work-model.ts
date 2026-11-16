@@ -158,6 +158,11 @@ export function stepStatus(status: WorkStatus, step: -1 | 1): WorkStatus | null 
   return WORK_STATUSES[WORK_STATUSES.indexOf(status) + step] ?? null;
 }
 
+/** The prompt "Ask an agent" puts in a new conversation's composer. The agent reads the description itself. */
+export function askAgentDraft(item: Pick<WorkRow, 'key' | 'title'>): string {
+  return `Work on ${item.key}: ${item.title}. Read it with canvas_work (action read, key ${item.key}), assign it to yourself and follow its acceptance checks.`;
+}
+
 /** The name a session goes by here: its row's name, else the first eight characters of its id. */
 export function sessionLabel(id: string, sessions: readonly ShellSessionRow[]): string {
   return sessions.find((s) => s.id === id)?.name || id.slice(0, 8);
