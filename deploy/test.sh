@@ -72,6 +72,10 @@ tests=(
   test/deploy-colours-auth.test.ts
   test/sse-registry-parity.test.ts
   test/server-index-title.test.ts
+  test/review-page.test.ts
+  test/review-approve.test.ts
+  test/review-captures.test.ts
+  test/canvas-reviews-link.test.ts
 )
 
 # A filter that matches no file makes vitest exit 0, so a renamed test must fail here instead.

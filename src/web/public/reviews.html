@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <base href="/" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Reviews</title>
+    <link rel="stylesheet" href="reviews.css" />
+    <!-- The dashboard's Markdown pipeline for agent text: parser, then the one sanitizer. -->
+    <script defer src="vendor/marked.min.js"></script>
+    <script defer src="vendor/dompurify.min.js"></script>
+    <script defer src="sanitize-html.js"></script>
+    <script defer src="reviews.js"></script>
+  </head>
+  <body>
+    <header class="rv-top">
+      <a class="rv-back" id="rvBack" href="./" aria-label="Back to sessions">‹ Sessions</a>
+      <h1 id="rvTitle">Reviews</h1>
+      <span class="rv-meta" id="rvMeta"></span>
+      <span class="rv-pill" id="rvState" hidden></span>
+      <span class="rv-spacer"></span>
+      <div class="rv-verdict" id="rvVerdict">
+        <button type="button" class="rv-btn" id="rvRequest" hidden>Request changes</button>
+        <button type="button" class="rv-btn rv-btn-go" id="rvApprove" hidden>Approve</button>
+      </div>
+    </header>
+
+    <main class="rv-main" id="rvMain" data-pane="doc">
+      <nav class="rv-queue" id="rvQueue" aria-label="Reviews"></nav>
+
+      <section class="rv-doc" id="rvDoc" aria-label="Walkthrough">
+        <div class="rv-doc-scroll" id="rvDocScroll">
+          <div class="rv-notice" id="rvNotice" hidden></div>
+          <article class="rv-walk" id="rvWalk"></article>
+        </div>
+        <aside class="rv-notes" id="rvNotes" aria-label="Notes">
+          <div class="rv-notes-head">
+            <h2 id="rvNotesTitle">Notes</h2>
+            <button type="button" class="rv-btn rv-btn-sm" id="rvGeneral">Add a general note</button>
+          </div>
+          <form class="rv-composer" id="rvComposer" hidden>
+            <div class="rv-composer-at" id="rvComposerAt"></div>
+            <textarea id="rvComposerText" rows="3" maxlength="4000" aria-label="Note"></textarea>
+            <div class="rv-composer-actions">
+              <button type="button" class="rv-btn rv-btn-sm" id="rvComposerCancel">Cancel</button>
+              <button type="submit" class="rv-btn rv-btn-sm rv-btn-go">Save note</button>
+            </div>
+          </form>
+          <ol class="rv-note-list" id="rvNoteList"></ol>
+        </aside>
+      </section>
+
+      <section class="rv-stage" id="rvStage" aria-label="Preview and changes">
+        <div class="rv-bar">
+          <div class="rv-tabs" role="tablist">
+            <button type="button" role="tab" class="rv-tab" id="rvTabPreview" aria-selected="false">Preview</button>
+            <button type="button" role="tab" class="rv-tab" id="rvTabCaptures" aria-selected="false" hidden>
+              Captures
+            </button>
+            <button type="button" role="tab" class="rv-tab" id="rvTabChanges" aria-selected="true">Changes</button>
+          </div>
+          <span class="rv-bar-note" id="rvBarNote"></span>
+          <div class="rv-seg" id="rvDevice" hidden>
+            <button type="button" data-device="desktop" aria-pressed="true">Desktop</button>
+            <button type="button" data-device="phone" aria-pressed="false">Phone</button>
+          </div>
+          <button type="button" class="rv-btn rv-btn-sm" id="rvPinsToggle" aria-pressed="true" hidden>Notes</button>
+          <button type="button" class="rv-btn rv-btn-sm" id="rvPreviewNote" hidden>Add note</button>
+        </div>
+        <div class="rv-view rv-view-preview" id="rvPreview" hidden></div>
+        <div class="rv-view rv-view-captures" id="rvCaptures" hidden>
+          <div class="rv-still-strip">
+            <div class="rv-still-names" id="rvCaptureList"></div>
+            <button type="button" class="rv-btn rv-btn-sm" id="rvStillSize" aria-pressed="false">Actual size</button>
+          </div>
+          <div class="rv-still" id="rvStill"></div>
+        </div>
+        <div class="rv-view rv-view-changes" id="rvChanges">
+          <div class="rv-files" id="rvFiles"></div>
+          <div class="rv-diff" id="rvDiff"></div>
+        </div>
+      </section>
+    </main>
+
+    <button type="button" class="rv-select-note" id="rvSelectNote" hidden>Add note</button>
+
+    <nav class="rv-panes" id="rvPanes" aria-label="Sections">
+      <button type="button" data-pane="queue">Queue</button>
+      <button type="button" data-pane="doc" aria-current="true">Walkthrough</button>
+      <button type="button" data-pane="notes">Notes</button>
+      <button type="button" data-pane="stage">Changes</button>
+    </nav>
+
+    <dialog class="rv-confirm" id="rvConfirm" aria-labelledby="rvConfirmTitle">
+      <h2 id="rvConfirmTitle"></h2>
+      <div id="rvConfirmBody"></div>
+      <div class="rv-confirm-foot">
+        <button type="button" class="rv-btn" id="rvConfirmCancel">Cancel</button>
+        <button type="button" class="rv-btn rv-btn-go" id="rvConfirmGo"></button>
+      </div>
+    </dialog>
+    <div class="rv-toast" id="rvToast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

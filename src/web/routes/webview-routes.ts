@@ -782,8 +782,10 @@ async function proxyRequest(
     basePath
   );
 
-  // A canvas frame carries the injected frame bridge, which the page's own policy must let run.
-  const csp = upstreamCsp && webview.origin.kind === 'canvas' ? allowFrameBridge(upstreamCsp) : upstreamCsp;
+  // A canvas frame carries the injected frame bridge, which the page's own policy must let run. So does a preview
+  // opened from the Reviews page, whose capability asks for it.
+  const bridged = webview.origin.kind === 'canvas' || webviewCapabilities.resolve(cap)?.bridge === true;
+  const csp = upstreamCsp && bridged ? allowFrameBridge(upstreamCsp) : upstreamCsp;
 
   reply.code(response.status);
   for (const [key, value] of Object.entries(outHeaders)) reply.header(key, value);
@@ -820,7 +822,7 @@ async function proxyRequest(
       html.length <= MAX_WEBVIEW_HTML_REWRITE_BYTES
         ? rewriteHtml(html, cap, basePath, {
             moduleMap: webview.origin.kind === 'session',
-            frameBridge: webview.origin.kind === 'canvas',
+            frameBridge: bridged,
           })
         : html
     );

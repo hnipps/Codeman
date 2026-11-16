@@ -606,6 +606,12 @@ body:has(#outline:not([hidden])) #workView {
   font-size: 12px;
   color: var(--secondary);
 }
+.work-link-review {
+  flex-basis: 100%;
+  padding: 0 4px 6px;
+  font-size: 12px;
+  color: var(--accent);
+}
 .work-unlink {
   min-height: 28px;
   font-size: 12px;

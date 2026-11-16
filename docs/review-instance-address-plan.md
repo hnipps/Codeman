@@ -134,11 +134,22 @@ Building inside the preview VM is deliberate. A build runs the branch's install 
 
 The app never talks to the broker. The supervisor does, the same way it owns deploys:
 
-- `codeman-deploy review start <sha>` exports the commit and hands it to the broker. It prints the preview's hostname.
-- `codeman-deploy review stop <id>` destroys it.
-- `codeman-deploy review status` lists previews, their commits, and whether each is running or asleep.
+| Command | What it does | Prints |
+| --- | --- | --- |
+| `codeman-deploy review create <sha> [--scenario <file>]` | Exports the commit, hands it to the broker, which builds it once and leaves the preview asleep. | `id`, `hostname` |
+| `codeman-deploy review use <id>` | Says a reviewer is looking at this preview now. Wakes it if it is asleep and restarts its idle clock. | its state |
+| `codeman-deploy review release <id>` | Says the reviewer has left. The preview goes to sleep a minute later, unless something uses it first. | its state |
+| `codeman-deploy review destroy <id>` | Deletes the preview's VM and disk. | its state |
+| `codeman-deploy review status [<id>]` | Lists every preview, or one: commit, hostname, state and last use. Changes nothing. | the list |
 
-The Codeman VM is deliberately blocked from opening any connection to the host, and that stays true. The host drives the channel: the supervisor writes each request into a directory in the Codeman VM that only the supervisor can write, and the broker reads requests from it and writes its answers back. The broker accepts only those three requests and treats what it reads as untrusted input. The app user and the agents cannot write a request, and no network rule changes. A preview start does not go through the deploy queue, because nothing is built on the Codeman VM.
+Harry left the command set to the agent on 2026-11-16, asking that each command have one job. The first draft had three (`start`, `stop`, `status`). Two things changed:
+
+- **Two commands were added.** The rule that a preview runs only while its review is in use needs the app to say when a review page opens and when it closes. `use` and `release` are those two messages. Without them a preview could only wake on the first request to its own address and sleep after five idle minutes.
+- **Two commands were renamed.** `start` built a preview and left it asleep, and `stop` deleted it, while a preview also stops and starts every time it sleeps and wakes. `create` and `destroy` say what happens.
+
+Every command prints one line of JSON on standard output and errors on standard error. Exit codes match `codeman-deploy`: 0 done, 1 refused, 2 bad argument, 3 no answer in time. `use`, `release` and `destroy` can be repeated safely: a second call on a preview already in that state succeeds. An `<id>` the broker did not issue is exit 2 before any request is written.
+
+The Codeman VM is deliberately blocked from opening any connection to the host, and that stays true. The host drives the channel: the supervisor writes each request into a directory in the Codeman VM that only the supervisor can write, and the broker reads requests from it and writes its answers back. The broker accepts only those five requests and treats what it reads as untrusted input. The app user and the agents cannot write a request, and no network rule changes. Creating a preview does not go through the deploy queue, because nothing is built on the Codeman VM.
 
 ### The preview's environment
 
@@ -162,7 +173,7 @@ The preview's Codeman has no password. Only the broker can connect to it, so the
 
 Agents run inside a preview, but never against the real service. `<base-image>` carries a stand-in `claude` executable on the `PATH` that draws a scripted session in the terminal and makes no network request. No Claude Code login and no API key exist on a preview VM, so `docs/self-building.md` rule 10 holds there by construction.
 
-The stand-in is separate work with its own design. What it must cover is open: at least start, a prompt, a reply, and the idle state, since those are what Codeman's own features read.
+The stand-in is `deploy/preview/bin/claude`, described in `deploy/preview/README.md`. It covers start, a prompt, a working row, a reply, the idle state, the conversation file and the three hooks Codeman waits on, since those are what Codeman's own features read. It was run inside a throwaway Codeman: a claude session started on it, a prompt sent through the API came back as a `stop` signal and a last answer, and the session then read as idle. Tools, permission dialogs and resuming are not covered.
 
 ### Test data
 

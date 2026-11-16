@@ -29,7 +29,16 @@ export interface WebviewCapabilityRecord {
   /** Username that minted it (multi-user); undefined in single-user mode. */
   owner?: string;
   createdAt: number;
+  /**
+   * The proxy injects the frame bridge into this capability's HTML, so the Reviews page can pick an element in a
+   * preview and follow it. A web tab opened on the dashboard never carries it: the two are separate tokens.
+   */
+  bridge?: boolean;
 }
+
+/** The reverse-index key: a web tab has at most one plain capability and one that carries the bridge. */
+const indexKey = (webviewId: string, bridge: boolean | undefined): string =>
+  bridge ? `${webviewId}\u0000bridge` : webviewId;
 
 export class WebviewCapabilityStore {
   private readonly capabilities: StaleExpirationMap<string, WebviewCapabilityRecord>;
@@ -42,8 +51,7 @@ export class WebviewCapabilityStore {
       ttlMs,
       refreshOnGet: true,
       onExpire: (_token, record) => {
-        const current = this.byWebview.get(record.webviewId);
-        if (current !== undefined) this.byWebview.delete(record.webviewId);
+        this.byWebview.delete(indexKey(record.webviewId, record.bridge));
       },
     });
   }
@@ -58,22 +66,23 @@ export class WebviewCapabilityStore {
   }
 
   /** Mint (or reuse) a capability for a webview. Returns the token. */
-  mint(webviewId: string, owner?: string): string {
-    const existing = this.byWebview.get(webviewId);
+  mint(webviewId: string, owner?: string, { bridge = false }: { bridge?: boolean } = {}): string {
+    const key = indexKey(webviewId, bridge);
+    const existing = this.byWebview.get(key);
     if (existing) {
       const record = this.capabilities.get(existing);
       // Reuse only while the record is live AND still belongs to the same identity.
       if (record && record.owner === owner) return existing;
       this.capabilities.delete(existing);
-      this.byWebview.delete(webviewId);
+      this.byWebview.delete(key);
     }
 
     // Bound growth: a client that never reuses tokens must not grow this forever.
     if (this.capabilities.size >= MAX_WEBVIEW_CAPABILITIES) this.capabilities.cleanup();
 
     const token = randomBytes(24).toString('base64url');
-    this.capabilities.set(token, { webviewId, owner, createdAt: Date.now() });
-    this.byWebview.set(webviewId, token);
+    this.capabilities.set(token, { webviewId, owner, createdAt: Date.now(), ...(bridge ? { bridge: true } : {}) });
+    this.byWebview.set(key, token);
     return token;
   }
 
@@ -85,10 +94,11 @@ export class WebviewCapabilityStore {
 
   /** Revoke every capability for a webview (called on delete/edit). */
   revokeWebview(webviewId: string): void {
-    const token = this.byWebview.get(webviewId);
-    if (token) {
+    for (const key of [indexKey(webviewId, false), indexKey(webviewId, true)]) {
+      const token = this.byWebview.get(key);
+      if (!token) continue;
       this.capabilities.delete(token);
-      this.byWebview.delete(webviewId);
+      this.byWebview.delete(key);
       this.revoked(token);
     }
   }
@@ -111,11 +121,11 @@ export class WebviewCapabilityStore {
    */
   revokeOwner(owner: string | undefined): number {
     let revoked = 0;
-    for (const [webviewId, token] of [...this.byWebview]) {
+    for (const [key, token] of [...this.byWebview]) {
       const record = this.capabilities.peek(token);
       if (record?.owner === owner) {
         this.capabilities.delete(token);
-        this.byWebview.delete(webviewId);
+        this.byWebview.delete(key);
         this.revoked(token);
         revoked++;
       }
