@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+// A stand-in for the `claude` command on a preview machine. See ../standin-claude.mjs.
+// A dynamic import, so this file runs whether or not a package.json above it says "type": "module".
+import('../standin-claude.mjs').then(
+  async ({ main }) => {
+    process.exitCode = await main();
+  },
+  (err) => {
+    console.error(err);
+    process.exitCode = 1;
+  }
+);

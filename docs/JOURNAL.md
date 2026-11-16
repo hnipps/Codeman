@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — A stand-in for `claude` on preview machines
+
+**Type:** intent-refinement
+**Touches:** `deploy/preview/`, `test/preview-standin-claude.test.ts`, `docs/review-instance-address-plan.md`
+**Why:** A preview of a Codeman branch has no Claude login and must never get one, and a Codeman with no sessions shows a reviewer very little.
+**Links:** [deploy/preview/README.md](../deploy/preview/README.md), [docs/review-instance-address-plan.md](review-instance-address-plan.md)
+
+The stand-in is a script with fixed answers that keeps what Codeman reads off a claude pane: the composer row, the working row, the conversation file and the hooks. It travels with the branch, in `deploy/preview/bin`, so a branch that changes what Codeman expects of a pane changes its stand-in in the same commit, and the test reads the script with the registry's own claude entry. The other choice was to bake it into the machine image; then a branch could not change it and a reviewer would see sessions that disagree with the code under review.
+
+It imports nothing that can open a connection. It runs the workspace's hooks, which Codeman wrote and which call the Codeman server on the same machine.
+
 ## 2026-11-16 — Reviews page: captures come from the agent, and the ways in
 
 **Type:** intent-refinement

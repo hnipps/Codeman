@@ -162,7 +162,7 @@ The preview's Codeman has no password. Only the broker can connect to it, so the
 
 Agents run inside a preview, but never against the real service. `<base-image>` carries a stand-in `claude` executable on the `PATH` that draws a scripted session in the terminal and makes no network request. No Claude Code login and no API key exist on a preview VM, so `docs/self-building.md` rule 10 holds there by construction.
 
-The stand-in is separate work with its own design. What it must cover is open: at least start, a prompt, a reply, and the idle state, since those are what Codeman's own features read.
+The stand-in is `deploy/preview/bin/claude`, described in `deploy/preview/README.md`. It covers start, a prompt, a working row, a reply, the idle state, the conversation file and the three hooks Codeman waits on, since those are what Codeman's own features read. It was run inside a throwaway Codeman: a claude session started on it, a prompt sent through the API came back as a `stop` signal and a last answer, and the session then read as idle. Tools, permission dialogs and resuming are not covered.
 
 ### Test data
 
