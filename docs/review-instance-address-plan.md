@@ -1,188 +1,168 @@
-# Review instance address: proposal
+# Review previews on throwaway VMs: proposal
 
-**Status:** Proposal for Harry. Nothing in it has been applied. `docs/self-building.md` rule 11 says changes to the supervisor, the proxy or the deploy design are proposed in writing; this is that proposal.
+**Status:** Proposal for Harry, revised 2026-11-16 after his answers to the first version. Nothing in it has been applied. `docs/self-building.md` rule 11 says changes to the supervisor, the proxy or the deploy design are proposed in writing; this is that proposal.
+
+The first version proposed one review instance inside the Codeman VM, run as a second OS user on one fixed hostname. Harry asked for a throwaway VM per preview, outside the Codeman VM, each on its own generated hostname. This version describes that design. The section "What changed from the first version" lists the differences.
 
 ## The need
 
 The planned Reviews page lets Harry review a finished branch inside Codeman. When the branch is a branch of Codeman itself, an **Open live** button opens that branch's running instance in a new browser tab.
 
-That tab runs unreviewed code. It must not share the live app's login cookie, its stored settings (`localStorage`, IndexedDB) or its service worker. Those are all keyed by web origin, so the review instance needs an origin of its own. A sub-path of the live address is ruled out because it is the same origin. It is never embedded in a frame, so frame rules do not matter here.
+That tab runs unreviewed code. In the browser it must not share the live app's login cookie, its stored settings (`localStorage`, IndexedDB) or its service worker, which are all keyed by web origin. On the server it must not be able to read the live data directory, the live login, the live tmux socket or the deploy queue. It is never embedded in a frame.
 
-The preview server fix of 2026-11-14 (`intent/2026-11-14-preview-env-isolation.md`) already gives a Codeman started as a preview its own data directory and tmux socket. This proposal is about the address and the process that serves it.
+## Decisions Harry has made
+
+| Topic | Decision |
+| --- | --- |
+| Where it runs | A throwaway VM per preview, on the machine that hosts the Codeman VM, outside the Codeman VM. |
+| Address | A hostname generated for each preview. |
+| Role | The default role, so the instance behaves like a fresh install. |
+| Agents inside | Allowed, against a simulated Claude. No real Claude login on a preview VM. |
+| Data | Test data. An agent may change it to set up the scenario its work needs. |
+| Running | Only while the review is in use: start when the review page opens, stop after five minutes without interaction, stop one minute after the page is closed or backgrounded. |
+| Capacity | A cap on running preview VMs. The host-side session sets it from measurements on the host. |
+| Build | Build only. `deploy/test.sh` does not run for a preview. |
+| Maximum age | An undecided preview's disk is deleted after three days. |
+| Other projects | A dev server for a project other than Codeman stays on the existing preview servers inside the Codeman VM. Preview VMs are for Codeman branches only. |
+| Sign-in | The edge access application is the only sign-in. The broker verifies its signed token on every request. |
+| Supervisor constraints | None known. |
 
 ## Placeholders
 
-The repository is public, so this document names no host, address, port, user or server path. Harry fills these in privately.
+The repository is public, so this document names no host, address, port, user or server path. Harry or the host-side session fills these in privately.
 
 | Placeholder | Meaning |
 | --- | --- |
 | `<live-host>` | The public hostname of the live app. |
-| `<review-host>` | The new public hostname for the review instance. |
-| `<zone>` | The DNS zone both hostnames sit in. |
-| `<tunnel>` | The tunnel that carries `<live-host>` to the VM. |
-| `<proxy-listener>` | The reverse proxy's listener that the tunnel reaches today. |
-| `<review-unit>` | The name of the new service unit that runs the review instance. |
-| `<review-port>` | A loopback port for the review instance. It must differ from both colours' ports in `config.json`, the stable API listener and `<proxy-listener>`. |
-| `<review-user>` | A new OS user that runs the review instance. |
-| `<review-data-dir>` | The review instance's data directory, under `<review-user>`'s home. |
-| `<review-releases-dir>` | Where the supervisor keeps the one review build. |
+| `<zone>` | The DNS zone the live hostname sits in. |
+| `<preview-prefix>` | The fixed start of every preview hostname. |
+| `<preview-host>` | One preview's hostname, `<preview-prefix>-<id>.<zone>`. |
+| `<tunnel>` | The tunnel that carries `<live-host>` to the host machine. |
+| `<broker>` | The new host-side service that creates, routes to and destroys preview VMs. |
+| `<preview-net>` | A host-only virtual network that preview VMs attach to. |
+| `<base-image>` | The prepared disk image every preview VM starts from. |
 
-## Options for a separate origin
+## Design
 
-An origin is scheme, host and port. Cookies are looser: they ignore the port and, with a `Domain` attribute, can span subdomains. Codeman's `codeman_session` cookie is host-only (no `Domain`, `path=/`, `src/web/middleware/auth.ts`).
+### One host-side service owns preview VMs
 
-| Option | Separate origin? | Separate cookie jar? | Verdict |
-| --- | --- | --- | --- |
-| A second port on `<live-host>` | Yes | **No.** Cookies ignore the port, so both instances read and overwrite one `codeman_session` cookie. | Rejected. It fails the cookie requirement. The tunnel also routes by hostname, not port. |
-| A subdomain of the live host, `review.<live-host>` | Yes | Yes, while the live cookie stays host-only | Works, but a two-level name is not covered by the zone's default edge certificate, and any future `Domain=` cookie on the live app would reach it. |
-| **A sibling hostname, `<review-host>` in `<zone>`** | Yes | Yes | **Recommended.** One-level name, so the existing edge certificate covers it. Needs one DNS record, one tunnel ingress rule and one Access application. |
-| A separate registrable domain | Yes | Yes, and also cross-site | Strongest, since `SameSite` then separates them too. Costs a domain. Not needed, given the next point. |
+`<broker>` runs on the host machine, outside every VM. It is the only thing that creates or destroys a preview VM, and it is also the proxy that preview hostnames reach. It does four things:
 
-A sibling hostname is the same *site* as `<live-host>`, so a page on `<review-host>` can send requests to `<live-host>` that carry the live cookie. Codeman already refuses those writes: `registerHostGuard()` rejects a state-changing request whose `Origin` hostname is not in the live colour's `CODEMAN_ALLOWED_HOSTS` (`isAllowedRequestOrigin()` in `src/web/network-auth-policy.ts`). Reads come back opaque to the review page because Codeman grants CORS only to `localhost`, `127.0.0.1` and `::1` origins (`registerSecurityHeaders()` in `src/web/middleware/auth.ts`). Two rules keep that true:
+- **Create.** Given a commit as a `git archive` export and an optional scenario (see "Test data"), it clones `<base-image>` as a copy-on-write disk, boots a VM on `<preview-net>`, and runs `deploy/build.sh` inside it. It returns the preview's id and hostname.
+- **Route.** It answers every `<preview-host>` request by looking up the id and passing the request to that VM. An unknown id gets 404.
+- **Stop and start.** It runs a VM only while the review is in use (see "When a preview VM runs"). The built disk is kept, so a start boots the VM without building again. While it boots, the broker answers with a small "starting" page that reloads itself.
+- **Destroy.** It deletes the VM and its disk when the review is approved, when a newer commit replaces the reviewed one, and after three days if neither happens. A deleted preview can be built again from its commit and scenario.
 
-- The live `CODEMAN_ALLOWED_HOSTS` must never gain a suffix entry (`.<zone>`) that matches `<review-host>`.
-- The live app must never add a CORS grant for `<review-host>`.
+The broker enforces the limits itself, so nothing the Codeman VM sends can exceed them: a maximum number of running preview VMs, a fixed memory and disk size per VM, a longest single run, and the maximum age. The host-side session sets the numbers by measuring a preview VM on the host.
 
-## Recommended design
+### When a preview VM runs
 
-The supervisor owns the review instance, the same way it owns the colours. The app asks for it through the supervisor CLI, as the Deploys section already does.
+A stopped VM uses disk but no memory. The rules below keep a VM running only while Harry is looking at its review.
 
-- **One unit.** A new systemd unit, `<review-unit>`, runs one Codeman on `127.0.0.1:<review-port>` as `<review-user>`. One unit means at most one review instance, by construction.
-- **Static proxy route.** The reverse proxy gets one more site that sends `<review-host>` to `<review-port>`. It never changes per review, so no review action reloads the proxy.
-- **Its own build.** `codeman-supervisor review start <sha>` exports the commit with `git archive` and runs `deploy/build.sh` into `<review-releases-dir>`, through the same queue as deploys. It skips `deploy/test.sh`, the backup, the handoff, the switch and the `good/` tag. It writes no state the deploy path reads.
-- **Stop.** `codeman-supervisor review stop` stops the unit and deletes the build. The Reviews page calls it when a review is decided.
+| Event | Result |
+| --- | --- |
+| An agent submits a review | Build once, capture the stills the walkthrough links to, then stop. Builds run one at a time. |
+| Harry opens the review page | Start. |
+| Five minutes with no interaction on the review page or in the **Open live** tab | Stop. |
+| The review page and the **Open live** tab are both closed or in the background | Stop after one minute. |
+| Harry switches to another review in the queue | The first review counts as closed. |
+| The browser stops reporting (sleep, lost connection) | Counts as closed. |
+| The cap is reached and Harry opens another review | Stop the running VM that was used longest ago, then start the new one. |
+| Harry requests changes | Stop. The disk is kept until the new commit arrives. |
+| The host restarts | Every VM is stopped. Disks are kept. |
 
-### Why a second OS user
+The **Open live** tab counts as use of the review. Without that rule, working in the live tab would put the review page in the background and stop the VM under it.
 
-Origin separation protects the browser. It does nothing on the server. A review instance running as the app user can read the live data directory, the login file it links to (`.env` in the live data dir), the live tmux socket directory, and the supervisor's queue, so unreviewed code could read the live password, attach to live agent sessions or queue a deploy.
+The review page and the broker's own view of the **Open live** tab report use. The preview's code is not trusted to report it. A preview page keeps a stream open to its server for as long as it is loaded, so an open connection does not count as use; a request that a person caused does. Code under review could fake such requests, which the longest single run bounds.
 
-Every one of those is closed to a user outside the app user and app group today. The live home and data directory are owner-only, the tmux socket directory is owner-only, and the login file and the queue directory are readable by the app group only. Running the review instance as `<review-user>`, not in the app group, closes all of them without changing any of their permissions.
+### Hostnames come from one wildcard
 
-The same gap exists today for every preview server an agent starts, because those run as the app user. This proposal does not change previews.
+Nothing is created at the edge per preview. Three wildcard entries are set up once:
 
-## Steps for Harry
+1. One wildcard DNS record for `*.<zone>` that points at `<tunnel>`.
+2. One wildcard ingress rule in `<tunnel>`'s config that sends `*.<zone>` to `<broker>`. The existing rule for `<live-host>` stays above it and is unchanged.
+3. One edge access application that covers `<preview-prefix>-*.<zone>` with the same policy as the one in front of `<live-host>`.
 
-Each step is a change to the supervisor, the proxy or the host. None of it can be done from inside the app.
+Preview names are one level deep, so the zone's default edge certificate covers them. Each preview is its own origin, so its cookie and stored settings are separate from the live app's and from every other preview's.
 
-### 1. DNS, tunnel and Access (host side)
+The broker only routes names that start with `<preview-prefix>-` and match a preview it created. Every other name the wildcard catches gets 404.
 
-1. Add a DNS record for `<review-host>` that points at `<tunnel>`, the same way `<live-host>` does.
-2. Add an ingress rule for `<review-host>` to `<tunnel>`'s config. Point it at the same service as `<live-host>` (`<proxy-listener>`). The tunnel passes the `Host` header through (the live colour's `CODEMAN_ALLOWED_HOSTS` check depends on that already), so the proxy can tell the two apart. No new port is opened into the VM, so the host's firewall rules for the VM do not change.
-3. Add an edge access application for `<review-host>` with the same policy as the one in front of `<live-host>`. Its sign-in cookie is per application, so this is a separate sign-in.
+Preview hostnames are the same *site* as `<live-host>`, so a preview page can send requests to the live app that carry the live cookie. Codeman already refuses those writes (`isAllowedRequestOrigin()` in `src/web/network-auth-policy.ts`) and grants CORS only to loopback origins (`registerSecurityHeaders()` in `src/web/middleware/auth.ts`). Two rules keep that true:
 
-### 2. The review user (VM)
+- The live `CODEMAN_ALLOWED_HOSTS` must never gain a suffix entry (`.<zone>`) that matches preview names.
+- The live app must never add a CORS grant for a preview hostname.
 
-1. Create `<review-user>` with its own home. Do not add it to the app group.
-2. Give it read access to the review build only: `<review-releases-dir>` owned by root, readable by `<review-user>`.
-3. Do not give it a Claude Code login. Agent sessions inside the review instance then cannot spend tokens. See open question 4.
+### What a preview VM can reach
 
-### 3. The reverse proxy (VM)
+- `<preview-net>` gives a preview VM outbound internet access, which the build needs for `npm ci`.
+- It has no route to the Codeman VM, to other preview VMs or to the host's local network.
+- Only the broker can open a connection into a preview VM.
 
-1. On `<proxy-listener>`, add a site that matches only the host `<review-host>`. Keep the existing site as the catch-all for every other host, so it keeps serving `<live-host>`.
-2. Point the new site at `127.0.0.1:<review-port>` with response buffering turned off, the same setting the colour upstream uses so SSE frames flush.
-3. Write it into the proxy's main config, not into the upstream file the supervisor rewrites on each switch. A switch must never touch it.
-4. Reload the proxy once.
+Building inside the preview VM is deliberate. A build runs the branch's install scripts, and those are unreviewed code too.
 
-When no review instance is running, the proxy answers `<review-host>` with 502, which is the right answer.
+### How the app asks for a preview
 
-### 4. The review unit (VM)
+The app never talks to the broker. The supervisor does, the same way it owns deploys:
 
-```ini
-[Unit]
-Description=Codeman review instance
-After=network.target
+- `codeman-deploy review start <sha>` exports the commit and sends it to the broker. It prints the preview's hostname.
+- `codeman-deploy review stop <id>` destroys it.
+- `codeman-deploy review status` lists previews, their commits, and whether each is running or asleep.
 
-[Service]
-Type=simple
-User=<review-user>
-Group=<review-user>
-EnvironmentFile=<supervisor env dir>/review.env
-ExecStart=/bin/sh -c 'cd "$CODEMAN_RELEASE_DIR" && exec "$CODEMAN_NODE_BINARY" dist/index.js web --port "$CODEMAN_COLOUR_PORT"'
-KillMode=control-group
-MemoryHigh=<review memory high>
-MemoryMax=<review memory max>
-RuntimeMaxSec=<idle ceiling>
-OOMPolicy=stop
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=<review-user home>
-PrivateTmp=yes
-```
+The channel from the Codeman VM to the broker carries only those three requests, authenticated with a credential that only the supervisor can read. The app user and the agents cannot reach the broker directly. A preview start does not go through the deploy queue, because nothing is built on the Codeman VM.
 
-Unlike a colour, the review instance's tmux server should live in this unit's cgroup. Stopping the unit then kills every pane it started, which is what a review needs. `PrivateTmp=yes` also gives it its own tmux socket directory.
+### The preview's environment
 
-`RuntimeMaxSec` is the idle ceiling: the unit stops after that long whatever happens. Four hours would match the preview idle stop (`CODEMAN_PREVIEW_IDLE_STOP_MS`). A stop on real inactivity, read from the proxy's access log for `<review-host>`, can come later if the ceiling proves too blunt.
+The broker starts Codeman in the VM with a fixed environment and nothing copied from the live deployment:
 
-### 5. The review environment (supervisor)
+| Variable | Value |
+| --- | --- |
+| `CODEMAN_ALLOWED_HOSTS` | The preview's own hostname. |
+| `CODEMAN_BUILD_ID` | The reviewed commit. |
+| `CODEMAN_ALLOW_UNAUTHENTICATED_NETWORK` | `1`. The preview has no password of its own (see "Login"), and it listens on `<preview-net>` so the broker can reach it. |
 
-`review start` writes `review.env` with exactly these variables, and nothing copied from `colourEnv` or the app env file:
+No deploy role is set, so it runs as `live` in its own data directory (`parseStartRole()` in `src/deploy-role.ts`). No supervisor variables are set, so its Deploys section stays hidden.
 
-| Variable | Value | Why |
-| --- | --- | --- |
-| `CODEMAN_RELEASE_DIR` | The review build | Same role as for a colour. |
-| `CODEMAN_COLOUR_PORT` | `<review-port>` | Same role as for a colour. |
-| `CODEMAN_NODE_BINARY` | `config.nodeBinary` | Same role as for a colour. |
-| `CODEMAN_DATA_DIR` | `<review-data-dir>` | Explicit, so nothing falls back to a shared default. |
-| `CODEMAN_TMUX_SOCKET` | `codeman-review` | A name no colour uses. The private `/tmp` separates it anyway. |
-| `CODEMAN_ALLOWED_HOSTS` | `<review-host>` | Its own Host allowlist and Origin check. |
-| `CODEMAN_BUILD_ID` | The reviewed sha | So its UI and telemetry say which build it is. |
-| `CODEMAN_PASSWORD` | The review password (section "Login") | Never the live password. |
+### Login
 
-Left out on purpose:
+The edge access application is the only sign-in. It attaches a signed token to every request it lets through. The broker verifies that token's signature, audience and expiry on every request and refuses a request without a valid one. If the access application is ever misconfigured, previews are refused, not exposed.
 
-- `CODEMAN_SUPERVISOR_CLI`. Its Deploys section stays hidden, and with no group membership it could not reach the queue anyway.
-- `CODEMAN_STABLE_API_URL`, `CODEMAN_LOG_DIR`. Those point at the live deployment.
-- `CODEMAN_DEPLOY_ROLE`. Unset is `live` (`parseStartRole()` in `src/deploy-role.ts`), which is right for a server alone in its own data dir. See open question 3.
+The preview's Codeman has no password. Only the broker can connect to it, so the broker's check is the gate. This keeps the check out of the code under review, and no live credential or new sign-in code is needed. **Open live** is a plain link to `<preview-host>`.
 
-### 6. Supervisor commands
+### Simulated Claude
 
-1. `codeman-supervisor review start <sha>`: refuse while a deploy is queued or running, refuse if a review is already running (or replace it, see open question 2), build, write `review.env`, start the unit, wait for `/api/health`.
-2. `codeman-supervisor review stop`: stop the unit, delete the build. Keep or delete `<review-data-dir>` (open question 5).
-3. `codeman-supervisor review status`: running or not, the sha, when it started.
-4. Make `codeman-deploy` accept `review start|stop|status` so an agent can drive it the way it drives deploys.
+Agents run inside a preview, but never against the real service. `<base-image>` carries a stand-in `claude` executable on the `PATH` that draws a scripted session in the terminal and makes no network request. No Claude Code login and no API key exist on a preview VM, so `docs/self-building.md` rule 10 holds there by construction.
 
-The app side, the Reviews page and its **Open live** button that opens `https://<review-host>/`, is separate work and needs a setting that tells the app `<review-host>`.
+The stand-in is separate work with its own design. What it must cover is open: at least start, a prompt, a reply, and the idle state, since those are what Codeman's own features read.
 
-## Login
+### Test data
 
-The review instance has its own origin, so the browser holds a separate `codeman_session` cookie for it. It needs its own credentials.
+A preview starts from a seed data set kept in the repository, so every preview shows the same sessions, cases and canvas unless told otherwise. An agent that needs a particular scenario submits a scenario file with its walkthrough. The broker applies it on top of the seed at create time. A scenario is stored with the review and is not merged with the branch.
 
-Recommended: Access on `<review-host>` (step 1.3) is the outer gate, and the review instance gets its own `CODEMAN_PASSWORD`, kept in a root-owned file next to the app env file and read by the supervisor when it writes `review.env`. The browser saves it per origin, so Harry types it once.
+## What Harry or the host-side session sets up
 
-Why not the live password: the review instance's own code can read its environment, and that code is the thing under review.
+None of this can be done from inside the Codeman VM.
 
-Why not no password: the review instance binds loopback, so Codeman cannot tell that the proxy and the tunnel make it public. Its own guard against running unauthenticated behind a tunnel (`CODEMAN_ALLOW_UNAUTHENTICATED_TUNNEL`) covers only tunnels Codeman starts itself. Access would be the only gate.
+1. **Survey and measure the host.** Record which hypervisor runs the Codeman VM, how that VM was created, and how much memory and disk are free. Then run a preview VM and measure its memory, its disk, its build time and its start time. Set the cap on running VMs and the VM size from those numbers.
+2. **Build `<base-image>`.** The same OS release as the Codeman VM, with Node, tmux, git, the C/C++ toolchain `npm ci` needs, and the stand-in `claude`.
+3. **Create `<preview-net>`** with the reachability rules above.
+4. **Install `<broker>`** as a host service with its limits and the access application's verification keys.
+5. **Add the three wildcard entries** at the edge and in the tunnel config.
+6. **Give the supervisor its credential** for the broker, and add the three `review` commands to the supervisor.
 
-## Staying within the host's limits
+## What changed from the first version
 
-The VM has 8 GiB of RAM and 4 GiB of swap. On 2026-11-16 at about 01:00, with the live colour idle, `free` showed about 2.2 GiB available and 2.1 GiB of swap in use, and the live colour's resident memory was about 230 MB. Two global out-of-memory events this month killed agent sessions.
+| First version | This version |
+| --- | --- |
+| One instance inside the Codeman VM | One VM per preview, outside it |
+| A second OS user for server-side isolation | A separate machine; no second user needed |
+| One fixed sibling hostname | A generated hostname per preview from one wildcard |
+| A memory cap inside the 8 GiB VM | The preview VM's own size, set on the host |
+| Replace or refuse a second review | Several at once, up to the broker's limit |
+| A static site in the VM's reverse proxy | The broker routes; the VM's proxy is untouched |
+| A four-hour ceiling | Runs only while the review is in use |
+| No agents inside | Agents inside, against a simulated Claude |
+| Built on the Codeman VM through the deploy queue | Built inside the preview VM |
 
-- **One at a time.** One unit, so at most one instance. `review start` while one runs either refuses or replaces it.
-- **Never during a deploy.** `review start` goes through the deploy queue, so a review build and a deploy build never run together. Both builds then fall under the supervisor service's existing memory cap.
-- **Its own cap.** `MemoryMax` on the review unit. Set it from a measurement, for example the peak of one review session with the canvas open. Without that, 1 GiB is a guess.
-- **Stopped when decided or idle.** The Reviews page calls `review stop` on approve or reject. `RuntimeMaxSec` stops it if nobody does.
-- **Disk.** The root disk was 88% full on 2026-11-16. A release here is about 200 MB; one of the three kept on 2026-11-16 was 1.2 GB. The review build lives in its own directory, never counts toward `limits.releasesKept`, and is deleted on stop.
+## Open question
 
-## Collisions with blue and green
-
-| Resource | Blue and green | Review instance |
-| --- | --- | --- |
-| Port | `config.colours.*.port` and the stable listener | `<review-port>`, which `review start` refuses if it equals any of them. |
-| Data directory | The shared data dir in `colourEnv` | `<review-data-dir>`, under another user's home. |
-| tmux socket | `codeman` in `/tmp/tmux-<app uid>` | `codeman-review` in the unit's private `/tmp`, under another uid. |
-| Releases | `releasesDir`, pruned to `releasesKept` | `<review-releases-dir>`, one build. |
-| Proxy | The upstream file the supervisor rewrites on each switch | A static site block. A switch never touches it. |
-| Unit | One unit per colour | `<review-unit>`. |
-| Tags and push | `good/<timestamp>`, `push.branch` | None. |
-
-## Open questions for Harry
-
-1. **The hostname.** What should `<review-host>` be? Can you add its DNS record, tunnel ingress rule and Access application, or should those steps go to the host-side session?
-2. **Replace or refuse.** When a review is running and another branch is opened, should `review start` replace it or refuse?
-3. **Role.** Should the review instance run as the default role in its own data dir, so it behaves like a fresh install, or as `candidate` so it never runs automations?
-4. **Agents inside the review instance.** Should agents run there at all? With no Claude Code login for `<review-user>` they cannot, which is the safe default but means features that start an agent cannot be exercised during a review.
-5. **Data.** Should each review start from an empty data dir, or from a copy of the live data dir with secrets removed? A copy shows real canvases and sessions but costs disk and needs a list of what to strip.
-6. **Memory cap.** What `MemoryMax` do you want, given the measurements above? Should the review refuse to start when available memory is below some floor?
-7. **Idle ceiling.** Is four hours right for `RuntimeMaxSec`?
-8. **Who builds.** Should the review build run `deploy/test.sh` too, or build only? This proposal says build only, because the review is for looking at the branch and a red test is visible in the walkthrough.
-9. **Supervisor layout.** This proposal assumes the review commands live in the supervisor's private repository next to the deploy commands, and that the private `/tmp` and second user suit your threat model. If the supervisor has constraints this repository cannot show, say which.
+**Start time.** Stopping this eagerly is only comfortable if a start takes seconds. If the host measurement shows a slow start, should the VM be suspended to disk instead of shut down, or the timers lengthened?
