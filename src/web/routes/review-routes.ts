@@ -50,6 +50,14 @@ import {
   tryGit,
   type ReviewChanges,
 } from '../../reviews/review-git.js';
+import {
+  createLiveControl,
+  LiveError,
+  liveView,
+  previewFor,
+  type LiveControl,
+  type LiveView,
+} from '../../reviews/review-live.js';
 import { mergeReviewedBranch, type MergeInput, type MergeResult } from '../../reviews/review-merge.js';
 import {
   CaptureNameSchema,
@@ -118,7 +126,13 @@ export interface ReviewRouteOptions {
   };
   /** The merge. Injected by tests that are about something else. */
   merge?: (input: MergeInput) => Promise<MergeResult>;
+  /** The preview service behind Open live. Injected by tests, which must never reach a real one. */
+  live?: LiveControl;
 }
+
+const LiveActionSchema = z.object({ action: z.enum(['build', 'open', 'close']) }).strict();
+/** One build request per review at a time. */
+const buildingLive = new Set<string>();
 
 const ApproveSchema = z.object({ headSha: z.string().regex(/^[0-9a-f]{40}$/) }).strict();
 /** One merge per repository at a time. */
@@ -258,6 +272,38 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     return value;
   };
 
+  const live = options.live ?? createLiveControl();
+
+  /** True when this review can have a live preview: the service exists and the branch is a branch of Codeman. */
+  const liveApplies = async (review: Review): Promise<boolean> =>
+    live.available() && !review.decision && (await deploysItself(review.repoRoot));
+
+  /** What the page is told about the review's live preview. A service that does not answer reads as unavailable. */
+  const liveOf = async (review: Review): Promise<LiveView> => {
+    if (!(await liveApplies(review))) return { available: false };
+    try {
+      return liveView(previewFor(await live.status(), review.headSha));
+    } catch {
+      return { available: false };
+    }
+  };
+
+  /**
+   * Keeps the preview service in step with a review, after the answer has gone out: the preview of a commit the
+   * review no longer shows is destroyed, and `build` asks for one of the commit it shows now. Failures are left
+   * for the page, which offers the build again.
+   */
+  const syncLive = (review: Review, goneSha: string | undefined, build: boolean): void => {
+    if (!live.available()) return;
+    void (async () => {
+      if (!(await deploysItself(review.repoRoot))) return;
+      const previews = await live.status();
+      const gone = goneSha && goneSha !== review.headSha ? previewFor(previews, goneSha) : null;
+      if (gone) await live.destroy(gone.id).catch(() => undefined);
+      if (build && !previewFor(previews, review.headSha)) await live.create(review.headSha);
+    })().catch(() => undefined);
+  };
+
   /**
    * Reads how each deploy a review asked for ended. The colour that asked is stopped by a deploy that succeeds, so
    * the answer is read later, by whichever colour is live, from the supervisor's own record.
@@ -342,6 +388,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     }
     changesCache.delete(review.id);
     announce(review);
+    syncLive(review, open?.headSha, true);
     return reply.code(open ? 200 : 201).send({
       success: true,
       data: { id: review.id, revision: review.revision, state: toView(review).state, url: `reviews/${review.id}` },
@@ -359,6 +406,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         review: toView(review),
         // What the Approve button will do, so the page can say so before it is pressed.
         approve: { deploys: review.decision?.kind === 'merged' ? false : await deploysItself(review.repoRoot) },
+        live: await liveOf(review),
         sessionLive: !!session && canAccessOwned(getAuthUser(req), session.owner) && !session.paneExit,
       },
     };
@@ -490,6 +538,8 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     }
     changesCache.delete(review.id);
     announce(latest);
+    // A decided review has no preview: the one of the commit that was reviewed is destroyed.
+    syncLive({ ...latest, headSha: mergedSha }, review.headSha, false);
     return {
       success: true,
       data: {
@@ -513,6 +563,49 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
     announce(changed.review);
     return { success: true, data: { review: toView(changed.review) } };
+  });
+
+  /**
+   * Open live, for a branch of Codeman itself. `open` says a person is looking at the review: the preview wakes and
+   * its idle clock restarts. `close` says they left. `build` asks for a preview when there is none, or when its
+   * build failed. Only a person asks, from the live colour; the preview's id never leaves the server.
+   */
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/live', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    if (isMultiUserMode() && !isAdmin(req))
+      return fail(reply, 403, ApiErrorCode.FORBIDDEN, 'Only an admin can run a live preview of Codeman');
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const { action } = parseBody(LiveActionSchema, req.body);
+    if (!(await liveApplies(review)))
+      return fail(reply, 409, ApiErrorCode.CONFLICT, 'NO_LIVE: this review has no live preview');
+    try {
+      const preview = previewFor(await live.status(), review.headSha);
+      if (action === 'build') {
+        if (preview && preview.state !== 'build-failed') return { success: true, data: { live: liveView(preview) } };
+        if (buildingLive.has(review.id))
+          return fail(reply, 409, ApiErrorCode.CONFLICT, 'BUSY: a build was just asked for');
+        buildingLive.add(review.id);
+        try {
+          if (preview) await live.destroy(preview.id);
+          await live.create(review.headSha);
+        } finally {
+          buildingLive.delete(review.id);
+        }
+      } else if (!preview || preview.state === 'building' || preview.state === 'build-failed') {
+        // Nothing to wake or put to sleep yet. `close` is still a success: the page says it on its way out.
+        if (action === 'open')
+          return fail(reply, 409, ApiErrorCode.CONFLICT, 'NOT_READY: the live preview is not built yet');
+      } else if (action === 'open') {
+        await live.use(preview.id);
+      } else {
+        await live.release(preview.id);
+      }
+      return { success: true, data: { live: liveView(previewFor(await live.status(), review.headSha)) } };
+    } catch (err) {
+      if (!(err instanceof LiveError)) throw err;
+      return fail(reply, err.code === 1 ? 409 : 502, ApiErrorCode.CONFLICT, err.message);
+    }
   });
 
   /**
