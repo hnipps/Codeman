@@ -1344,6 +1344,44 @@ export async function agentPreviewAdd(deps: AgentDeps, options: { name: string; 
   return code;
 }
 
+/** The longest walkthrough the server stores (`MAX_WALKTHROUGH_CHARS`); checked here so an oversized file fails before any request. */
+export const REVIEW_WALKTHROUGH_MAX_CHARS = 60_000;
+
+/**
+ * `agent review submit` — hand this session's checked-out branch to the Reviews page with a walkthrough.
+ * A second submit for the same branch replaces the walkthrough of the review that is still open. The server
+ * takes the repository, branch and commit from this session; nothing here names them.
+ */
+export async function agentReviewSubmit(
+  deps: AgentDeps,
+  options: { title: string; walkthrough: string; base?: string }
+): Promise<number> {
+  if (!options.title.trim()) return fail(deps, 'refusing: empty --title', EXIT.refused);
+  if (!options.walkthrough.trim()) return fail(deps, 'refusing: the walkthrough is empty', EXIT.refused);
+  if (options.walkthrough.length > REVIEW_WALKTHROUGH_MAX_CHARS)
+    return fail(
+      deps,
+      `refusing: the walkthrough is ${options.walkthrough.length} characters; the limit is ${REVIEW_WALKTHROUGH_MAX_CHARS}`,
+      EXIT.refused
+    );
+  const res = await deps.request(deps.ctx, {
+    method: 'POST',
+    path: '/api/v1/reviews',
+    body: { title: options.title, walkthrough: options.walkthrough, ...(options.base ? { base: options.base } : {}) },
+    timeoutMs: 30_000,
+  });
+  if (!res.json?.success) return fail(deps, describeFailure(res));
+  const data = res.json.data as { id: string; revision: number; state: string; url: string };
+  if (deps.json) emitJson(deps, data);
+  else
+    deps.io.out(
+      palette.ok(
+        `${GLYPH.ok} review ${data.id} ${data.revision > 1 ? `updated (revision ${data.revision})` : 'submitted'}; it waits for the reviewer on the Reviews page`
+      )
+    );
+  return EXIT.ok;
+}
+
 /** `agent preview ls` — this session's previews, plus servers Codeman could not stop. */
 export async function agentPreviewLs(deps: AgentDeps): Promise<number> {
   const self = await resolveSessionId(deps, deps.ctx.selfId);
@@ -1705,6 +1743,47 @@ export function registerAgentCommands(program: Command): Command {
     .description('Delete any session except this one (refuses your own id)')
     .option('--json', 'Machine-readable output')
     .action((id: string, options: { json?: boolean }) => run(Boolean(options.json), (deps) => agentRm(deps, { id })));
+
+  const review = agent
+    .command('review')
+    .description('Hand finished work to the reviewer inside Codeman, with a walkthrough, in place of a pull request');
+  review
+    .command('submit')
+    .description(
+      "Submit this session's checked-out branch for review. Commit the work first. Submitting again for the same branch replaces the walkthrough and keeps the reviewer's notes. Never merge or deploy the branch yourself"
+    )
+    .requiredOption('--title <title>', 'What the reviewer gets, in one line')
+    .requiredOption(
+      '--file <path>',
+      'The walkthrough, a Markdown file (- for stdin). Link code as [text](#code=path/to/file.ts:10-24) and a preview state as [text](#preview=/some/path)'
+    )
+    .option('--base <branch>', "The branch this work merges into (default: the repository's main branch)")
+    .option('--json', 'Machine-readable output')
+    .action(async (options: { title: string; file: string; base?: string; json?: boolean }) => {
+      let walkthrough: string;
+      try {
+        const { readFile } = await import('node:fs/promises');
+        walkthrough =
+          options.file === '-'
+            ? await new Promise<string>((done, bad) => {
+                let text = '';
+                process.stdin.setEncoding('utf8');
+                process.stdin.on('data', (chunk) => (text += chunk));
+                process.stdin.on('end', () => done(text));
+                process.stdin.on('error', bad);
+              })
+            : await readFile(options.file, 'utf8');
+      } catch (err) {
+        console.error(palette.err(`${GLYPH.fail} cannot read ${options.file}: ${getErrorMessage(err)}`));
+        process.exitCode = EXIT.error;
+        return;
+      }
+      return run(
+        Boolean(options.json),
+        (deps) => agentReviewSubmit(deps, { title: options.title, walkthrough, base: options.base }),
+        'A review is submitted by the session in CODEMAN_SESSION_ID, so run this from inside that session.'
+      );
+    });
 
   const preview = agent
     .command('preview')

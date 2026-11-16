@@ -41,6 +41,7 @@ export {
   tryWebviewRefererFallback,
 } from './webview-routes.js';
 export { registerPreviewRoutes } from './preview-routes.js';
+export { registerReviewPageRoutes } from './review-routes.js';
 export { registerTabLayoutRoutes } from './tab-layout-routes.js';
 export { registerMcpSyncRoutes } from './mcp-sync-routes.js';
 export { registerConfigBackupRoutes, runConfigBackup } from './config-backup-routes.js';

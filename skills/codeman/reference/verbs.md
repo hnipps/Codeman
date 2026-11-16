@@ -863,6 +863,29 @@ The same over HTTP: `PUT /api/v1/sessions/$CODEMAN_SESSION_ID/previews/<name>
 {"cmd":…}`, `GET /api/v1/sessions/$CODEMAN_SESSION_ID/previews`, `DELETE
 …/previews/<name>`, `GET …/previews/<name>/log?tail=<bytes>`.
 
+### 5.17 Hand finished work to the reviewer
+
+When the work on a branch is finished and committed, submit it for review inside Codeman. Do this in place of
+opening a pull request, unless the user asked for one.
+
+```bash
+codeman agent review submit --title "Show tab groups on the phone home screen" --file walkthrough.md
+```
+
+The walkthrough is Markdown for the person who will decide. Write what changed for them, how it works, what to
+look at closely, what you left alone, and the checks you ran. Two kinds of link move the reviewer's screen:
+
+- `[home-sessions.js:88-141](#code=src/web/public/home-sessions.js:88-141)` opens the changes at those lines.
+- `[See it on a phone](#preview=/)` moves this session's preview to that path. Start the preview first (5.16).
+
+Rules:
+
+- Commit first. The review compares the branch's commits with its base; uncommitted work is not in it.
+- The branch must be checked out in this session's folder, and must not be the base branch. Pass
+  `--base <branch>` when the work does not merge into the repository's main branch.
+- Submit again after you address the reviewer's notes. It updates the same review and keeps the notes.
+- Never merge or deploy the branch yourself, and never resolve a note. The reviewer does both.
+
 ## Experimental bounded inspection and guarded submission
 
 These three commands and their HTTP routes are labeled experimental, so they may

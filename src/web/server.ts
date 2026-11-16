@@ -27,7 +27,7 @@
  * @module web/server
  */
 
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyCompress from '@fastify/compress';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -277,6 +277,7 @@ import {
   sessionWebviewIds,
   webviewsWithOpenSockets,
   registerPreviewRoutes,
+  registerReviewPageRoutes,
   registerTabLayoutRoutes,
   registerMcpSyncRoutes,
   registerConfigBackupRoutes,
@@ -1179,6 +1180,13 @@ export class WebServer extends EventEmitter {
         .send(await this.renderIndexHtml());
     });
     this.app.get('/canvas.html', async (_req, reply) => reply.code(404).send());
+    // The Reviews page (`reviews.html`): one document for the queue and for one review. Like the canvas page it
+    // is served only from its own address, so the base-path rewrite and the cache-bust pass always run.
+    this.app.get('/reviews.html', async (_req, reply) => reply.code(404).send());
+    const reviewsPage = async (_req: unknown, reply: FastifyReply) =>
+      reply.header('Cache-Control', 'no-cache').type('text/html; charset=utf-8').send(this.renderReviewsHtml());
+    this.app.get('/reviews', reviewsPage);
+    this.app.get('/reviews/:id', reviewsPage);
     this.app.get<{ Params: { workspaceId: string } }>('/canvas/:workspaceId', async (req, reply) => {
       const settings = await this.readSettings(true);
       if (!canvasOn(settings)) return reply.code(404).send();
@@ -1530,6 +1538,7 @@ export class WebServer extends EventEmitter {
     registerOrchestratorRoutes(this.app, ctx);
     registerWebviewRoutes(this.app, ctx, this.basePath);
     registerPreviewRoutes(this.app, ctx, this.basePath);
+    registerReviewPageRoutes(this.app, ctx);
     if (!this.testMode) {
       this.cleanup.setInterval(
         () => {
@@ -2089,6 +2098,15 @@ export class WebServer extends EventEmitter {
         );
     }
     html = html.replace('<meta charset="utf-8" />', () => ['<meta charset="utf-8" />', ...metas].join('\n    '));
+    return this.cacheBustAssets(html);
+  }
+
+  /** The Reviews page. Read from disk on every request, like the canvas page. */
+  private renderReviewsHtml(): string {
+    const html = readFileSync(join(__dirname, 'public', 'reviews.html'), 'utf8').replace(
+      '<base href="/" />',
+      () => `<base href="${escapeHtmlText(joinBasePath(this.basePath, '/')).replaceAll('"', '&quot;')}" />`
+    );
     return this.cacheBustAssets(html);
   }
 
@@ -3128,7 +3146,7 @@ export class WebServer extends EventEmitter {
     // Saved-webview invalidations carry the trusted resource owner. Route them to
     // that owner (plus admins), so an admin editing a user's web tab notifies the
     // user, and no other user learns the ids of someone else's web tabs.
-    if (event.startsWith('canvas:')) return deriveWebviewSseHint(data);
+    if (event.startsWith('canvas:') || event.startsWith('review:')) return deriveWebviewSseHint(data);
     if (event.startsWith('webview:')) {
       return deriveWebviewSseHint(data);
     }

@@ -477,6 +477,31 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     {
+      name: 'submit_review',
+      title: 'Submit finished work for review',
+      description:
+        "Hand the calling session's checked-out branch to the Reviews page with a walkthrough, in place of a pull " +
+        'request. Commit the work first. The walkthrough is Markdown for the reviewer: what changed for them, how ' +
+        'it works, what to look at closely, what you left alone, and the checks you ran. Link code as ' +
+        '[text](#code=path/to/file.ts:10-24) and a preview state as [text](#preview=/some/path). Submitting again ' +
+        "for the same branch replaces the walkthrough and keeps the reviewer's notes. Never merge or deploy the " +
+        'branch yourself. Works only from inside a Codeman session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', minLength: 1, maxLength: 140, description: 'What the reviewer gets, in one line.' },
+          walkthrough: { type: 'string', minLength: 1, maxLength: 60000, description: 'The walkthrough, in Markdown.' },
+          base: {
+            type: 'string',
+            description: "The branch this work merges into. Default: the repository's main branch.",
+          },
+        },
+        required: ['title', 'walkthrough'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    {
       name: 'read_output',
       title: "Read a session's output",
       description:
@@ -1209,6 +1234,19 @@ export function createToolRunner(deps: ToolRunnerDeps) {
       };
     };
   }
+  tools.submit_review = async (args, signal) => {
+    const body: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args)) {
+      if (key !== 'title' && key !== 'walkthrough' && key !== 'base') throw new ToolError(`Unknown field ${key}`);
+      if (typeof value !== 'string') throw new ToolError(`${key} must be a string`);
+      body[key] = value;
+    }
+    const res = await call({ method: 'POST', path: '/api/v1/reviews', body }, signal);
+    return {
+      text: JSON.stringify(res.json?.success ? res.json.data : (res.json ?? { error: res.text })),
+      isError: !res.json?.success,
+    };
+  };
   tools.canvas_upload_image = async (args, signal) => {
     const allowed = new Set(['path', 'base64', 'type']);
     for (const key of Object.keys(args)) {

@@ -2110,6 +2110,41 @@ A routine (W-44, intent `intent/2026-11-15-canvas-routines.md`) is a saved title
 - ⚠️ **Only the live colour fires** (`mayAutomate`, rule 6), checked before every write and every call; a candidate or retired colour, and tests (`testMode`), never tick.
 - **Tool and page.** `canvas_routine` (list, read, create, update, run, delete) calls the routes' own functions and is listed briefly in `canvas_capabilities` (the document is at its cap). Changes broadcast `canvas:changed` with `routines: true`. The page shows routines as the Work view's second tab (`packages/canvas/src/routines-view.ts`): cards with triggers, gates, next run, an Enabled switch, Run now, recent fires (a gate skip reads "skipped: gate N (count X)") with a link to the Tasks list, and one edit form with Triggers and Gates; `textContent` only, writes only on a person's press. Tests: `test/canvas-routines.test.ts`, `test/routes/canvas-routine-routes.test.ts`, `test/internal-principal.test.ts`, `test/canvas-agent-start.test.ts`.
 
+## Reviews page
+
+Design and slices: [`intent/2026-11-16-reviews-page.md`](../intent/2026-11-16-reviews-page.md). The preview VM for Codeman branches is in [`review-instance-address-plan.md`](review-instance-address-plan.md).
+
+**What it is.** An agent submits a walkthrough of the branch its session has checked out. A person reads it at `/reviews/<id>` beside the changes and the session's running preview, leaves notes, and sends them back as one prompt. It replaces opening a pull request to read a diff.
+
+**Files.**
+
+| File | Holds |
+| --- | --- |
+| `src/reviews/review-model.ts` | Schemas, limits, the state word, note rules, the Request changes prompt, `toView`. No IO. |
+| `src/reviews/review-store.ts` | One file per review, `<data dir>/reviews/<id>.json`, `{ version: 1, review }`. |
+| `src/reviews/review-git.ts` | The branch a folder has checked out, and the files and diffs between its merge base and its tip. |
+| `src/web/routes/review-routes.ts` | The routes, and who may call each. |
+| `src/web/public/reviews.{html,js,css}` | The page. Served only at `/reviews` and `/reviews/:id`. |
+
+**Rules.**
+
+- **Only the live colour writes.** `writeReview()` checks `deployRole.allows('persist')` at the write, and the routes answer 409 first.
+- **Stored data.** A file that does not parse, or whose `version` is not 1, is skipped on read and never overwritten. The previous release has no reviews directory and ignores it.
+- **Who submits.** `POST /api/reviews` needs `X-Codeman-Parent-Session` naming a session the caller may see (an exact id, or a unique prefix of 8 or more). The repository, branch and commit come from that session's folder. The body carries only the title, the walkthrough and an optional base branch.
+- **Resubmission.** A submit from the same session for the same repository and branch updates the review that is still open: it replaces the walkthrough and the recorded commit, keeps the notes and adds one to `revision`. A decided review is never reopened; the next submit makes a new one.
+- **Who notes and decides.** Notes, resolving and Request changes refuse (403) a request that carries the agent header. As on the canvas, an agent that leaves the header off looks like a person; the header is how the agent CLI and the MCP server always call.
+- **Ownership.** A review's `owner` is its author session's owner. Lists are filtered and single reads answer 404 through `canAccessOwned`. `review:changed` carries `{ id, owner }` and `deriveSseHint` routes it to that owner and admins.
+- **What a browser never gets.** `repoRoot`. `toView()` drops it, and the route test asserts the path is absent from the answer.
+- **Git.** Every command compares two commits, so no working tree, index or clean filter is involved. Refs are checked with `git check-ref-format --branch` and passed as `refs/heads/…`, `refs/remotes/origin/…` or a sha. A diff request's `path` must be one the branch's own file list holds. No git runs for a remote or Docker session, nor for a repository at or inside a Docker case workspace; when the Docker case list cannot be read, the route refuses.
+- **Request changes.** Every unsent, unresolved note goes in one prompt through `deliver()`. A paste that never reached the pane stamps nothing. One that was written is stamped even when Enter was not confirmed, since sending again would paste it twice. One send per review at a time, a rate limit per review, and a refusal while the session has a pending approval or has ended.
+- **Notes after sending.** A sent note can be resolved or reopened. It cannot be edited or deleted, because the agent was sent its words.
+- **The state word** (`reviewState`): `ready`; `changes-requested` once notes were sent; `updated` when the agent has submitted again since. A decision, once Approve exists, wins over all three.
+- **Rendering.** The walkthrough goes through `marked` and `window.sanitizeMarkdownHtml` and is shown as plain text when either is missing. Everything else from an agent or from git is written with `textContent`. Links `#code=<path>:<from>-<to>` and `#preview=/<path>` move the stage; other fragment links are disabled and other links open in a new tab.
+- **Preview.** The stage frames the author session's first running preview through `POST /api/webviews/:id/open`, with the sandbox a preview tab has and no `allow-same-origin`. A running Codeman branch is never framed.
+- **Limits.** 100 open reviews per owner, 300 notes per review, 50 notes per send, a 60,000-character walkthrough, 500 listed files, 400 KiB per file diff.
+
+Tests: `test/review-page.test.ts` (in the deploy gate).
+
 ## Canvas voice
 
 The canvas assistant takes speech two ways (PC11). Dictation (`B`, `#voiceDictate`) writes what was said into the composer's draft and never sends. Voice conversation (Shift+B, `#voiceConversation`) takes one spoken turn at a time, sends it as an ordinary conversation message and speaks the reply. The two have separate controls, keys and state lines, and a key is a toggle only: none is hold-to-talk.

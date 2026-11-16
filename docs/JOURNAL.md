@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — Reviews page, first slice: walkthrough, changes, notes, Request changes
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/{review-model,review-store,review-git}.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.{html,js,css}`, `src/web/{server,sse-events}.ts`, `src/{cli-agent,mcp-server}.ts`, `deploy/test.sh`, `skills/codeman/reference/verbs.md`
+**Why:** Harry reviews finished agent work on GitHub, where the diff has no explanation and nothing runs. He wants the agent to explain the change and to see it running, inside Codeman.
+**Links:** [intent/2026-11-16-reviews-page.md](../intent/2026-11-16-reviews-page.md), [architecture-invariants, "Reviews page"](architecture-invariants.md#reviews-page), [review-instance-address-plan.md](review-instance-address-plan.md)
+
+Decision. A review is its own page and its own store, not a canvas object: the queue spans every project, and a review must outlive a canvas workspace. The agent submits from its session, and the server takes the repository and branch from that session, so a submit cannot name someone else's work. Notes follow the brief review rule: a person writes and resolves them, and they go to the agent as one prompt on a button press.
+
+Decision. A note on a preview anchors to the path the preview shows, not to an element in it. The preview frame is sandboxed without `allow-same-origin`, so the page cannot read what was clicked inside it, and that sandbox stays.
+
+Not in this slice. Approve (merge, and deploy for the Codeman repository), captures and Open live for Codeman branches, and the links from the sessions rail and from Work items. The intent lists them as later slices.
+
 ## 2026-11-16 — A preview also drops the live colour's release, port and host names
 
 **Type:** intent-refinement

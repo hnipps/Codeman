@@ -1,0 +1,346 @@
+/**
+ * The Reviews page: the pure rules (`src/reviews/review-model.ts`), the git reader against a real temporary
+ * repository (`review-git.ts`), and the routes (`src/web/routes/review-routes.ts`).
+ */
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dataPath } from '../src/config/instance.js';
+import { deployRole } from '../src/deploy-role.js';
+import {
+  parseNumstatZ,
+  repoFacts,
+  reviewChanges,
+  reviewFileDiff,
+  ReviewGitRefusal,
+} from '../src/reviews/review-git.js';
+import {
+  addNote,
+  patchNote,
+  queueOf,
+  removeNote,
+  requestChangesPrompt,
+  reviewState,
+  stampSent,
+  submitReview,
+  toView,
+  unsentNotes,
+  type Review,
+} from '../src/reviews/review-model.js';
+import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
+import { createRouteTestHarness, type RouteTestHarness } from './routes/_route-test-utils.js';
+
+vi.mock('../src/canvas/conversation-delivery.js', async (original) => ({
+  ...(await original<typeof import('../src/canvas/conversation-delivery.js')>()),
+  deliver: vi.fn(async () => 'confirmed'),
+}));
+const { deliver } = await import('../src/canvas/conversation-delivery.js');
+
+const SHA = 'a'.repeat(40);
+const facts = { repoRoot: '/repo', project: 'repo', branch: 'feat/x', base: 'main', headSha: SHA };
+const author = { owner: null, sessionId: 'sess-1', sessionName: 'w4' };
+const fresh = (): Review =>
+  submitReview(undefined, { title: 'T', walkthrough: 'Hello world' }, facts, author, 'aaaaaaaa', 1000);
+
+describe('review rules', () => {
+  it('cleans what an agent submits', () => {
+    const r = submitReview(
+      undefined,
+      { title: '  A\ttitle\nwith\u0007 a bell  ', walkthrough: 'line\r\nnext\u001b[31m' },
+      facts,
+      author,
+      'aaaaaaaa',
+      1
+    );
+    expect(r.title).toBe('A title with a bell');
+    expect(r.walkthrough).toBe('line\nnext[31m');
+  });
+
+  it('a resubmission replaces the walkthrough, keeps the notes and counts a revision', () => {
+    const noted = addNote(fresh(), { at: { kind: 'general' }, text: 'why?' }, 'bbbbbbbb', 1100);
+    if (!noted.ok) throw new Error('expected a note');
+    const again = submitReview(
+      noted.review,
+      { title: 'T2', walkthrough: 'Second' },
+      { ...facts, headSha: 'b'.repeat(40) },
+      author,
+      'cccccccc',
+      2000
+    );
+    expect(again.id).toBe('aaaaaaaa');
+    expect(again.revision).toBe(2);
+    expect(again.walkthrough).toBe('Second');
+    expect(again.notes).toHaveLength(1);
+    expect(again.headSha).toBe('b'.repeat(40));
+  });
+
+  it('moves ready → changes requested → updated', () => {
+    let r = fresh();
+    expect(reviewState(r)).toBe('ready');
+    const noted = addNote(r, { at: { kind: 'general' }, text: 'fix it' }, 'bbbbbbbb', 1100);
+    if (!noted.ok) throw new Error('expected a note');
+    r = stampSent(noted.review, ['bbbbbbbb'], 1200);
+    expect(reviewState(r)).toBe('changes-requested');
+    expect(unsentNotes(r)).toHaveLength(0);
+    r = submitReview(r, { title: 'T', walkthrough: 'Fixed' }, facts, author, 'x', 1300);
+    expect(reviewState(r)).toBe('updated');
+  });
+
+  it('a sent note can be resolved but not edited or deleted', () => {
+    const noted = addNote(fresh(), { at: { kind: 'general' }, text: 'fix it' }, 'bbbbbbbb', 1100);
+    if (!noted.ok) throw new Error('expected a note');
+    const sent = stampSent(noted.review, ['bbbbbbbb'], 1200);
+    expect(patchNote(sent, 'bbbbbbbb', { text: 'other' }, 1300)).toMatchObject({ ok: false, code: 'SENT' });
+    expect(removeNote(sent, 'bbbbbbbb')).toMatchObject({ ok: false, code: 'SENT' });
+    const resolved = patchNote(sent, 'bbbbbbbb', { resolved: true }, 1300);
+    expect(resolved.ok && resolved.review.notes[0]?.resolvedAt).toBe(1300);
+    const reopened = resolved.ok ? patchNote(resolved.review, 'bbbbbbbb', { resolved: false }, 1400) : resolved;
+    expect(reopened.ok && 'resolvedAt' in reopened.review.notes[0]!).toBe(false);
+  });
+
+  it('a decided review takes no more notes and leaves the waiting list', () => {
+    const decided: Review = { ...fresh(), decision: { kind: 'merged', at: 5000 } };
+    expect(addNote(decided, { at: { kind: 'general' }, text: 'late' }, 'bbbbbbbb', 6000)).toMatchObject({
+      ok: false,
+      code: 'DECIDED',
+    });
+    const queue = queueOf([decided, { ...fresh(), id: 'dddddddd' }], 6000);
+    expect(queue.waiting.map((r) => r.id)).toEqual(['dddddddd']);
+    expect(queue.decided.map((r) => r.id)).toEqual(['aaaaaaaa']);
+    expect(queueOf([decided], 5000 + 25 * 60 * 60 * 1000).decided).toEqual([]);
+  });
+
+  it('builds one prompt that names where each note sits', () => {
+    let r = fresh();
+    const add = (at: Parameters<typeof addNote>[1]['at'], text: string, id: string) => {
+      const next = addNote(r, { at, text }, id, 1100);
+      if (!next.ok) throw new Error('expected a note');
+      r = next.review;
+    };
+    add({ kind: 'general' }, 'Overall fine', 'n1aaaaaa');
+    add({ kind: 'text', anchor: { quote: 'Hello', prefix: '', suffix: ' world' } }, 'Say more', 'n2aaaaaa');
+    add({ kind: 'code', path: 'src/a.ts', line: 12, side: 'new', text: 'const a = 1;' }, 'Rename', 'n3aaaaaa');
+    add({ kind: 'preview', path: '/settings' }, 'Too dark', 'n4aaaaaa');
+    const prompt = requestChangesPrompt(r, unsentNotes(r));
+    if (!('text' in prompt)) throw new Error('expected a prompt');
+    expect(prompt.text).toContain('1. General');
+    expect(prompt.text).toContain('2. On your walkthrough, at "Hello"');
+    expect(prompt.text).toContain('3. On src/a.ts:12, `const a = 1;`');
+    expect(prompt.text).toContain('4. On the preview at /settings');
+    expect(prompt.text).toContain('Do not merge or deploy');
+    expect(requestChangesPrompt(r, [])).toMatchObject({ refusal: expect.stringContaining('NOTHING') });
+  });
+
+  it('never sends the path on this machine to a browser', () => {
+    expect(JSON.stringify(toView(fresh()))).not.toContain('/repo');
+  });
+
+  it('parses numstat -z, renames and binaries included, and drops unsafe paths', () => {
+    const out = ['3\t1\tsrc/a.ts', '-\t-\timg.png', '2\t0\t', 'old.ts', 'new.ts', '1\t1\t../escape', ''].join('\0');
+    expect(parseNumstatZ(out)).toEqual([
+      { path: 'src/a.ts', added: 3, deleted: 1, binary: false },
+      { path: 'img.png', added: 0, deleted: 0, binary: true },
+      { path: 'new.ts', origPath: 'old.ts', added: 2, deleted: 0, binary: false },
+    ]);
+  });
+});
+
+function makeRepo(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'review-repo-')));
+  const git = (...args: string[]) =>
+    execFileSync(
+      'git',
+      ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args],
+      {
+        cwd: dir,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'a.txt'), 'one\ntwo\nthree\n');
+  git('add', 'a.txt');
+  git('commit', '-q', '-m', 'base');
+  git('checkout', '-q', '-b', 'feat/x');
+  writeFileSync(join(dir, 'a.txt'), 'one\nTWO\nthree\n');
+  writeFileSync(join(dir, 'b.txt'), 'new\n');
+  git('add', '.');
+  git('commit', '-q', '-m', 'work');
+  return dir;
+}
+
+describe('review git reader', () => {
+  let repo: string;
+  beforeAll(() => {
+    repo = makeRepo();
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('reads the branch, its base and what it changes', async () => {
+    const f = await repoFacts(repo, undefined);
+    expect(f).toMatchObject({ repoRoot: repo, branch: 'feat/x', base: 'main' });
+    const changes = await reviewChanges(repo, f.base, f.branch);
+    expect(changes).toMatchObject({ commits: 1, added: 2, deleted: 1, gone: false, headSha: f.headSha });
+    expect(changes.files.map((x) => x.path)).toEqual(['a.txt', 'b.txt']);
+    const diff = await reviewFileDiff(repo, f.base, f.branch, { path: 'a.txt' });
+    expect(diff?.diff).toContain('-two\n+TWO');
+  });
+
+  it('refuses the base branch itself, an unknown base, and an option-shaped name', async () => {
+    await expect(repoFacts(repo, 'feat/x')).rejects.toBeInstanceOf(ReviewGitRefusal);
+    await expect(repoFacts(repo, 'nope')).rejects.toThrow(/NO_BASE/);
+    expect((await reviewChanges(repo, '--output=/tmp/x', 'feat/x')).gone).toBe(true);
+    expect(await reviewFileDiff(repo, 'main', 'feat/x', { path: '../a.txt' })).toBeNull();
+  });
+
+  it('reports a deleted branch as gone', async () => {
+    expect(await reviewChanges(repo, 'main', 'feat/missing')).toMatchObject({ gone: true, files: [] });
+  });
+});
+
+describe('review routes', () => {
+  let repo: string;
+  let harness: RouteTestHarness;
+  const AGENT = { 'x-codeman-parent-session': 'test-session-1' };
+
+  beforeAll(() => {
+    repo = makeRepo();
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+  beforeEach(async () => {
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, { dockerWorkspaces: async () => [] })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo;
+    vi.mocked(deliver).mockClear();
+    vi.mocked(deliver).mockResolvedValue('confirmed');
+  });
+  afterEach(async () => {
+    await harness.app.close();
+    rmSync(dataPath('reviews'), { recursive: true, force: true });
+  });
+
+  const submit = (headers: Record<string, string> = AGENT, walkthrough = 'See [a](#code=a.txt:2)') =>
+    harness.app.inject({ method: 'POST', url: '/api/reviews', headers, payload: { title: 'Work', walkthrough } });
+
+  it('only the session that did the work submits, and a second submit updates the same review', async () => {
+    expect((await submit({})).statusCode).toBe(403);
+    expect((await submit({ 'x-codeman-parent-session': 'nobody-here' })).statusCode).toBe(403);
+    const first = await submit();
+    expect(first.statusCode).toBe(201);
+    const id = first.json().data.id as string;
+    const second = await submit(AGENT, 'Updated');
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data).toMatchObject({ id, revision: 2 });
+    expect(readdirSync(dataPath('reviews')).filter((n) => n.endsWith('.json'))).toHaveLength(1);
+    expect(harness.ctx.broadcast).toHaveBeenCalledWith('review:changed', { id, owner: '@single' });
+
+    const queue = (await harness.app.inject({ url: '/api/reviews' })).json().data;
+    expect(queue.waiting).toHaveLength(1);
+    const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
+    expect(one.review).toMatchObject({ title: 'Work', branch: 'feat/x', base: 'main', state: 'ready' });
+    expect(one.review.repoRoot).toBeUndefined();
+    expect(JSON.stringify(one)).not.toContain(repo);
+  });
+
+  it('serves the changes, and a diff only for a file the branch changed', async () => {
+    const id = (await submit()).json().data.id as string;
+    const changes = (await harness.app.inject({ url: `/api/reviews/${id}/changes` })).json().data;
+    expect(changes).toMatchObject({ moved: false, gone: false });
+    expect(changes.files).toHaveLength(2);
+    const diff = await harness.app.inject({ url: `/api/reviews/${id}/diff?path=a.txt` });
+    expect(diff.json().data.diff).toContain('+TWO');
+    expect((await harness.app.inject({ url: `/api/reviews/${id}/diff?path=.git/config` })).statusCode).toBe(404);
+    expect((await harness.app.inject({ url: `/api/reviews/zzzzzzzz/changes` })).statusCode).toBe(404);
+  });
+
+  it('refuses a submit from a repository inside a Docker case, and when the Docker list is unreadable', async () => {
+    await harness.app.close();
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, { dockerWorkspaces: async () => [repo] })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo;
+    const inside = await submit();
+    expect(inside.statusCode).toBe(400);
+    expect(inside.json().error).toContain('Docker');
+    await harness.app.close();
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => {
+          throw new Error('unreadable');
+        },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo;
+    expect((await submit()).statusCode).toBe(400);
+    expect(existsSync(dataPath('reviews'))).toBe(false);
+  });
+
+  it('notes are a person’s: an agent is refused, and Request changes sends them once', async () => {
+    const id = (await submit()).json().data.id as string;
+    const note = { at: { kind: 'code', path: 'a.txt', line: 2, side: 'new', text: 'TWO' }, text: 'Lower case?' };
+    const byAgent = await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id}/notes`,
+      headers: AGENT,
+      payload: note,
+    });
+    expect(byAgent.statusCode).toBe(403);
+    const added = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/notes`, payload: note });
+    expect(added.statusCode).toBe(200);
+    expect(added.json().data.review.unsent).toBe(1);
+
+    const agentSend = await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id}/request-changes`,
+      headers: AGENT,
+      payload: {},
+    });
+    expect(agentSend.statusCode).toBe(403);
+    expect(deliver).not.toHaveBeenCalled();
+
+    const sent = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/request-changes`, payload: {} });
+    expect(sent.statusCode).toBe(200);
+    expect(sent.json().data).toMatchObject({ confirmed: true, review: { state: 'changes-requested', unsent: 0 } });
+    expect(deliver).toHaveBeenCalledTimes(1);
+
+    const again = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/request-changes`, payload: {} });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toContain('NOTHING');
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('stamps nothing when the prompt never reached the session', async () => {
+    const id = (await submit()).json().data.id as string;
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id}/notes`,
+      payload: { at: { kind: 'general' }, text: 'x' },
+    });
+    vi.mocked(deliver).mockResolvedValue('not-written');
+    const sent = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/request-changes`, payload: {} });
+    expect(sent.statusCode).toBe(409);
+    const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
+    expect(one.review).toMatchObject({ state: 'ready', unsent: 1 });
+  });
+
+  it('writes nothing on a colour that is not live', async () => {
+    const id = (await submit()).json().data.id as string;
+    vi.spyOn(deployRole, 'allows').mockReturnValue(false);
+    try {
+      expect((await submit(AGENT, 'again')).statusCode).toBe(409);
+      const note = await harness.app.inject({
+        method: 'POST',
+        url: `/api/reviews/${id}/notes`,
+        payload: { at: { kind: 'general' }, text: 'x' },
+      });
+      expect(note.statusCode).toBe(409);
+      const read = await harness.app.inject({ url: `/api/reviews/${id}` });
+      expect(read.json().data.review.revision).toBe(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
