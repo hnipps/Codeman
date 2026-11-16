@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — A preview also drops the live colour's release, port and host names
+
+**Type:** intent-refinement
+**Touches:** `src/preview-env.ts`, `test/preview-env.test.ts`
+**Why:** A throwaway Codeman started through `codeman agent preview add` on the deployed build used its own data dir and tmux socket, and `preview rm` stopped it with its tmux server. Its environment still carried `CODEMAN_RELEASE_DIR`, `CODEMAN_COLOUR_PORT` and `CODEMAN_ALLOWED_HOSTS` from the live colour.
+**Links:** [intent/2026-11-14-preview-env-isolation.md](../intent/2026-11-14-preview-env-isolation.md)
+
+Decision. `PREVIEW_STRIPPED_ENV` gains those three. The first two are set by the deploy supervisor and read by nothing in Codeman, but they name the live colour. The third is read: a nested Codeman would accept requests for the live app's host names.
+
+Kept. `CODEMAN_NODE_BINARY` (a fact about the host) and `CODEMAN_NO_AUTOSTART` (keeps `npm install` from starting a service).
+
 ## 2026-11-15 — Canvas routines run as agent-started background tasks, enabled only by a person
 
 **Type:** intent-refinement
