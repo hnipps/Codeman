@@ -47,6 +47,8 @@ delete process.env.CODEMAN_USERNAME;
 // __codemanGestureAvailable flag), breaking byte-identity assertions
 // (test/server-index-title.test.ts) when the shell exports CODEMAN_GESTURE=1.
 delete process.env.CODEMAN_GESTURE;
+// The switch that turns on Open live's supervisor calls; a test injects a fake instead (test/review-live.test.ts).
+delete process.env.CODEMAN_REVIEW_PREVIEWS;
 // CODEMAN_BASE_URL (#381) is read by the WebServer constructor as a fallback; an
 // operator who exports it (exactly who the feature is for) would otherwise see the
 // root-install byte-identity assertions fail.

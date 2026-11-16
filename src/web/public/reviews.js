@@ -49,6 +49,9 @@
     sessionLive: false,
     /** What Approve will do for this review: `{ deploys }`. */
     approve: null,
+    /** The review's live preview as the server describes it, or null when it has none. */
+    live: null,
+    liveBusy: false,
     approving: false,
     changes: null,
     changesError: '',
@@ -194,7 +197,10 @@
   }
 
   async function openReview(id, push) {
+    liveSay('close');
+    liveLast = '';
     const seq = ++state.loadSeq;
+    setLive(null);
     if (push && id !== state.id) history.pushState({ id }, '', `reviews/${id}`);
     state.id = id;
     state.review = null;
@@ -226,7 +232,9 @@
     state.review = data.review;
     state.sessionLive = data.sessionLive;
     state.approve = data.approve || null;
+    setLive(data.live);
     renderReview();
+    liveSay('open');
     // Stills are the thing to look at when there are any; a running preview, found below, takes the tab from them.
     setTab(captures().length ? 'captures' : 'changes');
     setPane('doc');
@@ -249,6 +257,7 @@
     state.review = data.review;
     state.sessionLive = data.sessionLive;
     state.approve = data.approve || null;
+    setLive(data.live);
     if (before && before.state === 'deploying' && data.review.state === 'deployed')
       toast('Deployed. The new build is live.', 'ok');
     if (before && before.revision !== data.review.revision) {
@@ -1278,6 +1287,120 @@
 
   // ---------------------------------------------------------------- layout
 
+  // ── Open live: a branch of Codeman itself, running on its own address ──────────────────────────────
+
+  const LIVE_READY = ['stopped', 'starting', 'running'];
+  const LIVE_POLL_MS = 5000;
+  const LIVE_USE_EVERY_MS = 60000;
+  let livePoll = 0;
+  let liveUsedAt = 0;
+  /** The last word sent, so leaving a tab that is closing does not say `close` twice. */
+  let liveLast = '';
+
+  function liveReady() {
+    return !!(state.live && state.live.available && LIVE_READY.includes(state.live.state));
+  }
+
+  /** Takes the server's word on the review's live preview and draws the button. Polls while a build runs. */
+  function setLive(live) {
+    state.live = live && live.available ? live : null;
+    const button = $('rvOpenLive');
+    clearTimeout(livePoll);
+    button.hidden = !state.live;
+    if (!state.live) return;
+    const kind = state.live.state;
+    button.disabled = kind === 'building' || state.liveBusy;
+    button.title = '';
+    if (kind === 'none') button.textContent = 'Build live preview';
+    else if (kind === 'building') button.textContent = 'Building live preview…';
+    else if (kind === 'build-failed') {
+      button.textContent = 'Live build failed. Build again';
+      button.title = state.live.error || '';
+    } else {
+      button.textContent = state.liveBusy ? 'Waking the preview…' : 'Open live';
+      button.title = 'Opens this branch running on its own address, in a new tab';
+    }
+    if (kind === 'building') livePoll = setTimeout(pollLive, LIVE_POLL_MS);
+  }
+
+  async function pollLive() {
+    const id = state.id;
+    if (!id || document.hidden) return;
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(id)}`);
+      if (id !== state.id) return;
+      const wasBuilding = state.live && state.live.state === 'building';
+      setLive(data.live);
+      if (wasBuilding && liveReady()) {
+        toast('The live preview is built.', 'ok');
+        liveSay('open');
+      }
+    } catch (_err) {
+      if (id === state.id) livePoll = setTimeout(pollLive, LIVE_POLL_MS);
+    }
+  }
+
+  /**
+   * Tells the preview service a person is looking at this review (`open`) or has left it (`close`). The service
+   * runs the preview only while a review is in use, so this is sent on opening a review, on returning to the tab,
+   * at most once a minute while the page is being used, and on the way out.
+   */
+  function liveSay(action) {
+    if (!state.id || !liveReady() || (action === 'close' && liveLast !== 'open')) return;
+    liveLast = action;
+    if (action === 'open') liveUsedAt = Date.now();
+    fetch(`api/reviews/${encodeURIComponent(state.id)}/live`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    }).catch(() => {});
+  }
+
+  function liveTouched(event) {
+    // The button says `open` itself.
+    if (event.target instanceof Element && event.target.closest('#rvOpenLive')) return;
+    if (!document.hidden && Date.now() - liveUsedAt > LIVE_USE_EVERY_MS) liveSay('open');
+  }
+
+  async function liveClick() {
+    if (!state.live || state.liveBusy) return;
+    const id = state.id;
+    const ready = liveReady();
+    // The tab is opened inside the click, before the wait, or the browser blocks it as a pop-up.
+    const tab = ready ? window.open('', '_blank') : null;
+    if (tab) {
+      tab.opener = null;
+      tab.document.title = 'Waking the preview…';
+      tab.document.body.textContent = 'Waking the preview. This takes a few seconds.';
+    }
+    state.liveBusy = true;
+    setLive(state.live);
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(id)}/live`, {
+        method: 'POST',
+        body: { action: ready ? 'open' : 'build' },
+      });
+      state.liveBusy = false;
+      if (id !== state.id) {
+        if (tab) tab.close();
+        return;
+      }
+      liveUsedAt = Date.now();
+      if (ready) liveLast = 'open';
+      setLive(data.live);
+      if (tab && data.live && data.live.url && /^https:\/\//.test(data.live.url)) tab.location.replace(data.live.url);
+      else if (tab) tab.close();
+      if (!ready) toast('The live preview is being built. It takes about two minutes.');
+    } catch (err) {
+      state.liveBusy = false;
+      if (tab) tab.close();
+      if (id === state.id) setLive(state.live);
+      toast(err.message, 'bad');
+    }
+  }
+
   function setTab(tab) {
     state.tab = tab;
     $('rvTabPreview').setAttribute('aria-selected', String(tab === 'preview'));
@@ -1342,6 +1465,17 @@
       else openComposer({ kind: 'preview', path: state.previewPath });
     });
     $('rvPinsToggle').addEventListener('click', () => setPinsHidden(!state.pinsHidden));
+    $('rvOpenLive').addEventListener('click', liveClick);
+    document.addEventListener('pointerdown', liveTouched, true);
+    document.addEventListener('keydown', liveTouched, true);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) liveSay('close');
+      else {
+        liveSay('open');
+        if (state.live && state.live.state === 'building') pollLive();
+      }
+    });
+    window.addEventListener('pagehide', () => liveSay('close'));
     window.addEventListener('message', onFrameMessage);
     window.addEventListener('resize', renderPins);
     for (const button of $('rvDevice').querySelectorAll('button'))
