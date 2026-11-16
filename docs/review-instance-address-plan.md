@@ -151,7 +151,16 @@ The app runs the same commands through the supervisor program it already uses fo
 
 Every command prints one line of JSON on standard output and errors on standard error. Exit codes match `codeman-deploy`: 0 done, 1 refused, 2 bad argument, 3 no answer in time. `use`, `release` and `destroy` can be repeated safely: a second call on a preview already in that state succeeds. An `<id>` the broker did not issue is exit 2 before any request is written.
 
-The Codeman VM is deliberately blocked from opening any connection to the host, and that stays true. The host drives the channel: the supervisor writes each request into a directory in the Codeman VM that only the supervisor can write, and the broker reads requests from it and writes its answers back. The broker accepts only those five requests and treats what it reads as untrusted input. The app user and the agents cannot write a request, and no network rule changes. Creating a preview does not go through the deploy queue, because nothing is built on the Codeman VM.
+The Codeman VM is deliberately blocked from opening any connection to the host, and that stays true. The host drives the channel: the `review` command writes each request as a small file into a request folder in the Codeman VM, and the broker reads requests from it and writes its answers back. No network rule changes.
+
+The command runs as whoever called it, so the app user, and with it any agent in the Codeman VM, can write a request file. Harry approved this on 2026-11-16 in place of the first draft, in which only the root-owned supervisor could write one. The broker is the gate instead:
+
+- It accepts only those five requests, with exactly the fields each one takes, and refuses a file that is too large, is not a regular file, or names a path it should not.
+- It treats every value it reads as untrusted input and never runs anything from a request.
+- Only the broker can write an answer or the state file, so a request cannot forge one.
+- An agent that writes requests directly can do what `codeman-deploy review` already lets it do, and no more: ask for previews, up to the cap.
+
+Creating a preview does not go through the deploy queue, because nothing is built on the Codeman VM.
 
 ### The preview's environment
 
