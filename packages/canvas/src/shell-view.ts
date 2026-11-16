@@ -31,6 +31,7 @@ import {
   type WorkspaceEntry,
 } from './workspaces.js';
 import { createCaseWorkspace, workspaceOfCase, type Made } from './workspace-actions.js';
+import { parseWaitingReviews } from './reviews.js';
 import { releaseUnseen, securityNoticeDue, seenNotices, shellLine } from './shell-notices.js';
 
 export type ShellHost = {
@@ -228,11 +229,24 @@ export class ShellView {
     }
     if (this.stopped) return;
     this.paintSessions();
+    void this.loadReviews();
     if (this.sessionsLoaded && !this.sessionsFailed) this.host.listed(this.rows);
     if (this.goto) this.paintGoto();
     if (this.again) {
       this.again = false;
       void this.refresh();
+    }
+  }
+
+  /** How many reviews wait for the reader, beside the link to the Reviews page. A failed read changes nothing. */
+  private async loadReviews(): Promise<void> {
+    try {
+      const response = await fetch(this.host.url('/api/reviews'));
+      if (!response.ok) return;
+      const waiting = parseWaitingReviews(await response.json())?.count ?? 0;
+      if (!this.stopped) node('reviewsCount').textContent = waiting ? `${waiting} waiting` : '';
+    } catch {
+      /* The link still opens the page. */
     }
   }
 

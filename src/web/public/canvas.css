@@ -2978,6 +2978,21 @@ textarea[readonly] {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+#reviewsLink {
+  margin-top: 4px;
+}
+#reviewsLink .workspace-name {
+  flex: none;
+}
+#reviewsCount {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 12px;
+}
 .workspace-name,
 .session-name,
 .goto-name {

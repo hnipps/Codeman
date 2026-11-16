@@ -31,6 +31,7 @@ import {
   type WorkFilter,
   type WorkRow,
 } from './work-model.js';
+import { parseWaitingReviews, reviewWords, type WaitingReview } from './reviews.js';
 import { RoutinesView } from './routines-view.js';
 
 export type WorkHost = {
@@ -114,6 +115,8 @@ export class WorkView {
   private asked = 0;
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
   private sessionsAt = 0;
+  /** The review each session has waiting on the Reviews page, by session id. Read with the sessions. */
+  private reviews = new Map<string, WaitingReview>();
   private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
   private toastTimer: ReturnType<typeof setTimeout> | undefined;
   private drag: {
@@ -310,16 +313,26 @@ export class WorkView {
       try {
         const response = await fetch(this.host.url(`/api/canvas/${this.host.workspace}/sessions`));
         const rows = response.ok ? parseSessions(await response.json()) : null;
-        if (rows) {
-          this.sessions = rows;
-          this.paint();
-        }
+        const reviews = await this.readReviews();
+        if (reviews) this.reviews = reviews;
+        if (rows) this.sessions = rows;
+        if (rows || reviews) this.paint();
       } catch {
         // The states already shown stay until the next event.
       } finally {
         this.sessionsTimer = undefined;
       }
     }, wait);
+  }
+
+  /** Reviews that wait for a verdict, keyed by the session that wrote each. Null when they could not be read. */
+  private async readReviews(): Promise<Map<string, WaitingReview> | null> {
+    try {
+      const response = await fetch(this.host.url('/api/reviews'));
+      return response.ok ? (parseWaitingReviews(await response.json())?.bySession ?? null) : null;
+    } catch {
+      return null;
+    }
   }
 
   private async send(method: 'POST' | 'PATCH', path: string, body: unknown): Promise<WorkRow | null> {
@@ -1077,6 +1090,14 @@ export class WorkView {
       unlink.dataset.workDetail = `unlink-${id}`;
       unlink.setAttribute('aria-label', `Unlink ${sessionLabel(id, sessions)}`);
       link.append(name, unlink, meta);
+      const review = this.reviews.get(id);
+      if (review) {
+        // The session handed its work in: the walkthrough, the changes and the verdict are on the Reviews page.
+        const open = el('a', 'work-link-review', reviewWords(review.state));
+        open.href = this.host.url(`/reviews/${review.id}`);
+        open.dataset.workDetail = `review-${id}`;
+        link.append(open);
+      }
       links.append(link);
     }
     const linkable = sessions.filter((s) => s.state !== 'done' && !item.sessions.includes(s.id));

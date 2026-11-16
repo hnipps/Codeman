@@ -430,7 +430,25 @@
     else body.textContent = r.walkthrough;
     for (const a of body.querySelectorAll('a[href]')) wireLink(a);
     walk.append(body);
+    markStaleLinks();
     paintTextNotes();
+  }
+
+  /**
+   * A code link whose file the branch no longer changes is struck through. Only when the whole file list is known:
+   * a list that failed to load or was cut short says nothing about a file it does not name.
+   */
+  function markStaleLinks() {
+    const c = state.changes;
+    // A branch that was merged changes nothing against its base, and that says nothing about the walkthrough.
+    const open = state.review && !state.review.decision;
+    const known = open && c && !c.gone && !c.truncated && c.files.length ? new Set(c.files.map((f) => f.path)) : null;
+    for (const a of $('rvWalk').querySelectorAll('a.rv-lk-code')) {
+      const stale = known !== null && !known.has(a.dataset.path);
+      a.classList.toggle('rv-lk-stale', stale);
+      if (stale) a.title = 'This file is no longer among the changes';
+      else a.removeAttribute('title');
+    }
   }
 
   /** `#code=path:10-24` and `#preview=/path` move the stage; every other link opens in a new tab. */
@@ -443,6 +461,7 @@
       const from = code[2] ? Number(code[2]) : null;
       const to = code[3] ? Number(code[3]) : from;
       a.className = 'rv-lk rv-lk-code';
+      a.dataset.path = path;
       a.removeAttribute('target');
       a.addEventListener('click', (event) => {
         event.preventDefault();
@@ -709,6 +728,7 @@
     renderHeader();
     renderNotice();
     renderFiles();
+    markStaleLinks();
     const first = state.changes && state.changes.files[0];
     if (first && !state.file) selectFile(first.path, null);
     else renderDiff();
