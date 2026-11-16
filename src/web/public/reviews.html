@@ -20,7 +20,10 @@
       <span class="rv-meta" id="rvMeta"></span>
       <span class="rv-pill" id="rvState" hidden></span>
       <span class="rv-spacer"></span>
-      <button type="button" class="rv-btn" id="rvRequest" hidden>Request changes</button>
+      <div class="rv-verdict" id="rvVerdict">
+        <button type="button" class="rv-btn" id="rvRequest" hidden>Request changes</button>
+        <button type="button" class="rv-btn rv-btn-go" id="rvApprove" hidden>Approve</button>
+      </div>
     </header>
 
     <main class="rv-main" id="rvMain" data-pane="doc">
@@ -79,6 +82,14 @@
       <button type="button" data-pane="stage">Changes</button>
     </nav>
 
+    <dialog class="rv-confirm" id="rvConfirm" aria-labelledby="rvConfirmTitle">
+      <h2 id="rvConfirmTitle"></h2>
+      <div id="rvConfirmBody"></div>
+      <div class="rv-confirm-foot">
+        <button type="button" class="rv-btn" id="rvConfirmCancel">Cancel</button>
+        <button type="button" class="rv-btn rv-btn-go" id="rvConfirmGo"></button>
+      </div>
+    </dialog>
     <div class="rv-toast" id="rvToast" role="status" aria-live="polite" hidden></div>
   </body>
 </html>

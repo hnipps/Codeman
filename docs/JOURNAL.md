@@ -2,6 +2,21 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — Reviews page: element notes on the preview, and Approve
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/{review-merge,review-model}.ts`, `src/web/routes/{review-routes,webview-routes}.ts`, `src/webview-capabilities.ts`, `src/deploy-control.ts`, `src/web/public/reviews.{html,js,css}`, `deploy/test.sh`, `docs/self-building.md`
+**Why:** Two owner decisions on the first slice, and the verdict the page was built for.
+**Links:** [intent/2026-11-16-reviews-page.md](../intent/2026-11-16-reviews-page.md), [architecture-invariants, "Reviews page"](architecture-invariants.md#reviews-page)
+
+Retracts the entry below on one point: a note on a preview anchors to an element of the page, not to its path. Harry asked for that, and for a way to hide the notes while he tests the page. The sandbox stays as it was. The page reaches into the frame through the canvas frame bridge, which the proxy injects only for a capability minted by `POST /api/reviews/:id/preview`. A dashboard web tab on the same preview keeps its own token and gets no bridge, so nothing changes for it.
+
+Decision. Approve merges without touching any checkout (Harry, same day). The merge is built from objects and refs and pushed to `origin`, so a folder that has the base branch checked out, dirty or clean, ends up behind its remote and nothing else, as after a merged pull request. The one refusal left is a repository with no remote whose base branch is checked out in a folder: moving that branch under its index would make the next commit there undo the merge without saying so.
+
+Decision. Approve merges exactly the commit the reviewer was shown. The page sends the branch tip it displayed, and a branch that moved since is refused.
+
+Decision. For Codeman's own repository Approve also asks the supervisor for a deploy of the merge. This is the first deploy the app asks for itself; until now only an agent's shell did, and the web UI could only roll back. It uses the supervisor's existing `request deploy <sha>` and changes nothing in the supervisor. The repository is recognised by holding the commit that is live now, not by a path. Because a successful deploy stops the colour that asked, the outcome is read afterwards from the supervisor's record by whichever colour is live.
+
 ## 2026-11-16 — Reviews page, first slice: walkthrough, changes, notes, Request changes
 
 **Type:** intent-refinement

@@ -16,12 +16,12 @@ import type { RepoFacts } from './review-model.js';
 
 export const MAX_REVIEW_FILES = 500;
 export const MAX_REVIEW_DIFF_BYTES = 400 * 1024;
-const SHA = /^[0-9a-f]{40}$/;
+export const SHA = /^[0-9a-f]{40}$/;
 
 export class ReviewGitRefusal extends Error {}
 
-const line = (s: string): string => s.trim().split('\n')[0] ?? '';
-async function tryGit(git: GitRunner, cwd: string, args: string[]): Promise<string | null> {
+export const line = (s: string): string => s.trim().split('\n')[0] ?? '';
+export async function tryGit(git: GitRunner, cwd: string, args: string[]): Promise<string | null> {
   try {
     return await git(cwd, args);
   } catch {
@@ -29,7 +29,7 @@ async function tryGit(git: GitRunner, cwd: string, args: string[]): Promise<stri
   }
 }
 
-async function validRef(git: GitRunner, cwd: string, name: string): Promise<boolean> {
+export async function validRef(git: GitRunner, cwd: string, name: string): Promise<boolean> {
   return (await tryGit(git, cwd, ['check-ref-format', '--branch', name])) !== null;
 }
 

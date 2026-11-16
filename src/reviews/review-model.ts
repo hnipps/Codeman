@@ -105,6 +105,9 @@ export const NoteSchema = z
 export type Note = z.infer<typeof NoteSchema>;
 
 /** What happened when a person approved. Absent until then. */
+/** A deploy the supervisor neither lists nor runs is given up on after this long. Deploys queue, so it is generous. */
+export const DEPLOY_LOST_MS = 45 * 60_000;
+
 export const DecisionSchema = z
   .object({
     kind: z.enum(['merged', 'deploying', 'deployed', 'deploy-failed']),
@@ -228,6 +231,55 @@ export const NoteBodySchema = z.object({ at: NoteAnchorSchema, text: z.string().
 export const NotePatchSchema = z
   .object({ text: z.string().min(1).max(MAX_NOTE_CHARS).optional(), resolved: z.boolean().optional() })
   .strict();
+
+/** How a deploy this review asked for stands, from the supervisor's own record. Pure. */
+export function settledDeploy(
+  decision: Decision,
+  overview: {
+    live: { sha: string } | null;
+    recent: {
+      sha: string | null;
+      action: string;
+      outcome: string;
+      failedStep: string | null;
+      finishedAt: string | null;
+    }[];
+    busy: boolean;
+  },
+  now: number
+): Decision | null {
+  if (decision.kind !== 'deploying' || !decision.mergedSha) return null;
+  const sha = decision.mergedSha;
+  const run = overview.recent.find((d) => d.action === 'deploy' && d.sha === sha && d.finishedAt !== null);
+  if (run?.outcome === 'success' || (!run && overview.live?.sha === sha))
+    return { ...decision, kind: 'deployed', at: now };
+  if (run)
+    return {
+      ...decision,
+      kind: 'deploy-failed',
+      at: now,
+      error: cleanLine(
+        run.failedStep ? `The deploy failed at ${run.failedStep}` : `The deploy was ${run.outcome}`,
+        200
+      ),
+    };
+  const stillListed = overview.recent.some((d) => d.action === 'deploy' && d.sha === sha);
+  if (!stillListed && !overview.busy && now - decision.at > DEPLOY_LOST_MS)
+    return { ...decision, kind: 'deploy-failed', at: now, error: 'The deploy supervisor has no record of this deploy' };
+  return null;
+}
+
+/** Records what Approve did. Refused once a review has been approved. */
+export function decide(r: Review, decision: Decision): Changed | Refusal {
+  if (
+    r.decision &&
+    !(r.decision.kind === 'deploy-failed' || r.decision.kind === 'deploying' || r.decision.kind === 'merged')
+  )
+    return refuse('DECIDED', 'DECIDED: this review has been decided');
+  if (r.decision && r.decision.mergedSha && decision.mergedSha !== r.decision.mergedSha)
+    return refuse('DECIDED', 'DECIDED: this review has been merged');
+  return { ok: true, review: { ...r, decision } };
+}
 
 export type Refusal = { ok: false; code: 'DECIDED' | 'FULL' | 'NOT_FOUND' | 'SENT'; message: string };
 export type Changed = { ok: true; review: Review };

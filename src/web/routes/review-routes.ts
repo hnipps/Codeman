@@ -31,15 +31,25 @@ import { z } from 'zod';
 import { deliver } from '../../canvas/conversation-delivery.js';
 import { SendLimiter } from '../../canvas/send-limit.js';
 import { getDataDir } from '../../config/instance.js';
+import { isMultiUserMode } from '../../config/multiuser.js';
+import {
+  readOverview as realReadOverview,
+  requestDeploy as realRequestDeploy,
+  supervisorCli,
+  type DeployOverviewConfigured,
+} from '../../deploy-control.js';
 import { deployRole } from '../../deploy-role.js';
-import { isInsideAny } from '../../git-workspace-status.js';
+import { isInsideAny, runGit } from '../../git-workspace-status.js';
 import {
   ReviewGitRefusal,
   repoFacts,
   reviewChanges,
   reviewFileDiff,
+  SHA,
+  tryGit,
   type ReviewChanges,
 } from '../../reviews/review-git.js';
+import { mergeReviewedBranch, type MergeInput, type MergeResult } from '../../reviews/review-merge.js';
 import {
   MAX_OPEN_REVIEWS,
   NoteBodySchema,
@@ -47,17 +57,20 @@ import {
   ReviewIdSchema,
   SubmitSchema,
   addNote,
+  decide,
   isOpen,
   patchNote,
   queueOf,
   removeNote,
   requestChangesPrompt,
   sameWork,
+  settledDeploy,
   stampSent,
   submitReview,
   toView,
   unsentNotes,
   type Changed,
+  type Decision,
   type Refusal,
   type Review,
 } from '../../reviews/review-model.js';
@@ -68,7 +81,7 @@ import { webviewCapabilities } from '../../webview-capabilities.js';
 import { readWebviews } from '../../webview-store.js';
 import { approvalInbox } from '../approval-inbox.js';
 import type { EventPort, SessionPort } from '../ports/index.js';
-import { canAccessOwned, getAuthUser, parseBody } from '../route-helpers.js';
+import { canAccessOwned, getAuthUser, isAdmin, parseBody } from '../route-helpers.js';
 import { SseEvent } from '../sse-events.js';
 import { proxyPrefixFor } from '../webview-proxy.js';
 import { deliveryDeps } from './canvas-conversation-routes.js';
@@ -80,7 +93,24 @@ export interface ReviewRouteOptions {
   dockerWorkspaces?: () => Promise<string[]>;
   /** The reverse-proxy mount prefix, for the preview frame's address. */
   basePath?: string;
+  /** The deploy supervisor, as `deploy-control.ts` reaches it. Injected by tests, which must never reach a real one. */
+  deploy?: {
+    cli: () => string | null;
+    readOverview: (cli: string) => Promise<DeployOverviewConfigured>;
+    requestDeploy: (cli: string, sha: string) => Promise<{ requestId: string }>;
+  };
+  /** The merge. Injected by tests that are about something else. */
+  merge?: (input: MergeInput) => Promise<MergeResult>;
 }
+
+const ApproveSchema = z.object({ headSha: z.string().regex(/^[0-9a-f]{40}$/) }).strict();
+/** One merge per repository at a time. */
+const merging = new Set<string>();
+/** Whether a repository is the one this Codeman is built from, remembered briefly: the answer costs a supervisor call. */
+const selfDeployCache = new Map<string, { at: number; value: boolean }>();
+const SELF_DEPLOY_TTL_MS = 30_000;
+const SETTLE_EVERY_MS = 3_000;
+let settledAt = 0;
 
 const PreviewOpenSchema = z.object({ webviewId: z.string().min(1).max(200) }).strict();
 
@@ -173,6 +203,58 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     return (await isInsideAny(repoRoot, roots)) ? 'A repository inside a Docker case cannot be reviewed here' : null;
   };
 
+  const deploy = options.deploy ?? {
+    cli: supervisorCli,
+    readOverview: realReadOverview,
+    requestDeploy: realRequestDeploy,
+  };
+  const merge = options.merge ?? ((input: MergeInput) => mergeReviewedBranch(input));
+
+  /**
+   * True when approving a branch of this repository also deploys it: the deploy supervisor is configured and the
+   * commit that is live now is a commit of this repository. Only Codeman's own repository holds that commit.
+   */
+  const deploysItself = async (repoRoot: string): Promise<boolean> => {
+    const cli = deploy.cli();
+    if (!cli) return false;
+    const hit = selfDeployCache.get(repoRoot);
+    if (hit && Date.now() - hit.at < SELF_DEPLOY_TTL_MS) return hit.value;
+    let value = false;
+    try {
+      const live = (await deploy.readOverview(cli)).live?.sha ?? '';
+      value = SHA.test(live) && (await tryGit(runGit, repoRoot, ['cat-file', '-e', `${live}^{commit}`])) !== null;
+    } catch {
+      value = false;
+    }
+    selfDeployCache.set(repoRoot, { at: Date.now(), value });
+    if (selfDeployCache.size > CHANGES_CACHE_MAX) selfDeployCache.delete(selfDeployCache.keys().next().value as string);
+    return value;
+  };
+
+  /**
+   * Reads how each deploy a review asked for ended. The colour that asked is stopped by a deploy that succeeds, so
+   * the answer is read later, by whichever colour is live, from the supervisor's own record.
+   */
+  const settleDeploys = async (): Promise<void> => {
+    if (Date.now() - settledAt < SETTLE_EVERY_MS || !deployRole.allows('persist')) return;
+    settledAt = Date.now();
+    const waiting = listReviews().filter((r) => r.decision?.kind === 'deploying');
+    const cli = deploy.cli();
+    if (!waiting.length || !cli) return;
+    let overview: DeployOverviewConfigured;
+    try {
+      overview = await deploy.readOverview(cli);
+    } catch {
+      return;
+    }
+    for (const review of waiting) {
+      const next = review.decision ? settledDeploy(review.decision, overview, Date.now()) : null;
+      if (!next) continue;
+      const changed = changeReview(review.id, (r) => decide(r, next));
+      if (changed.ok) announce(changed.review);
+    }
+  };
+
   const changesOf = async (review: Review): Promise<ReviewChanges> => {
     const hit = changesCache.get(review.id);
     if (hit && Date.now() - hit.at < CHANGES_TTL_MS) return hit.changes;
@@ -184,6 +266,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   };
 
   app.get('/api/reviews', async (req) => {
+    await settleDeploys();
     const mine = listReviews().filter((r) => visible(req, r));
     return { success: true, data: queueOf(mine, Date.now()) };
   });
@@ -231,6 +314,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   });
 
   app.get<{ Params: { id: string } }>('/api/reviews/:id', async (req, reply) => {
+    await settleDeploys();
     const review = reviewOf(req, reply);
     if (!review) return reply;
     const session = ctx.sessions.get(review.sessionId);
@@ -238,6 +322,8 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       success: true,
       data: {
         review: toView(review),
+        // What the Approve button will do, so the page can say so before it is pressed.
+        approve: { deploys: review.decision?.kind === 'merged' ? false : await deploysItself(review.repoRoot) },
         sessionLive: !!session && canAccessOwned(getAuthUser(req), session.owner) && !session.paneExit,
       },
     };
@@ -299,6 +385,100 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   app.delete<{ Params: { id: string; noteId: string } }>('/api/reviews/:id/notes/:noteId', async (req, reply) =>
     changeNotes(req, reply, (r) => removeNote(r, req.params.noteId))
   );
+
+  /** Asks the supervisor for a deploy of the merge and returns what the review should record. */
+  const askForDeploy = async (mergedSha: string): Promise<Decision> => {
+    const cli = deploy.cli();
+    try {
+      if (!cli) throw new Error('Deploy control is not configured on this install');
+      const { requestId } = await deploy.requestDeploy(cli, mergedSha);
+      return { kind: 'deploying', at: Date.now(), mergedSha, deployRequestId: requestId.slice(0, 100) };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'The deploy could not be requested';
+      return { kind: 'deploy-failed', at: Date.now(), mergedSha, error: message.slice(0, 200) };
+    }
+  };
+
+  /** Who may ask for a deploy, and from which colour. Returns false when it has replied. */
+  const mayDeploy = (req: FastifyRequest, reply: FastifyReply): boolean => {
+    if (isMultiUserMode() && !isAdmin(req)) {
+      void fail(reply, 403, ApiErrorCode.FORBIDDEN, 'Only an admin can approve a change that deploys Codeman');
+      return false;
+    }
+    if (!deployRole.allows('requestDeploy')) {
+      void fail(reply, 409, ApiErrorCode.CONFLICT, 'A deploy can only be requested from the live colour');
+      return false;
+    }
+    return true;
+  };
+
+  /**
+   * Approve. Merges the branch into its base exactly as the reviewer was shown it (`headSha`), and for Codeman's own
+   * repository asks the supervisor to deploy the merge. Nothing here runs without this request, and nothing in it
+   * touches a working tree (`review-merge.ts`).
+   */
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/approve', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    if (review.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
+    const { headSha } = parseBody(ApproveSchema, req.body);
+    const refusal = await gitRefusal(ctx.sessions.get(review.sessionId), review.repoRoot);
+    if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
+    const deploys = await deploysItself(review.repoRoot);
+    if (deploys && !mayDeploy(req, reply)) return reply;
+    if (merging.has(review.repoRoot))
+      return fail(reply, 409, ApiErrorCode.CONFLICT, 'BUSY: another merge is running in this repository');
+    merging.add(review.repoRoot);
+    let merged: MergeResult;
+    try {
+      merged = await merge({
+        repoRoot: review.repoRoot,
+        base: review.base,
+        branch: review.branch,
+        headSha,
+        title: review.title,
+      });
+    } finally {
+      merging.delete(review.repoRoot);
+    }
+    if (!merged.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, merged.message);
+    // The merge exists from here on. It is recorded before the deploy is asked for, so a deploy that cannot be
+    // requested leaves a merged review with a failed deploy, never an unrecorded merge.
+    const mergedSha = merged.mergedSha;
+    const first = changeReview(review.id, (r) => decide(r, { kind: 'merged', at: Date.now(), mergedSha }));
+    let latest = first.ok ? first.review : review;
+    if (deploys) {
+      const decision = await askForDeploy(mergedSha);
+      const second = changeReview(review.id, (r) => decide(r, decision));
+      if (second.ok) latest = second.review;
+    }
+    changesCache.delete(review.id);
+    announce(latest);
+    return {
+      success: true,
+      data: {
+        review: toView(latest),
+        merge: { pushed: merged.pushed, localMoved: merged.localMoved, already: merged.already },
+      },
+    };
+  });
+
+  /** Asks again for the deploy of a merge whose deploy failed. The merge is not made again. */
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/deploy', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const mergedSha = review.decision?.kind === 'deploy-failed' ? review.decision.mergedSha : undefined;
+    if (!mergedSha)
+      return fail(reply, 409, ApiErrorCode.CONFLICT, 'NOTHING: this review has no failed deploy to try again');
+    if (!mayDeploy(req, reply)) return reply;
+    const decision = await askForDeploy(mergedSha);
+    const changed = changeReview(review.id, (r) => decide(r, decision));
+    if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
+    announce(changed.review);
+    return { success: true, data: { review: toView(changed.review) } };
+  });
 
   /**
    * The address of the review's preview frame. It is the session's own preview, through a capability of its own that

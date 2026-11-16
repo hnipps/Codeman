@@ -131,8 +131,31 @@ export function requestRollback(
   target: RollbackTarget,
   timeoutMs: number = QUEUE_TIMEOUT_MS
 ): Promise<{ requestId: string }> {
+  return queueRequest(cli, 'rollback', target, timeoutMs);
+}
+
+/**
+ * Queue a deploy of one commit, the request `codeman-deploy <sha>` makes. Only the Reviews page's Approve asks for
+ * it, for a merge a person approved. A successful deploy stops the process that asked, as a rollback does.
+ */
+export function requestDeploy(
+  cli: string,
+  sha: string,
+  timeoutMs: number = QUEUE_TIMEOUT_MS
+): Promise<{ requestId: string }> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) return Promise.reject(new DeployControlError('A deploy needs a full commit sha'));
+  return queueRequest(cli, 'deploy', sha, timeoutMs);
+}
+
+function queueRequest(
+  cli: string,
+  action: 'deploy' | 'rollback',
+  target: string,
+  timeoutMs: number
+): Promise<{ requestId: string }> {
+  const what = action === 'deploy' ? 'deploy' : 'rollback';
   return new Promise((resolve, reject) => {
-    const child = spawn(cli, ['request', 'rollback', target], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cli, ['request', action, target], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -149,7 +172,7 @@ export function requestRollback(
         reject(new DeployControlError(lastLine(stderr) || fallback));
       });
 
-    const timer = setTimeout(() => fail('The deploy supervisor did not queue the rollback in time'), timeoutMs);
+    const timer = setTimeout(() => fail(`The deploy supervisor did not queue the ${what} in time`), timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
       if (settled) return;
@@ -168,6 +191,6 @@ export function requestRollback(
       if (!settled) stderr = (stderr + chunk.toString()).slice(-2048);
     });
     child.on('error', () => fail('The deploy supervisor could not be started'));
-    child.on('close', () => fail('The deploy supervisor exited before queuing the rollback'));
+    child.on('close', () => fail(`The deploy supervisor exited before queuing the ${what}`));
   });
 }

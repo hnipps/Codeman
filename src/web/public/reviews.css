@@ -153,6 +153,42 @@ textarea {
   padding: 16px;
 }
 
+.rv-verdict {
+  display: flex;
+  gap: 8px;
+}
+.rv-verdict:not(:has(.rv-btn:not([hidden]))) {
+  display: none;
+}
+.rv-confirm {
+  width: min(460px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--text);
+}
+.rv-confirm::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.rv-confirm h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.rv-confirm p {
+  margin: 0 0 8px;
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.rv-confirm-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 /* ---------- columns ---------- */
 .rv-main {
   flex: 1;
@@ -773,15 +809,24 @@ textarea {
     display: none;
   }
   /* The verdict stays in reach: a fixed bar above the section tabs. */
-  #rvRequest {
+  .rv-verdict {
     position: fixed;
     left: 12px;
     right: 12px;
     bottom: calc(56px + env(safe-area-inset-bottom));
     z-index: 15;
+  }
+  .rv-verdict .rv-btn {
+    flex: 1 1 0;
+    min-width: 0;
     min-height: 44px;
-    background: var(--bg-card);
+    overflow: hidden;
+    text-overflow: ellipsis;
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+  }
+  .rv-verdict .rv-btn:not(.rv-btn-go) {
+    flex-grow: 1.6;
+    background: var(--bg-card);
   }
   .rv-main {
     padding-bottom: calc(112px + env(safe-area-inset-bottom));

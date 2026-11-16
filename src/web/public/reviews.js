@@ -47,6 +47,9 @@
     id: null,
     review: null,
     sessionLive: false,
+    /** What Approve will do for this review: `{ deploys }`. */
+    approve: null,
+    approving: false,
     changes: null,
     changesError: '',
     file: null,
@@ -217,6 +220,7 @@
     if (seq !== state.loadSeq) return;
     state.review = data.review;
     state.sessionLive = data.sessionLive;
+    state.approve = data.approve || null;
     renderReview();
     setPane('doc');
     loadChanges(seq);
@@ -237,6 +241,9 @@
     if (seq !== state.loadSeq) return;
     state.review = data.review;
     state.sessionLive = data.sessionLive;
+    state.approve = data.approve || null;
+    if (before && before.state === 'deploying' && data.review.state === 'deployed')
+      toast('Deployed. The new build is live.', 'ok');
     if (before && before.revision !== data.review.revision) {
       renderReview();
       loadChanges(seq);
@@ -270,6 +277,100 @@
       : r.unsent
         ? 'Sends every unsent note to the session as one prompt.'
         : 'Add a note first.';
+    renderApprove();
+    renderNotice();
+    watchDeploy();
+  }
+
+  // ---------------------------------------------------------------- approve
+
+  const shortSha = (sha) => (typeof sha === 'string' ? sha.slice(0, 7) : '');
+
+  function renderApprove() {
+    const r = state.review;
+    const button = $('rvApprove');
+    const c = state.changes;
+    const retry = r.state === 'deploy-failed';
+    button.hidden = !(retry || !r.decision);
+    if (button.hidden) return;
+    const deploys = !!(state.approve && state.approve.deploys);
+    button.textContent = state.approving ? 'Working…' : retry ? 'Deploy again' : 'Approve';
+    const ready = retry || (c && !c.gone && c.headSha);
+    button.disabled = state.approving || !ready;
+    button.title = retry
+      ? 'Asks for the deploy of the merged commit again. Nothing is merged twice.'
+      : !ready
+        ? 'The changes have not loaded, or the branch is gone.'
+        : deploys
+          ? `Merges ${r.branch} into ${r.base} and deploys it.`
+          : `Merges ${r.branch} into ${r.base}.`;
+  }
+
+  function askApprove() {
+    const r = state.review;
+    const c = state.changes;
+    if (r.state === 'deploy-failed') return approveCall('deploy', {});
+    if (!c || c.gone || !c.headSha) return undefined;
+    const deploys = !!(state.approve && state.approve.deploys);
+    $('rvConfirmTitle').textContent = `Merge ${r.branch} into ${r.base}?`;
+    const lines = [
+      `${c.commits} ${c.commits === 1 ? 'commit' : 'commits'}, ${c.files.length}${c.truncated ? '+' : ''} ${
+        c.files.length === 1 ? 'file' : 'files'
+      }, +${c.added} −${c.deleted}. The branch merges as Changes shows it now, at ${shortSha(c.headSha)}.`,
+    ];
+    if (deploys)
+      lines.push(
+        'This is Codeman itself, so the merge is then deployed: built, tested and switched to. Your sessions keep running, and this page reloads when the new build is live.'
+      );
+    if (c.moved) lines.push('The branch has commits newer than the walkthrough. They are part of what merges.');
+    if (r.unsent)
+      lines.push(
+        `${r.unsent} ${r.unsent === 1 ? 'note has' : 'notes have'} not been sent to the session. Approving does not send ${
+          r.unsent === 1 ? 'it' : 'them'
+        }.`
+      );
+    lines.push('A merge is not undone from this page.');
+    $('rvConfirmBody').replaceChildren(...lines.map((line) => el('p', '', line)));
+    $('rvConfirmGo').textContent = deploys ? 'Merge and deploy' : 'Merge';
+    $('rvConfirm').showModal();
+    $('rvConfirmCancel').focus();
+    return undefined;
+  }
+
+  async function approveCall(path, body) {
+    state.approving = true;
+    renderApprove();
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(state.id)}/${path}`, { method: 'POST', body });
+      state.review = data.review;
+      const d = data.review.decision || {};
+      const where = data.merge && data.merge.pushed ? ' on origin' : '';
+      toast(
+        d.kind === 'deploying'
+          ? `Merged as ${shortSha(d.mergedSha)}. The deploy is queued.`
+          : d.kind === 'deploy-failed'
+            ? `Merged as ${shortSha(d.mergedSha)}, but the deploy could not be requested: ${d.error || 'no reason given'}`
+            : `Merged into ${data.review.base}${where} as ${shortSha(d.mergedSha)}.`,
+        d.kind === 'deploy-failed' ? 'bad' : 'ok'
+      );
+      loadQueue();
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+    state.approving = false;
+    renderHeader();
+    renderNotes();
+    renderPreview();
+  }
+
+  /** While a deploy runs the colour serving this page is replaced, so no event can be relied on: ask. */
+  function watchDeploy() {
+    const deploying = state.review && state.review.state === 'deploying';
+    if (deploying && !watchDeploy.timer) watchDeploy.timer = setInterval(refreshReview, 5000);
+    if (!deploying && watchDeploy.timer) {
+      clearInterval(watchDeploy.timer);
+      watchDeploy.timer = null;
+    }
   }
 
   function renderNotice() {
@@ -281,7 +382,16 @@
       lines.push(
         'The branch has new commits since this walkthrough was written. Its code links may point at lines that moved.'
       );
-    if (state.review && !state.sessionLive)
+    const d = state.review && state.review.decision;
+    if (d && d.kind === 'merged') lines.push(`Merged into ${state.review.base} as ${shortSha(d.mergedSha)}.`);
+    else if (d && d.kind === 'deploying')
+      lines.push(`Merged as ${shortSha(d.mergedSha)}. The deploy is running; this page follows it.`);
+    else if (d && d.kind === 'deployed') lines.push(`Merged as ${shortSha(d.mergedSha)} and deployed.`);
+    else if (d && d.kind === 'deploy-failed')
+      lines.push(
+        `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
+      );
+    if (state.review && !state.sessionLive && !d)
       lines.push('The session that wrote this has ended. You can still read it and keep notes.');
     box.hidden = !lines.length;
     box.replaceChildren(...lines.map((line) => el('p', '', line)));
@@ -1016,6 +1126,12 @@
 
   function start() {
     $('rvRequest').addEventListener('click', requestChanges);
+    $('rvApprove').addEventListener('click', askApprove);
+    $('rvConfirmCancel').addEventListener('click', () => $('rvConfirm').close());
+    $('rvConfirmGo').addEventListener('click', () => {
+      $('rvConfirm').close();
+      approveCall('approve', { headSha: state.changes.headSha });
+    });
     $('rvGeneral').addEventListener('click', () => openComposer({ kind: 'general' }));
     $('rvComposerCancel').addEventListener('click', closeComposer);
     $('rvComposer').addEventListener('submit', (event) => {
