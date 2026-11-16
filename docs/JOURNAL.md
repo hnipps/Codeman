@@ -2,6 +2,17 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — Five supervisor commands for review previews
+
+**Type:** intent-refinement
+**Touches:** `docs/review-instance-address-plan.md`
+**Why:** The plan listed three commands, and its own start and stop rules needed the app to report when a review page opens and closes. Harry left the set to the agent and asked that each command have one job.
+**Links:** [docs/review-instance-address-plan.md](review-instance-address-plan.md#how-the-app-asks-for-a-preview)
+
+`codeman-deploy review create | use | release | destroy | status`. `use` and `release` are the page-opened and page-closed messages. `create` and `destroy` replace `start` and `stop`, because a preview also stops and starts each time it sleeps and wakes, and the old `stop` deleted it.
+
+Rejected. Three commands with the broker waking a preview on the first request to its address: the page could not warm a preview before **Open live** is pressed, and a closed page would hold a VM for five minutes instead of one. One heartbeat command in place of `use` and `release`: it needs a call every few seconds through the supervisor for as long as a page is open.
+
 ## 2026-11-16 — A stand-in for `claude` on preview machines
 
 **Type:** intent-refinement
