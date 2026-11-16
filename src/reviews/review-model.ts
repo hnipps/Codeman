@@ -45,6 +45,27 @@ const stripControl = (s: string): string =>
 export const cleanLine = (s: string, max: number): string => stripControl(s).replace(/\s+/g, ' ').trim().slice(0, max);
 export const cleanText = (s: string, max: number): string => stripControl(s).replace(/\r\n?/g, '\n').slice(0, max);
 
+/**
+ * An element of a previewed page, as the frame bridge reported it. Every string here was written by the page inside
+ * the frame: it is shown with `textContent` and passes through `cleanLine` before it enters a prompt.
+ */
+export const PreviewElementSchema = z
+  .object({
+    /** A CSS selector that found exactly this element when it was picked. */
+    selector: z.string().min(1).max(1024),
+    /** A readable ancestor trail, such as `main > section.lanes > article.card`. */
+    trail: z.string().max(2048).default(''),
+    tag: z.string().min(1).max(64),
+    text: z.string().max(400).default(''),
+    /** Where it was in the frame's viewport when picked, so it can be found again after its selector changes. */
+    x: z.number().finite(),
+    y: z.number().finite(),
+    /** `file:line` when the page marks its elements with one. */
+    source: z.string().max(512).optional(),
+  })
+  .strict();
+export type PreviewElement = z.infer<typeof PreviewElementSchema>;
+
 export const NoteAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('general') }).strict(),
   z.object({ kind: z.literal('text'), anchor: ReviewAnchorSchema }).strict(),
@@ -59,7 +80,15 @@ export const NoteAnchorSchema = z.discriminatedUnion('kind', [
       text: z.string().max(400),
     })
     .strict(),
-  z.object({ kind: z.literal('preview'), path: z.string().min(1).max(MAX_PATH_CHARS) }).strict(),
+  z
+    .object({
+      kind: z.literal('preview'),
+      /** The preview address the reviewer had asked for when the note was written. */
+      path: z.string().min(1).max(MAX_PATH_CHARS),
+      /** The element on the page the note is about. Absent on a note about the page as a whole. */
+      element: PreviewElementSchema.optional(),
+    })
+    .strict(),
 ]);
 export type NoteAnchor = z.infer<typeof NoteAnchorSchema>;
 
@@ -266,8 +295,18 @@ const where = (n: Note): string => {
       return `On ${n.at.path}:${n.at.line}${n.at.side === 'old' ? ' (removed line)' : ''}${
         n.at.text.trim() ? `, \`${oneLine(n.at.text, 160)}\`` : ''
       }`;
-    case 'preview':
-      return `On the preview at ${oneLine(n.at.path, 200)}`;
+    case 'preview': {
+      const el = n.at.element;
+      if (!el) return `On the preview at ${oneLine(n.at.path, 200)}`;
+      const text = oneLine(el.text, 80);
+      return [
+        `On the preview at ${oneLine(n.at.path, 200)}, the element <${oneLine(el.tag, 64)}>`,
+        text ? ` "${text}"` : '',
+        ` (selector \`${oneLine(el.selector, 300)}\``,
+        el.source ? `, source ${oneLine(el.source, 200)}` : '',
+        ')',
+      ].join('');
+    }
   }
 };
 

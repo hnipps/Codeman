@@ -1538,7 +1538,7 @@ export class WebServer extends EventEmitter {
     registerOrchestratorRoutes(this.app, ctx);
     registerWebviewRoutes(this.app, ctx, this.basePath);
     registerPreviewRoutes(this.app, ctx, this.basePath);
-    registerReviewPageRoutes(this.app, ctx);
+    registerReviewPageRoutes(this.app, ctx, { basePath: this.basePath });
     if (!this.testMode) {
       this.cleanup.setInterval(
         () => {

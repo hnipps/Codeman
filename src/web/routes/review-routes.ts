@@ -30,6 +30,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { deliver } from '../../canvas/conversation-delivery.js';
 import { SendLimiter } from '../../canvas/send-limit.js';
+import { getDataDir } from '../../config/instance.js';
 import { deployRole } from '../../deploy-role.js';
 import { isInsideAny } from '../../git-workspace-status.js';
 import {
@@ -63,10 +64,13 @@ import {
 import { changeReview, listReviews, newReviewId, readReview, writeReview } from '../../reviews/review-store.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
+import { webviewCapabilities } from '../../webview-capabilities.js';
+import { readWebviews } from '../../webview-store.js';
 import { approvalInbox } from '../approval-inbox.js';
 import type { EventPort, SessionPort } from '../ports/index.js';
 import { canAccessOwned, getAuthUser, parseBody } from '../route-helpers.js';
 import { SseEvent } from '../sse-events.js';
+import { proxyPrefixFor } from '../webview-proxy.js';
 import { deliveryDeps } from './canvas-conversation-routes.js';
 import { defaultDockerWorkspaces } from './git-status-routes.js';
 
@@ -74,7 +78,11 @@ type Ctx = SessionPort & EventPort;
 export interface ReviewRouteOptions {
   /** Host paths of Docker case workspaces. Injected by tests; rejects when the list cannot be read. */
   dockerWorkspaces?: () => Promise<string[]>;
+  /** The reverse-proxy mount prefix, for the preview frame's address. */
+  basePath?: string;
 }
+
+const PreviewOpenSchema = z.object({ webviewId: z.string().min(1).max(200) }).strict();
 
 const DiffQuerySchema = z.object({ path: z.string().min(1).max(4096) }).strict();
 const limiter = new SendLimiter();
@@ -291,6 +299,29 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   app.delete<{ Params: { id: string; noteId: string } }>('/api/reviews/:id/notes/:noteId', async (req, reply) =>
     changeNotes(req, reply, (r) => removeNote(r, req.params.noteId))
   );
+
+  /**
+   * The address of the review's preview frame. It is the session's own preview, through a capability of its own that
+   * makes the proxy inject the frame bridge, so a note can be put on an element of the page. The frame stays
+   * sandboxed with an opaque origin; the bridge is its only channel to this page.
+   */
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/preview', async (req, reply) => {
+    if (agentHeader(req)) return fail(reply, 403, ApiErrorCode.FORBIDDEN, PERSON_ONLY);
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const body = parseBody(PreviewOpenSchema, req.body);
+    const webview = (await readWebviews(getDataDir())).find((w) => w.id === body.webviewId);
+    if (
+      !webview ||
+      webview.origin.kind !== 'session' ||
+      webview.origin.sessionId !== review.sessionId ||
+      webview.embedMode === 'direct' ||
+      !canAccessOwned(getAuthUser(req), webview.owner)
+    )
+      return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'That is not a preview of the session that wrote this review');
+    const capability = webviewCapabilities.mint(webview.id, webview.owner, { bridge: true });
+    return { success: true, data: { embedUrl: proxyPrefixFor(capability, options.basePath ?? '') } };
+  });
 
   app.post<{ Params: { id: string } }>('/api/reviews/:id/request-changes', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;

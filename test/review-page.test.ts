@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dataPath } from '../src/config/instance.js';
+import { dataPath, getDataDir } from '../src/config/instance.js';
 import { deployRole } from '../src/deploy-role.js';
 import {
   parseNumstatZ,
@@ -30,6 +30,9 @@ import {
   type Review,
 } from '../src/reviews/review-model.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
+import type { Webview } from '../src/types/webview.js';
+import { webviewCapabilities } from '../src/webview-capabilities.js';
+import { writeWebviews } from '../src/webview-store.js';
 import { createRouteTestHarness, type RouteTestHarness } from './routes/_route-test-utils.js';
 
 vi.mock('../src/canvas/conversation-delivery.js', async (original) => ({
@@ -123,12 +126,32 @@ describe('review rules', () => {
     add({ kind: 'text', anchor: { quote: 'Hello', prefix: '', suffix: ' world' } }, 'Say more', 'n2aaaaaa');
     add({ kind: 'code', path: 'src/a.ts', line: 12, side: 'new', text: 'const a = 1;' }, 'Rename', 'n3aaaaaa');
     add({ kind: 'preview', path: '/settings' }, 'Too dark', 'n4aaaaaa');
+    add(
+      {
+        kind: 'preview',
+        path: '/settings',
+        element: {
+          selector: 'main > button.save',
+          trail: 'main > button',
+          tag: 'button',
+          text: 'Save\u001b[31m\nnow',
+          x: 4,
+          y: 8,
+        },
+      },
+      'Wrong colour',
+      'n5aaaaaa'
+    );
     const prompt = requestChangesPrompt(r, unsentNotes(r));
     if (!('text' in prompt)) throw new Error('expected a prompt');
     expect(prompt.text).toContain('1. General');
     expect(prompt.text).toContain('2. On your walkthrough, at "Hello"');
     expect(prompt.text).toContain('3. On src/a.ts:12, `const a = 1;`');
-    expect(prompt.text).toContain('4. On the preview at /settings');
+    expect(prompt.text).toContain('4. On the preview at /settings\n');
+    // What the page wrote about its own element reaches the prompt as one plain line.
+    expect(prompt.text).toContain(
+      '5. On the preview at /settings, the element <button> "Save[31m now" (selector `main > button.save`)'
+    );
     expect(prompt.text).toContain('Do not merge or deploy');
     expect(requestChangesPrompt(r, [])).toMatchObject({ refusal: expect.stringContaining('NOTHING') });
   });
@@ -324,6 +347,38 @@ describe('review routes', () => {
     expect(sent.statusCode).toBe(409);
     const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
     expect(one.review).toMatchObject({ state: 'ready', unsent: 1 });
+  });
+
+  it('opens only the review session’s own preview, through a capability that carries the frame bridge', async () => {
+    const id = (await submit()).json().data.id as string;
+    const tab = (webviewId: string, sessionId: string): Webview => ({
+      id: webviewId,
+      name: 'web',
+      url: 'http://127.0.0.1:9/',
+      embedMode: 'proxy',
+      trusted: false,
+      origin: { kind: 'session', sessionId, name: 'web' },
+      createdAt: 1,
+    });
+    await writeWebviews(getDataDir(), [tab('wv-own', 'test-session-1'), tab('wv-other', 'someone-else')]);
+    const open = (webviewId: string, headers: Record<string, string> = {}) =>
+      harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/preview`, headers, payload: { webviewId } });
+
+    expect((await open('wv-other')).statusCode).toBe(404);
+    expect((await open('wv-missing')).statusCode).toBe(404);
+    expect((await open('wv-own', AGENT)).statusCode).toBe(403);
+    const opened = await open('wv-own');
+    expect(opened.statusCode).toBe(200);
+    const cap = /^\/webview\/([^/]+)\/$/.exec(opened.json().data.embedUrl)?.[1] ?? '';
+    expect(webviewCapabilities.resolve(cap)).toMatchObject({ webviewId: 'wv-own', bridge: true });
+    // The dashboard's own tab on the same preview is another token, and it carries no bridge.
+    const plain = webviewCapabilities.mint('wv-own', undefined);
+    expect(plain).not.toBe(cap);
+    expect(webviewCapabilities.resolve(plain)?.bridge).toBeUndefined();
+    expect(webviewCapabilities.mint('wv-own', undefined, { bridge: true })).toBe(cap);
+    webviewCapabilities.revokeWebview('wv-own');
+    expect(webviewCapabilities.resolve(cap)).toBeUndefined();
+    expect(webviewCapabilities.resolve(plain)).toBeUndefined();
   });
 
   it('writes nothing on a colour that is not live', async () => {

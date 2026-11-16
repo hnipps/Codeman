@@ -971,9 +971,10 @@ A review is an agent's walkthrough of the branch its session has checked out, wi
 | `GET /api/v1/reviews/:id` | owner | `{ review, sessionLive }`. The review has `state` (`ready`, `changes-requested`, `updated`, `merged`, `deploying`, `deployed`, `deploy-failed`), `unsent` and `notes`. |
 | `GET /api/v1/reviews/:id/changes` | owner | `{ headSha, mergeBase, commits, files, added, deleted, truncated, gone, moved }`. `moved` is true when the branch has commits newer than the walkthrough. `gone` is true when the branch no longer exists. |
 | `GET /api/v1/reviews/:id/diff?path=` | owner | `{ path, origPath?, diff, truncated, binary }` for a file `changes` listed. 404 for any other path. |
-| `POST /api/v1/reviews/:id/notes` `{ "at", "text" }` | a person | Adds a note. `at` is `{ "kind": "general" }`, `{ "kind": "text", "anchor": { quote, prefix, suffix } }`, `{ "kind": "code", path, line, side, text }` or `{ "kind": "preview", path }`. |
+| `POST /api/v1/reviews/:id/notes` `{ "at", "text" }` | a person | Adds a note. `at` is `{ "kind": "general" }`, `{ "kind": "text", "anchor": { quote, prefix, suffix } }`, `{ "kind": "code", path, line, side, text }` or `{ "kind": "preview", path, element? }`, where `element` is `{ selector, trail, tag, text, x, y, source? }`, an element of the previewed page. |
 | `PATCH /api/v1/reviews/:id/notes/:noteId` `{ "text"?, "resolved"? }` | a person | Edits an unsent note, or resolves or reopens any note. 409 `SENT` for an edit to a sent note. |
 | `DELETE /api/v1/reviews/:id/notes/:noteId` | a person | Deletes an unsent note. 409 `SENT` otherwise. |
+| `POST /api/v1/reviews/:id/preview` `{ "webviewId" }` | a person | `{ embedUrl }` for a preview of the review's own session, framed so that a note can be put on an element of the page. 404 for any other web tab. |
 | `POST /api/v1/reviews/:id/request-changes` | a person | Sends every unsent, unresolved note to the author session as one prompt. Answers `{ sent, confirmed, review }`. 409 with `NOTHING`, `SESSION_ENDED`, `APPROVAL_PENDING`, `SENDING`, `NOT_READY` or `NOT_WRITTEN` in the message; nothing is marked sent in those cases. |
 
 A request that carries `X-Codeman-Parent-Session` is an agent's and gets 403 on the person's routes. Every write answers 409 on a deploy colour that is not live.

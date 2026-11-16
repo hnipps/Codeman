@@ -33,6 +33,15 @@
   };
   const STATE_TONE = { ready: 'ok', updated: 'ok', deploying: 'warn', 'deploy-failed': 'bad' };
 
+  const PINS_KEY = 'codeman-reviews-pins-hidden';
+  function readPinsHidden() {
+    try {
+      return localStorage.getItem(PINS_KEY) === '1';
+    } catch (_err) {
+      return false;
+    }
+  }
+
   const state = {
     queue: { waiting: [], decided: [] },
     id: null,
@@ -47,6 +56,15 @@
     device: 'desktop',
     preview: null,
     previewPath: '/',
+    /** The frame bridge in the previewed page has answered, so an element can be picked and found again. */
+    bridge: false,
+    picking: false,
+    pinsHidden: readPinsHidden(),
+    /** Where each open element note's element is now, in the frame's own pixels; null when it is not on this page. */
+    pinRects: new Map(),
+    locateId: '',
+    locateNotes: [],
+    flashPin: null,
     composing: null,
     loadSeq: 0,
   };
@@ -180,6 +198,10 @@
     state.range = null;
     state.preview = null;
     state.previewPath = '/';
+    state.bridge = false;
+    state.picking = false;
+    state.pinRects = new Map();
+    state.flashPin = null;
     closeComposer();
     renderQueue();
     let data;
@@ -434,7 +456,9 @@
     if (at.kind === 'text')
       return `“${at.anchor.quote.length > 90 ? `${at.anchor.quote.slice(0, 90)}…` : at.anchor.quote}”`;
     if (at.kind === 'code') return `${at.path}:${at.line}${at.side === 'old' ? ' (removed)' : ''}`;
-    return `Preview ${at.path}`;
+    if (!at.element) return `Preview ${at.path}`;
+    const text = at.element.text.replace(/\s+/g, ' ').trim();
+    return `Preview · ${at.element.tag}${text ? ` “${text.length > 50 ? `${text.slice(0, 50)}…` : text}”` : ''}`;
   }
 
   function openComposer(at) {
@@ -461,8 +485,12 @@
 
   function goToNote(note) {
     if (note.at.kind === 'code') showCode(note.at.path, note.at.side === 'new' ? note.at.line : null, null);
-    else if (note.at.kind === 'preview') showPreview(note.at.path);
-    else if (note.at.kind === 'text') {
+    else if (note.at.kind === 'preview') {
+      state.flashPin = note.id;
+      if (note.at.element && state.pinsHidden) setPinsHidden(false);
+      showPreview(note.at.path);
+      renderPins();
+    } else if (note.at.kind === 'text') {
       setPane('doc');
       const mark = $('rvWalk').querySelector(`mark[data-note="${CSS.escape(note.id)}"]`);
       if (mark) mark.scrollIntoView({ block: 'center' });
@@ -478,6 +506,8 @@
       renderWalkthrough();
       renderNotes();
       renderDiff();
+      renderPreview();
+      locatePins();
     } catch (err) {
       toast(err.message, 'bad');
     }
@@ -723,7 +753,10 @@
       if (!running.length) {
         state.preview = { state: 'none' };
       } else {
-        const opened = await api(`api/webviews/${encodeURIComponent(running[0].webviewId)}/open`, { method: 'POST' });
+        const opened = await api(`api/reviews/${encodeURIComponent(r.id)}/preview`, {
+          method: 'POST',
+          body: { webviewId: running[0].webviewId },
+        });
         if (seq !== state.loadSeq) return;
         state.preview =
           opened && opened.embedUrl
@@ -750,8 +783,17 @@
     const p = state.preview;
     const ready = p && p.state === 'ready';
     $('rvDevice').hidden = !ready || state.tab !== 'preview';
-    $('rvPreviewNote').hidden = !ready || state.tab !== 'preview' || !isOpenReview();
-    $('rvBarNote').textContent = ready && state.tab === 'preview' ? state.previewPath : '';
+    const shown = ready && state.tab === 'preview';
+    const noteButton = $('rvPreviewNote');
+    noteButton.hidden = !shown || !isOpenReview();
+    // Without the bridge (a page that is not HTML, or one too large to rewrite) a note can only name the page.
+    noteButton.textContent = state.picking ? 'Cancel' : state.bridge ? 'Add note' : 'Note on this page';
+    const pinned = elementNotes().length;
+    const toggle = $('rvPinsToggle');
+    toggle.hidden = !shown || !pinned;
+    toggle.textContent = state.pinsHidden ? `Show notes · ${pinned}` : `Hide notes · ${pinned}`;
+    toggle.setAttribute('aria-pressed', String(!state.pinsHidden));
+    $('rvBarNote').textContent = !shown ? '' : state.picking ? 'Press an element in the preview' : state.previewPath;
     if (!ready) {
       box.replaceChildren(
         el(
@@ -775,13 +817,162 @@
       // review read this document and call the Codeman API.
       frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-downloads allow-modals');
       frame.setAttribute('referrerpolicy', 'no-referrer');
-      shell.append(frame);
+      const screen = el('div', 'rv-screen');
+      const pins = el('div', 'rv-pins');
+      pins.id = 'rvPins';
+      screen.append(frame, pins);
+      shell.append(screen);
       box.append(shell);
     }
     box.querySelector('.rv-frame').dataset.device = state.device;
     if (frame.dataset.src !== src) {
       frame.dataset.src = src;
+      // The new page's bridge says so when it is ready; until then nothing can be picked or found.
+      state.bridge = false;
+      state.picking = false;
+      state.pinRects = new Map();
       frame.src = src;
+    }
+    renderPins();
+  }
+
+  // ---------------------------------------------------------------- notes on the previewed page
+  //
+  // The frame is sandboxed with an opaque origin, so this page cannot look inside it. The frame bridge the proxy
+  // injects is the only channel. The previewed page can post the same messages itself, so every one is checked,
+  // bounded and shown with textContent; none of them can do more than propose an anchor for a note the person writes.
+
+  const previewFrame = () => $('rvPreview').querySelector('iframe');
+  const elementNotes = () =>
+    state.review ? state.review.notes.filter((n) => !n.resolvedAt && n.at.kind === 'preview' && n.at.element) : [];
+
+  function tellFrame(message) {
+    const frame = previewFrame();
+    if (frame && frame.contentWindow) frame.contentWindow.postMessage(message, '*');
+  }
+
+  const str = (value, max) => (typeof value === 'string' ? value.slice(0, max) : '');
+  const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+
+  /** The element a pick reported, cut down to what a note keeps; null when it is not one. */
+  function pickedElement(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.rect || typeof raw.rect !== 'object') return null;
+    const selector = str(raw.selector, 1024);
+    const tag = str(raw.tag, 64);
+    const x = num(raw.rect.x);
+    const y = num(raw.rect.y);
+    if (!selector || !tag || x === null || y === null) return null;
+    const element = { selector, trail: str(raw.path, 2048), tag, text: str(raw.text, 400), x, y };
+    const source = str(raw.source, 512);
+    if (source) element.source = source;
+    return element;
+  }
+
+  function setPicking(on) {
+    state.picking = on && state.bridge;
+    tellFrame({ type: state.picking ? 'codeman:pick-start' : 'codeman:pick-stop' });
+    renderPreview();
+  }
+
+  function setPinsHidden(hidden) {
+    state.pinsHidden = hidden;
+    try {
+      localStorage.setItem(PINS_KEY, hidden ? '1' : '0');
+    } catch (_err) {
+      /* The choice then lasts for this visit only. */
+    }
+    renderPreview();
+  }
+
+  /** Asks the frame where each open element note's element is now. */
+  function locatePins() {
+    const notes = elementNotes().slice(0, 64);
+    if (!state.bridge || !notes.length) {
+      state.pinRects = new Map();
+      renderPins();
+      return;
+    }
+    state.locateId = `rv${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    state.locateNotes = notes.map((n) => n.id);
+    tellFrame({
+      type: 'codeman:locate',
+      requestId: state.locateId,
+      selectors: notes.map((n) => n.at.element.selector),
+      hints: notes.map((n) => ({
+        tag: n.at.element.tag,
+        text: n.at.element.text,
+        x: n.at.element.x,
+        y: n.at.element.y,
+      })),
+    });
+  }
+
+  function renderPins() {
+    const layer = $('rvPins');
+    if (!layer) return;
+    layer.replaceChildren();
+    layer.hidden = state.pinsHidden;
+    if (state.pinsHidden) return;
+    const width = layer.clientWidth;
+    const height = layer.clientHeight;
+    elementNotes().forEach((note, index) => {
+      const rect = state.pinRects.get(note.id);
+      if (!rect) return;
+      // An element scrolled out of the frame's viewport has no pin until it is scrolled back.
+      if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > width || rect.y > height) return;
+      if (state.flashPin === note.id) {
+        const box = el('div', 'rv-pin-box');
+        box.style.left = `${rect.x}px`;
+        box.style.top = `${rect.y}px`;
+        box.style.width = `${rect.width}px`;
+        box.style.height = `${rect.height}px`;
+        layer.append(box);
+      }
+      const pin = el('button', 'rv-pin', String(index + 1));
+      pin.type = 'button';
+      pin.title = note.text.length > 120 ? `${note.text.slice(0, 120)}…` : note.text;
+      pin.setAttribute('aria-label', `Note ${index + 1}: ${pin.title}`);
+      pin.style.left = `${Math.max(2, Math.min(width - 26, rect.x + rect.width - 11))}px`;
+      pin.style.top = `${Math.max(2, Math.min(height - 24, rect.y - 11))}px`;
+      pin.addEventListener('click', () => {
+        state.flashPin = note.id;
+        renderPins();
+        focusNote(note.id);
+      });
+      layer.append(pin);
+    });
+  }
+
+  function onFrameMessage(event) {
+    const frame = previewFrame();
+    if (!frame || event.source !== frame.contentWindow) return;
+    const data = event.data;
+    if (!data || typeof data !== 'object' || typeof data.type !== 'string') return;
+    if (data.type === 'codeman:frame-ready') {
+      state.bridge = true;
+      state.picking = false;
+      renderPreview();
+      locatePins();
+    } else if (data.type === 'codeman:frame-rects-changed') {
+      locatePins();
+    } else if (data.type === 'codeman:frame-rects') {
+      if (data.requestId !== state.locateId || !Array.isArray(data.rects)) return;
+      const rects = new Map();
+      state.locateNotes.forEach((id, index) => {
+        const r = data.rects[index];
+        if (!r || typeof r !== 'object') return;
+        const rect = { x: num(r.x), y: num(r.y), width: num(r.width), height: num(r.height) };
+        if (rect.x === null || rect.y === null || rect.width === null || rect.height === null) return;
+        rects.set(id, rect);
+      });
+      state.pinRects = rects;
+      renderPins();
+    } else if (data.type === 'codeman:frame-picked') {
+      const element = pickedElement(data.element);
+      setPicking(false);
+      if (element && isOpenReview()) openComposer({ kind: 'preview', path: state.previewPath, element });
+    } else if (data.type === 'codeman:frame-pick-cancelled' || data.type === 'codeman:canvas-escape') {
+      if (state.picking) setPicking(false);
     }
   }
 
@@ -839,7 +1030,14 @@
     });
     $('rvTabPreview').addEventListener('click', () => setTab('preview'));
     $('rvTabChanges').addEventListener('click', () => setTab('changes'));
-    $('rvPreviewNote').addEventListener('click', () => openComposer({ kind: 'preview', path: state.previewPath }));
+    $('rvPreviewNote').addEventListener('click', () => {
+      if (state.picking) setPicking(false);
+      else if (state.bridge) setPicking(true);
+      else openComposer({ kind: 'preview', path: state.previewPath });
+    });
+    $('rvPinsToggle').addEventListener('click', () => setPinsHidden(!state.pinsHidden));
+    window.addEventListener('message', onFrameMessage);
+    window.addEventListener('resize', renderPins);
     for (const button of $('rvDevice').querySelectorAll('button'))
       button.addEventListener('click', () => {
         state.device = button.dataset.device;
