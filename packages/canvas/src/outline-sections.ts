@@ -142,6 +142,7 @@ export function installOutlineSections(options: {
       section.style.removeProperty('flex');
       section.style.removeProperty('height');
       section.style.removeProperty('max-height');
+      section.style.removeProperty('min-height');
     }
     const expanded = isPhone() || !shown(outline) ? [] : parts.filter((p) => !collapsed.has(p.id) && shown(p.section));
     const upper = expanded.slice(0, -1);
@@ -151,6 +152,7 @@ export function installOutlineSections(options: {
     if (!last) return;
     last.section.style.flex = '1 1 0';
     last.section.style.maxHeight = 'none';
+    last.section.style.minHeight = `${MIN_SECTION}px`;
     // Sections are sized here; handles overlap their neighbours and take no room.
     const sized = new Set<Element>([...expanded.map((p) => p.section), ...parts.map((p) => p.handle)]);
     let chrome = 0;
@@ -168,6 +170,7 @@ export function installOutlineSections(options: {
         p.section.style.flex = '0 0 auto';
         p.section.style.height = `${height}px`;
         p.section.style.maxHeight = 'none';
+        p.section.style.minHeight = '0';
       }
       drawn.set(p.id, height ?? p.section.offsetHeight);
       p.handle.setAttribute('aria-valuenow', String(drawn.get(p.id)));
@@ -181,6 +184,12 @@ export function installOutlineSections(options: {
     pref = { ...pref, heights };
     layout();
   };
+  /** Stores what was drawn, so a drag or key past the room does not leave a taller preference behind it. */
+  const keep = (id: SectionId): void => {
+    const height = drawn.get(id);
+    if (height !== undefined) pref = { ...pref, heights: { ...pref.heights, [id]: height } };
+    save();
+  };
 
   for (const { id, section, toggle, handle } of parts) {
     toggle.addEventListener('click', () => {
@@ -190,16 +199,19 @@ export function installOutlineSections(options: {
       layout();
     });
     let dragging = false;
+    let moved = false;
     handle.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       dragging = true;
+      moved = false;
       handle.setPointerCapture(e.pointerId);
       handle.classList.add('dragging');
       document.documentElement.classList.add('section-resizing');
     });
     handle.addEventListener('pointermove', (e) => {
       if (!dragging) return;
+      moved = true;
       const top = section.getBoundingClientRect().top;
       setHeight(id, Math.round(Math.min(MAX_SECTION, Math.max(MIN_SECTION, e.clientY - top))));
     });
@@ -208,10 +220,8 @@ export function installOutlineSections(options: {
       dragging = false;
       handle.classList.remove('dragging');
       document.documentElement.classList.remove('section-resizing');
-      // Keep what was drawn, so a drag past the room does not leave a taller preference behind it.
-      const height = drawn.get(id);
-      if (height !== undefined) pref = { ...pref, heights: { ...pref.heights, [id]: height } };
-      save();
+      // A click without a move leaves a section at its own size.
+      if (moved) keep(id);
     };
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
@@ -232,9 +242,17 @@ export function installOutlineSections(options: {
         return;
       }
       setHeight(id, next);
-      save();
+      keep(id);
     });
   }
+
+  // Search filters the object tree: a collapsed Objects section would hide every match, so typing opens it.
+  document.getElementById('search')?.addEventListener('input', (e) => {
+    if (!(e.target as HTMLInputElement).value || !pref.collapsed.includes('objects')) return;
+    pref = { ...pref, collapsed: pref.collapsed.filter((c) => c !== 'objects') };
+    save();
+    layout();
+  });
 
   // A section appears or goes (Prototypes with its first page, Sessions with the shell), the outline opens or the
   // window changes size: each re-fits. Layout only writes styles and data-collapsed, so neither observer loops.
@@ -243,6 +261,14 @@ export function installOutlineSections(options: {
   sections.observe(outline, { attributes: true, attributeFilter: ['hidden'] });
   sections.observe(document.documentElement, { attributes: true, attributeFilter: ['data-shell', 'data-phone'] });
   new ResizeObserver(layout).observe(outline);
+  // Rows arriving in a section left at its own size change the room below it. Deferred a frame, so a re-fit that
+  // resizes an observed section never runs inside the observer's own delivery.
+  let frame = 0;
+  const content = new ResizeObserver(() => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(layout);
+  });
+  for (const { section } of parts) content.observe(section);
   layout();
   return { layout };
 }

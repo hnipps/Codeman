@@ -64,6 +64,15 @@ describe('canvas outline sections', () => {
     expect(await page.locator('#workCounts').isVisible()).toBe(true);
   });
 
+  it('leaves Work at its own size after a click on its boundary without a move', async () => {
+    const box = (await page.locator(workHandle).boundingBox())!;
+    await page.mouse.click(box.x + 40, box.y + box.height / 2);
+    expect(await page.evaluate(() => document.getElementById('work')!.style.height)).toBe('');
+    expect(await page.evaluate(() => localStorage.getItem('codeman:canvas:outline-sections') ?? '')).not.toContain(
+      'heights":{"work'
+    );
+  });
+
   it('drags the boundary under Work to set its height, and keeps it across a reload', async () => {
     const top = await page.evaluate(() => document.getElementById('work')!.getBoundingClientRect().top);
     const box = (await page.locator(workHandle).boundingBox())!;
@@ -109,6 +118,13 @@ describe('canvas outline sections', () => {
     const objectsTop = await page.evaluate(() => document.getElementById('objects')!.getBoundingClientRect().top);
     expect(Math.abs(workBottom - objectsTop)).toBeLessThanOrEqual(1);
     expect(await height('work')).toBeGreaterThan(300);
+  });
+
+  it('opens a collapsed Objects section when the person searches', async () => {
+    await page.locator('#search').fill('anything');
+    expect(await page.locator('#objects .section-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(await page.locator('#tree').isVisible()).toBe(true);
+    await page.locator('#search').fill('');
   });
 
   it('collapses on a phone but draws no handle', async () => {
