@@ -31,6 +31,7 @@ export const PREVIEW_STRIPPED_ENV: readonly string[] = Object.freeze([
   'CODEMAN_PORT',
   'CODEMAN_HOST',
   'CODEMAN_BASE_URL',
+  'CODEMAN_ALLOWED_HOSTS',
   // Blue/green deployment and supervision of this server.
   'CODEMAN_DEPLOY_ROLE',
   'CODEMAN_SUPERVISOR_CLI',
@@ -38,6 +39,8 @@ export const PREVIEW_STRIPPED_ENV: readonly string[] = Object.freeze([
   'CODEMAN_RESTART_BY_EXIT',
   'CODEMAN_BUILD_ID',
   'CODEMAN_LOG_DIR',
+  'CODEMAN_RELEASE_DIR',
+  'CODEMAN_COLOUR_PORT',
   // Login and the acknowledgements that waive it.
   'CODEMAN_PASSWORD',
   'CODEMAN_USERNAME',

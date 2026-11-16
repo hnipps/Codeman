@@ -21,12 +21,14 @@ Each stripped variable, and why:
 | `CODEMAN_TMUX_SOCKET` | Outranks `CODEMAN_INSTANCE`: the nested Codeman attaches to this instance's panes. The observed bug. |
 | `CODEMAN_PORT`, `CODEMAN_HOST` | A nested Codeman would try to bind this server's address. The preview's port is `PORT`. |
 | `CODEMAN_BASE_URL` | The reverse-proxy prefix of this server, not of anything the preview serves. |
+| `CODEMAN_ALLOWED_HOSTS` | The host names this server is served under. A nested Codeman would accept requests addressed to the live app's host. |
 | `CODEMAN_DEPLOY_ROLE` | A nested Codeman would start as this colour's role, e.g. `candidate`. |
 | `CODEMAN_SUPERVISOR_CLI` | A nested Codeman's deploy routes would drive the real deploy supervisor. |
 | `CODEMAN_STABLE_API_URL` | A nested Codeman would point its panes at the live address of this deployment. |
 | `CODEMAN_RESTART_BY_EXIT` | A nested Codeman would exit to update, expecting a supervisor that is not its own. |
 | `CODEMAN_BUILD_ID` | A nested Codeman would report this server's build. |
 | `CODEMAN_LOG_DIR` | A nested Codeman would append its telemetry to this server's log streams. |
+| `CODEMAN_RELEASE_DIR`, `CODEMAN_COLOUR_PORT` | Set by the deploy supervisor, not read by Codeman. They name the live colour's release and port. Added 2026-11-16 after a real preview showed them reaching the child. |
 | `CODEMAN_PASSWORD`, `CODEMAN_USERNAME` | This server's login. Already stripped before this change. |
 | `CODEMAN_MULTIUSER` | This server's login mode; without the credentials above a nested one starts in a mode it cannot satisfy. |
 | `CODEMAN_ALLOW_UNAUTHENTICATED_NETWORK`, `CODEMAN_ALLOW_UNAUTHENTICATED_TUNNEL` | An acknowledgement of exposure is given for one server. A child must not start already waived. |
@@ -37,7 +39,8 @@ Kept on purpose:
 
 - `CODEMAN_API_URL`. It names this server only. A nested Codeman overwrites it in `WebServer.start()`. Nothing in the preview path reads it, and `codeman agent` refuses to run without `CODEMAN_MUX=1`, which is stripped, so keeping it gives a preview no identity. An app under preview that wants to call this Codeman can still find it.
 - `CODEMAN_CASES_PATH`, `CODEMAN_USER_SPACES_DIR`. The cases trees are shared across instances by design.
-- Tuning limits (`CODEMAN_MAX_*`, timeouts) and facts about the host (`CODEMAN_IN_CONTAINER`, `CODEMAN_DOCKER_HOST_HOME`). They describe the machine, not this server.
+- Tuning limits (`CODEMAN_MAX_*`, timeouts) and facts about the host (`CODEMAN_IN_CONTAINER`, `CODEMAN_DOCKER_HOST_HOME`, the supervisor's `CODEMAN_NODE_BINARY`). They describe the machine, not this server.
+- `CODEMAN_NO_AUTOSTART`. It stops `npm install` from starting a service, which a preview that installs dependencies also wants.
 
 ## Affected users and systems
 
