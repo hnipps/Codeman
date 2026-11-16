@@ -180,13 +180,14 @@ export class WorkView {
     hint.setAttribute('aria-hidden', 'true');
     all.append(hint);
     head.append(title, all);
+    this.counts.id = 'workCounts';
     this.counts.setAttribute('aria-label', 'Work by status');
     this.active.setAttribute('aria-label', 'In progress');
     this.note.hidden = true;
     this.note.setAttribute('role', 'status');
     s.append(head, this.counts, this.active, this.note);
     const outline = document.getElementById('outline');
-    const before = document.getElementById('prototypes') ?? document.getElementById('tree');
+    const before = document.getElementById('prototypes') ?? document.getElementById('objects');
     if (outline) outline.insertBefore(s, before && before.parentElement === outline ? before : null);
   }
 
