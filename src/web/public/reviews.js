@@ -59,6 +59,10 @@
     device: 'desktop',
     preview: null,
     previewPath: '/',
+    /** The still the Captures tab shows, by name. */
+    capture: null,
+    /** Shown at its own size, scrolling, instead of shrunk to the stage's width. */
+    stillActual: false,
     /** The frame bridge in the previewed page has answered, so an element can be picked and found again. */
     bridge: false,
     picking: false,
@@ -201,6 +205,7 @@
     state.range = null;
     state.preview = null;
     state.previewPath = '/';
+    state.capture = null;
     state.bridge = false;
     state.picking = false;
     state.pinRects = new Map();
@@ -222,6 +227,8 @@
     state.sessionLive = data.sessionLive;
     state.approve = data.approve || null;
     renderReview();
+    // Stills are the thing to look at when there are any; a running preview, found below, takes the tab from them.
+    setTab(captures().length ? 'captures' : 'changes');
     setPane('doc');
     loadChanges(seq);
     loadPreview(seq);
@@ -251,6 +258,7 @@
     } else {
       renderHeader();
       renderNotes();
+      renderCaptures();
     }
   }
 
@@ -402,6 +410,7 @@
     renderWalkthrough();
     renderNotes();
     renderNotice();
+    renderCaptures();
     $('rvNotes').hidden = false;
   }
 
@@ -456,7 +465,15 @@
     const href = a.getAttribute('href') || '';
     const code = /^#code=(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(href);
     const preview = /^#preview=(\/.*)$/.exec(href);
-    if (code) {
+    const capture = /^#capture=([a-z0-9][a-z0-9-]{0,39})$/.exec(href);
+    if (capture) {
+      a.className = 'rv-lk rv-lk-preview';
+      a.removeAttribute('target');
+      a.addEventListener('click', (event) => {
+        event.preventDefault();
+        showCapture(capture[1]);
+      });
+    } else if (code) {
       const path = decodeURIComponent(code[1]);
       const from = code[2] ? Number(code[2]) : null;
       const to = code[3] ? Number(code[3]) : from;
@@ -585,6 +602,10 @@
     if (at.kind === 'text')
       return `“${at.anchor.quote.length > 90 ? `${at.anchor.quote.slice(0, 90)}…` : at.anchor.quote}”`;
     if (at.kind === 'code') return `${at.path}:${at.line}${at.side === 'old' ? ' (removed)' : ''}`;
+    if (at.kind === 'capture') {
+      const still = captures().find((c) => c.name === at.name);
+      return `Capture · ${(still && still.label) || at.name}`;
+    }
     if (!at.element) return `Preview ${at.path}`;
     const text = at.element.text.replace(/\s+/g, ' ').trim();
     return `Preview · ${at.element.tag}${text ? ` “${text.length > 50 ? `${text.slice(0, 50)}…` : text}”` : ''}`;
@@ -599,8 +620,10 @@
     $('rvComposerText').focus();
   }
   function closeComposer() {
+    const onStill = state.composing && state.composing.kind === 'capture';
     state.composing = null;
     $('rvComposer').hidden = true;
+    if (onStill) renderCaptures();
   }
 
   function focusNote(id) {
@@ -614,7 +637,11 @@
 
   function goToNote(note) {
     if (note.at.kind === 'code') showCode(note.at.path, note.at.side === 'new' ? note.at.line : null, null);
-    else if (note.at.kind === 'preview') {
+    else if (note.at.kind === 'capture') {
+      state.flashPin = note.id;
+      if (note.at.x !== undefined && state.pinsHidden) setPinsHidden(false);
+      showCapture(note.at.name);
+    } else if (note.at.kind === 'preview') {
       state.flashPin = note.id;
       if (note.at.element && state.pinsHidden) setPinsHidden(false);
       showPreview(note.at.path);
@@ -652,7 +679,13 @@
     $('rvGeneral').hidden = !isOpenReview();
     if (!r.notes.length) {
       list.append(
-        el('li', 'rv-dim', 'No notes yet. Select words in the walkthrough, or press a line in Changes, to anchor one.')
+        el(
+          'li',
+          'rv-dim',
+          captures().length
+            ? 'No notes yet. Select words in the walkthrough, press a line in Changes, or press a capture, to anchor one.'
+            : 'No notes yet. Select words in the walkthrough, or press a line in Changes, to anchor one.'
+        )
       );
       return;
     }
@@ -918,12 +951,18 @@
     noteButton.hidden = !shown || !isOpenReview();
     // Without the bridge (a page that is not HTML, or one too large to rewrite) a note can only name the page.
     noteButton.textContent = state.picking ? 'Cancel' : state.bridge ? 'Add note' : 'Note on this page';
-    const pinned = elementNotes().length;
+    const onStill = state.tab === 'captures' && currentCapture() !== null;
+    if (onStill) {
+      noteButton.hidden = !isOpenReview();
+      noteButton.textContent = 'Add note';
+    }
+    const pinned = onStill ? stillNotes().length : elementNotes().length;
     const toggle = $('rvPinsToggle');
-    toggle.hidden = !shown || !pinned;
+    toggle.hidden = !(shown || onStill) || !pinned;
     toggle.textContent = state.pinsHidden ? `Show notes · ${pinned}` : `Hide notes · ${pinned}`;
     toggle.setAttribute('aria-pressed', String(!state.pinsHidden));
-    $('rvBarNote').textContent = !shown ? '' : state.picking ? 'Press an element in the preview' : state.previewPath;
+    $('rvBarNote').textContent =
+      onStill || !shown ? '' : state.picking ? 'Press an element in the preview' : state.previewPath;
     if (!ready) {
       box.replaceChildren(
         el(
@@ -1012,6 +1051,7 @@
       /* The choice then lasts for this visit only. */
     }
     renderPreview();
+    renderCaptures();
   }
 
   /** Asks the frame where each open element note's element is now. */
@@ -1106,6 +1146,125 @@
     }
   }
 
+  // ---------------------------------------------------------------- captures
+  //
+  // Stills the agent took of the running branch, for work whose preview cannot be framed here. Each is an image
+  // this server stores and serves by the name in the review's own record. A note sits on a point of a still, kept
+  // as fractions of its size so the pin lands in the same place at any width.
+
+  const captures = () => (state.review && state.review.captures) || [];
+  const currentCapture = () => captures().find((c) => c.name === state.capture) || captures()[0] || null;
+  const stillNotes = () => {
+    const still = currentCapture();
+    return still
+      ? state.review.notes.filter(
+          (n) => !n.resolvedAt && n.at.kind === 'capture' && n.at.name === still.name && n.at.x !== undefined
+        )
+      : [];
+  };
+
+  function stillPin(text, x, y, title) {
+    const pin = el('button', 'rv-pin', text);
+    pin.type = 'button';
+    pin.title = title;
+    pin.style.left = `calc(${x * 100}% - 11px)`;
+    pin.style.top = `calc(${y * 100}% - 22px)`;
+    return pin;
+  }
+
+  function renderCaptures() {
+    const all = captures();
+    const tab = $('rvTabCaptures');
+    tab.hidden = !all.length;
+    tab.textContent = `Captures · ${all.length}`;
+    const list = $('rvCaptureList');
+    const box = $('rvStill');
+    list.replaceChildren();
+    if (!all.length) {
+      box.replaceChildren();
+      if (state.tab === 'captures') setTab('changes');
+      return;
+    }
+    const still = currentCapture();
+    for (const c of all) {
+      const row = el('button', 'rv-chip');
+      row.type = 'button';
+      if (c.name === still.name) row.setAttribute('aria-current', 'true');
+      row.append(el('span', '', c.label || c.name), el('span', 'rv-chip-dim', `${c.width}×${c.height}`));
+      row.addEventListener('click', () => showCapture(c.name));
+      list.append(row);
+    }
+    const src = `api/reviews/${encodeURIComponent(state.review.id)}/captures/${encodeURIComponent(still.name)}?v=${still.at}`;
+    let frame = box.querySelector('.rv-still-box');
+    let img = frame && frame.querySelector('img');
+    if (!img || img.dataset.src !== src) {
+      frame = el('div', 'rv-still-box');
+      img = document.createElement('img');
+      img.dataset.src = src;
+      img.src = src;
+      img.width = still.width;
+      img.height = still.height;
+      img.alt = still.label || `Capture ${still.name}`;
+      img.draggable = false;
+      if (isOpenReview()) img.title = 'Press a spot to put a note there';
+      img.addEventListener('click', (event) => {
+        if (!isOpenReview()) return;
+        const rect = img.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const part = (value) => Math.round(Math.min(1, Math.max(0, value)) * 10000) / 10000;
+        openComposer({
+          kind: 'capture',
+          name: still.name,
+          x: part((event.clientX - rect.left) / rect.width),
+          y: part((event.clientY - rect.top) / rect.height),
+        });
+        renderCaptures();
+      });
+      const pins = el('div', 'rv-pins');
+      frame.append(img, pins);
+      box.replaceChildren(frame);
+    }
+    frame.classList.toggle('rv-still-open', Boolean(isOpenReview()));
+    frame.classList.toggle('rv-still-actual', state.stillActual);
+    $('rvStillSize').setAttribute('aria-pressed', String(state.stillActual));
+    const layer = frame.querySelector('.rv-pins');
+    layer.replaceChildren();
+    layer.hidden = state.pinsHidden;
+    stillNotes().forEach((note, index) => {
+      const title = note.text.length > 120 ? `${note.text.slice(0, 120)}…` : note.text;
+      const pin = stillPin(String(index + 1), note.at.x, note.at.y, title);
+      pin.setAttribute('aria-label', `Note ${index + 1}: ${title}`);
+      if (state.flashPin === note.id) pin.classList.add('rv-pin-flash');
+      pin.addEventListener('click', () => {
+        state.flashPin = note.id;
+        renderCaptures();
+        focusNote(note.id);
+      });
+      layer.append(pin);
+    });
+    // Where the note being written will sit. It shows even with the others hidden, or the press would seem lost.
+    const draft = state.composing;
+    if (draft && draft.kind === 'capture' && draft.name === still.name && draft.x !== undefined) {
+      layer.hidden = false;
+      const pin = stillPin('+', draft.x, draft.y, 'The note you are writing');
+      pin.classList.add('rv-pin-draft');
+      pin.tabIndex = -1;
+      layer.append(pin);
+    }
+    renderPreview();
+  }
+
+  function showCapture(name) {
+    setPane('stage');
+    if (!captures().some((c) => c.name === name)) {
+      toast(`This review has no capture named ${name}.`, 'warn');
+      return;
+    }
+    state.capture = name;
+    if (state.tab === 'captures') renderCaptures();
+    else setTab('captures');
+  }
+
   function showPreview(path) {
     setPane('stage');
     if (!state.preview || state.preview.state !== 'ready') {
@@ -1123,9 +1282,12 @@
     state.tab = tab;
     $('rvTabPreview').setAttribute('aria-selected', String(tab === 'preview'));
     $('rvTabChanges').setAttribute('aria-selected', String(tab === 'changes'));
+    $('rvTabCaptures').setAttribute('aria-selected', String(tab === 'captures'));
     $('rvPreview').hidden = tab !== 'preview';
     $('rvChanges').hidden = tab !== 'changes';
-    renderPreview();
+    $('rvCaptures').hidden = tab !== 'captures';
+    if (tab === 'captures') renderCaptures();
+    else renderPreview();
   }
 
   /** On a phone one column shows at a time; on a desktop this only records which one a link last asked for. */
@@ -1166,8 +1328,16 @@
     });
     $('rvTabPreview').addEventListener('click', () => setTab('preview'));
     $('rvTabChanges').addEventListener('click', () => setTab('changes'));
+    $('rvTabCaptures').addEventListener('click', () => setTab('captures'));
+    $('rvStillSize').addEventListener('click', () => {
+      state.stillActual = !state.stillActual;
+      renderCaptures();
+    });
     $('rvPreviewNote').addEventListener('click', () => {
-      if (state.picking) setPicking(false);
+      if (state.tab === 'captures') {
+        const still = currentCapture();
+        if (still) openComposer({ kind: 'capture', name: still.name });
+      } else if (state.picking) setPicking(false);
       else if (state.bridge) setPicking(true);
       else openComposer({ kind: 'preview', path: state.previewPath });
     });

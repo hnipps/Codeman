@@ -47,12 +47,14 @@ import {
   httpRequest,
   inputRefusal,
   isSelfSession,
+  loadReviewCaptures,
   MIN_ID_PREFIX_LENGTH,
   stripAnsi,
   type AgentContext,
   type ApiRequest,
   type ApiResponse,
   type RequestOptions,
+  type ReviewCaptureInput,
   type WaitResult,
 } from './cli-agent.js';
 import { credentialsFrom, readCodemanEnvFile } from './codeman-credentials.js';
@@ -483,7 +485,8 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
         "Hand the calling session's checked-out branch to the Reviews page with a walkthrough, in place of a pull " +
         'request. Commit the work first. The walkthrough is Markdown for the reviewer: what changed for them, how ' +
         'it works, what to look at closely, what you left alone, and the checks you ran. Link code as ' +
-        '[text](#code=path/to/file.ts:10-24) and a preview state as [text](#preview=/some/path). Submitting again ' +
+        '[text](#code=path/to/file.ts:10-24), a preview state as [text](#preview=/some/path) and a capture as ' +
+        '[text](#capture=name). Submitting again ' +
         "for the same branch replaces the walkthrough and keeps the reviewer's notes. Never merge or deploy the " +
         'branch yourself. Works only from inside a Codeman session.',
       inputSchema: {
@@ -494,6 +497,23 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
           base: {
             type: 'string',
             description: "The branch this work merges into. Default: the repository's main branch.",
+          },
+          captures: {
+            type: 'array',
+            maxItems: 24,
+            description:
+              'Stills of the running branch, for work whose preview the reviewer cannot open: screenshots you took. ' +
+              'Link one from the walkthrough as [text](#capture=name). Naming any drops earlier captures not named again.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,39}$' },
+                path: { type: 'string', description: 'A .png, .jpg or .webp file on this machine, at most 3 MB.' },
+                label: { type: 'string', maxLength: 80, description: 'What the still shows, in a few words.' },
+              },
+              required: ['name', 'path'],
+              additionalProperties: false,
+            },
           },
         },
         required: ['title', 'walkthrough'],
@@ -1236,16 +1256,56 @@ export function createToolRunner(deps: ToolRunnerDeps) {
   }
   tools.submit_review = async (args, signal) => {
     const body: Record<string, unknown> = {};
+    const inputs: ReviewCaptureInput[] = [];
     for (const [key, value] of Object.entries(args)) {
+      if (key === 'captures') {
+        if (!Array.isArray(value)) throw new ToolError('captures must be a list');
+        for (const item of value) {
+          const row = item as Record<string, unknown> | null;
+          if (!row || typeof row.name !== 'string' || typeof row.path !== 'string')
+            throw new ToolError('Each capture needs a name and a path');
+          if (row.label !== undefined && typeof row.label !== 'string') throw new ToolError('label must be a string');
+          for (const field of Object.keys(row))
+            if (field !== 'name' && field !== 'path' && field !== 'label')
+              throw new ToolError(`Unknown field ${field}`);
+          inputs.push({ name: row.name, path: row.path, ...(row.label ? { label: row.label } : {}) });
+        }
+        continue;
+      }
       if (key !== 'title' && key !== 'walkthrough' && key !== 'base') throw new ToolError(`Unknown field ${key}`);
       if (typeof value !== 'string') throw new ToolError(`${key} must be a string`);
       body[key] = value;
     }
+    // Every still is read before anything is sent, so a review never arrives with half of its captures.
+    const captures = inputs.length ? await loadReviewCaptures(inputs) : [];
+    if (typeof captures === 'string') throw new ToolError(captures);
+    if (captures.length) body.captures = captures.map((c) => c.name);
     const res = await call({ method: 'POST', path: '/api/v1/reviews', body }, signal);
-    return {
-      text: JSON.stringify(res.json?.success ? res.json.data : (res.json ?? { error: res.text })),
-      isError: !res.json?.success,
-    };
+    if (!res.json?.success) return { text: JSON.stringify(res.json ?? { error: res.text }), isError: true };
+    const data = res.json.data as { id: string };
+    for (const capture of captures) {
+      const sent = await call(
+        {
+          method: 'PUT',
+          path: `/api/v1/reviews/${data.id}/captures/${capture.name}${
+            capture.label ? `?label=${encodeURIComponent(capture.label)}` : ''
+          }`,
+          rawBody: { data: capture.data, contentType: capture.contentType },
+          timeoutMs: 60_000,
+        },
+        signal
+      );
+      if (!sent.json?.success)
+        return {
+          text: JSON.stringify({
+            ...data,
+            error: `The review was submitted, but capture ${capture.name} was not stored. Submit again to retry.`,
+            detail: sent.json ?? sent.text,
+          }),
+          isError: true,
+        };
+    }
+    return { text: JSON.stringify(data), isError: false };
   };
   tools.canvas_upload_image = async (args, signal) => {
     const allowed = new Set(['path', 'base64', 'type']);

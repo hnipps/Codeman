@@ -55,6 +55,9 @@
         <div class="rv-bar">
           <div class="rv-tabs" role="tablist">
             <button type="button" role="tab" class="rv-tab" id="rvTabPreview" aria-selected="false">Preview</button>
+            <button type="button" role="tab" class="rv-tab" id="rvTabCaptures" aria-selected="false" hidden>
+              Captures
+            </button>
             <button type="button" role="tab" class="rv-tab" id="rvTabChanges" aria-selected="true">Changes</button>
           </div>
           <span class="rv-bar-note" id="rvBarNote"></span>
@@ -66,6 +69,13 @@
           <button type="button" class="rv-btn rv-btn-sm" id="rvPreviewNote" hidden>Add note</button>
         </div>
         <div class="rv-view rv-view-preview" id="rvPreview" hidden></div>
+        <div class="rv-view rv-view-captures" id="rvCaptures" hidden>
+          <div class="rv-still-strip">
+            <div class="rv-still-names" id="rvCaptureList"></div>
+            <button type="button" class="rv-btn rv-btn-sm" id="rvStillSize" aria-pressed="false">Actual size</button>
+          </div>
+          <div class="rv-still" id="rvStill"></div>
+        </div>
         <div class="rv-view rv-view-changes" id="rvChanges">
           <div class="rv-files" id="rvFiles"></div>
           <div class="rv-diff" id="rvDiff"></div>

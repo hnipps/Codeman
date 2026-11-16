@@ -74,6 +74,7 @@ tests=(
   test/server-index-title.test.ts
   test/review-page.test.ts
   test/review-approve.test.ts
+  test/review-captures.test.ts
   test/canvas-reviews-link.test.ts
 )
 

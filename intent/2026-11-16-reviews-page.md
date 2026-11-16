@@ -29,7 +29,7 @@ Preview differs by project:
 1. Store, routes, submit, the page with queue, walkthrough, Changes, notes and Request changes.
 2. Preview in the stage for other projects; stale-link marks when the branch moves.
 3. Approve: merge, and deploy for the Codeman repository.
-4. Captures and **Open live** for Codeman branches, against the supervisor's `review` commands.
+4. Captures: stills the agent takes of the running branch and sends with the review (built). **Open live** for Codeman branches, against the supervisor's `review` commands (waits for the host-side service).
 5. Entry points from the rail and from Work items; the stand-in `claude` and seed data for preview VMs.
 
 ## Affected users and systems

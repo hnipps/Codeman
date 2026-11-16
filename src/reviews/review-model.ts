@@ -66,6 +66,28 @@ export const PreviewElementSchema = z
   .strict();
 export type PreviewElement = z.infer<typeof PreviewElementSchema>;
 
+/** Stills one review may carry, and how large each may be. A screenshot of a page is well under this. */
+export const MAX_CAPTURES = 24;
+export const MAX_CAPTURE_BYTES = 3 * 1024 * 1024;
+export const CaptureNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/);
+/**
+ * A still the agent took of the running branch. The bytes are a file beside the review, named `<name><ext>`;
+ * this is what is known about them. `ext` is what the bytes proved to be, never what the upload claimed.
+ */
+export const CaptureSchema = z
+  .object({
+    name: CaptureNameSchema,
+    ext: z.enum(['.png', '.jpg', '.webp']),
+    width: z.number().int().min(1).max(20_000),
+    height: z.number().int().min(1).max(20_000),
+    bytes: z.number().int().min(1).max(MAX_CAPTURE_BYTES),
+    label: z.string().max(80),
+    at: z.number().int().nonnegative(),
+  })
+  .strict();
+export type Capture = z.infer<typeof CaptureSchema>;
+const Fraction = z.number().min(0).max(1);
+
 export const NoteAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('general') }).strict(),
   z.object({ kind: z.literal('text'), anchor: ReviewAnchorSchema }).strict(),
@@ -87,6 +109,15 @@ export const NoteAnchorSchema = z.discriminatedUnion('kind', [
       path: z.string().min(1).max(MAX_PATH_CHARS),
       /** The element on the page the note is about. Absent on a note about the page as a whole. */
       element: PreviewElementSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('capture'),
+      name: CaptureNameSchema,
+      /** The point the note is about, as fractions of the still's width and height. Absent for the whole still. */
+      x: Fraction.optional(),
+      y: Fraction.optional(),
     })
     .strict(),
 ]);
@@ -139,6 +170,8 @@ export const ReviewSchema = z
     /** How many times the agent has submitted this review. */
     revision: z.number().int().min(1),
     notes: z.array(NoteSchema).max(MAX_NOTES_PER_REVIEW),
+    /** Stills of the running branch, for a project whose preview cannot be framed. Absent when there are none. */
+    captures: z.array(CaptureSchema).max(MAX_CAPTURES).optional(),
     /** When notes were last sent as Request changes. */
     requestedAt: z.number().int().nonnegative().optional(),
     decision: DecisionSchema.optional(),
@@ -178,6 +211,8 @@ export const SubmitSchema = z
       .max(MAX_TITLE_CHARS * 2),
     walkthrough: z.string().min(1).max(MAX_WALKTHROUGH_CHARS),
     base: RefSchema.optional(),
+    /** The stills this revision keeps, by name. Absent keeps them all; the rest are dropped with their files. */
+    captures: z.array(CaptureNameSchema).max(MAX_CAPTURES).optional(),
   })
   .strict();
 export type Submit = z.infer<typeof SubmitSchema>;
@@ -199,9 +234,13 @@ export function submitReview(
 ): Review {
   const title = cleanLine(input.title, MAX_TITLE_CHARS) || 'Untitled review';
   const walkthrough = cleanText(input.walkthrough, MAX_WALKTHROUGH_CHARS);
-  if (open)
+  if (open) {
+    const kept = input.captures ? new Set(input.captures) : null;
+    const captures = kept ? (open.captures ?? []).filter((c) => kept.has(c.name)) : open.captures;
+    const { captures: _old, ...rest } = open;
     return {
-      ...open,
+      ...rest,
+      ...(captures?.length ? { captures } : {}),
       title,
       walkthrough,
       base: facts.base,
@@ -212,6 +251,7 @@ export function submitReview(
       decision: undefined,
       updatedAt: Math.max(now, open.updatedAt + 1),
     };
+  }
   return {
     id,
     ...author,
@@ -323,6 +363,15 @@ export function removeNote(r: Review, noteId: string): Changed | Refusal {
   return { ok: true, review: { ...r, notes: r.notes.filter((n) => n.id !== noteId) } };
 }
 
+/** Adds a still, or replaces the one of the same name. Only while the review is open. */
+export function putCapture(r: Review, capture: Capture): Changed | Refusal {
+  if (!isOpen(r)) return refuse('DECIDED', 'DECIDED: this review has been decided');
+  const others = (r.captures ?? []).filter((c) => c.name !== capture.name);
+  if (others.length >= MAX_CAPTURES) return refuse('FULL', `FULL: a review carries at most ${MAX_CAPTURES} captures`);
+  return { ok: true, review: { ...r, captures: [...others, capture] } };
+}
+export const captureFile = (c: Pick<Capture, 'name' | 'ext'>): string => `${c.name}${c.ext}`;
+
 export const unsentNotes = (r: Review): Note[] =>
   r.notes.filter((n) => n.sentAt === undefined && n.resolvedAt === undefined);
 
@@ -358,6 +407,14 @@ const where = (n: Note): string => {
         el.source ? `, source ${oneLine(el.source, 200)}` : '',
         ')',
       ].join('');
+    }
+    case 'capture': {
+      const { x, y } = n.at;
+      const point =
+        x === undefined || y === undefined
+          ? ''
+          : `, at ${Math.round(x * 100)}% across and ${Math.round(y * 100)}% down`;
+      return `On the capture "${n.at.name}"${point}`;
     }
   }
 };

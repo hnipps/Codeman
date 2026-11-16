@@ -626,6 +626,91 @@ textarea {
   border-radius: 3px;
   box-shadow: 0 0 0 1px #11151c;
 }
+/* A still of the running branch. It shrinks to the stage's width and scrolls when it is taller. */
+.rv-still {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  text-align: center;
+}
+.rv-still-box {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  border: 1px solid var(--border-light);
+  line-height: 0;
+}
+.rv-still-box img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.rv-still-open img {
+  cursor: crosshair;
+}
+.rv-still-box .rv-pins {
+  overflow: visible;
+}
+.rv-view-captures {
+  display: flex;
+  flex-direction: column;
+}
+.rv-still-strip {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.rv-still-names {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rv-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+.rv-chip:hover {
+  border-color: var(--border-light);
+}
+.rv-chip[aria-current='true'] {
+  border-color: var(--border-light);
+  background: var(--bg-hover);
+  color: var(--text);
+  font-weight: 700;
+}
+.rv-chip-dim {
+  color: var(--text-muted);
+  font: 400 11px var(--mono);
+}
+.rv-still-actual img {
+  max-width: none;
+}
+.rv-still-actual {
+  max-width: none;
+}
+.rv-pin-flash {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.rv-pin-draft {
+  background: var(--accent);
+  pointer-events: none;
+}
 .rv-btn[aria-pressed='true'] {
   border-color: var(--border-light);
   background: var(--bg-hover);
@@ -873,6 +958,7 @@ textarea {
     border-bottom: 1px solid var(--border);
   }
   .rv-file,
+  .rv-chip,
   .rv-btn-sm,
   .rv-tab,
   .rv-seg button {

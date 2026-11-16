@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-16 — Reviews page: captures come from the agent, and the ways in
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/review-model.ts`, `src/reviews/review-store.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.{html,js,css}`, `src/cli-agent.ts`, `src/mcp-server.ts`, `packages/canvas/src/reviews.ts`, `skills/codeman/reference/verbs.md`
+**Why:** A running Codeman branch is never framed, and the throwaway machine that will run one for **Open live** does not exist yet. The reviewer still needs to see the change.
+**Links:** [intent/2026-11-16-reviews-page.md](../intent/2026-11-16-reviews-page.md)
+
+Stills are taken by the agent, from the branch it is already running, and sent with the review. The other choice was to have the preview machine take them when it builds; that ties what the reviewer sees to a service that is not built, and an agent already has the page open in a browser when it checks its own work. When the preview machine exists it adds **Open live** beside the stills and replaces nothing.
+
+A still is accepted only from the session that wrote the review, only as PNG, JPEG or WebP whose bytes prove it, and is served only by the name the review's own record holds. A note sits on a point of a still as fractions of its size.
+
+The canvas outline links to the page and counts the reviews that ask something of the reader; a work item links to its session's review. The classic dashboard has no link.
+
 ## 2026-11-16 — Reviews page: element notes on the preview, and Approve
 
 **Type:** intent-refinement

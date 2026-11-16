@@ -5,11 +5,14 @@
  * - A write is tmp + fsync + rename, mode 0600: a walkthrough can quote code from a private repository.
  * - A file that does not parse, or that a newer release wrote, is skipped on read and never overwritten.
  * - A change reads, applies a pure function and writes in one synchronous tick, so two requests cannot interleave.
+ * - A review's stills are files in `<data dir>/reviews/<id>.captures/`, named by the review's own record. A file
+ *   the record does not name is never served, and no request names a path.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   closeSync,
   existsSync,
+  lstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -21,7 +24,14 @@ import {
 } from 'node:fs';
 import { dataPath } from '../config/instance.js';
 import { deployRole, DeployRoleRefusal } from '../deploy-role.js';
-import { ReviewFileSchema, ReviewIdSchema, type Review } from './review-model.js';
+import {
+  CaptureNameSchema,
+  captureFile,
+  ReviewFileSchema,
+  ReviewIdSchema,
+  type Capture,
+  type Review,
+} from './review-model.js';
 
 /** Files read by one listing. Past it the newest are kept, so an old backlog cannot slow every request. */
 const MAX_FILES_READ = 1000;
@@ -109,4 +119,51 @@ export function changeReview<R extends { ok: false }>(
   const result = change(read.review);
   if (result.ok && result.review !== read.review) writeReview(result.review);
   return result;
+}
+
+const capturesDir = (id: string): string => dataPath('reviews', `${id}.captures`);
+
+/** Writes one still's bytes. The caller has already judged the bytes and holds the record that names the file. */
+export function writeCaptureFile(reviewId: string, capture: Pick<Capture, 'name' | 'ext'>, data: Buffer): void {
+  if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'may write reviews');
+  const id = ReviewIdSchema.parse(reviewId);
+  CaptureNameSchema.parse(capture.name);
+  const dir = capturesDir(id);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = `${dir}/${captureFile(capture)}`;
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, data, { mode: 0o600, flag: 'wx' });
+    renameSync(tmp, path);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** The file of a still the review's record names, or null. A symlink or anything but a regular file is refused. */
+export function findCaptureFile(review: Review, name: string): { path: string; size: number; capture: Capture } | null {
+  const capture = review.captures?.find((c) => c.name === name);
+  if (!capture) return null;
+  const path = `${capturesDir(review.id)}/${captureFile(capture)}`;
+  try {
+    const info = lstatSync(path);
+    return info.isFile() ? { path, size: info.size, capture } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Removes every still file the review's record no longer names. With no record left, the folder goes too. */
+export function pruneCaptureFiles(review: Review): void {
+  if (!deployRole.allows('persist')) return;
+  const dir = capturesDir(review.id);
+  const keep = new Set((review.captures ?? []).map(captureFile));
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) if (!keep.has(name)) rmSync(`${dir}/${name}`, { force: true });
+  if (!keep.size) rmSync(dir, { recursive: true, force: true });
 }

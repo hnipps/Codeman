@@ -28,6 +28,7 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { imageSize } from '../../canvas/canvas-assets.js';
 import { deliver } from '../../canvas/conversation-delivery.js';
 import { SendLimiter } from '../../canvas/send-limit.js';
 import { getDataDir } from '../../config/instance.js';
@@ -51,15 +52,20 @@ import {
 } from '../../reviews/review-git.js';
 import { mergeReviewedBranch, type MergeInput, type MergeResult } from '../../reviews/review-merge.js';
 import {
+  CaptureNameSchema,
+  MAX_CAPTURE_BYTES,
   MAX_OPEN_REVIEWS,
   NoteBodySchema,
   NotePatchSchema,
   ReviewIdSchema,
   SubmitSchema,
   addNote,
+  cleanLine,
   decide,
+  isDecided,
   isOpen,
   patchNote,
+  putCapture,
   queueOf,
   removeNote,
   requestChangesPrompt,
@@ -74,7 +80,16 @@ import {
   type Refusal,
   type Review,
 } from '../../reviews/review-model.js';
-import { changeReview, listReviews, newReviewId, readReview, writeReview } from '../../reviews/review-store.js';
+import {
+  changeReview,
+  findCaptureFile,
+  listReviews,
+  newReviewId,
+  pruneCaptureFiles,
+  readReview,
+  writeCaptureFile,
+  writeReview,
+} from '../../reviews/review-store.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
@@ -85,7 +100,9 @@ import { canAccessOwned, getAuthUser, isAdmin, parseBody } from '../route-helper
 import { SseEvent } from '../sse-events.js';
 import { proxyPrefixFor } from '../webview-proxy.js';
 import { deliveryDeps } from './canvas-conversation-routes.js';
+import { localFileSource, sendFileBody } from './file-routes.js';
 import { defaultDockerWorkspaces } from './git-status-routes.js';
+import { imageMagicMatchesExt } from './session-routes.js';
 
 type Ctx = SessionPort & EventPort;
 export interface ReviewRouteOptions {
@@ -122,6 +139,16 @@ const sending = new Set<string>();
 const changesCache = new Map<string, { at: number; changes: ReviewChanges }>();
 const CHANGES_TTL_MS = 5_000;
 const CHANGES_CACHE_MAX = 50;
+
+const CAPTURE_TYPES: Readonly<Record<string, '.png' | '.jpg' | '.webp'>> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+};
+const CAPTURE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp' } as const;
+/** A decided review keeps its stills this long; after it only the walkthrough, notes and decision remain. */
+const CAPTURES_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
+const CaptureQuerySchema = z.object({ label: z.string().max(200).optional() }).strict();
 
 const PERSON_ONLY = 'A review is noted and decided by a person only';
 const NOT_LIVE = 'Only the live colour may write reviews';
@@ -305,6 +332,14 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       Date.now()
     );
     writeReview(review);
+    if (open) pruneCaptureFiles(review);
+    // Stills are the one large thing a review holds, so the ones of long-decided reviews go when new work arrives.
+    for (const old of all) {
+      if (!old.captures?.length || !isDecided(old) || Date.now() - (old.decision?.at ?? 0) < CAPTURES_KEPT_MS) continue;
+      const { captures: _gone, ...rest } = old;
+      writeReview(rest);
+      pruneCaptureFiles(rest);
+    }
     changesCache.delete(review.id);
     announce(review);
     return reply.code(open ? 200 : 201).send({
@@ -501,6 +536,89 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'That is not a preview of the session that wrote this review');
     const capability = webviewCapabilities.mint(webview.id, webview.owner, { bridge: true });
     return { success: true, data: { embedUrl: proxyPrefixFor(capability, options.basePath ?? '') } };
+  });
+
+  // Stills of the running branch. Only the session that wrote the review adds one; anyone who may read the review
+  // may see one. The bytes are judged before they are written, and a file is served only by the name the review's
+  // own record gives it, so no request carries a path.
+  void app.register(async (scope) => {
+    scope.addContentTypeParser(
+      Object.keys(CAPTURE_TYPES),
+      { parseAs: 'buffer', bodyLimit: MAX_CAPTURE_BYTES + 1024 },
+      (_req, body, done) => done(null, body)
+    );
+    scope.put<{ Params: { id: string; name: string } }>(
+      '/api/reviews/:id/captures/:name',
+      { bodyLimit: MAX_CAPTURE_BYTES + 1024 },
+      async (req, reply) => {
+        const session = callerSession(ctx, req);
+        const review = reviewOf(req, reply);
+        if (!review) return reply;
+        if (!session || session.id !== review.sessionId)
+          return fail(reply, 403, ApiErrorCode.FORBIDDEN, 'Only the session that wrote a review adds its captures');
+        if (!deployRole.allows('persist')) return fail(reply, 409, ApiErrorCode.CONFLICT, NOT_LIVE);
+        const name = CaptureNameSchema.safeParse(req.params.name);
+        if (!name.success)
+          return fail(
+            reply,
+            400,
+            ApiErrorCode.INVALID_INPUT,
+            'A capture name is lowercase letters, digits and hyphens, at most 40 characters'
+          );
+        const { label } = parseBody(CaptureQuerySchema, req.query);
+        const ext =
+          CAPTURE_TYPES[
+            String(req.headers['content-type'] ?? '')
+              .split(';')[0]
+              .trim()
+              .toLowerCase()
+          ];
+        const data = req.body;
+        if (!ext || !Buffer.isBuffer(data) || !data.length)
+          return fail(reply, 415, ApiErrorCode.INVALID_INPUT, 'Send PNG, JPEG or WebP bytes with that Content-Type');
+        if (data.length > MAX_CAPTURE_BYTES)
+          return fail(reply, 413, ApiErrorCode.INVALID_INPUT, 'A capture is at most 3 MB');
+        const size = imageMagicMatchesExt(data, ext) ? imageSize(data, ext) : null;
+        if (!size || size.width > 20_000 || size.height > 20_000)
+          return fail(reply, 400, ApiErrorCode.INVALID_INPUT, 'Those bytes are not the image their type says');
+        const capture = {
+          name: name.data,
+          ext,
+          ...size,
+          bytes: data.length,
+          label: cleanLine(label ?? '', 80),
+          at: Date.now(),
+        };
+        // The record first: a refusal then leaves no file, and a file no record names is never served.
+        const result = changeReview(review.id, (r) => putCapture(r, capture));
+        if (!result.ok)
+          return fail(
+            reply,
+            'missing' in result && result.missing ? 404 : 409,
+            'missing' in result && result.missing ? ApiErrorCode.NOT_FOUND : ApiErrorCode.CONFLICT,
+            result.message
+          );
+        writeCaptureFile(review.id, capture, data);
+        // A still of the same name and another type left its file behind.
+        pruneCaptureFiles(result.review);
+        announce(result.review);
+        return { success: true, data: { name: capture.name, width: capture.width, height: capture.height } };
+      }
+    );
+  });
+
+  app.get<{ Params: { id: string; name: string } }>('/api/reviews/:id/captures/:name', async (req, reply) => {
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const found = findCaptureFile(review, req.params.name);
+    if (!found) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'Capture not found');
+    reply
+      .header('Content-Type', CAPTURE_MIME[found.capture.ext])
+      // The page asks with `?v=<when it was taken>`, so a replaced still is a new address.
+      .header('Cache-Control', 'private, max-age=31536000, immutable')
+      .header('X-Content-Type-Options', 'nosniff');
+    sendFileBody(reply, found.size, req.headers.range, localFileSource(found.path));
+    return reply;
   });
 
   app.post<{ Params: { id: string } }>('/api/reviews/:id/request-changes', async (req, reply) => {

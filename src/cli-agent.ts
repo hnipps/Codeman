@@ -1352,9 +1352,50 @@ export const REVIEW_WALKTHROUGH_MAX_CHARS = 60_000;
  * A second submit for the same branch replaces the walkthrough of the review that is still open. The server
  * takes the repository, branch and commit from this session; nothing here names them.
  */
+export const REVIEW_CAPTURE_MAX = 24;
+export const REVIEW_CAPTURE_MAX_BYTES = 3 * 1024 * 1024;
+export type ReviewCaptureInput = { name: string; path: string; label?: string };
+export type LoadedCapture = { name: string; label: string; data: Buffer; contentType: string };
+
+/** `name=path` from `--capture`, or why it is refused. */
+export function parseCaptureSpec(spec: string): ReviewCaptureInput | string {
+  const at = spec.indexOf('=');
+  if (at < 1 || at === spec.length - 1) return `--capture takes name=path, got ${JSON.stringify(spec)}`;
+  return { name: spec.slice(0, at), path: spec.slice(at + 1) };
+}
+
+/**
+ * Reads the stills a submission names, before anything is sent: a bad name, a missing file or one too large
+ * refuses the whole submission, so a review never arrives with half of its captures.
+ */
+export async function loadReviewCaptures(inputs: readonly ReviewCaptureInput[]): Promise<LoadedCapture[] | string> {
+  if (inputs.length > REVIEW_CAPTURE_MAX) return `a review carries at most ${REVIEW_CAPTURE_MAX} captures`;
+  const { readFile } = await import('node:fs/promises');
+  const seen = new Set<string>();
+  const out: LoadedCapture[] = [];
+  for (const input of inputs) {
+    if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(input.name))
+      return `capture name ${JSON.stringify(input.name)}: use lowercase letters, digits and hyphens, at most 40`;
+    if (seen.has(input.name)) return `capture name ${input.name} is given twice`;
+    seen.add(input.name);
+    const kind = /\.(png|jpe?g|webp)$/i.exec(input.path)?.[1].toLowerCase();
+    if (!kind) return `capture ${input.name}: ${input.path} is not a .png, .jpg or .webp file`;
+    const info = await stat(input.path).catch(() => null);
+    if (!info?.isFile()) return `capture ${input.name}: cannot read ${input.path}`;
+    if (info.size > REVIEW_CAPTURE_MAX_BYTES) return `capture ${input.name}: ${input.path} is over 3 MB`;
+    out.push({
+      name: input.name,
+      label: (input.label ?? '').slice(0, 80),
+      data: await readFile(input.path),
+      contentType: `image/${kind === 'jpg' ? 'jpeg' : kind}`,
+    });
+  }
+  return out;
+}
+
 export async function agentReviewSubmit(
   deps: AgentDeps,
-  options: { title: string; walkthrough: string; base?: string }
+  options: { title: string; walkthrough: string; base?: string; captures?: readonly ReviewCaptureInput[] }
 ): Promise<number> {
   if (!options.title.trim()) return fail(deps, 'refusing: empty --title', EXIT.refused);
   if (!options.walkthrough.trim()) return fail(deps, 'refusing: the walkthrough is empty', EXIT.refused);
@@ -1364,14 +1405,37 @@ export async function agentReviewSubmit(
       `refusing: the walkthrough is ${options.walkthrough.length} characters; the limit is ${REVIEW_WALKTHROUGH_MAX_CHARS}`,
       EXIT.refused
     );
+  const captures = options.captures?.length ? await loadReviewCaptures(options.captures) : [];
+  if (typeof captures === 'string') return fail(deps, `refusing: ${captures}`, EXIT.refused);
   const res = await deps.request(deps.ctx, {
     method: 'POST',
     path: '/api/v1/reviews',
-    body: { title: options.title, walkthrough: options.walkthrough, ...(options.base ? { base: options.base } : {}) },
+    body: {
+      title: options.title,
+      walkthrough: options.walkthrough,
+      ...(options.base ? { base: options.base } : {}),
+      // Naming the captures tells the server which ones this revision keeps; without any, the earlier ones stay.
+      ...(captures.length ? { captures: captures.map((c) => c.name) } : {}),
+    },
     timeoutMs: 30_000,
   });
   if (!res.json?.success) return fail(deps, describeFailure(res));
   const data = res.json.data as { id: string; revision: number; state: string; url: string };
+  for (const capture of captures) {
+    const sent = await deps.request(deps.ctx, {
+      method: 'PUT',
+      path: `/api/v1/reviews/${data.id}/captures/${capture.name}${
+        capture.label ? `?label=${encodeURIComponent(capture.label)}` : ''
+      }`,
+      rawBody: { data: capture.data, contentType: capture.contentType },
+      timeoutMs: 60_000,
+    });
+    if (!sent.json?.success)
+      return fail(
+        deps,
+        `review ${data.id} was submitted, but capture ${capture.name} was not stored: ${describeFailure(sent)}. Submit again to retry.`
+      );
+  }
   if (deps.json) emitJson(deps, data);
   else
     deps.io.out(
@@ -1758,8 +1822,24 @@ export function registerAgentCommands(program: Command): Command {
       'The walkthrough, a Markdown file (- for stdin). Link code as [text](#code=path/to/file.ts:10-24) and a preview state as [text](#preview=/some/path)'
     )
     .option('--base <branch>', "The branch this work merges into (default: the repository's main branch)")
+    .option(
+      '--capture <name=path>',
+      'A still of the running branch (.png, .jpg or .webp, at most 3 MB), shown beside the walkthrough; link it as [text](#capture=name). Repeatable; naming any drops earlier captures not named again',
+      (value: string, all: string[]) => [...all, value],
+      [] as string[]
+    )
     .option('--json', 'Machine-readable output')
-    .action(async (options: { title: string; file: string; base?: string; json?: boolean }) => {
+    .action(async (options: { title: string; file: string; base?: string; capture: string[]; json?: boolean }) => {
+      const captures: ReviewCaptureInput[] = [];
+      for (const spec of options.capture) {
+        const parsed = parseCaptureSpec(spec);
+        if (typeof parsed === 'string') {
+          console.error(palette.err(`${GLYPH.fail} ${parsed}`));
+          process.exitCode = EXIT.refused;
+          return;
+        }
+        captures.push(parsed);
+      }
       let walkthrough: string;
       try {
         const { readFile } = await import('node:fs/promises');
@@ -1780,7 +1860,7 @@ export function registerAgentCommands(program: Command): Command {
       }
       return run(
         Boolean(options.json),
-        (deps) => agentReviewSubmit(deps, { title: options.title, walkthrough, base: options.base }),
+        (deps) => agentReviewSubmit(deps, { title: options.title, walkthrough, base: options.base, captures }),
         'A review is submitted by the session in CODEMAN_SESSION_ID, so run this from inside that session.'
       );
     });
