@@ -458,12 +458,22 @@ export function requestChangesPrompt(r: Review, notes: Note[]): { text: string }
   if (!notes.length) return { refusal: 'NOTHING: there is no unsent note to send' };
   if (notes.length > MAX_NOTES_PER_SEND)
     return { refusal: `TOO_MANY: at most ${MAX_NOTES_PER_SEND} notes go in one request; resolve or split them` };
+  // A work item's review follows its pull request: a push to the branch and a report on the item is the resubmission.
+  const ending =
+    sourceOf(r).kind === 'work'
+      ? [
+          `Address each note on the same branch and push it to origin (${r.branch}), then report on ${r.sessionName}.`,
+          'Do not merge or deploy; the reviewer decides.',
+        ]
+      : [
+          'Address each note on the same branch. When you are done, submit the review again with an updated walkthrough',
+          '(`codeman agent review submit`). Do not merge or deploy; the reviewer decides.',
+        ];
   const lines = [
     `Review notes on "${r.title}" (branch ${r.branch}). The reviewer asked for changes.`,
     '',
     ...notes.flatMap((n, i) => [`${i + 1}. ${where(n)}`, ...n.text.split('\n').map((l) => `   ${l}`), '']),
-    'Address each note on the same branch. When you are done, submit the review again with an updated walkthrough',
-    '(`codeman agent review submit`). Do not merge or deploy; the reviewer decides.',
+    ...ending,
   ];
   return { text: lines.join('\n') };
 }

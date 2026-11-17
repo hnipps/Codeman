@@ -68,7 +68,8 @@ function resolveAssignee(
   return resolved.ok ? { ok: true, assignee: { kind: 'session', sessionId: resolved.ids[0]! } } : resolved;
 }
 
-async function announce(ctx: CanvasPort, workspaceId: string): Promise<void> {
+/** Tells canvas pages that a workspace's items changed. */
+export async function announceWorkChange(ctx: CanvasPort, workspaceId: string): Promise<void> {
   const { readWorkspaces } = await import('../../canvas/workspace-registry.js');
   const seq = (await ctx.canvasStores()).get(workspaceId).read().seq;
   ctx.broadcast(SseEvent.CanvasChanged, {
@@ -90,7 +91,7 @@ async function answer(ctx: CanvasPort, workspaceId: string, result: Result, crea
           : [409, ApiErrorCode.CONFLICT];
     return refuse(status, code, `${result.code}: ${result.message}`);
   }
-  if (!result.duplicate) await announce(ctx, workspaceId);
+  if (!result.duplicate) await announceWorkChange(ctx, workspaceId);
   const outcome = ok({
     item: workRow(result.item, result.file),
     ...(result.filed.length ? { filed: result.filed.map((i) => workRow(i, result.file)) } : {}),
