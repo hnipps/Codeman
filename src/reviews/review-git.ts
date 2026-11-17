@@ -11,12 +11,15 @@
  *   before any function here runs.
  */
 import { basename } from 'node:path';
+import { runFetch } from '../git-fetch.js';
 import { isSafeRepoRelativePath, runGit, type GitRunner } from '../git-workspace-status.js';
 import type { RepoFacts } from './review-model.js';
 
 export const MAX_REVIEW_FILES = 500;
 export const MAX_REVIEW_DIFF_BYTES = 400 * 1024;
 export const SHA = /^[0-9a-f]{40}$/;
+/** How long one fetch or push to `origin` may take. */
+export const NETWORK_TIMEOUT_MS = 60_000;
 
 export class ReviewGitRefusal extends Error {}
 
@@ -33,13 +36,52 @@ export async function validRef(git: GitRunner, cwd: string, name: string): Promi
   return (await tryGit(git, cwd, ['check-ref-format', '--branch', name])) !== null;
 }
 
-/** The commit a branch name points at: the local branch first, then the one fetched from `origin`. */
-async function resolveBranch(git: GitRunner, cwd: string, name: string): Promise<string | null> {
-  for (const ref of [`refs/heads/${name}`, `refs/remotes/origin/${name}`]) {
+/**
+ * Where a review's head branch is read. A session's review reads the session's own branch, then the one fetched from
+ * `origin`; a review of a pull request reads `origin` only, so a stale local branch of the same name never shadows the
+ * pull request's tip.
+ */
+export type HeadLocator = { from: 'local-first'; branch: string } | { from: 'origin'; branch: string };
+
+const headRefs = (head: HeadLocator): string[] =>
+  head.from === 'origin'
+    ? [`refs/remotes/origin/${head.branch}`]
+    : [`refs/heads/${head.branch}`, `refs/remotes/origin/${head.branch}`];
+
+/** The commit a head points at, or null. The one head lookup: the Changes tab and Approve both read through it. */
+export async function resolveHead(git: GitRunner, cwd: string, head: HeadLocator): Promise<string | null> {
+  for (const ref of headRefs(head)) {
     const sha = line((await tryGit(git, cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) ?? '');
     if (SHA.test(sha)) return sha;
   }
   return null;
+}
+const resolveBranch = (git: GitRunner, cwd: string, name: string): Promise<string | null> =>
+  resolveHead(git, cwd, { from: 'local-first', branch: name });
+
+/**
+ * Brings `refs/remotes/origin/<branch>` up to date with `origin`, through the fetch runner (non-interactive, timed,
+ * the whole process tree killed on timeout). `absent`: origin has no such branch, or there is no origin.
+ */
+export async function fetchHead(
+  repoRoot: string,
+  branch: string,
+  deps: { git?: GitRunner; net?: GitRunner } = {}
+): Promise<'fetched' | 'absent' | 'failed'> {
+  const git = deps.git ?? runGit;
+  if (!(await validRef(git, repoRoot, branch))) return 'failed';
+  if ((await tryGit(git, repoRoot, ['remote', 'get-url', 'origin'])) === null) return 'absent';
+  try {
+    await (deps.net ?? runFetch)(
+      repoRoot,
+      ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+      { timeoutMs: NETWORK_TIMEOUT_MS }
+    );
+    return 'fetched';
+  } catch (err) {
+    const stderr = (err as { stderr?: unknown }).stderr;
+    return typeof stderr === 'string' && /couldn't find remote ref/i.test(stderr) ? 'absent' : 'failed';
+  }
 }
 
 async function defaultBase(git: GitRunner, cwd: string): Promise<string | null> {
@@ -109,9 +151,9 @@ export function parseNumstatZ(out: string): ChangedFile[] {
 }
 
 type Range = { head: string; mergeBase: string } | null;
-async function rangeOf(git: GitRunner, repoRoot: string, base: string, branch: string): Promise<Range> {
-  if (!(await validRef(git, repoRoot, base)) || !(await validRef(git, repoRoot, branch))) return null;
-  const head = await resolveBranch(git, repoRoot, branch);
+async function rangeOf(git: GitRunner, repoRoot: string, base: string, at: HeadLocator): Promise<Range> {
+  if (!(await validRef(git, repoRoot, base)) || !(await validRef(git, repoRoot, at.branch))) return null;
+  const head = await resolveHead(git, repoRoot, at);
   if (!head) return null;
   // The base branch here and the one fetched from `origin` can differ: merges land on the remote, so the local
   // branch is often behind. Comparing with the older one shows everything merged since as this branch's work, so the
@@ -131,10 +173,10 @@ const DIFF = ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M'];
 export async function reviewChanges(
   repoRoot: string,
   base: string,
-  branch: string,
+  head: HeadLocator,
   git: GitRunner = runGit
 ): Promise<ReviewChanges> {
-  const range = await rangeOf(git, repoRoot, base, branch);
+  const range = await rangeOf(git, repoRoot, base, head);
   if (!range)
     return { headSha: '', mergeBase: '', commits: 0, files: [], added: 0, deleted: 0, truncated: false, gone: true };
   const all = parseNumstatZ(await git(repoRoot, [...DIFF, '--numstat', '-z', range.mergeBase, range.head, '--']));
@@ -159,12 +201,12 @@ export type ReviewFileDiff = { diff: string; truncated: boolean; binary: boolean
 export async function reviewFileDiff(
   repoRoot: string,
   base: string,
-  branch: string,
+  head: HeadLocator,
   file: { path: string; origPath?: string },
   git: GitRunner = runGit
 ): Promise<ReviewFileDiff | null> {
   if (!isSafeRepoRelativePath(file.path) || (file.origPath && !isSafeRepoRelativePath(file.origPath))) return null;
-  const range = await rangeOf(git, repoRoot, base, branch);
+  const range = await rangeOf(git, repoRoot, base, head);
   if (!range) return null;
   const paths = file.origPath ? [file.origPath, file.path] : [file.path];
   let out: string;

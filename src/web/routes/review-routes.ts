@@ -48,6 +48,7 @@ import {
   reviewFileDiff,
   SHA,
   tryGit,
+  type HeadLocator,
   type ReviewChanges,
 } from '../../reviews/review-git.js';
 import {
@@ -113,6 +114,7 @@ import { defaultDockerWorkspaces } from './git-status-routes.js';
 import { imageMagicMatchesExt } from './session-routes.js';
 
 type Ctx = SessionPort & EventPort;
+const headOf = (review: Review): HeadLocator => ({ from: 'local-first', branch: review.branch });
 export interface ReviewRouteOptions {
   /** Host paths of Docker case workspaces. Injected by tests; rejects when the list cannot be read. */
   dockerWorkspaces?: () => Promise<string[]>;
@@ -331,7 +333,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   const changesOf = async (review: Review): Promise<ReviewChanges> => {
     const hit = changesCache.get(review.id);
     if (hit && Date.now() - hit.at < CHANGES_TTL_MS) return hit.changes;
-    const changes = await reviewChanges(review.repoRoot, review.base, review.branch);
+    const changes = await reviewChanges(review.repoRoot, review.base, headOf(review));
     changesCache.delete(review.id);
     changesCache.set(review.id, { at: Date.now(), changes });
     if (changesCache.size > CHANGES_CACHE_MAX) changesCache.delete(changesCache.keys().next().value as string);
@@ -430,7 +432,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     // The path is a key into the branch's own file list, never a path the browser chose.
     const file = (await changesOf(review)).files.find((f) => f.path === path);
     if (!file) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'That file is not part of this review');
-    const diff = await reviewFileDiff(review.repoRoot, review.base, review.branch, file);
+    const diff = await reviewFileDiff(review.repoRoot, review.base, headOf(review), file);
     if (!diff) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'The branch is gone');
     return { success: true, data: { path: file.path, origPath: file.origPath, ...diff } };
   });
@@ -518,7 +520,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       merged = await merge({
         repoRoot: review.repoRoot,
         base: review.base,
-        branch: review.branch,
+        head: headOf(review),
         headSha,
         title: review.title,
       });
