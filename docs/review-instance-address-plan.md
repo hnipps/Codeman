@@ -209,9 +209,9 @@ None of this can be done from inside the Codeman VM.
 | 1 | Storage pool, `<preview-net>` and `<base-image>` on the host | Done 2026-11-16 |
 | 2 | `<broker>` as a host service, with the limits above | Done 2026-11-16 |
 | 3 | The request directory in the Codeman VM, the supervisor's `review` commands and `CODEMAN_REVIEW_PREVIEWS=1` for the live colour | Applied 2026-11-17 |
-| 4 | The wildcard entries at the edge, the tunnel rule and the access application | Not applied |
+| 4 | The wildcard entries at the edge, the tunnel rule and the access application | Applied 2026-11-17 |
 
-Until phase 4 is applied, the Reviews page builds, wakes, puts to sleep and destroys previews, but the address **Open live** opens does not answer.
+Phase 4 was applied on 2026-11-17. Preview addresses are `pv-<8 hex>.<zone>` under one proxied wildcard record, routed by the tunnel to the broker's edge. An access application covers only those names, so a request without a valid token never reaches the broker, and the broker checks the token again on every request and WebSocket upgrade. The broker answers only names it created; any other name gets 404, the live hostname included. The tunnel rule can be undone with the tag recorded on the host.
 
 ## What changed from the first version
 
