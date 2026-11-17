@@ -1541,6 +1541,8 @@ export class WebServer extends EventEmitter {
     registerPreviewRoutes(this.app, ctx, this.basePath);
     registerReviewPageRoutes(this.app, ctx, {
       basePath: this.basePath,
+      startSession: (headers, request) => this.startConversationSession(headers, request),
+      discardSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
       announceWork: (workspaceId) => void announceWorkChange(canvasPort, workspaceId).catch(() => undefined),
     });
     if (!this.testMode) {

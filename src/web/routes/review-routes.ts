@@ -12,6 +12,8 @@
  *   PATCH  /api/reviews/:id/notes/:noteId        a PERSON edits or resolves a note { text?, resolved? }
  *   DELETE /api/reviews/:id/notes/:noteId        a PERSON deletes an unsent note
  *   POST   /api/reviews/:id/request-changes      a PERSON sends every unsent note as ONE prompt
+ *   POST   /api/reviews/:id/new-session          a PERSON hands the review, with its notes, to a NEW session once the
+ *                                                author session has ended
  *
  * Who may do what:
  * - Submitting is the agent's act: the request must carry `X-Codeman-Parent-Session`, and the review is made for
@@ -21,6 +23,12 @@
  *   owns answers 404, like a session does.
  * - Only the live deploy colour writes.
  * - Git never runs for a remote or Docker session, nor for a repository at or inside a Docker case workspace.
+ *
+ * A hand-over starts one Claude session in the review's checked-out folder through the ordinary create routes, with
+ * the person's own credentials (`startSession`), and pastes one prompt carrying the whole review: title, walkthrough,
+ * branch and base, the changed files, the open canvas Work items linked to the old session, and the notes. Only once
+ * that paste reached the pane does the review move to the new session (its resubmissions then update the same review)
+ * and the work items link it; a paste that never landed deletes the session again and changes nothing.
  *
  * The prompt is delivered the way a canvas conversation is (`deliver()`): a paste that never reached the pane
  * stamps nothing; one that was written is stamped even when Enter was not confirmed, since sending again would
@@ -42,6 +50,7 @@ import {
 import { deployRole } from '../../deploy-role.js';
 import { isInsideAny, runGit } from '../../git-workspace-status.js';
 import {
+  line,
   ReviewGitRefusal,
   repoFacts,
   reviewChanges,
@@ -71,6 +80,8 @@ import {
   addNote,
   cleanLine,
   decide,
+  handOver,
+  handoverPrompt,
   isDecided,
   isOpen,
   patchNote,
@@ -101,6 +112,7 @@ import {
   writeCaptureFile,
   writeReview,
 } from '../../reviews/review-store.js';
+import { handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
 import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
@@ -133,6 +145,19 @@ export interface ReviewRouteOptions {
   merge?: (input: MergeInput) => Promise<MergeResult>;
   /** The preview service behind Open live. Injected by tests, which must never reach a real one. */
   live?: LiveControl;
+  /**
+   * Starts one agent session through the ordinary create and start routes with the caller's credentials (the server's
+   * `startConversationSession`). Absent, a review cannot be handed to a new session.
+   */
+  startSession?: (
+    headers: Readonly<Record<string, string | string[] | undefined>>,
+    request: { workingDir: string; name: string; mode: string; launch: Record<string, unknown> }
+  ) => Promise<{ ok: true; sessionId: string } | { ok: false; message: string }>;
+  /** Deletes a session `startSession` made, when the hand-over failed after it. */
+  discardSession?: (
+    headers: Readonly<Record<string, string | string[] | undefined>>,
+    sessionId: string
+  ) => Promise<void>;
   /** Reviews of work items' pull requests. Injected by tests; by default made here and follows item writes. */
   workReviews?: WorkReviews;
   /** Tells canvas pages that a workspace's items changed (Request changes and Approve of a work review write them). */
@@ -856,6 +881,128 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
           sent: stamped.ok ? ids : [],
           confirmed: result === 'confirmed' || result === 'unverified',
           review: toView(stamped.ok ? stamped.review : review),
+        },
+      };
+    } finally {
+      sending.delete(review.id);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/new-session', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    if (!isOpen(review)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been decided');
+    // A work review's notes go to its item (Request changes), never to a session.
+    const authorId = authorSessionId(review);
+    if (!authorId)
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        'WORK_REVIEW: a work item review takes notes through Request changes'
+      );
+    const old = authorSession(review);
+    if (old && !old.paneExit && canAccessOwned(getAuthUser(req), old.owner))
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        'SESSION_LIVE: the session that wrote this review is still running; use Request changes'
+      );
+    const refusal = await gitRefusal(old, review.repoRoot);
+    if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
+    // The new session starts in the review's folder, so that folder must still hold the branch.
+    const checkedOut = line(
+      (await tryGit(runGit, review.repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) ?? ''
+    );
+    if (!checkedOut)
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        `FOLDER_GONE: ${review.project} is no longer a git checkout on a branch; nothing was started`
+      );
+    if (checkedOut !== review.branch)
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        `NOT_CHECKED_OUT: ${review.project} has ${checkedOut} checked out, not ${review.branch}; check the branch out there first. Nothing was started`
+      );
+    let changes: ReviewChanges | null = null;
+    try {
+      changes = await changesOf(review);
+    } catch {
+      changes = null;
+    }
+    if (changes?.gone)
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        `BRANCH_GONE: ${review.branch} no longer exists; nothing was started`
+      );
+    const work = workItemsForSession(review.owner, authorId);
+    const chosen = unsentNotes(review);
+    const prompt = handoverPrompt(review, chosen, {
+      files: (changes?.files ?? []).map((f) =>
+        f.binary ? `${f.path} (binary)` : `${f.path} (+${f.added} -${f.deleted})`
+      ),
+      moreFiles: changes?.truncated ? 1 : 0,
+      ...(changes ? { commits: changes.commits } : {}),
+      work: work.map(handoverWork),
+    });
+    if ('refusal' in prompt) return fail(reply, 409, ApiErrorCode.CONFLICT, prompt.refusal);
+    const start = options.startSession;
+    if (!start)
+      return fail(reply, 409, ApiErrorCode.CONFLICT, 'UNAVAILABLE: this server cannot start sessions for reviews');
+
+    if (sending.has(review.id)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'SENDING: these notes are being sent');
+    if (!limiter.take(review.id, false))
+      return fail(reply, 429, ApiErrorCode.RATE_LIMITED, 'RATE_LIMITED: too many sends for this review; wait a moment');
+    sending.add(review.id);
+    try {
+      const started = await start(req.headers, {
+        workingDir: review.repoRoot,
+        name: `Review · ${review.title}`.slice(0, 100),
+        mode: 'claude',
+        launch: {},
+      });
+      if (!started.ok)
+        return fail(reply, 409, ApiErrorCode.OPERATION_FAILED, `START_FAILED: ${started.message}; nothing was sent`);
+      const session = ctx.sessions.get(started.sessionId);
+      const result = session ? await deliver(deliveryDeps(session, prompt.text), 'paste', Date.now()) : 'not-written';
+      if (result === 'not-written' || result === 'not-ready') {
+        // Nothing reached the new session, so it would only be an empty tab; the review stays as it was.
+        await options.discardSession?.(req.headers, started.sessionId);
+        return fail(
+          reply,
+          409,
+          ApiErrorCode.CONFLICT,
+          result === 'not-ready'
+            ? 'NOT_READY: the new session was not ready for a prompt in time; it was closed and nothing was sent'
+            : 'NOT_WRITTEN: the prompt could not be written to the new session; it was closed and nothing was sent'
+        );
+      }
+      const to = { sessionId: started.sessionId, sessionName: session?.name ?? '' };
+      const ids = chosen.map((n) => n.id);
+      const moved = changeReview(review.id, (r) => ({
+        ok: true as const,
+        review: stampSent(handOver(r, to), ids, Date.now()),
+      }));
+      if (moved.ok) announce(moved.review);
+      for (const workspaceId of linkSessionToWork(work, started.sessionId, personAuthor(req)))
+        options.announceWork?.(workspaceId);
+      return {
+        success: true,
+        data: {
+          sessionId: started.sessionId,
+          sessionName: to.sessionName,
+          sent: moved.ok ? ids : [],
+          confirmed: result === 'confirmed' || result === 'unverified',
+          work: work.map((w) => handoverWork(w).key),
+          review: toView(moved.ok ? moved.review : review),
         },
       };
     } finally {

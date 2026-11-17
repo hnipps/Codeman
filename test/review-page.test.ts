@@ -34,6 +34,10 @@ import type { Webview } from '../src/types/webview.js';
 import { webviewCapabilities } from '../src/webview-capabilities.js';
 import { writeWebviews } from '../src/webview-store.js';
 import { createRouteTestHarness, type RouteTestHarness } from './routes/_route-test-utils.js';
+import { createMockSession } from './mocks/mock-session.js';
+import { changeWork, readWork } from '../src/canvas/work-store.js';
+import { createWork } from '../src/canvas/work.js';
+import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 
 vi.mock('../src/canvas/conversation-delivery.js', async (original) => ({
   ...(await original<typeof import('../src/canvas/conversation-delivery.js')>()),
@@ -419,4 +423,173 @@ describe('review routes', () => {
       vi.restoreAllMocks();
     }
   });
+});
+
+describe('handing a review to a new session', () => {
+  let repo: string;
+  let harness: RouteTestHarness;
+  const AGENT = { 'x-codeman-parent-session': 'test-session-1' };
+  const startSession = vi.fn();
+  const discardSession = vi.fn(async () => {});
+  const announceWork = vi.fn();
+
+  beforeAll(() => {
+    repo = makeRepo();
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+  beforeEach(async () => {
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        startSession,
+        discardSession,
+        announceWork,
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo;
+    startSession.mockReset();
+    startSession.mockImplementation(async () => {
+      const fresh = createMockSession('new-session-1');
+      fresh.name = 'w9';
+      fresh.workingDir = repo;
+      harness.ctx.sessions.set(fresh.id, fresh as never);
+      return { ok: true, sessionId: fresh.id };
+    });
+    discardSession.mockClear();
+    announceWork.mockClear();
+    vi.mocked(deliver).mockClear();
+    vi.mocked(deliver).mockResolvedValue('confirmed');
+  });
+  afterEach(async () => {
+    await harness.app.close();
+    rmSync(dataPath('reviews'), { recursive: true, force: true });
+    rmSync(dataPath('canvas'), { recursive: true, force: true });
+    rmSync(dataPath('workspaces.json'), { force: true });
+  });
+
+  /** A review by test-session-1 with one note, a work item linking that session, and the session then gone. */
+  const ended = async () => {
+    const id = (
+      await harness.app.inject({
+        method: 'POST',
+        url: '/api/reviews',
+        headers: AGENT,
+        payload: { title: 'Work', walkthrough: 'I changed a.txt and added b.txt.' },
+      })
+    ).json().data.id as string;
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id}/notes`,
+      payload: { at: { kind: 'code', path: 'a.txt', line: 2, side: 'new', text: 'TWO' }, text: 'Lower case?' },
+    });
+    const workspace = workspaceForCase('review-case');
+    const filed = changeWork(workspace.id, (file) =>
+      createWork(
+        file,
+        { title: 'Shout less', status: 'in-progress', description: 'Make a.txt calmer.', sessions: ['test-session-1'] },
+        { author: { kind: 'human', userId: 'admin' }, now: 1 }
+      )
+    );
+    if (!filed.ok) throw new Error('expected a work item');
+    harness.ctx.sessions.delete('test-session-1');
+    return { id, workspaceId: workspace.id };
+  };
+  const handOver = (id: string, headers: Record<string, string> = {}) =>
+    harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/new-session`, headers, payload: {} });
+
+  it('refuses while the author session still runs, and refuses an agent', async () => {
+    const id = (
+      await harness.app.inject({
+        method: 'POST',
+        url: '/api/reviews',
+        headers: AGENT,
+        payload: { title: 'Work', walkthrough: 'x' },
+      })
+    ).json().data.id as string;
+    const live = await handOver(id);
+    expect(live.statusCode).toBe(409);
+    expect(live.json().error).toContain('SESSION_LIVE');
+    expect((await handOver(id, AGENT)).statusCode).toBe(403);
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('starts a session in the branch folder and sends it the whole review, then moves the review to it', async () => {
+    const { id, workspaceId } = await ended();
+    const res = await handOver(id);
+    expect(res.statusCode).toBe(200);
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(startSession.mock.calls[0][1]).toMatchObject({ workingDir: repo, mode: 'claude' });
+    const data = res.json().data;
+    expect(data).toMatchObject({
+      sessionId: 'new-session-1',
+      sessionName: 'w9',
+      confirmed: true,
+      work: ['W-1'],
+      review: { sessionId: 'new-session-1', sessionName: 'w9', state: 'changes-requested', unsent: 0 },
+    });
+
+    const text = await deliveredText();
+    expect(text).toContain('The session that wrote it has ended');
+    expect(text).toContain('Branch: feat/x, compared with main');
+    expect(text).toContain('a.txt (+1 -1)');
+    expect(text).toContain('b.txt (+1 -0)');
+    expect(text).toContain('W-1 "Shout less" (In progress)');
+    expect(text).toContain('Make a.txt calmer.');
+    expect(text).toContain('I changed a.txt and added b.txt.');
+    expect(text).toContain('On a.txt:2');
+    expect(text).toContain('Lower case?');
+
+    const item = readWork(workspaceId);
+    if (!item.ok) throw new Error('expected work');
+    expect(item.file.items[0].sessions).toEqual(['test-session-1', 'new-session-1']);
+    expect(announceWork).toHaveBeenCalledWith(workspaceId);
+
+    // The new session owns the review now: Request changes goes to it, and its resubmission updates this review.
+    const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
+    expect(one.sessionLive).toBe(true);
+    const again = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: { 'x-codeman-parent-session': 'new-session-1' },
+      payload: { title: 'Work', walkthrough: 'Lower-cased it.' },
+    });
+    expect(again.json().data).toMatchObject({ id, revision: 2 });
+  });
+
+  it('closes the new session and changes nothing when the prompt never reached it', async () => {
+    const { id } = await ended();
+    vi.mocked(deliver).mockResolvedValue('not-ready');
+    const res = await handOver(id);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toContain('NOT_READY');
+    expect(discardSession).toHaveBeenCalledWith(expect.anything(), 'new-session-1');
+    const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
+    expect(one.review).toMatchObject({ sessionId: 'test-session-1', unsent: 1 });
+  });
+
+  it('refuses when the folder no longer has the branch checked out', async () => {
+    const { id } = await ended();
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: repo });
+    try {
+      const res = await handOver(id);
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toContain('NOT_CHECKED_OUT');
+      expect(startSession).not.toHaveBeenCalled();
+    } finally {
+      execFileSync('git', ['checkout', '-q', 'feat/x'], { cwd: repo });
+    }
+  });
+
+  /** The text the hand-over pasted: `deliver` is mocked, so the paste its deps would make is made here. */
+  async function deliveredText(): Promise<string> {
+    const writes: string[] = [];
+    const fresh = harness.ctx.sessions.get('new-session-1') as unknown as { writeViaMux: unknown };
+    fresh.writeViaMux = async (t: string) => {
+      writes.push(t);
+      return true;
+    };
+    const deps = vi.mocked(deliver).mock.calls[0][0] as unknown as { paste(): Promise<boolean> };
+    await deps.paste();
+    return writes.join('');
+  }
 });

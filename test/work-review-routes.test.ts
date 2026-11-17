@@ -192,6 +192,20 @@ describe('work review routes', () => {
     expect((await page()).review).toMatchObject({ state: 'updated', revision: 2 });
   });
 
+  it('never hands a work review to a new session; its notes go to the item', async () => {
+    await opened();
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id()}/notes`,
+      payload: { at: { kind: 'general' }, text: 'Rename the heading' },
+    });
+    const refused = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id()}/new-session` });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toMatch(/WORK_REVIEW/);
+    expect(deliver).not.toHaveBeenCalled();
+    expect((await page()).review).toMatchObject({ sessionId: `work:${workspaceId}:1`, unsent: 1 });
+  });
+
   it('Approve merges the origin tip into the base and marks the item done', async () => {
     const one = await opened();
     const approved = await harness.app.inject({

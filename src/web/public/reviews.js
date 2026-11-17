@@ -7,7 +7,8 @@
  *   it goes through `marked` and then `window.sanitizeMarkdownHtml`, the dashboard's sanitizer, and is shown as
  *   plain text when either is missing.
  * - A preview is a sandboxed frame without `allow-same-origin`, like a preview tab on the dashboard.
- * - Nothing is sent to a session without a press of Request changes.
+ * - Nothing is sent to a session without a press of Request changes (once the author session has ended, that press
+ *   starts a new session and hands it the review).
  * - All addresses are relative, so the page works under a reverse-proxy base path through `<base href>`.
  */
 (function () {
@@ -47,6 +48,8 @@
     id: null,
     review: null,
     sessionLive: false,
+    /** A hand-over to a new session is in flight. */
+    sending: false,
     /** The work item this review is of (`{ key, prUrl, wanted }`), null when its item is gone, undefined for a session. */
     work: undefined,
     /** What Approve will do for this review: `{ deploys }`. */
@@ -339,13 +342,11 @@
         ? `Puts every unsent note on ${key} and moves it to the top of Ready for work.`
         : 'Add a note first.';
     } else {
+      // One button whether or not the author session still runs: once it has ended, the notes go to a new session
+      // that is given the whole review, and the reviewer need not know the difference.
       request.textContent = `Request changes${notes}`;
-      request.disabled = !r.unsent || !state.sessionLive;
-      request.title = !state.sessionLive
-        ? 'The session that wrote this review has ended, so there is nowhere to send notes.'
-        : r.unsent
-          ? 'Sends every unsent note to the session as one prompt.'
-          : 'Add a note first.';
+      request.disabled = !r.unsent || state.sending;
+      request.title = r.unsent ? 'Sends every unsent note to the agent as one prompt.' : 'Add a note first.';
     }
     renderApprove();
     renderNotice();
@@ -480,8 +481,6 @@
       lines.push(
         'The work item no longer asks for this review: it is closed, or its pull request changed. You can still read it.'
       );
-    else if (state.review && !isWork() && !state.sessionLive && !d)
-      lines.push('The session that wrote this has ended. You can still read it and keep notes.');
     box.hidden = !lines.length;
     box.replaceChildren(...lines.map((line) => el('p', '', line)));
   }
@@ -806,6 +805,7 @@
   }
 
   async function requestChanges() {
+    if (!isWork() && !state.sessionLive) return sendToNewSession();
     const button = $('rvRequest');
     button.disabled = true;
     button.textContent = 'Sending…';
@@ -829,6 +829,38 @@
     }
     renderHeader();
     renderNotes();
+  }
+
+  /** The author session has ended: a new session is started on the branch and handed the review with its notes. */
+  async function sendToNewSession() {
+    const id = state.id;
+    const button = $('rvRequest');
+    state.sending = true;
+    button.disabled = true;
+    // Claude Code takes up to a minute before it accepts a first prompt, so this can take a while.
+    button.textContent = 'Sending…';
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(id)}/new-session`, { method: 'POST', body: {} });
+      if (state.id === id) {
+        state.review = data.review;
+        state.sessionLive = true;
+      }
+      toast(
+        data.confirmed
+          ? `Sent ${data.sent.length} ${data.sent.length === 1 ? 'note' : 'notes'} to the agent.`
+          : 'The notes were written to the agent, but it has not confirmed it started. Check the session.',
+        data.confirmed ? 'ok' : 'warn'
+      );
+      loadQueue();
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      state.sending = false;
+    }
+    if (state.id !== id) return;
+    renderHeader();
+    renderNotes();
+    renderNotice();
   }
 
   // ---------------------------------------------------------------- changes
