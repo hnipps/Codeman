@@ -1,0 +1,19 @@
+<!doctype html><meta charset=utf-8><title>capture fixture 2</title>
+<link rel=stylesheet href=https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css>
+<style>body{margin:0;font:14px sans-serif;background:#fff}.box{position:absolute;width:320px;height:120px}
+#hover{background:#888;left:10px;top:150px;width:200px;height:60px}#hover:hover{background:#00a000}
+#toast{position:fixed;left:240px;top:150px;width:200px;height:60px;background:#ff8000}</style>
+<div id=tA class=box style="left:10px;top:10px"></div>
+<div id=tB class=box style="left:350px;top:10px"></div>
+<div id=hover class=box>hover me</div>
+<div id=toast>toast</div>
+<iframe id=frame sandbox="allow-scripts" style="position:absolute;left:460px;top:150px;width:200px;height:100px;border:0"></iframe>
+<script src=https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js></script><script src=https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.19.0/lib/addon-webgl.js></script><script src=https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js></script>
+<script>
+function term(id, preserve){const t=new Terminal({cols:30,rows:6,fontSize:14});t.open(document.getElementById(id));t.loadAddon(new WebglAddon.WebglAddon(preserve));t.write('\x1b[41m'+' '.repeat(30*6)+'\x1b[0m');return t;}
+window.tA=term('tA',false);window.tB=term('tB',true);
+const base=location.origin;
+document.getElementById('frame').srcdoc=`<body style="margin:0;background:#0033ff;color:#fff">sandboxed page<script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js"><\/script><script>
+addEventListener('message',async e=>{if(e.data!=='capture')return;const c=await htmlToImage.toCanvas(document.body,{width:innerWidth,height:innerHeight,pixelRatio:1});parent.postMessage({capture:c.toDataURL('image/png')},'*');});<\/script></body>`;
+window.frameCapture=()=>new Promise(r=>{addEventListener('message',e=>{if(e.data&&e.data.capture)r(e.data.capture)},{once:true});document.getElementById('frame').contentWindow.postMessage('capture','*');});
+</script>

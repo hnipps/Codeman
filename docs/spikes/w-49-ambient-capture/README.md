@@ -1,0 +1,95 @@
+# Ambient capture spike (W-49)
+
+Goal: from any Codeman page, a person draws around what bothers them, adds a note, and Codeman files it as a Work item. They never leave what they were doing. This spike answers W-49's four questions with evidence. It ships a throwaway demo and proposes build items. It does not ship the feature.
+
+Everything in this folder is throwaway. Codeman does not load any of it.
+
+| File | What it is |
+| --- | --- |
+| `demo.html` | Freeze, draw and send on a mock shell with a WebGL terminal, a canvas object, a sandboxed prototype frame, a hover state and a toast. Press Ctrl+Shift+X or Capture. |
+| `check-demo.mjs` | Drives the demo headlessly, draws a loop, sends a note and checks the bundle. |
+| `probes/probe-rasterisers.mjs` | Compares two DOM rasterisers with tab capture on `probes/fixture.html`. |
+| `probes/probe-patches.mjs` | Measures the two fixes that make the DOM path see a terminal and a sandboxed frame (`probes/fixture2.html`). |
+
+Run each script with node from the repository after `npm install`, for example `node docs/spikes/w-49-ambient-capture/probes/probe-patches.mjs`. `check-demo.mjs` takes the demo folder and an output folder as arguments. The pages load html-to-image, html2canvas and xterm from a CDN, pinned to exact versions. On this host Chromium also needs `LD_LIBRARY_PATH=~/.codeman/mermaid-runtime/lib`.
+
+All numbers below were measured on 2026-11-17 in headless Chromium 148 (Playwright 1223 build, SwiftShader WebGL, device scale factor 1).
+
+## Answers
+
+### 1. Desktop: screen capture or a DOM rasteriser?
+
+**Recommendation.** Use a DOM rasteriser in the top document, plus two fixes Codeman controls. The rasteriser needs no permission prompt and covers every surface Codeman draws. Treat real tab capture as an optional exact-pixels mode, and do not build it first.
+
+A DOM rasteriser on its own misses three surfaces (measured, `probe-rasterisers.mjs`). It draws each region's centre pixel as follows:
+
+| Region | Expected | html2canvas 1.4.1 | html-to-image 1.11.11 |
+| --- | --- | --- | --- |
+| WebGL canvas, `preserveDrawingBuffer: false` (how Codeman builds xterm today) | `#ff0000` | `#ffffff` | `#ffffff` |
+| WebGL canvas, `preserveDrawingBuffer: true` | `#00cc00` | `#00cc00` | `#00cc00` |
+| Sandboxed iframe without `allow-same-origin` (prototypes, web tabs, canvas embeds, Mermaid) | `#0033ff` | `#ffffff` | `#ffffff` |
+| Cross-origin iframe | `#e000e0` | `#ffffff` | `#ffffff` |
+| Plain DOM | `#ffd400` | `#ffd400` | `#ffd400` |
+| 2D canvas | `#00e5e5` | `#00e5e5` | `#00e5e5` |
+
+Two fixes close the gaps that matter in Codeman (measured, `probe-patches.mjs`):
+
+- **Terminals.** `app.js` builds the addon as `new WebglAddon.WebglAddon()`, which leaves `preserveDrawingBuffer` false. A rasteriser then reads the terminal as `#000000`. `new WebglAddon.WebglAddon(true)` (xterm addon-webgl 0.19.0) makes it read the true cell colour `#cc0000`. The same change applies to grid tiles and the split's Pane B. The GPU cost of keeping the buffer was not measured.
+- **Sandboxed frames.** The parent cannot read an opaque-origin frame. The frame can rasterise itself and post a PNG back. That took 14 to 16 ms for a 200 by 100 frame. Codeman already injects a frame bridge into proxied and prototype pages (`src/canvas/frame-bridge.ts`), so a `capture` message fits there. The frame must pass its body's background colour to the rasteriser, because a cloned body loses root background propagation. Without it the area below the body content came back white (seen in the demo).
+
+Cross-origin frames do not occur in Codeman. Web tabs and prototypes are proxied same-origin under `/webview/<cap>/` and then sandboxed, so the frame-bridge fix covers them. Same-origin frames such as the canvas full view's session page were not tested. html-to-image does not descend into iframes, so the build must rasterise `frame.contentDocument` itself and paint it into place. That is an inference from the library's behaviour, not a measurement.
+
+Freeze cost with html-to-image was 73 to 155 ms on the probe page and 136 to 166 ms on the demo page. The live dashboard has far more DOM, so its time is unmeasured. A `:hover` state survived the rasterise: the hover button read `#00a000` while hovered. The demo kept the hover colour after the pointer moved to draw, which shows that freeze-first works. A toast that disappears inside the freeze window would still be lost, so the build should freeze before it changes anything on screen. A cross-origin stylesheet cannot be inlined, and html-to-image logs a `cssRules` SecurityError for it. Codeman serves its CSS same-origin, so this only affected the CDN-hosted demo.
+
+**Tab capture (`getDisplayMedia`) was not verified here.** The headless shell answers `NotSupportedError`. Full Chromium in headless mode hung on the call, because this host has no X display ("Unable to open display" from WebRTC's X11 capturer). An Xvfb taken from Ubuntu's packages would not start without `xkbcomp` at its built-in path. What follows is from the Screen Capture spec and Chromium's documented behaviour, not from a run here. Every `getDisplayMedia` call needs a user gesture and shows a consent dialog. The spec does not let a browser persist a grant. Keeping one stream open after one consent avoids a prompt per capture, but it shows a "sharing this tab" bar for the whole page life and ends on reload. `preferCurrentTab` is Chromium-only, and Safari and Firefox would show a full picker. That is why tab capture should be an opt-in exact-pixels mode at most.
+
+### 2. Phone: native screenshot plus the highlight tool
+
+**Not verified on a real iPhone.** The test rig's WebDriverAgent signing profile expired at 14:32 on 2026-11-17, and a rebuild needs Harry at the Mac. This run started after that. The flow below is a proposal for the build item to prove on the rig.
+
+1. The person takes a native screenshot.
+2. They open Capture from Codeman's phone entry point.
+3. Capture opens the image picker at once. On iOS, recent screenshots are at the top of the photo library.
+4. The person draws on the image with the same highlight tool, using touch, and adds the note.
+
+Capture should reuse the client admission helper `_admitPromptAttachments()` and `_promptAttachKind()` for the pick. It must not reuse `POST /api/sessions/:id/paste-image`, which writes into a session workspace. The image belongs to the Work item through W-42.
+
+A possibly shorter path, untested: iOS's screenshot editor has "Copy and Delete". Capture could then offer Paste through `navigator.clipboard.read()`, which iOS confirms with its own Paste callout. That skips the photo picker and leaves no screenshot in Photos.
+
+A native screenshot carries no DOM context. Capture can record only the page it was opened from. The item must label that context as where capture was opened, not as what the image shows.
+
+### 3. Where the entry point lives
+
+- **Desktop shortcut.** Add a registry entry `capture` in `DEFAULT_SHORTCUTS`, bound to Ctrl+Shift+X and rebindable. Codeman binds no Ctrl+Shift+X today. Like every chord, it must also be swallowed in the xterm key handler, or xterm writes the control byte into the PTY. Ctrl+Shift+S was rejected because Edge uses it for Web Capture and Firefox for Screenshot. That conflict comes from memory, not a check here.
+- **Canvas page.** `canvas.html` is its own document with its own key handling. Board keys are bare letters, so a Ctrl+Shift chord does not collide. Capture must run in the top document. A full view or embed that has focus forwards the chord to the top: a same-origin page by `postMessage`, and a sandboxed page through the frame bridge, which today forwards only Escape and Q.
+- **Desktop button.** Add one quiet header control on the dashboard and one in the canvas outline foot, so the feature can be found without the shortcut.
+- **Phone.** A Capture button in the phone overview home screen and in the canvas phone dock. Use a button, not a gesture: multi-finger gestures collide with iOS, terminal touch (tap, long-press and swipe) and canvas drawing.
+
+### 4. Attaching the image to a Work item
+
+W-42 is in progress. It adds `attachments` to an item, an upload route that reuses the prompt-upload rules (`ALLOWED_DOCUMENT_EXTS`, which includes PNG and text, and `imageMagicMatchesExt`) and a raw route. Filing then takes two steps, and neither involves an agent:
+
+1. `POST /api/canvas/:workspaceId/work` with a `requestId`, a title from the note's first line, and the note as the description.
+2. Upload `clean.png`, `marked-crop.png`, `marked-wide.png` and `capture.json` to the new item.
+
+`capture.json` holds the path in CSS pixels with the device pixel ratio, what lies under the outline, and the page facts. The demo builds that bundle. The `requestId` makes a retry safe. The demo's bundle from `check-demo.mjs` was:
+
+- `under` listed `obj-sticky-1` (a `data-object-id`), the terminal (`terminal: true`), the prototype frame by title, and DOM selectors with their own text.
+- `page` listed the path, title, theme, window size, device pixel ratio, build hash, session, case and workspace.
+
+The workspace is the one on screen: a canvas page's own, or the canvas workspace of the shown session's case. With neither, a default applies, and choosing that default is Harry's call.
+
+## Proposed build items
+
+1. **Capture core, desktop.** Rasterise the top document, recurse into same-origin frames, paint frame-bridge captures into place, and use `WebglAddon(true)` for the main terminal, tiles and Pane B. Measure the freeze time on a real dashboard with 6 tiles, and the WebGL frame time before and after. Needs a vendored rasteriser (decision below).
+2. **Highlight layer and context.** The freeze overlay, freehand outline, note, Redraw and Cancel. It keeps the clean image, the path and the marked crop and wide shot separate. It records what is under the outline: canvas object ids, selectors and text, page, theme, window, build, session and case.
+3. **Filing.** Resolve the workspace, create the item, attach through W-42 and keep a retry-safe outbox. Depends on W-42.
+4. **Entry points.** The `capture` registry entry, the xterm swallow, chord forwarding from frames, and the header, outline and phone buttons.
+5. **Phone capture.** Pick the native screenshot through the admission helper, draw with touch, and prove it on the iPhone rig once WebDriverAgent is re-signed. Try the clipboard path too.
+6. **Optional: exact-pixels mode.** Tab capture on desktop Chromium with one consent per page load. Build it only if item 1 shows a real gap.
+
+## Decisions only Harry can make
+
+- **Vendor a DOM rasteriser.** html-to-image 1.11.11 is MIT and about 20 KB minified. Writing an SVG `foreignObject` rasteriser in-house is the alternative.
+- **The default workspace** for a capture made where no workspace is on screen.
+- **The shortcut.** Ctrl+Shift+X is proposed.

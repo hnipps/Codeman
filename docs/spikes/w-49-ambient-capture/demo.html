@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="codeman-build" content="demo-0000000">
+<title>Ambient capture demo</title>
+<!-- Throwaway spike demo for W-49. Not loaded by Codeman. Open it from a local static server. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css">
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1d2330; --muted: #5d6675; --line: #d9dde4; --accent: #e5484d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header b { margin-right: auto; }
+  main { display: grid; grid-template-columns: 1fr 260px; gap: 16px; padding: 16px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  #term { height: 160px; }
+  .row { display: flex; gap: 12px; margin-top: 16px; }
+  .obj { width: 140px; height: 90px; border-radius: 6px; background: #ffe58a; padding: 8px; }
+  #hoverBtn { padding: 8px 12px; border: 1px solid var(--line); background: #eee; border-radius: 6px; }
+  #hoverBtn:hover { background: #1b6e2e; color: #fff; }
+  #proto { width: 220px; height: 110px; border: 1px solid var(--line); border-radius: 6px; }
+  #toast { position: fixed; right: 16px; bottom: 16px; background: #1d2330; color: #fff; padding: 10px 14px; border-radius: 6px; }
+  #capture { position: fixed; inset: 0; z-index: 10000; background: #0008; display: none; }
+  #capture.on { display: block; }
+  #frozen { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #ink { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #ink path { fill: rgba(229, 72, 77, .12); stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+  #note { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(520px, calc(100% - 32px)); background: var(--card); border-radius: 8px; padding: 12px; display: none; gap: 8px; }
+  #note.on { display: grid; }
+  #note textarea { width: 100%; min-height: 60px; font: inherit; }
+  #note .acts { display: flex; gap: 8px; justify-content: flex-end; }
+  #result { position: fixed; inset: 0; overflow: auto; background: var(--bg); z-index: 10001; padding: 16px; display: none; }
+  #result.on { display: block; }
+  #result img { max-width: 100%; border: 1px solid var(--line); margin: 4px 0 12px; display: block; }
+  #result pre { background: var(--card); border: 1px solid var(--line); padding: 8px; overflow: auto; font-size: 12px; }
+</style>
+</head>
+<body data-session-id="demo-session" data-case="demo-case" data-workspace="demo-ws">
+<header><b>Codeman (demo shell)</b><span>Capture: Ctrl+Shift+X</span><button id="captureBtn" type="button">Capture</button></header>
+<main>
+  <section class="panel">
+    <div id="term"></div>
+    <div class="row">
+      <div class="obj" data-object-id="obj-sticky-1">Canvas object (sticky)</div>
+      <iframe id="proto" title="Prototype" sandbox="allow-scripts"></iframe>
+    </div>
+  </section>
+  <aside class="panel" id="settings">
+    <h3>Settings</h3>
+    <label><input type="checkbox" checked> Show plan usage</label>
+    <p><button id="hoverBtn" type="button">Hover state</button></p>
+  </aside>
+</main>
+<div id="toast" role="status">Session w3 finished</div>
+
+<div id="capture" aria-label="Capture">
+  <img id="frozen" alt="">
+  <svg id="ink"></svg>
+  <form id="note">
+    <label for="noteText">What bothers you here?</label>
+    <textarea id="noteText"></textarea>
+    <div class="acts"><button type="button" id="redraw">Redraw</button><button type="button" id="cancel">Cancel</button><button type="submit">Send</button></div>
+  </form>
+</div>
+<div id="result"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.19.0/lib/addon-webgl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js"></script>
+<script>
+const HTML_TO_IMAGE = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js';
+
+const term = new Terminal({ cols: 60, rows: 8, fontSize: 13 });
+term.open(document.getElementById('term'));
+term.loadAddon(new WebglAddon.WebglAddon(true));
+term.write('$ npm test\r\n\x1b[42m PASS \x1b[0m test/a.test.ts\r\n\x1b[41m FAIL \x1b[0m test/b.test.ts\r\n  expected 3, got 4\r\n$ ');
+
+document.getElementById('proto').srcdoc = `<!doctype html><body style="margin:0;font:13px system-ui;background:#1864ab;color:#fff;padding:8px">Prototype v3 (sandboxed, opaque origin)
+<script src="${HTML_TO_IMAGE}"><\/script><script>
+addEventListener('message', async (e) => {
+  if (e.source !== parent || !e.data || e.data.type !== 'codeman:capture') return;
+  const c = await htmlToImage.toCanvas(document.documentElement, { width: innerWidth, height: innerHeight, pixelRatio: e.data.dpr, backgroundColor: getComputedStyle(document.body).backgroundColor });
+  parent.postMessage({ type: 'codeman:capture-result', id: e.data.id, png: c.toDataURL('image/png') }, '*');
+});
+<\/script></body>`;
+
+function frameCapture(frame, dpr) {
+  const id = Math.random().toString(36).slice(2);
+  return new Promise((resolve) => {
+    const done = (png) => { removeEventListener('message', onMsg); resolve(png); };
+    const onMsg = (e) => { if (e.source === frame.contentWindow && e.data && e.data.type === 'codeman:capture-result' && e.data.id === id) done(e.data.png); };
+    addEventListener('message', onMsg);
+    frame.contentWindow.postMessage({ type: 'codeman:capture', id, dpr }, '*');
+    setTimeout(() => done(null), 1500);
+  });
+}
+
+const loadImg = (src) => new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = src; });
+
+async function freeze() {
+  const t0 = performance.now();
+  const dpr = devicePixelRatio || 1;
+  const frames = [...document.querySelectorAll('iframe[sandbox]')].map((f) => ({ f, r: f.getBoundingClientRect() }));
+  const [page, ...framePngs] = await Promise.all([
+    htmlToImage.toCanvas(document.body, { width: innerWidth, height: innerHeight, pixelRatio: dpr, filter: (n) => n.id !== 'capture' && n.id !== 'result' }),
+    ...frames.map(({ f }) => frameCapture(f, dpr)),
+  ]);
+  const ctx = page.getContext('2d');
+  const missing = [];
+  for (let i = 0; i < frames.length; i++) {
+    const { f, r } = frames[i];
+    if (!framePngs[i]) { missing.push(f.title || f.id); continue; }
+    ctx.drawImage(await loadImg(framePngs[i]), r.left * dpr, r.top * dpr, r.width * dpr, r.height * dpr);
+  }
+  return { canvas: page, dpr, ms: Math.round(performance.now() - t0), missingFrames: missing };
+}
+
+let shot = null;
+let points = [];
+const cap = document.getElementById('capture');
+const ink = document.getElementById('ink');
+const note = document.getElementById('note');
+
+async function startCapture() {
+  if (cap.classList.contains('on')) return;
+  shot = await freeze();
+  document.getElementById('frozen').src = shot.canvas.toDataURL('image/png');
+  points = []; ink.innerHTML = ''; note.classList.remove('on');
+  cap.classList.add('on');
+}
+
+function pathD(pts) { return pts.length ? 'M' + pts.map((p) => p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' L') + ' Z' : ''; }
+
+ink.addEventListener('pointerdown', (e) => {
+  ink.setPointerCapture(e.pointerId);
+  points = [{ x: e.clientX, y: e.clientY }];
+  ink.innerHTML = '<path></path>';
+});
+ink.addEventListener('pointermove', (e) => {
+  if (!ink.hasPointerCapture(e.pointerId)) return;
+  points.push({ x: e.clientX, y: e.clientY });
+  ink.firstChild.setAttribute('d', pathD(points));
+});
+ink.addEventListener('pointerup', () => { if (points.length > 2) { note.classList.add('on'); document.getElementById('noteText').focus(); } });
+
+function inside(p, poly) {
+  let hit = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) hit = !hit;
+  }
+  return hit;
+}
+function bbox(pts) {
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+}
+function selectorOf(el) {
+  if (el.id) return '#' + el.id;
+  const parts = [];
+  for (let n = el; n && n !== document.body && parts.length < 4; n = n.parentElement) {
+    parts.unshift(n.tagName.toLowerCase() + (n.classList.length ? '.' + [...n.classList].slice(0, 2).join('.') : ''));
+    if (n.id) { parts[0] = '#' + n.id; break; }
+  }
+  return parts.join(' > ');
+}
+
+function underOutline(poly) {
+  const b = bbox(poly), step = Math.max(6, Math.min(b.w, b.h) / 12), seen = new Map();
+  cap.style.visibility = 'hidden';
+  for (let y = b.y; y <= b.y + b.h; y += step) for (let x = b.x; x <= b.x + b.w; x += step) {
+    if (!inside({ x, y }, poly)) continue;
+    const el = document.elementFromPoint(x, y);
+    if (!el || seen.has(el)) continue;
+    const obj = el.closest('[data-object-id]');
+    seen.set(el, { selector: selectorOf(el), text: ([...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' ').trim() || el.getAttribute('aria-label') || el.title || '').slice(0, 120), objectId: obj ? obj.dataset.objectId : null, frame: el.tagName === 'IFRAME' ? el.title || null : null, terminal: !!(el.closest('.xterm') || el.querySelector(':scope > .xterm')) });
+  }
+  cap.style.visibility = '';
+  return [...seen.values()];
+}
+
+function marked(src, poly, dpr, box) {
+  const c = document.createElement('canvas');
+  c.width = Math.round(box.w * dpr); c.height = Math.round(box.h * dpr);
+  const g = c.getContext('2d');
+  g.drawImage(src, box.x * dpr, box.y * dpr, box.w * dpr, box.h * dpr, 0, 0, c.width, c.height);
+  g.scale(dpr, dpr); g.translate(-box.x, -box.y);
+  g.lineWidth = 3; g.strokeStyle = '#e5484d'; g.lineJoin = 'round';
+  g.beginPath(); poly.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))); g.closePath(); g.stroke();
+  return c;
+}
+function clampBox(b) {
+  const x = Math.max(0, b.x), y = Math.max(0, b.y);
+  return { x, y, w: Math.min(innerWidth, b.x + b.w) - x, h: Math.min(innerHeight, b.y + b.h) - y };
+}
+
+note.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const b = bbox(points), pad = 24;
+  const tight = clampBox({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad });
+  const wide = clampBox({ x: b.x - b.w, y: b.y - b.h, w: b.w * 3, h: b.h * 3 });
+  const capture = {
+    note: document.getElementById('noteText').value,
+    path: { points: points.map((p) => [Math.round(p.x), Math.round(p.y)]), units: 'css-px', dpr: shot.dpr },
+    under: underOutline(points),
+    page: {
+      path: location.pathname, view: document.title, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+      window: [innerWidth, innerHeight], dpr: shot.dpr, build: document.querySelector('meta[name="codeman-build"]').content,
+      sessionId: document.body.dataset.sessionId, case: document.body.dataset.case, workspace: document.body.dataset.workspace,
+    },
+    freezeMs: shot.ms,
+    missingFrames: shot.missingFrames,
+  };
+  const files = {
+    'clean.png': shot.canvas.toDataURL('image/png'),
+    'marked-crop.png': marked(shot.canvas, points, shot.dpr, tight).toDataURL('image/png'),
+    'marked-wide.png': marked(shot.canvas, points, shot.dpr, wide).toDataURL('image/png'),
+  };
+  window.__lastCapture = { capture, files };
+  cap.classList.remove('on');
+  const out = document.getElementById('result');
+  out.textContent = '';
+  const h = document.createElement('h2'); h.textContent = 'Would file to ' + capture.page.workspace; out.append(h);
+  for (const [name, url] of Object.entries(files)) { const p = document.createElement('p'); p.textContent = name; const img = document.createElement('img'); img.src = url; img.alt = name; out.append(p, img); }
+  const pre = document.createElement('pre'); pre.textContent = JSON.stringify(capture, null, 2); out.append(pre);
+  const close = document.createElement('button'); close.textContent = 'Close'; close.onclick = () => out.classList.remove('on'); out.prepend(close);
+  out.classList.add('on');
+});
+document.getElementById('cancel').onclick = () => cap.classList.remove('on');
+document.getElementById('redraw').onclick = () => { points = []; ink.innerHTML = ''; note.classList.remove('on'); };
+document.getElementById('captureBtn').addEventListener('click', startCapture);
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toUpperCase() === 'X') { e.preventDefault(); startCapture(); }
+  if (e.key === 'Escape' && cap.classList.contains('on')) cap.classList.remove('on');
+}, true);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<!doctype html><meta charset=utf-8><title>capture fixture</title>
+<style>body{margin:0;font:14px sans-serif;background:#fff}.r{position:absolute;width:200px;height:120px}#dom{background:#ffd400}</style>
+<canvas id=gl class=r width=200 height=120 style="left:10px;top:10px"></canvas>
+<canvas id=glp class=r width=200 height=120 style="left:230px;top:10px"></canvas>
+<iframe id=sandbox class=r sandbox="allow-scripts" style="left:450px;top:10px;border:0" srcdoc="<body style='margin:0;background:#0033ff'>sandboxed</body>"></iframe>
+<iframe id=xorigin class=r style="left:10px;top:150px;border:0"></iframe>
+<div id=dom class=r style="left:230px;top:150px">plain DOM</div>
+<canvas id=c2d class=r width=200 height=120 style="left:450px;top:150px"></canvas>
+<script>
+function gl(id, color, keep){const c=document.getElementById(id).getContext('webgl2',{preserveDrawingBuffer:keep,antialias:false});c.clearColor(...color,1);c.clear(c.COLOR_BUFFER_BIT);}
+gl('gl',[1,0,0],false);gl('glp',[0,0.8,0],true);
+const x=document.getElementById('c2d').getContext('2d');x.fillStyle='#00e5e5';x.fillRect(0,0,200,120);
+document.getElementById('xorigin').src=location.protocol+'//127.0.0.1:'+location.port+'/inner.html';
+</script>
