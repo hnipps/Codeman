@@ -1,0 +1,1 @@
+Throwaway file for a test of how GitHub detects a merge pushed outside a PR. Deleted with its branch.
