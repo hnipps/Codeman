@@ -15,6 +15,7 @@
  * and the server only records it.
  */
 import { z } from 'zod';
+import { RefSchema } from '../reviews/review-model.js';
 import { AuthorSchema, IdSchema, type Author } from './model.js';
 
 export type WorkAssignee = { kind: 'person' } | { kind: 'session'; sessionId: string };
@@ -73,6 +74,9 @@ export const MAX_WORK_HISTORY = 50;
 export const MAX_FILED_ITEMS = 10;
 /** The person's instruction an agent quotes to move an item out of Backlog. */
 export const MAX_INSTRUCTION_CHARS = 300;
+export const MAX_PR_URL_CHARS = 300;
+/** The reviewer's notes an item carries back to the agent that picks it up next. */
+export const MAX_CHANGES_CHARS = 16_000;
 
 export const workKey = (number: number): string => `W-${number}`;
 /** `W-12`, `w-12` or `12`; anything else is not a key. */
@@ -115,7 +119,32 @@ const AssigneeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session'), sessionId: IdSchema }).strict(),
 ]);
 
+/** True for an `https:` address and nothing else, so a link built from it can never run script. */
+export function isHttpsUrl(text: string): boolean {
+  if (text.length > MAX_PR_URL_CHARS) return false;
+  try {
+    return new URL(text).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+const PrUrl = z.string().trim().refine(isHttpsUrl, 'A pull request link is an https address of at most 300 characters');
+/**
+ * The pull request that carries an item's work. `url` is a link for people and nothing parses it; `branch` is the head
+ * branch on `origin`, which is what a review reads, so an item without it shows the link and has no review; `base` is
+ * the branch it merges into, the repository's default when absent.
+ */
+const WorkPrSchema = z.object({ url: PrUrl, branch: RefSchema.optional(), base: RefSchema.optional() }).strict();
+export type WorkPr = z.infer<typeof WorkPrSchema>;
+/** What the API takes: the full shape, or a bare https address as `{ url }`. */
+const WorkPrInput = z.union([PrUrl.transform((url): WorkPr => ({ url })), WorkPrSchema]);
+
 const at = z.number().int().nonnegative();
+/** The person's review notes, delivered to the item. Cleared by the next report on the item. */
+const WorkChangesSchema = z
+  .object({ text: z.string().min(1).max(MAX_CHANGES_CHARS), reviewId: z.string().max(40), at })
+  .passthrough();
+export type WorkChanges = z.infer<typeof WorkChangesSchema>;
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
 const itemFields = {
   number: z.number().int().positive(),
@@ -125,6 +154,8 @@ const itemFields = {
   sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).catch([]),
   createdFrom: z.number().int().positive().optional().catch(undefined),
   requestId: z.uuid().optional().catch(undefined),
+  pr: WorkPrSchema.optional().catch(undefined),
+  changes: WorkChangesSchema.optional().catch(undefined),
   author: AuthorSchema,
   createdAt: at,
   updatedAt: at,
@@ -235,6 +266,7 @@ export const CreateWorkSchema = z
     assignee: AssigneeInput.optional(),
     sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).optional(),
     createdFrom: Key.optional(),
+    pr: WorkPrInput.optional(),
   })
   .strict();
 export type CreateWork = z.infer<typeof CreateWorkSchema>;
@@ -257,6 +289,8 @@ export const UpdateWorkSchema = z
     position: z.number().int().positive().optional(),
     /** An agent moving an item out of Backlog quotes the person's instruction to do so; refused without it. */
     instruction: Instruction.optional(),
+    /** The item's pull request; `null` clears it. */
+    pr: WorkPrInput.nullable().optional(),
   })
   .strict();
 export type UpdateWork = z.infer<typeof UpdateWorkSchema>;
@@ -318,6 +352,8 @@ function link(item: WorkItem, ids: readonly string[]): string | null {
 }
 const describeAssignee = (a: WorkAssignee | null): string =>
   a === null ? 'Unassigned' : a.kind === 'person' ? 'Assigned to the person' : `Assigned to session ${a.sessionId}`;
+const samePr = (a: WorkPr | undefined, b: WorkPr): boolean =>
+  !!a && a.url === b.url && a.branch === b.branch && a.base === b.base;
 function touch(item: WorkItem, ctx: WorkContext): void {
   item.updatedAt = ctx.now;
   item.revision += 1;
@@ -373,6 +409,7 @@ function newItem(
   fields: Pick<WorkItem, 'title' | 'status' | 'description' | 'assignee' | 'sessions'> & {
     createdFrom?: number;
     requestId?: string;
+    pr?: WorkPr;
   },
   firstEvent: string
 ): WorkItem {
@@ -385,6 +422,7 @@ function newItem(
     sessions: fields.sessions,
     ...(fields.createdFrom !== undefined ? { createdFrom: fields.createdFrom } : {}),
     ...(fields.requestId ? { requestId: fields.requestId } : {}),
+    ...(fields.pr ? { pr: fields.pr } : {}),
     author: ctx.author,
     createdAt: ctx.now,
     updatedAt: ctx.now,
@@ -392,6 +430,7 @@ function newItem(
     history: [],
   };
   log(item, ctx, firstEvent);
+  if (fields.pr) log(item, ctx, `Linked PR ${fields.pr.url}`);
   file.next += 1;
   file.items.push(item);
   if (item.status === 'ready-for-work') file.readyOrder.push(item.number);
@@ -425,6 +464,7 @@ export function createWork(file: WorkFile, input: CreateWork, ctx: WorkContext):
       sessions,
       createdFrom: input.createdFrom,
       requestId: input.requestId,
+      pr: input.pr,
     },
     input.createdFrom !== undefined
       ? `Created from ${workKey(input.createdFrom)} in ${WORK_STATUS_NAMES[input.status]}`
@@ -514,6 +554,15 @@ export function updateWork(
     changed = true;
   }
   if (patch.position !== undefined && place(next, item, patch.position, ctx)) changed = true;
+  if (patch.pr === null && item.pr) {
+    delete item.pr;
+    log(item, ctx, 'Unlinked PR');
+    changed = true;
+  } else if (patch.pr && !samePr(item.pr, patch.pr)) {
+    item.pr = patch.pr;
+    log(item, ctx, `Linked PR ${patch.pr.url}`);
+    changed = true;
+  }
   if (!changed) return { ok: true, file, item: findWork(file, number)!, filed: [], duplicate: false };
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
@@ -554,6 +603,8 @@ export function reportWork(
     const failed = link(item, [sessionId]);
     if (failed) return refuse('INVALID_INPUT', failed);
   }
+  // The report answers the review notes it was picked up with; the review itself reads the new tip from origin.
+  delete item.changes;
   const filed: WorkItem[] = [];
   const moveTo = (to: WorkStatus): void => {
     if (item.status !== to) setStatus(next, item, to, ctx, report.instruction);
@@ -605,6 +656,52 @@ export function reportWork(
   return { ok: true, file: next, item, filed, duplicate: false };
 }
 
+/**
+ * The reviewer asked for changes on the item's pull request: the notes go on the item, an open question is closed by
+ * them, and the item goes to the top of Ready for work, so the next run picks it up and reads the notes first.
+ */
+export function requestChangesOnWork(
+  file: WorkFile,
+  number: number,
+  changes: WorkChanges,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  if (workClosed(findWork(file, number)!.status))
+    return refuse('INVALID_INPUT', `${workKey(number)} is closed; reopen it to send it changes`);
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  item.changes = { ...changes, text: changes.text.slice(0, MAX_CHANGES_CHARS) };
+  delete item.needs;
+  if (item.status !== 'ready-for-work') setStatus(next, item, 'ready-for-work', ctx);
+  place(next, item, 1, ctx);
+  log(item, ctx, 'Changes requested in review');
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
+/** Approve merged the item's pull request: the item is done. An item already done is left as it is. */
+export function approveWork(
+  file: WorkFile,
+  number: number,
+  mergedSha: string,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  const current = findWork(file, number)!;
+  if (current.status === 'done') return { ok: true, file, item: current, filed: [], duplicate: false };
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  setStatus(next, item, 'done', ctx);
+  delete item.needs;
+  delete item.changes;
+  log(item, ctx, `Approved and merged ${mergedSha.slice(0, 7)} in review`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
 // ---- Reading --------------------------------------------------------------
 
 /** An item as the API answers it: its key spelled out, its request id left out. */
@@ -632,6 +729,8 @@ export function workRelated(file: WorkFile, item: WorkItem): { createdFrom?: Wor
 export function workBrief(item: WorkItem, file?: WorkFile) {
   const position = file ? workPosition(file, item.number) : null;
   return {
+    // The reviewer's notes come first: an agent picking the item up reads them before anything else.
+    ...(item.changes ? { changesRequested: item.changes.text } : {}),
     key: workKey(item.number),
     title: item.title,
     status: item.status,
@@ -641,6 +740,7 @@ export function workBrief(item: WorkItem, file?: WorkFile) {
     revision: item.revision,
     updatedAt: item.updatedAt,
     ...(item.createdFrom !== undefined ? { createdFrom: workKey(item.createdFrom) } : {}),
+    ...(item.pr ? { pr: item.pr.url } : {}),
     ...(item.needs ? { needsYou: true } : {}),
   };
 }

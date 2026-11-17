@@ -115,6 +115,7 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import { announceWorkChange } from './routes/canvas-work-routes.js';
 import { INTERNAL_PRINCIPAL_HEADER } from './internal-principal.js';
 import {
   canvasOn,
@@ -1542,7 +1543,7 @@ export class WebServer extends EventEmitter {
       basePath: this.basePath,
       startSession: (headers, request) => this.startConversationSession(headers, request),
       discardSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
-      announceWork: (workspaceId) => void this.announceCanvasWork(workspaceId),
+      announceWork: (workspaceId) => void announceWorkChange(canvasPort, workspaceId).catch(() => undefined),
     });
     if (!this.testMode) {
       this.cleanup.setInterval(
@@ -2666,22 +2667,6 @@ export class WebServer extends EventEmitter {
     await this.app
       .inject({ method: 'DELETE', url: `/api/sessions/${encodeURIComponent(sessionId)}`, headers: forwarded })
       .catch(() => undefined);
-  }
-
-  /** Tells canvas readers that a workspace's Work items changed, the way the work routes do. */
-  private async announceCanvasWork(workspaceId: string): Promise<void> {
-    try {
-      const { readWorkspaces } = await import('../canvas/workspace-registry.js');
-      const seq = (await this.getCanvasStores()).get(workspaceId).read().seq;
-      this.broadcast(SseEvent.CanvasChanged, {
-        workspaceId,
-        seq,
-        owner: readWorkspaces().find((w) => w.id === workspaceId)?.owner,
-        work: true,
-      });
-    } catch {
-      /* A reader that misses this sees the link on its next read. */
-    }
   }
 
   private async getCanvasStores(): Promise<CanvasStores> {

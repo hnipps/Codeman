@@ -325,8 +325,18 @@ kbd {
 .search-wrap:has(input:not(:placeholder-shown)) .search-hint {
   display: none;
 }
+#objects {
+  flex: 1 1 0;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+}
+#objects > .section-head {
+  padding: 8px 12px 0;
+}
 #tree {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -3044,9 +3054,6 @@ textarea[readonly] {
 :root[data-shell] .outline-foot {
   flex-shrink: 0;
 }
-:root[data-shell] #tree {
-  min-height: 48px;
-}
 .launch-row .session-meta {
   white-space: normal;
 }
@@ -3064,6 +3071,78 @@ textarea[readonly] {
   font-size: 12px;
   font-weight: 500;
   color: var(--secondary);
+}
+/* Outline sections collapse to their header and resize from the boundary under them (outline-sections.ts). */
+.section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 6px 2px 2px;
+  font-weight: inherit;
+}
+.section-toggle::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  margin: 0 2px 3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 120ms ease-out;
+}
+.section-toggle[aria-expanded='false']::before {
+  margin-bottom: 0;
+  transform: rotate(-45deg);
+}
+#outline > section[data-collapsed] {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+#outline > section[data-collapsed] > :not(.section-head) {
+  display: none;
+}
+/* 8px to grab, overlapping its neighbours by 4px each so it takes no room in the column. */
+.section-resize {
+  position: relative;
+  flex: 0 0 auto;
+  height: 8px;
+  margin: -4px 0;
+  z-index: 1;
+  cursor: row-resize;
+  touch-action: none;
+}
+.section-resize::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 3px;
+  height: 2px;
+  background: transparent;
+  transition: background 120ms ease-out;
+}
+.section-resize:hover::after,
+.section-resize.dragging::after {
+  background: var(--divider);
+}
+.section-resize:focus-visible {
+  outline: none;
+}
+.section-resize:focus-visible::after {
+  background: var(--accent);
+}
+:root.section-resizing,
+:root.section-resizing * {
+  cursor: row-resize !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .section-toggle::before,
+  .section-resize::after {
+    transition: none;
+  }
 }
 #newSession {
   border-color: var(--divider);

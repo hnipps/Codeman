@@ -50,6 +50,8 @@
     sessionLive: false,
     /** A hand-over to a new session is in flight. */
     sending: false,
+    /** The work item this review is of (`{ key, prUrl, wanted }`), null when its item is gone, undefined for a session. */
+    work: undefined,
     /** What Approve will do for this review: `{ deploys }`. */
     approve: null,
     /** The review's live preview as the server describes it, or null when it has none. */
@@ -131,6 +133,18 @@
   }
   const agoText = (ms) => (ago(ms) === 'now' ? 'just now' : `${ago(ms)} ago`);
   const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  /** An address a pull request link may carry: https only, so no link built from server data can run script. */
+  const httpsHref = (url) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' ? parsed.href : null;
+    } catch (_err) {
+      return null;
+    }
+  };
+  /** The work item a review is of, as the server sends it; undefined for a session's review. */
+  const workOf = () => state.work || null;
+  const isWork = () => state.work !== undefined;
 
   // ---------------------------------------------------------------- queue
 
@@ -148,9 +162,10 @@
         const line = el('span', 'rv-queue-line');
         const pill = el('span', 'rv-pill', STATE_LABEL[row.state] || row.state);
         pill.dataset.tone = STATE_TONE[row.state] || 'dim';
+        const by = row.work ? row.work.key : row.sessionName || 'session';
         line.append(
           pill,
-          el('span', '', decidedRow ? clock(row.decidedAt) : `${row.sessionName || 'session'} · ${ago(row.createdAt)}`)
+          el('span', '', decidedRow ? `${by} · ${clock(row.decidedAt)}` : `${by} · ${ago(row.createdAt)}`)
         );
         a.append(line);
         a.addEventListener('click', (event) => {
@@ -158,7 +173,20 @@
           event.preventDefault();
           openReview(row.id, true);
         });
-        nav.append(a);
+        const href = row.work && httpsHref(row.work.prUrl);
+        if (!href) {
+          nav.append(a);
+          continue;
+        }
+        // A link cannot sit inside the row's own link, so a work row is the row plus its pull request beside it.
+        const wrap = el('div', 'rv-queue-row');
+        const pr = el('a', 'rv-queue-pr', 'PR ↗');
+        pr.href = href;
+        pr.target = '_blank';
+        pr.rel = 'noopener noreferrer';
+        pr.setAttribute('aria-label', `Pull request of ${row.work.key}`);
+        wrap.append(a, pr);
+        nav.append(wrap);
       }
     };
     group('Waiting for you', waiting, false);
@@ -190,6 +218,7 @@
   function renderEmpty() {
     $('rvTitle').textContent = 'Reviews';
     $('rvMeta').textContent = '';
+    $('rvPr').hidden = true;
     $('rvState').hidden = true;
     $('rvRequest').hidden = true;
     $('rvWalk').replaceChildren(el('p', 'rv-dim', 'Pick a review from the queue.'));
@@ -207,6 +236,7 @@
     if (push && id !== state.id) history.pushState({ id }, '', `reviews/${id}`);
     state.id = id;
     state.review = null;
+    state.work = undefined;
     state.changes = null;
     state.changesError = '';
     state.file = null;
@@ -234,6 +264,7 @@
     if (seq !== state.loadSeq) return;
     state.review = data.review;
     state.sessionLive = data.sessionLive;
+    state.work = data.work;
     state.approve = data.approve || null;
     setLive(data.live);
     renderReview();
@@ -259,6 +290,7 @@
     if (seq !== state.loadSeq) return;
     state.review = data.review;
     state.sessionLive = data.sessionLive;
+    state.work = data.work;
     state.approve = data.approve || null;
     setLive(data.live);
     if (before && before.state === 'deploying' && data.review.state === 'deployed')
@@ -266,7 +298,11 @@
     if (before && before.revision !== data.review.revision) {
       renderReview();
       loadChanges(seq);
-      toast('The agent submitted this review again. The walkthrough and the changes are updated.');
+      toast(
+        isWork()
+          ? 'The pull request has new commits. The walkthrough and the changes are updated.'
+          : 'The agent submitted this review again. The walkthrough and the changes are updated.'
+      );
     } else {
       renderHeader();
       renderNotes();
@@ -280,7 +316,15 @@
     $('rvTitle').textContent = r.title;
     const c = state.changes;
     const size = c && !c.gone ? ` · ${c.files.length}${c.truncated ? '+' : ''} files · +${c.added} −${c.deleted}` : '';
-    $('rvMeta').textContent = `${r.project} · ${r.branch} → ${r.base}${size}`;
+    const work = workOf();
+    $('rvMeta').textContent = `${work ? `${work.key} · ` : ''}${r.project} · ${r.branch} → ${r.base}${size}`;
+    const pr = $('rvPr');
+    const href = work && httpsHref(work.prUrl);
+    pr.hidden = !href;
+    if (href) {
+      pr.href = href;
+      pr.setAttribute('aria-label', `Pull request of ${work.key}`);
+    } else pr.removeAttribute('href');
     const pill = $('rvState');
     pill.hidden = false;
     pill.textContent = STATE_LABEL[r.state] || r.state;
@@ -288,12 +332,22 @@
     const open = !['merged', 'deployed', 'deploying'].includes(r.state);
     const request = $('rvRequest');
     request.hidden = !open;
-    const count = r.unsent ? ` · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}` : '';
-    // One button whether or not the author session still runs: once it has ended, the notes go to a new session
-    // that is given the whole review, and the reviewer need not know the difference.
-    request.textContent = `Request changes${count}`;
-    request.disabled = !r.unsent || state.sending;
-    request.title = r.unsent ? 'Sends every unsent note to the agent as one prompt.' : 'Add a note first.';
+    const notes = r.unsent ? ` · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}` : '';
+    if (isWork()) {
+      // A work review's notes go to its item, which keeps them for whichever run picks it up next.
+      const key = work ? work.key : r.sessionName;
+      request.textContent = `Send to ${key}${notes}`;
+      request.disabled = !r.unsent;
+      request.title = r.unsent
+        ? `Puts every unsent note on ${key} and moves it to the top of Ready for work.`
+        : 'Add a note first.';
+    } else {
+      // One button whether or not the author session still runs: once it has ended, the notes go to a new session
+      // that is given the whole review, and the reviewer need not know the difference.
+      request.textContent = `Request changes${notes}`;
+      request.disabled = !r.unsent || state.sending;
+      request.title = r.unsent ? 'Sends every unsent note to the agent as one prompt.' : 'Add a note first.';
+    }
     renderApprove();
     renderNotice();
     watchDeploy();
@@ -318,9 +372,9 @@
       ? 'Asks for the deploy of the merged commit again. Nothing is merged twice.'
       : !ready
         ? 'The changes have not loaded, or the branch is gone.'
-        : deploys
-          ? `Merges ${r.branch} into ${r.base} and deploys it.`
-          : `Merges ${r.branch} into ${r.base}.`;
+        : `Merges ${r.branch} into ${r.base}${deploys ? ' and deploys it' : ''}${
+            workOf() ? ` and marks ${workOf().key} done` : ''
+          }.`;
   }
 
   function askApprove() {
@@ -339,16 +393,20 @@
       lines.push(
         'This is Codeman itself, so the merge is then deployed: built, tested and switched to. Your sessions keep running, and this page reloads when the new build is live.'
       );
+    if (workOf())
+      lines.push(
+        `${workOf().key} is then marked done. The pull request on GitHub is left to GitHub, which sees its branch merged.`
+      );
     if (c.moved) lines.push('The branch has commits newer than the walkthrough. They are part of what merges.');
     if (r.unsent)
       lines.push(
-        `${r.unsent} ${r.unsent === 1 ? 'note has' : 'notes have'} not been sent to the session. Approving does not send ${
+        `${r.unsent} ${r.unsent === 1 ? 'note has' : 'notes have'} not been sent${isWork() ? '' : ' to the session'}. Approving does not send ${
           r.unsent === 1 ? 'it' : 'them'
         }.`
       );
     lines.push('A merge is not undone from this page.');
     $('rvConfirmBody').replaceChildren(...lines.map((line) => el('p', '', line)));
-    $('rvConfirmGo').textContent = deploys ? 'Merge and deploy' : 'Merge';
+    $('rvConfirmGo').textContent = deploys ? 'Merge and deploy' : workOf() ? 'Merge and mark done' : 'Merge';
     $('rvConfirm').showModal();
     $('rvConfirmCancel').focus();
     return undefined;
@@ -408,6 +466,10 @@
       lines.push(
         `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
       );
+    if (state.review && isWork() && !d && !(workOf() && workOf().wanted))
+      lines.push(
+        'The work item no longer asks for this review: it is closed, or its pull request changed. You can still read it.'
+      );
     box.hidden = !lines.length;
     box.replaceChildren(...lines.map((line) => el('p', '', line)));
   }
@@ -431,7 +493,9 @@
       el(
         'div',
         'rv-by',
-        `Written by ${r.sessionName || 'a session'} · ${agoText(r.updatedAt)}${r.revision > 1 ? ` · revision ${r.revision}` : ''}`
+        `${isWork() ? 'From' : 'Written by'} ${r.sessionName || 'a session'} · ${agoText(r.updatedAt)}${
+          r.revision > 1 ? ` · revision ${r.revision}` : ''
+        }`
       )
     );
     const body = el('div', 'rv-md');
@@ -730,7 +794,7 @@
   }
 
   async function requestChanges() {
-    if (!state.sessionLive) return sendToNewSession();
+    if (!isWork() && !state.sessionLive) return sendToNewSession();
     const button = $('rvRequest');
     button.disabled = true;
     button.textContent = 'Sending…';
@@ -741,9 +805,11 @@
       });
       state.review = data.review;
       toast(
-        data.confirmed
-          ? `Sent ${data.sent.length} ${data.sent.length === 1 ? 'note' : 'notes'} to the session.`
-          : 'The notes were written to the session, but it has not confirmed it started. Check the session.',
+        data.work
+          ? `Sent to ${data.work.key}. It is first in Ready for work.`
+          : data.confirmed
+            ? `Sent ${data.sent.length} ${data.sent.length === 1 ? 'note' : 'notes'} to the session.`
+            : 'The notes were written to the session, but it has not confirmed it started. Check the session.',
         data.confirmed ? 'ok' : 'warn'
       );
       loadQueue();
@@ -947,6 +1013,12 @@
 
   async function loadPreview(seq) {
     const r = state.review;
+    // A work review has no author session, so no session preview: the empty state says what is there instead.
+    if (isWork()) {
+      state.preview = { state: 'none' };
+      renderPreview();
+      return;
+    }
     state.preview = { state: 'loading' };
     renderPreview();
     try {
@@ -1010,7 +1082,9 @@
           'rv-dim rv-pad',
           !p || p.state === 'loading'
             ? 'Looking for a running preview…'
-            : 'The session has no running preview. The agent starts one with `codeman agent preview add`; the code is under Changes.'
+            : isWork()
+              ? 'A pull request has no running preview here. Its code is under Changes.'
+              : 'The session has no running preview. The agent starts one with `codeman agent preview add`; the code is under Changes.'
         )
       );
       return;

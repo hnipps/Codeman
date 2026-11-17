@@ -57,6 +57,7 @@ import {
   reviewFileDiff,
   SHA,
   tryGit,
+  headOf,
   type ReviewChanges,
 } from '../../reviews/review-git.js';
 import {
@@ -91,7 +92,9 @@ import {
   sameWork,
   settledDeploy,
   stampSent,
+  sourceOf,
   submitReview,
+  authorSessionId,
   toView,
   unsentNotes,
   type Changed,
@@ -110,6 +113,7 @@ import {
   writeReview,
 } from '../../reviews/review-store.js';
 import { handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
+import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
@@ -121,6 +125,7 @@ import { SseEvent } from '../sse-events.js';
 import { proxyPrefixFor } from '../webview-proxy.js';
 import { deliveryDeps } from './canvas-conversation-routes.js';
 import { localFileSource, sendFileBody } from './file-routes.js';
+import { resolveCasePath } from './case-routes.js';
 import { defaultDockerWorkspaces } from './git-status-routes.js';
 import { imageMagicMatchesExt } from './session-routes.js';
 
@@ -153,7 +158,9 @@ export interface ReviewRouteOptions {
     headers: Readonly<Record<string, string | string[] | undefined>>,
     sessionId: string
   ) => Promise<void>;
-  /** Tells canvas readers that a workspace's work items changed. */
+  /** Reviews of work items' pull requests. Injected by tests; by default made here and follows item writes. */
+  workReviews?: WorkReviews;
+  /** Tells canvas pages that a workspace's items changed (Request changes and Approve of a work review write them). */
   announceWork?: (workspaceId: string) => void;
 }
 
@@ -169,6 +176,9 @@ const selfDeployCache = new Map<string, { at: number; value: boolean }>();
 const SELF_DEPLOY_TTL_MS = 30_000;
 const SETTLE_EVERY_MS = 3_000;
 let settledAt = 0;
+
+/** A work review's page read fetches its branch at most this often; the queue read never fetches. */
+const WORK_FETCH_TTL_MS = 60_000;
 
 const PreviewOpenSchema = z.object({ webviewId: z.string().min(1).max(200) }).strict();
 
@@ -301,6 +311,45 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
 
   const live = options.live ?? createLiveControl();
 
+  /** The live session that wrote a review; a work review has none. */
+  const authorSession = (review: Review): Session | undefined => {
+    const id = authorSessionId(review);
+    return id ? ctx.sessions.get(id) : undefined;
+  };
+  const personAuthor = (req: FastifyRequest) => ({ kind: 'human' as const, userId: getAuthUser(req).username });
+
+  const workReviews =
+    options.workReviews ??
+    createWorkReviews({
+      // The case folder as its owner sees it, like the canvas resolves an agent's workspace.
+      casePath: async (w) => resolveCasePath(w.caseName, w.owner ? { username: w.owner, role: 'user' } : undefined),
+      dockerWorkspaces,
+      announce,
+      announceWork: options.announceWork,
+    });
+  if (!options.workReviews) {
+    const stop = workReviews.follow();
+    app.addHook('onReady', async () => {
+      if (deployRole.allows('persist')) void workReviews.catchUp().catch(() => undefined);
+    });
+    app.addHook('onClose', async () => stop());
+  }
+  const fetchedAt = new Map<string, number>();
+  /** Brings a work review in step with its item and origin; fetches at most once a minute per review. */
+  const syncWork = async (review: Review, fresh: boolean): Promise<SyncResult | null> => {
+    const source = sourceOf(review);
+    if (source.kind !== 'work') return null;
+    const fetch = fresh || Date.now() - (fetchedAt.get(review.id) ?? 0) >= WORK_FETCH_TTL_MS;
+    if (fetch) {
+      fetchedAt.delete(review.id);
+      fetchedAt.set(review.id, Date.now());
+      if (fetchedAt.size > CHANGES_CACHE_MAX) fetchedAt.delete(fetchedAt.keys().next().value as string);
+    }
+    const result = await workReviews.sync(source.work, { fetch });
+    if ('review' in result && result.changed) changesCache.delete(review.id);
+    return result;
+  };
+
   /** True when this review can have a live preview: the service exists and the branch is a branch of Codeman. */
   const liveApplies = async (review: Review): Promise<boolean> =>
     live.available() && !review.decision && (await deploysItself(review.repoRoot));
@@ -358,7 +407,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   const changesOf = async (review: Review): Promise<ReviewChanges> => {
     const hit = changesCache.get(review.id);
     if (hit && Date.now() - hit.at < CHANGES_TTL_MS) return hit.changes;
-    const changes = await reviewChanges(review.repoRoot, review.base, review.branch);
+    const changes = await reviewChanges(review.repoRoot, review.base, headOf(review));
     changesCache.delete(review.id);
     changesCache.set(review.id, { at: Date.now(), changes });
     if (changesCache.size > CHANGES_CACHE_MAX) changesCache.delete(changesCache.keys().next().value as string);
@@ -368,7 +417,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   app.get('/api/reviews', async (req) => {
     await settleDeploys();
     const mine = listReviews().filter((r) => visible(req, r));
-    return { success: true, data: queueOf(mine, Date.now()) };
+    return { success: true, data: queueOf(mine, Date.now(), workReviews.facts(mine)) };
   });
 
   app.post('/api/reviews', async (req, reply) => {
@@ -424,13 +473,18 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
 
   app.get<{ Params: { id: string } }>('/api/reviews/:id', async (req, reply) => {
     await settleDeploys();
-    const review = reviewOf(req, reply);
-    if (!review) return reply;
-    const session = ctx.sessions.get(review.sessionId);
+    const read = reviewOf(req, reply);
+    if (!read) return reply;
+    // A work review's tip lives on origin: reading the page is when a push is noticed. A sync that cannot run (offline,
+    // a refused case) leaves the review as it was stored, and the page shows that.
+    const synced = await syncWork(read, false);
+    const review = synced && 'review' in synced && synced.review.id === read.id ? synced.review : read;
+    const session = authorSession(review);
     return {
       success: true,
       data: {
         review: toView(review),
+        ...(sourceOf(review).kind === 'work' ? { work: workReviews.facts([review]).get(review.id) ?? null } : {}),
         // What the Approve button will do, so the page can say so before it is pressed.
         approve: { deploys: review.decision?.kind === 'merged' ? false : await deploysItself(review.repoRoot) },
         live: await liveOf(review),
@@ -442,7 +496,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   app.get<{ Params: { id: string } }>('/api/reviews/:id/changes', async (req, reply) => {
     const review = reviewOf(req, reply);
     if (!review) return reply;
-    const refusal = await gitRefusal(ctx.sessions.get(review.sessionId), review.repoRoot);
+    const refusal = await gitRefusal(authorSession(review), review.repoRoot);
     if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
     const changes = await changesOf(review);
     return { success: true, data: { ...changes, moved: !changes.gone && changes.headSha !== review.headSha } };
@@ -452,12 +506,12 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const review = reviewOf(req, reply);
     if (!review) return reply;
     const { path } = parseBody(DiffQuerySchema, req.query);
-    const refusal = await gitRefusal(ctx.sessions.get(review.sessionId), review.repoRoot);
+    const refusal = await gitRefusal(authorSession(review), review.repoRoot);
     if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
     // The path is a key into the branch's own file list, never a path the browser chose.
     const file = (await changesOf(review)).files.find((f) => f.path === path);
     if (!file) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'That file is not part of this review');
-    const diff = await reviewFileDiff(review.repoRoot, review.base, review.branch, file);
+    const diff = await reviewFileDiff(review.repoRoot, review.base, headOf(review), file);
     if (!diff) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'The branch is gone');
     return { success: true, data: { path: file.path, origPath: file.origPath, ...diff } };
   });
@@ -529,11 +583,18 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
    */
   app.post<{ Params: { id: string } }>('/api/reviews/:id/approve', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;
-    const review = reviewOf(req, reply);
-    if (!review) return reply;
-    if (review.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
+    const read = reviewOf(req, reply);
+    if (!read) return reply;
+    if (read.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
     const { headSha } = parseBody(ApproveSchema, req.body);
-    const refusal = await gitRefusal(ctx.sessions.get(review.sessionId), review.repoRoot);
+    // A work review merges what origin has now: a push since the page was read answers MOVED from the merge.
+    const synced = await syncWork(read, true);
+    if (synced && 'problem' in synced) return fail(reply, 409, ApiErrorCode.CONFLICT, synced.message);
+    if (synced && ('unwanted' in synced || synced.review.id !== read.id))
+      return fail(reply, 409, ApiErrorCode.CONFLICT, 'GONE: the work item no longer asks for this review');
+    const review = synced ? synced.review : read;
+    if (review.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
+    const refusal = await gitRefusal(authorSession(review), review.repoRoot);
     if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
     const deploys = await deploysItself(review.repoRoot);
     if (deploys && !mayDeploy(req, reply)) return reply;
@@ -545,7 +606,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       merged = await merge({
         repoRoot: review.repoRoot,
         base: review.base,
-        branch: review.branch,
+        head: headOf(review),
         headSha,
         title: review.title,
       });
@@ -558,6 +619,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const mergedSha = merged.mergedSha;
     const first = changeReview(review.id, (r) => decide(r, { kind: 'merged', at: Date.now(), mergedSha }));
     let latest = first.ok ? first.review : review;
+    workReviews.accepted(latest, mergedSha, personAuthor(req));
     if (deploys) {
       const decision = await askForDeploy(mergedSha);
       const second = changeReview(review.id, (r) => decide(r, decision));
@@ -649,7 +711,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (
       !webview ||
       webview.origin.kind !== 'session' ||
-      webview.origin.sessionId !== review.sessionId ||
+      webview.origin.sessionId !== authorSessionId(review) ||
       webview.embedMode === 'direct' ||
       !canAccessOwned(getAuthUser(req), webview.owner)
     )
@@ -674,7 +736,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         const session = callerSession(ctx, req);
         const review = reviewOf(req, reply);
         if (!review) return reply;
-        if (!session || session.id !== review.sessionId)
+        if (!session || session.id !== authorSessionId(review))
           return fail(reply, 403, ApiErrorCode.FORBIDDEN, 'Only the session that wrote a review adds its captures');
         if (!deployRole.allows('persist')) return fail(reply, 409, ApiErrorCode.CONFLICT, NOT_LIVE);
         const name = CaptureNameSchema.safeParse(req.params.name);
@@ -741,12 +803,40 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     return reply;
   });
 
+  /**
+   * Request changes on a work review: the notes go on the item, which moves to the top of Ready for work, so the next
+   * run on it reads them first, pushes to the same branch and reports. No pane is written and no agent is started here.
+   */
+  const sendToWork = (req: FastifyRequest, reply: FastifyReply, review: Review) => {
+    const chosen = unsentNotes(review);
+    const prompt = requestChangesPrompt(review, chosen);
+    if ('refusal' in prompt) return fail(reply, 409, ApiErrorCode.CONFLICT, prompt.refusal);
+    if (!limiter.take(review.id, false))
+      return fail(reply, 429, ApiErrorCode.RATE_LIMITED, 'RATE_LIMITED: too many sends for this review; wait a moment');
+    const sent = workReviews.sendChanges(review, prompt.text, personAuthor(req));
+    if (!sent.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, `NOT_WRITTEN: ${sent.message}; nothing was sent`);
+    // The item has the notes. Stamp against the review as it is now.
+    const ids = chosen.map((n) => n.id);
+    const stamped = changeReview(review.id, (r) => ({ ok: true as const, review: stampSent(r, ids, Date.now()) }));
+    if (stamped.ok) announce(stamped.review);
+    return {
+      success: true,
+      data: {
+        sent: stamped.ok ? ids : [],
+        confirmed: true,
+        review: toView(stamped.ok ? stamped.review : review),
+        work: { key: sent.key, position: sent.position },
+      },
+    };
+  };
+
   app.post<{ Params: { id: string } }>('/api/reviews/:id/request-changes', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;
     const review = reviewOf(req, reply);
     if (!review) return reply;
     if (!isOpen(review)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been decided');
-    const session = ctx.sessions.get(review.sessionId);
+    if (sourceOf(review).kind === 'work') return sendToWork(req, reply, review);
+    const session = authorSession(review);
     if (!session || session.paneExit || !canAccessOwned(getAuthUser(req), session.owner))
       return fail(
         reply,
@@ -803,7 +893,16 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const review = reviewOf(req, reply);
     if (!review) return reply;
     if (!isOpen(review)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been decided');
-    const old = ctx.sessions.get(review.sessionId);
+    // A work review's notes go to its item (Request changes), never to a session.
+    const authorId = authorSessionId(review);
+    if (!authorId)
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        'WORK_REVIEW: a work item review takes notes through Request changes'
+      );
+    const old = authorSession(review);
     if (old && !old.paneExit && canAccessOwned(getAuthUser(req), old.owner))
       return fail(
         reply,
@@ -844,7 +943,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         ApiErrorCode.CONFLICT,
         `BRANCH_GONE: ${review.branch} no longer exists; nothing was started`
       );
-    const work = workItemsForSession(review.owner, review.sessionId);
+    const work = workItemsForSession(review.owner, authorId);
     const chosen = unsentNotes(review);
     const prompt = handoverPrompt(review, chosen, {
       files: (changes?.files ?? []).map((f) =>
@@ -893,8 +992,8 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         review: stampSent(handOver(r, to), ids, Date.now()),
       }));
       if (moved.ok) announce(moved.review);
-      const author = { kind: 'human' as const, userId: getAuthUser(req).username };
-      for (const workspaceId of linkSessionToWork(work, started.sessionId, author)) options.announceWork?.(workspaceId);
+      for (const workspaceId of linkSessionToWork(work, started.sessionId, personAuthor(req)))
+        options.announceWork?.(workspaceId);
       return {
         success: true,
         data: {

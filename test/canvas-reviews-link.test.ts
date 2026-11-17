@@ -2,7 +2,7 @@
  * @fileoverview The canvas's two links to the Reviews page read `GET /api/reviews` through one parser.
  */
 import { describe, expect, it } from 'vitest';
-import { parseWaitingReviews, reviewWords } from '../packages/canvas/src/reviews.js';
+import { parseWaitingReviews, reviewWords, workReviewKey } from '../packages/canvas/src/reviews.js';
 
 const row = (id: string, sessionId: string, state = 'ready') => ({ id, sessionId, state });
 
@@ -28,6 +28,15 @@ describe('parseWaitingReviews', () => {
     const got = parseWaitingReviews({ data: { waiting: [row('aaaaaaaaaaaaaaaa', 's1', 'deploying')] } });
     expect(got?.count).toBe(0);
     expect(got?.bySession.get('s1')?.state).toBe('deploying');
+  });
+
+  it('keys a work review by its workspace and item, never by its stored session id', () => {
+    const work = { ...row('dddddddddddddddd', 'work:ws-1:38'), work: { workspaceId: 'ws-1', key: 'W-38' } };
+    const got = parseWaitingReviews({ data: { waiting: [work] } });
+    expect(got?.count).toBe(1);
+    expect(got?.byWork.get(workReviewKey('ws-1', 'W-38'))).toEqual({ id: 'dddddddddddddddd', state: 'ready' });
+    expect(got?.byWork.get(workReviewKey('ws-2', 'W-38'))).toBeUndefined();
+    expect(got?.bySession.size).toBe(0);
   });
 
   it('drops a row whose id could not be part of an address', () => {
