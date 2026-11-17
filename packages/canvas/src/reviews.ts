@@ -7,7 +7,13 @@
  */
 
 export type WaitingReview = { id: string; state: string };
-export type WaitingReviews = { count: number; bySession: Map<string, WaitingReview> };
+/** `byWork` is keyed by `workReviewKey(workspaceId, key)`: a work key repeats across workspaces. */
+export type WaitingReviews = {
+  count: number;
+  bySession: Map<string, WaitingReview>;
+  byWork: Map<string, WaitingReview>;
+};
+export const workReviewKey = (workspaceId: string, key: string): string => `${workspaceId}\n${key}`;
 
 const ID = /^[a-z0-9]{8,40}$/;
 
@@ -26,15 +32,26 @@ export function parseWaitingReviews(body: unknown): WaitingReviews | null {
   const waiting = (body as { data?: { waiting?: unknown } } | null)?.data?.waiting;
   if (!Array.isArray(waiting)) return null;
   const bySession = new Map<string, WaitingReview>();
+  const byWork = new Map<string, WaitingReview>();
   let count = 0;
   for (const row of waiting) {
-    const r = row as { id?: unknown; sessionId?: unknown; state?: unknown } | null;
+    const r = row as {
+      id?: unknown;
+      sessionId?: unknown;
+      state?: unknown;
+      work?: { workspaceId?: unknown; key?: unknown } | null;
+    } | null;
     if (!r || typeof r.id !== 'string' || !ID.test(r.id)) continue;
     // An approved review that is deploying is on the list, and asks nothing of the reader.
     if (r.state !== 'deploying') count++;
     // A session can have one review per branch; the list is oldest first, so the oldest one is the row's link.
-    if (typeof r.sessionId === 'string' && !bySession.has(r.sessionId))
-      bySession.set(r.sessionId, { id: r.id, state: typeof r.state === 'string' ? r.state : '' });
+    const review = { id: r.id, state: typeof r.state === 'string' ? r.state : '' };
+    // A work review is listed by its item; its stored session id names no session.
+    if (r.work && typeof r.work.workspaceId === 'string' && typeof r.work.key === 'string') {
+      byWork.set(workReviewKey(r.work.workspaceId, r.work.key), review);
+      continue;
+    }
+    if (typeof r.sessionId === 'string' && !bySession.has(r.sessionId)) bySession.set(r.sessionId, review);
   }
-  return { count, bySession };
+  return { count, bySession, byWork };
 }
