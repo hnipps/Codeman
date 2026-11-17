@@ -382,30 +382,41 @@
     if (r.state === 'deploy-failed') return approveCall('deploy', {});
     if (!c || c.gone || !c.headSha) return undefined;
     const deploys = !!(state.approve && state.approve.deploys);
-    $('rvConfirmTitle').textContent = `Merge ${r.branch} into ${r.base}?`;
-    const lines = [
-      `${c.commits} ${c.commits === 1 ? 'commit' : 'commits'}, ${c.files.length}${c.truncated ? '+' : ''} ${
+    const work = workOf();
+    const commits = `${c.commits} ${c.commits === 1 ? 'commit' : 'commits'}`;
+    $('rvConfirmTitle').textContent = deploys ? 'Merge and deploy?' : 'Merge?';
+    const steps = [`Merges ${commits} from ${r.branch} into ${r.base}`];
+    if (deploys) steps.push('deploys Codeman');
+    if (work) steps.push(`marks ${work.key} done`);
+    const lead =
+      steps.length === 1 ? `${steps[0]}.` : `${steps.slice(0, -1).join(', ')} and ${steps[steps.length - 1]}.`;
+    const body = [el('p', '', lead)];
+    if (c.moved)
+      body.push(el('p', 'rv-confirm-warn', 'The branch has new commits since the walkthrough. They merge too.'));
+    if (r.unsent)
+      body.push(
+        el(
+          'p',
+          'rv-confirm-warn',
+          `${r.unsent} ${r.unsent === 1 ? 'note has' : 'notes have'} not been sent and will not be.`
+        )
+      );
+    const more = [
+      `What merges is what Changes shows: ${c.files.length}${c.truncated ? '+' : ''} ${
         c.files.length === 1 ? 'file' : 'files'
-      }, +${c.added} −${c.deleted}. The branch merges as Changes shows it now, at ${shortSha(c.headSha)}.`,
+      }, +${c.added} −${c.deleted}, at ${shortSha(c.headSha)}.`,
     ];
     if (deploys)
-      lines.push(
-        'This is Codeman itself, so the merge is then deployed: built, tested and switched to. Your sessions keep running, and this page reloads when the new build is live.'
+      more.push(
+        'Deploying builds and tests the merge, then switches Codeman to it. Your sessions keep running, and this page reloads when the new version is live.'
       );
-    if (workOf())
-      lines.push(
-        `${workOf().key} is then marked done. The pull request on GitHub is left to GitHub, which sees its branch merged.`
-      );
-    if (c.moved) lines.push('The branch has commits newer than the walkthrough. They are part of what merges.');
-    if (r.unsent)
-      lines.push(
-        `${r.unsent} ${r.unsent === 1 ? 'note has' : 'notes have'} not been sent${isWork() ? '' : ' to the session'}. Approving does not send ${
-          r.unsent === 1 ? 'it' : 'them'
-        }.`
-      );
-    lines.push('A merge is not undone from this page.');
-    $('rvConfirmBody').replaceChildren(...lines.map((line) => el('p', '', line)));
-    $('rvConfirmGo').textContent = deploys ? 'Merge and deploy' : workOf() ? 'Merge and mark done' : 'Merge';
+    if (work) more.push('GitHub sees the branch merged and marks the pull request merged by itself.');
+    more.push('A merge cannot be undone from this page.');
+    const details = el('details', 'rv-confirm-more');
+    details.append(el('summary', '', 'What is this?'), ...more.map((line) => el('p', '', line)));
+    body.push(details);
+    $('rvConfirmBody').replaceChildren(...body);
+    $('rvConfirmGo').textContent = deploys ? 'Merge and deploy' : 'Merge';
     $('rvConfirm').showModal();
     $('rvConfirmCancel').focus();
     return undefined;
