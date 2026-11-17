@@ -56,6 +56,10 @@ export type WorkHost = {
   say(message: string): void;
   /** Opens the Tasks list in the rail, where a routine's runs live. */
   showTasks(): void;
+  /** Opens the outline; the view's own button shows only while it is closed (CSS). */
+  openOutline(): void;
+  /** Opens the assistant in the rail, beside the lanes. */
+  openAssistant(): void;
 };
 
 const FILTERS: [WorkFilter, string][] = [
@@ -236,6 +240,18 @@ export class WorkView {
     close.setAttribute('aria-label', 'Close Work');
     close.title = 'Close · Esc';
     close.append(icon('M5 5l10 10M15 5L5 15'));
+    const outline = btn('work-icon work-outline', '', () => this.host.openOutline());
+    outline.setAttribute('aria-label', 'Open outline');
+    outline.title = 'Open outline';
+    outline.append(icon('M3 4h14v12H3zM7 4v12'));
+    const assistant = btn('work-icon', '', () => this.host.openAssistant());
+    assistant.setAttribute('aria-label', 'Assistant');
+    assistant.title = 'Assistant';
+    assistant.append(
+      icon(
+        'M10 3l1.8 4.2L16 9l-4.2 1.8L10 15l-1.8-4.2L4 9l4.2-1.8zM15 14l.7 1.3L17 16l-1.3.7L15 18l-.7-1.3L13 16l1.3-.7z'
+      )
+    );
     this.modeSeg.setAttribute('role', 'group');
     this.modeSeg.setAttribute('aria-label', 'Work or routines');
     for (const [mode, label] of [
@@ -247,7 +263,7 @@ export class WorkView {
       this.modeSeg.append(b);
     }
     this.itemsOnly = [seg, this.search, hint, add, this.tabs, this.lanes];
-    head.append(h1, this.modeSeg, seg, this.search, el('span', 'work-grow'), hint, add, close);
+    head.append(outline, h1, this.modeSeg, seg, this.search, el('span', 'work-grow'), hint, add, assistant, close);
     this.tabs.setAttribute('aria-label', 'Lanes');
     // Built once and relabelled on paint, so a tab keeps the keyboard and a press across a refresh.
     for (const status of WORK_STATUSES) {

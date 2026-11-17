@@ -1585,6 +1585,10 @@ const work = new WorkView({
   showTasks: () => {
     if (state.rail.at(-1) !== 'tasks') toggleTasks();
   },
+  openOutline: () => {
+    if (!state.outlineOpen) dispatch({ kind: 'outline', open: true });
+  },
+  openAssistant: () => openAssistant(true),
 });
 void work.load();
 const prototypes = new PrototypesView({
