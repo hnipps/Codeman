@@ -47,6 +47,17 @@ export const workFileProblem = (reason: 'unreadable' | 'newer'): string =>
     ? 'Work items were saved by a newer release; nothing was changed'
     : 'The work items file could not be read; nothing was changed';
 
+type WorkListener = (workspaceId: string, change: WorkChange) => void;
+const listeners = new Set<WorkListener>();
+/**
+ * Called after every write of an item, whichever route or routine made it, so a module that follows items needs no
+ * list of call sites. A listener that throws is ignored. Returns the unsubscribe.
+ */
+export function subscribeWork(listener: WorkListener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 /** Applies one change and writes it. A refusal, a duplicate or a change that changed nothing writes nothing. */
 export function changeWork(
   workspaceId: string,
@@ -55,6 +66,15 @@ export function changeWork(
   const read = readWork(workspaceId);
   if (!read.ok) return { ok: false, code: 'FILE', message: workFileProblem(read.reason) };
   const result = change(read.file);
-  if (result.ok && result.file !== read.file) atomicWrite(workPath(workspaceId), encodeWorkFile(result.file));
+  if (result.ok && result.file !== read.file) {
+    atomicWrite(workPath(workspaceId), encodeWorkFile(result.file));
+    for (const listener of listeners) {
+      try {
+        listener(workspaceId, result);
+      } catch {
+        // A follower's failure never fails the write that already happened.
+      }
+    }
+  }
   return result;
 }

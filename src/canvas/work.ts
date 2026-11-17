@@ -75,6 +75,8 @@ export const MAX_FILED_ITEMS = 10;
 /** The person's instruction an agent quotes to move an item out of Backlog. */
 export const MAX_INSTRUCTION_CHARS = 300;
 export const MAX_PR_URL_CHARS = 300;
+/** The reviewer's notes an item carries back to the agent that picks it up next. */
+export const MAX_CHANGES_CHARS = 16_000;
 
 export const workKey = (number: number): string => `W-${number}`;
 /** `W-12`, `w-12` or `12`; anything else is not a key. */
@@ -138,6 +140,11 @@ export type WorkPr = z.infer<typeof WorkPrSchema>;
 const WorkPrInput = z.union([PrUrl.transform((url): WorkPr => ({ url })), WorkPrSchema]);
 
 const at = z.number().int().nonnegative();
+/** The person's review notes, delivered to the item. Cleared by the next report on the item. */
+const WorkChangesSchema = z
+  .object({ text: z.string().min(1).max(MAX_CHANGES_CHARS), reviewId: z.string().max(40), at })
+  .passthrough();
+export type WorkChanges = z.infer<typeof WorkChangesSchema>;
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
 const itemFields = {
   number: z.number().int().positive(),
@@ -148,6 +155,7 @@ const itemFields = {
   createdFrom: z.number().int().positive().optional().catch(undefined),
   requestId: z.uuid().optional().catch(undefined),
   pr: WorkPrSchema.optional().catch(undefined),
+  changes: WorkChangesSchema.optional().catch(undefined),
   author: AuthorSchema,
   createdAt: at,
   updatedAt: at,
@@ -595,6 +603,8 @@ export function reportWork(
     const failed = link(item, [sessionId]);
     if (failed) return refuse('INVALID_INPUT', failed);
   }
+  // The report answers the review notes it was picked up with; the review itself reads the new tip from origin.
+  delete item.changes;
   const filed: WorkItem[] = [];
   const moveTo = (to: WorkStatus): void => {
     if (item.status !== to) setStatus(next, item, to, ctx, report.instruction);
@@ -646,6 +656,52 @@ export function reportWork(
   return { ok: true, file: next, item, filed, duplicate: false };
 }
 
+/**
+ * The reviewer asked for changes on the item's pull request: the notes go on the item, an open question is closed by
+ * them, and the item goes to the top of Ready for work, so the next run picks it up and reads the notes first.
+ */
+export function requestChangesOnWork(
+  file: WorkFile,
+  number: number,
+  changes: WorkChanges,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  if (workClosed(findWork(file, number)!.status))
+    return refuse('INVALID_INPUT', `${workKey(number)} is closed; reopen it to send it changes`);
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  item.changes = { ...changes, text: changes.text.slice(0, MAX_CHANGES_CHARS) };
+  delete item.needs;
+  if (item.status !== 'ready-for-work') setStatus(next, item, 'ready-for-work', ctx);
+  place(next, item, 1, ctx);
+  log(item, ctx, 'Changes requested in review');
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
+/** Approve merged the item's pull request: the item is done. An item already done is left as it is. */
+export function approveWork(
+  file: WorkFile,
+  number: number,
+  mergedSha: string,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  const current = findWork(file, number)!;
+  if (current.status === 'done') return { ok: true, file, item: current, filed: [], duplicate: false };
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  setStatus(next, item, 'done', ctx);
+  delete item.needs;
+  delete item.changes;
+  log(item, ctx, `Approved and merged ${mergedSha.slice(0, 7)} in review`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
 // ---- Reading --------------------------------------------------------------
 
 /** An item as the API answers it: its key spelled out, its request id left out. */
@@ -673,6 +729,8 @@ export function workRelated(file: WorkFile, item: WorkItem): { createdFrom?: Wor
 export function workBrief(item: WorkItem, file?: WorkFile) {
   const position = file ? workPosition(file, item.number) : null;
   return {
+    // The reviewer's notes come first: an agent picking the item up reads them before anything else.
+    ...(item.changes ? { changesRequested: item.changes.text } : {}),
     key: workKey(item.number),
     title: item.title,
     status: item.status,

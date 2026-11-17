@@ -13,7 +13,7 @@
 import { basename } from 'node:path';
 import { runFetch } from '../git-fetch.js';
 import { isSafeRepoRelativePath, runGit, type GitRunner } from '../git-workspace-status.js';
-import type { RepoFacts } from './review-model.js';
+import { sourceOf, type RepoFacts, type Review } from './review-model.js';
 
 export const MAX_REVIEW_FILES = 500;
 export const MAX_REVIEW_DIFF_BYTES = 400 * 1024;
@@ -56,6 +56,12 @@ export async function resolveHead(git: GitRunner, cwd: string, head: HeadLocator
   }
   return null;
 }
+/** Where a review's head is read: a work review's pull request lives on origin, a session's branch here first. */
+export const headOf = (review: Pick<Review, 'sessionId' | 'sessionName' | 'branch'>): HeadLocator =>
+  sourceOf(review).kind === 'work'
+    ? { from: 'origin', branch: review.branch }
+    : { from: 'local-first', branch: review.branch };
+
 const resolveBranch = (git: GitRunner, cwd: string, name: string): Promise<string | null> =>
   resolveHead(git, cwd, { from: 'local-first', branch: name });
 
@@ -84,7 +90,8 @@ export async function fetchHead(
   }
 }
 
-async function defaultBase(git: GitRunner, cwd: string): Promise<string | null> {
+/** The branch a review compares with when none is named: origin's default, then `main`, then `master`. */
+export async function defaultBase(git: GitRunner, cwd: string): Promise<string | null> {
   const head = line((await tryGit(git, cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])) ?? '');
   const fromOrigin = head.startsWith('origin/') ? head.slice('origin/'.length) : '';
   for (const name of [fromOrigin, 'main', 'master']) {

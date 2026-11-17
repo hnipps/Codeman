@@ -48,7 +48,7 @@ import {
   reviewFileDiff,
   SHA,
   tryGit,
-  type HeadLocator,
+  headOf,
   type ReviewChanges,
 } from '../../reviews/review-git.js';
 import {
@@ -114,7 +114,6 @@ import { defaultDockerWorkspaces } from './git-status-routes.js';
 import { imageMagicMatchesExt } from './session-routes.js';
 
 type Ctx = SessionPort & EventPort;
-const headOf = (review: Review): HeadLocator => ({ from: 'local-first', branch: review.branch });
 export interface ReviewRouteOptions {
   /** Host paths of Docker case workspaces. Injected by tests; rejects when the list cannot be read. */
   dockerWorkspaces?: () => Promise<string[]>;

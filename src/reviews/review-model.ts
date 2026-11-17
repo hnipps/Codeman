@@ -183,6 +183,37 @@ export type Review = z.infer<typeof ReviewSchema>;
 
 export const ReviewFileSchema = z.object({ version: z.literal(1), review: ReviewSchema }).strict();
 
+/** A canvas work item, by its workspace and number. */
+export type WorkRef = { workspaceId: string; number: number };
+/** Who a review is from: the agent session that submitted it, or a work item whose pull request it reviews. */
+export type ReviewSource =
+  | { kind: 'session'; sessionId: string; sessionName: string }
+  | { kind: 'work'; work: WorkRef };
+
+/**
+ * A work review keeps its source in `sessionId` as `work:<workspaceId>:<n>`, so the file carries no key the previous
+ * release does not know and that release still reads it (self-building rule 5): there it is a review by "W-n" whose
+ * session has ended. This encoder and `sourceOf` are the only two places that know the stored form.
+ */
+const WORK_SOURCE = /^work:([A-Za-z0-9_-]{1,80}):([1-9][0-9]{0,8})$/;
+export function storedSource(source: ReviewSource): Pick<Review, 'sessionId' | 'sessionName'> {
+  if (source.kind === 'session') return { sessionId: source.sessionId, sessionName: source.sessionName };
+  const { workspaceId, number } = source.work;
+  return { sessionId: `work:${workspaceId}:${number}`, sessionName: `W-${number}` };
+}
+/** The one decoder. Every reader that means "the author session" reads the review through this. */
+export function sourceOf(review: Pick<Review, 'sessionId' | 'sessionName'>): ReviewSource {
+  const work = WORK_SOURCE.exec(review.sessionId);
+  return work
+    ? { kind: 'work', work: { workspaceId: work[1]!, number: Number(work[2]) } }
+    : { kind: 'session', sessionId: review.sessionId, sessionName: review.sessionName };
+}
+/** The session that wrote a review, or undefined for a work review. */
+export const authorSessionId = (review: Pick<Review, 'sessionId' | 'sessionName'>): string | undefined => {
+  const source = sourceOf(review);
+  return source.kind === 'session' ? source.sessionId : undefined;
+};
+
 export type ReviewState =
   | 'ready'
   | 'changes-requested'
@@ -443,11 +474,20 @@ export function toView(r: Review): ReviewView {
   const { repoRoot: _private, ...rest } = r;
   return { ...rest, state: reviewState(r), unsent: unsentNotes(r).length };
 }
+/** What the tracker says now about a work review's item. */
+export type WorkFacts = {
+  workspaceId: string;
+  key: string;
+  title: string;
+  status: string;
+  prUrl: string;
+  wanted: boolean;
+};
 export type ReviewSummary = Pick<
   ReviewView,
   'id' | 'title' | 'project' | 'branch' | 'sessionId' | 'sessionName' | 'state' | 'unsent' | 'createdAt' | 'updatedAt'
-> & { decidedAt?: number };
-export function toSummary(r: Review): ReviewSummary {
+> & { decidedAt?: number; work?: WorkFacts };
+export function toSummary(r: Review, work?: WorkFacts): ReviewSummary {
   const v = toView(r);
   return {
     id: v.id,
@@ -461,14 +501,25 @@ export function toSummary(r: Review): ReviewSummary {
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,
     ...(r.decision ? { decidedAt: r.decision.at } : {}),
+    ...(work ? { work } : {}),
   };
 }
 
-/** The queue: open reviews oldest first (the one waiting longest is at the top), then what was decided lately. */
-export function queueOf(all: Review[], now: number): { waiting: ReviewSummary[]; decided: ReviewSummary[] } {
-  const waiting = all.filter((r) => !isDecided(r)).sort((a, b) => a.createdAt - b.createdAt);
+/**
+ * The queue: open reviews oldest first (the one waiting longest is at the top), then what was decided lately. A work
+ * review waits only while its item still wants it (`work`, by review id, from the tracker at this read); a decided one
+ * follows the same 24 hours as any other.
+ */
+export function queueOf(
+  all: Review[],
+  now: number,
+  work: ReadonlyMap<string, WorkFacts> = new Map()
+): { waiting: ReviewSummary[]; decided: ReviewSummary[] } {
+  const waits = (r: Review): boolean => sourceOf(r).kind === 'session' || work.get(r.id)?.wanted === true;
+  const waiting = all.filter((r) => !isDecided(r) && waits(r)).sort((a, b) => a.createdAt - b.createdAt);
   const decided = all
     .filter((r) => isDecided(r) && now - (r.decision?.at ?? 0) < DECIDED_VISIBLE_MS)
     .sort((a, b) => (b.decision?.at ?? 0) - (a.decision?.at ?? 0));
-  return { waiting: waiting.map(toSummary), decided: decided.map(toSummary) };
+  const summary = (r: Review) => toSummary(r, work.get(r.id));
+  return { waiting: waiting.map(summary), decided: decided.map(summary) };
 }
