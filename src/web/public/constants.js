@@ -1973,6 +1973,7 @@ const SSE_EVENTS = {
   WEBVIEW_CHANGED: 'webview:changed',
   TAB_LAYOUT_CHANGED: 'tab:layoutChanged',
   CANVAS_CHANGED: 'canvas:changed',
+  REVIEW_CHANGED: 'review:changed',
   CANVAS_VIEW_COMMAND: 'canvas:viewCommand',
   CANVAS_CONVERSATION: 'canvas:conversation',
 };

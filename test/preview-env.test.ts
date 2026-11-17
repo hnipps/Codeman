@@ -42,6 +42,9 @@ describe('buildPreviewEnv', () => {
       'CODEMAN_DATA_DIR',
       'CODEMAN_TMUX_SOCKET',
       'CODEMAN_DEPLOY_ROLE',
+      'CODEMAN_RELEASE_DIR',
+      'CODEMAN_COLOUR_PORT',
+      'CODEMAN_ALLOWED_HOSTS',
       'CODEMAN_PASSWORD',
       'CODEMAN_USERNAME',
     ]) {

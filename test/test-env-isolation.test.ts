@@ -36,6 +36,7 @@ const STRIPPED_ENV_VARS: Array<[name: string, why: string]> = [
   ['CODEMAN_TMUX_SOCKET', 'renames the socket resolveTmuxSocketName() returns'],
   ['CLAUDE_CONFIG_DIR', 'relocates the Claude tree, so transcript fixtures under the temp HOME read as missing'],
   ['CODEMAN_CASES_PATH', 'bypasses the temporary HOME and points case routes at a deployment bind mount'],
+  ['CODEMAN_REVIEW_PREVIEWS', "turns on Open live's calls to the deploy supervisor's review commands"],
 ];
 
 const SETUP_SOURCE = readFileSync(fileURLToPath(new URL('./setup.ts', import.meta.url)), 'utf-8');

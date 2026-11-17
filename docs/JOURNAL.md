@@ -2,6 +2,111 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-17 — A work item's pull request is reviewed on the Reviews page, made by the server
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/work-reviews.ts`, `src/reviews/review-model.ts`, `src/canvas/work.ts`, `docs/architecture-invariants.md#reviews-page`
+**Why:** Routine-built Work items end in a GitHub pull request that never reached the Reviews page. Two designs were weighed: the agent submits a review at the end of its run, or the server makes one from the item.
+**Links:** [intent/2026-11-17-work-pr-reviews.md](../intent/2026-11-17-work-pr-reviews.md)
+
+The server makes it. An agent-submit-only design depends on the run that built the work still being there, and on every routine prompt remembering the step; it also leaves a review open after the item is closed or its pull request is cleared. With the server deriving the review from `item.pr`, the tracker stays the one owner of whether a review is wanted (read at each list), and the review record holds only what the person did and the last tip seen.
+
+The review has no author session, and the review file's schema is strict, so the previous release would refuse a new key. The source is therefore encoded in the existing `sessionId` as `work:<workspaceId>:<n>` (session name `W-n`), behind one encoder (`storedSource`) and one decoder (`sourceOf`); every reader that means the author session goes through `authorSessionId`, which is null for a work review. The previous release reads such a review as one by a session that no longer exists: it refuses Request changes, shows no preview, still merges on Approve only the commit the page showed, and leaves the item for a person to close.
+
+Request changes on a work review writes the notes on the item and moves it to the top of Ready for work instead of pasting into a session, since the routine's session has usually ended. Approve merges what `origin` has, never a local branch of the same name, and marks the item Done.
+
+## 2026-11-17 — Review previews: host phases 1 to 3 are applied
+
+**Type:** status-transition
+**Touches:** `docs/review-instance-address-plan.md`
+**Why:** The plan still said nothing had been applied. Harry approved it and the host-side session applied three of its four phases.
+**Links:** [docs/review-instance-address-plan.md](review-instance-address-plan.md)
+
+The storage pool, the preview network, the base image, the broker, the request directory and the supervisor's `review` commands exist, and the live colour runs with `CODEMAN_REVIEW_PREVIEWS=1`. The edge (wildcard entries, tunnel rule, access application) is not applied, so the address **Open live** opens does not answer yet.
+
+## 2026-11-16 — The caller writes a review preview request, and the broker is the gate
+
+**Type:** intent-refinement
+**Touches:** `docs/review-instance-address-plan.md`
+**Why:** The plan said only the root-owned supervisor could write a request. The host side was built with the `review` command running as its caller, and Harry approved that.
+**Links:** [docs/review-instance-address-plan.md](review-instance-address-plan.md#how-the-app-asks-for-a-preview)
+
+Any agent in the Codeman VM can now write a request file. It gains nothing over `codeman-deploy review`, which it could already run. The broker checks every request and is the only writer of answers and of the state file.
+
+## 2026-11-16 — Five supervisor commands for review previews
+
+**Type:** intent-refinement
+**Touches:** `docs/review-instance-address-plan.md`
+**Why:** The plan listed three commands, and its own start and stop rules needed the app to report when a review page opens and closes. Harry left the set to the agent and asked that each command have one job.
+**Links:** [docs/review-instance-address-plan.md](review-instance-address-plan.md#how-the-app-asks-for-a-preview)
+
+`codeman-deploy review create | use | release | destroy | status`. `use` and `release` are the page-opened and page-closed messages. `create` and `destroy` replace `start` and `stop`, because a preview also stops and starts each time it sleeps and wakes, and the old `stop` deleted it.
+
+Rejected. Three commands with the broker waking a preview on the first request to its address: the page could not warm a preview before **Open live** is pressed, and a closed page would hold a VM for five minutes instead of one. One heartbeat command in place of `use` and `release`: it needs a call every few seconds through the supervisor for as long as a page is open.
+
+## 2026-11-16 — A stand-in for `claude` on preview machines
+
+**Type:** intent-refinement
+**Touches:** `deploy/preview/`, `test/preview-standin-claude.test.ts`, `docs/review-instance-address-plan.md`
+**Why:** A preview of a Codeman branch has no Claude login and must never get one, and a Codeman with no sessions shows a reviewer very little.
+**Links:** [deploy/preview/README.md](../deploy/preview/README.md), [docs/review-instance-address-plan.md](review-instance-address-plan.md)
+
+The stand-in is a script with fixed answers that keeps what Codeman reads off a claude pane: the composer row, the working row, the conversation file and the hooks. It travels with the branch, in `deploy/preview/bin`, so a branch that changes what Codeman expects of a pane changes its stand-in in the same commit, and the test reads the script with the registry's own claude entry. The other choice was to bake it into the machine image; then a branch could not change it and a reviewer would see sessions that disagree with the code under review.
+
+It imports nothing that can open a connection. It runs the workspace's hooks, which Codeman wrote and which call the Codeman server on the same machine.
+
+## 2026-11-16 — Reviews page: captures come from the agent, and the ways in
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/review-model.ts`, `src/reviews/review-store.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.{html,js,css}`, `src/cli-agent.ts`, `src/mcp-server.ts`, `packages/canvas/src/reviews.ts`, `skills/codeman/reference/verbs.md`
+**Why:** A running Codeman branch is never framed, and the throwaway machine that will run one for **Open live** does not exist yet. The reviewer still needs to see the change.
+**Links:** [intent/2026-11-16-reviews-page.md](../intent/2026-11-16-reviews-page.md)
+
+Stills are taken by the agent, from the branch it is already running, and sent with the review. The other choice was to have the preview machine take them when it builds; that ties what the reviewer sees to a service that is not built, and an agent already has the page open in a browser when it checks its own work. When the preview machine exists it adds **Open live** beside the stills and replaces nothing.
+
+A still is accepted only from the session that wrote the review, only as PNG, JPEG or WebP whose bytes prove it, and is served only by the name the review's own record holds. A note sits on a point of a still as fractions of its size.
+
+The canvas outline links to the page and counts the reviews that ask something of the reader; a work item links to its session's review. The classic dashboard has no link.
+
+## 2026-11-16 — Reviews page: element notes on the preview, and Approve
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/{review-merge,review-model}.ts`, `src/web/routes/{review-routes,webview-routes}.ts`, `src/webview-capabilities.ts`, `src/deploy-control.ts`, `src/web/public/reviews.{html,js,css}`, `deploy/test.sh`, `docs/self-building.md`
+**Why:** Two owner decisions on the first slice, and the verdict the page was built for.
+**Links:** [intent/2026-11-16-reviews-page.md](../intent/2026-11-16-reviews-page.md), [architecture-invariants, "Reviews page"](architecture-invariants.md#reviews-page)
+
+Retracts the entry below on one point: a note on a preview anchors to an element of the page, not to its path. Harry asked for that, and for a way to hide the notes while he tests the page. The sandbox stays as it was. The page reaches into the frame through the canvas frame bridge, which the proxy injects only for a capability minted by `POST /api/reviews/:id/preview`. A dashboard web tab on the same preview keeps its own token and gets no bridge, so nothing changes for it.
+
+Decision. Approve merges without touching any checkout (Harry, same day). The merge is built from objects and refs and pushed to `origin`, so a folder that has the base branch checked out, dirty or clean, ends up behind its remote and nothing else, as after a merged pull request. The one refusal left is a repository with no remote whose base branch is checked out in a folder: moving that branch under its index would make the next commit there undo the merge without saying so.
+
+Decision. Approve merges exactly the commit the reviewer was shown. The page sends the branch tip it displayed, and a branch that moved since is refused.
+
+Decision. For Codeman's own repository Approve also asks the supervisor for a deploy of the merge. This is the first deploy the app asks for itself; until now only an agent's shell did, and the web UI could only roll back. It uses the supervisor's existing `request deploy <sha>` and changes nothing in the supervisor. The repository is recognised by holding the commit that is live now, not by a path. Because a successful deploy stops the colour that asked, the outcome is read afterwards from the supervisor's record by whichever colour is live.
+
+## 2026-11-16 — Reviews page, first slice: walkthrough, changes, notes, Request changes
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/{review-model,review-store,review-git}.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.{html,js,css}`, `src/web/{server,sse-events}.ts`, `src/{cli-agent,mcp-server}.ts`, `deploy/test.sh`, `skills/codeman/reference/verbs.md`
+**Why:** Harry reviews finished agent work on GitHub, where the diff has no explanation and nothing runs. He wants the agent to explain the change and to see it running, inside Codeman.
+**Links:** [intent/2026-11-16-reviews-page.md](../intent/2026-11-16-reviews-page.md), [architecture-invariants, "Reviews page"](architecture-invariants.md#reviews-page), [review-instance-address-plan.md](review-instance-address-plan.md)
+
+Decision. A review is its own page and its own store, not a canvas object: the queue spans every project, and a review must outlive a canvas workspace. The agent submits from its session, and the server takes the repository and branch from that session, so a submit cannot name someone else's work. Notes follow the brief review rule: a person writes and resolves them, and they go to the agent as one prompt on a button press.
+
+Decision. A note on a preview anchors to the path the preview shows, not to an element in it. The preview frame is sandboxed without `allow-same-origin`, so the page cannot read what was clicked inside it, and that sandbox stays.
+
+Not in this slice. Approve (merge, and deploy for the Codeman repository), captures and Open live for Codeman branches, and the links from the sessions rail and from Work items. The intent lists them as later slices.
+
+## 2026-11-16 — A preview also drops the live colour's release, port and host names
+
+**Type:** intent-refinement
+**Touches:** `src/preview-env.ts`, `test/preview-env.test.ts`
+**Why:** A throwaway Codeman started through `codeman agent preview add` on the deployed build used its own data dir and tmux socket, and `preview rm` stopped it with its tmux server. Its environment still carried `CODEMAN_RELEASE_DIR`, `CODEMAN_COLOUR_PORT` and `CODEMAN_ALLOWED_HOSTS` from the live colour.
+**Links:** [intent/2026-11-14-preview-env-isolation.md](../intent/2026-11-14-preview-env-isolation.md)
+
+Decision. `PREVIEW_STRIPPED_ENV` gains those three. The first two are set by the deploy supervisor and read by nothing in Codeman, but they name the live colour. The third is read: a nested Codeman would accept requests for the live app's host names.
+
+Kept. `CODEMAN_NODE_BINARY` (a fact about the host) and `CODEMAN_NO_AUTOSTART` (keeps `npm install` from starting a service).
+
 ## 2026-11-15 — Canvas routines run as agent-started background tasks, enabled only by a person
 
 **Type:** intent-refinement

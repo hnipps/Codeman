@@ -104,7 +104,8 @@ export function matchesFilter(item: WorkRow, filter: WorkFilter, query: string):
 
 /**
  * One lane's cards. Ready for work is in pickup order (its `position`, top first): priority is position. Other open
- * lanes are urgent first, then newest change; closed lanes newest change only.
+ * lanes are urgent first, then oldest first (a new item lands at the end, beside "+ Add item"); closed lanes newest
+ * change only.
  */
 export function laneItems(
   items: readonly WorkRow[],
@@ -119,7 +120,9 @@ export function laneItems(
   return inLane
     .map((item) => ({ item, state: rank(itemState(item, sessions)) }))
     .sort((a, b) =>
-      !workClosed(status) && a.state !== b.state ? a.state - b.state : b.item.updatedAt - a.item.updatedAt
+      workClosed(status)
+        ? b.item.updatedAt - a.item.updatedAt
+        : a.state - b.state || a.item.createdAt - b.item.createdAt || a.item.number - b.item.number
     )
     .map((entry) => entry.item);
 }

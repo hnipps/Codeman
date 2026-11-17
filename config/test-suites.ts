@@ -21,7 +21,9 @@
 export const BROWSER_TEST_GLOBS = [
   'test/canvas-view.browser.test.ts',
   'test/canvas-review.browser.test.ts',
+  'test/work-review-page.browser.test.ts',
   'test/canvas-panel-widths.browser.test.ts',
+  'test/canvas-outline-sections.browser.test.ts',
   'test/canvas-edit.browser.test.ts',
   'test/canvas-media.browser.test.ts',
   'test/canvas-prototype.browser.test.ts',

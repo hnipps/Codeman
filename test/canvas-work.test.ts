@@ -339,6 +339,55 @@ describe('work items: pure changes', () => {
     });
   });
 
+  describe('the pull request', () => {
+    const url = 'https://github.com/example/repo/pull/58';
+
+    it('takes a bare https address or {url, branch, base}, and refuses anything that is not https', () => {
+      expect(CreateWorkSchema.parse({ title: 'T', pr: url }).pr).toEqual({ url });
+      expect(CreateWorkSchema.parse({ title: 'T', pr: { url, branch: 'build/w-1', base: 'main' } }).pr).toEqual({
+        url,
+        branch: 'build/w-1',
+        base: 'main',
+      });
+      for (const pr of [
+        'javascript:alert(1)',
+        'http://github.com/example/repo/pull/58',
+        'not a url',
+        `https://example.com/${'x'.repeat(300)}`,
+        { url, branch: '-x' },
+        { url, branch: 'a..b' },
+        { url, extra: 1 },
+      ])
+        expect(UpdateWorkSchema.safeParse({ pr }).success, JSON.stringify(pr)).toBe(false);
+    });
+
+    it('links, relinks and clears, logging each change once', () => {
+      const first = made(emptyWorkFile(), 'With PR', { pr: url });
+      expect(first.item.pr).toEqual({ url });
+      expect(first.item.history[0]!.text).toBe(`Linked PR ${url}`);
+      const branched = updateWork(first.file, 1, UpdateWorkSchema.parse({ pr: { url, branch: 'feat/x' } }), ctx());
+      if (!branched.ok) throw new Error(branched.message);
+      expect(branched.item).toMatchObject({ pr: { url, branch: 'feat/x' }, revision: 2 });
+      const same = updateWork(branched.file, 1, UpdateWorkSchema.parse({ pr: { url, branch: 'feat/x' } }), ctx());
+      expect(same.ok && same.file).toBe(branched.file);
+      const cleared = updateWork(branched.file, 1, UpdateWorkSchema.parse({ pr: null }), ctx());
+      if (!cleared.ok) throw new Error(cleared.message);
+      expect(cleared.item.pr).toBeUndefined();
+      expect(cleared.item.history[0]!.text).toBe('Unlinked PR');
+      const again = updateWork(cleared.file, 1, UpdateWorkSchema.parse({ pr: null }), ctx());
+      expect(again.ok && again.file).toBe(cleared.file);
+    });
+
+    it('reads a stored pr that is not https as no pr, keeping the rest of the item', () => {
+      const file = made(emptyWorkFile(), 'Old').file;
+      const disk = encodeWorkFile(file) as { items: Record<string, unknown>[] };
+      disk.items[0]!.pr = { url: 'javascript:alert(1)' };
+      const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(disk)));
+      expect(back.items[0]!.pr).toBeUndefined();
+      expect(back.items[0]!.title).toBe('Old');
+    });
+  });
+
   it('is one command tool, with the run-end rule in its schema', () => {
     expect(canvasToolNames).toContain('canvas_work');
     expect(toolSchemas.canvas_work).toBe(WorkToolSchema);
@@ -470,5 +519,25 @@ describe('work items: routes and side file', () => {
     expect((await inject({ method: 'GET', url: api() })).statusCode).toBe(409);
     expect(readFileSync(workPath(ws), 'utf8')).toBe('{not json');
     rmSync(workPath(ws));
+  });
+
+  it('round-trips a pull request through the routes and the canvas_work tool, and clears it with null', async () => {
+    const url = 'https://github.com/example/repo/pull/58';
+    const created = await inject({ method: 'POST', url: api(), payload: { title: 'PR item', pr: url } });
+    expect(created.statusCode).toBe(201);
+    const key = (created.json().data?.item as { key: string }).key;
+    expect((await inject({ method: 'GET', url: api(`/${key}`) })).json().data).toMatchObject({ item: { pr: { url } } });
+    for (const pr of ['javascript:alert(1)', 'http://example.com/pull/1'])
+      expect((await inject({ method: 'PATCH', url: api(`/${key}`), payload: { pr } })).statusCode).toBe(400);
+    const tool = (args: Record<string, unknown>) =>
+      inject({ method: 'POST', url: `/api/canvas/${ws}/command`, payload: { tool: 'canvas_work', arguments: args } });
+    const linked = await tool({ action: 'update', key, pr: { url, branch: 'build/pr-item' } });
+    expect(linked.json().data).toMatchObject({ item: { pr: { url, branch: 'build/pr-item' } } });
+    const cleared = await inject({ method: 'PATCH', url: api(`/${key}`), payload: { pr: null } });
+    expect(cleared.statusCode).toBe(200);
+    expect((cleared.json().data?.item as { pr?: unknown }).pr).toBeUndefined();
+    expect(
+      JSON.parse(readFileSync(workPath(ws), 'utf8')).items.find((i: { title: string }) => i.title === 'PR item').pr
+    ).toBeUndefined();
   });
 });
