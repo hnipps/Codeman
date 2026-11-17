@@ -145,7 +145,7 @@ const MIME_TYPES: Record<string, string> = {
   txt: 'text/plain',
 };
 
-function buildContentDisposition(disposition: 'inline' | 'attachment', fileName: string): string {
+export function buildContentDisposition(disposition: 'inline' | 'attachment', fileName: string): string {
   const cleaned = fileName.replace(/["\\\r\n]/g, '_');
   const fallback = cleaned.replace(/[^\x20-\x7e]/g, '_') || 'file';
   const encoded = encodeURIComponent(cleaned).replace(

@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-17 — Work item attachments: quota from the record, bytes by id
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/work.ts`, `src/canvas/work-files.ts`, `src/web/routes/canvas-work-routes.ts`, `docs/architecture-invariants.md#canvas-work`
+**Why:** W-42 was split into four items on the owner's word; part 1 needed a storage design.
+**Links:** [intent/2026-11-17-work-attachments.md](../intent/2026-11-17-work-attachments.md)
+
+The bytes are written first and recorded second, and a refused record removes them. The workspace quota is the sum of sizes the items record, checked inside the one synchronous `changeWork()` write, rather than a directory walk under a lock as the image assets do: the record is already the source of truth for what exists, and the check cannot race. Files are named by a random id, not by content hash, because two items may attach the same bytes and removing one must not remove the other's. Only images are served with their own type; every other file is text or a download, so an attached HTML or PDF never runs on Codeman's origin.
+
 ## 2026-11-17 — A work item's pull request is reviewed on the Reviews page, made by the server
 
 **Type:** intent-refinement
