@@ -7,8 +7,8 @@
  *   it goes through `marked` and then `window.sanitizeMarkdownHtml`, the dashboard's sanitizer, and is shown as
  *   plain text when either is missing.
  * - A preview is a sandboxed frame without `allow-same-origin`, like a preview tab on the dashboard.
- * - Nothing is sent to a session without a press of Request changes (or, once the author session has ended, Send to
- *   a new session).
+ * - Nothing is sent to a session without a press of Request changes (once the author session has ended, that press
+ *   starts a new session and hands it the review).
  * - All addresses are relative, so the page works under a reverse-proxy base path through `<base href>`.
  */
 (function () {
@@ -289,14 +289,11 @@
     const request = $('rvRequest');
     request.hidden = !open;
     const count = r.unsent ? ` · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}` : '';
-    // Once the author session has ended, the notes go to a new session that is given the whole review.
-    request.textContent = `${state.sessionLive ? 'Request changes' : 'Send to a new session'}${count}`;
+    // One button whether or not the author session still runs: once it has ended, the notes go to a new session
+    // that is given the whole review, and the reviewer need not know the difference.
+    request.textContent = `Request changes${count}`;
     request.disabled = !r.unsent || state.sending;
-    request.title = !r.unsent
-      ? 'Add a note first.'
-      : state.sessionLive
-        ? 'Sends every unsent note to the session as one prompt.'
-        : 'The session that wrote this review has ended. Starts a new session on the branch and sends it the whole review: the walkthrough, the changed files, the work items it belongs to and every unsent note.';
+    request.title = r.unsent ? 'Sends every unsent note to the agent as one prompt.' : 'Add a note first.';
     renderApprove();
     renderNotice();
     watchDeploy();
@@ -410,10 +407,6 @@
     else if (d && d.kind === 'deploy-failed')
       lines.push(
         `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
-      );
-    if (state.review && !state.sessionLive && !d)
-      lines.push(
-        'The session that wrote this has ended. Your notes go to a new session that is given the whole review.'
       );
     box.hidden = !lines.length;
     box.replaceChildren(...lines.map((line) => el('p', '', line)));
@@ -768,20 +761,17 @@
     state.sending = true;
     button.disabled = true;
     // Claude Code takes up to a minute before it accepts a first prompt, so this can take a while.
-    button.textContent = 'Starting a session…';
+    button.textContent = 'Sending…';
     try {
       const data = await api(`api/reviews/${encodeURIComponent(id)}/new-session`, { method: 'POST', body: {} });
       if (state.id === id) {
         state.review = data.review;
         state.sessionLive = true;
       }
-      const work = data.work && data.work.length ? ` and linked it to ${data.work.join(', ')}` : '';
       toast(
         data.confirmed
-          ? `Started ${data.sessionName || 'a new session'}, sent it the review with ${data.sent.length} ${
-              data.sent.length === 1 ? 'note' : 'notes'
-            }${work}.`
-          : `Started ${data.sessionName || 'a new session'} and wrote the review to it${work}, but it has not confirmed it started. Check the session.`,
+          ? `Sent ${data.sent.length} ${data.sent.length === 1 ? 'note' : 'notes'} to the agent.`
+          : 'The notes were written to the agent, but it has not confirmed it started. Check the session.',
         data.confirmed ? 'ok' : 'warn'
       );
       loadQueue();

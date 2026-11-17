@@ -8,7 +8,7 @@ On the Reviews page, Request changes is disabled once the session that wrote the
 
 ## Proposed outcome
 
-When the author session has ended, the button reads **Send to a new session**. Pressing it starts a Claude session in the review's checked-out folder and sends it one prompt with the whole piece of work, not just the notes: title, walkthrough, branch and base, changed files, the open canvas Work items linked to the old session (key, title, status, description, open question, last outcome), and the notes. Once the prompt lands, the review belongs to the new session (its `codeman agent review submit` updates the same review, and Request changes goes to it), and the new session is linked to those work items.
+When the author session has ended, the button still reads **Request changes** (review note: the reviewer doesn't need to know a new session is involved). Pressing it starts a Claude session in the review's checked-out folder and sends it one prompt with the whole piece of work, not just the notes: title, walkthrough, branch and base, changed files, the open canvas Work items linked to the old session (key, title, status, description, open question, last outcome), and the notes. Once the prompt lands, the review belongs to the new session (its `codeman agent review submit` updates the same review, and Request changes goes to it), and the new session is linked to those work items.
 
 ## Affected users and systems
 
