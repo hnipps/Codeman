@@ -218,6 +218,25 @@ describe('review git reader', () => {
     expect(await reviewFileDiff(repo, 'main', 'feat/x', { path: '../a.txt' })).toBeNull();
   });
 
+  it('compares with the base fetched from origin when the local base is behind it', async () => {
+    const dir = makeRepo();
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+      // The work was branched from what origin has; the local base branch never caught up.
+      git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'feat/x'));
+      git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'more');
+      writeFileSync(join(dir, 'c.txt'), 'c\n');
+      git('add', 'c.txt');
+      git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'the work');
+      const changes = await reviewChanges(dir, 'main', 'feat/x');
+      expect(changes.files.map((x) => x.path)).toEqual(['c.txt']);
+      expect(changes.commits).toBe(2);
+      expect((await reviewFileDiff(dir, 'main', 'feat/x', { path: 'a.txt' }))?.diff ?? '').toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reports a deleted branch as gone', async () => {
     expect(await reviewChanges(repo, 'main', 'feat/missing')).toMatchObject({ gone: true, files: [] });
   });

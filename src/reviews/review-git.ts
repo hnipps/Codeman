@@ -112,10 +112,18 @@ type Range = { head: string; mergeBase: string } | null;
 async function rangeOf(git: GitRunner, repoRoot: string, base: string, branch: string): Promise<Range> {
   if (!(await validRef(git, repoRoot, base)) || !(await validRef(git, repoRoot, branch))) return null;
   const head = await resolveBranch(git, repoRoot, branch);
-  const baseSha = await resolveBranch(git, repoRoot, base);
-  if (!head || !baseSha) return null;
-  const mergeBase = line((await tryGit(git, repoRoot, ['merge-base', baseSha, head])) ?? '');
-  return SHA.test(mergeBase) ? { head, mergeBase } : null;
+  if (!head) return null;
+  // The base branch here and the one fetched from `origin` can differ: merges land on the remote, so the local
+  // branch is often behind. Comparing with the older one shows everything merged since as this branch's work, so the
+  // fork point nearest the branch tip wins.
+  let mergeBase = '';
+  for (const ref of [`refs/heads/${base}`, `refs/remotes/origin/${base}`]) {
+    const found = line((await tryGit(git, repoRoot, ['merge-base', ref, head])) ?? '');
+    if (!SHA.test(found)) continue;
+    if (!mergeBase || (await tryGit(git, repoRoot, ['merge-base', '--is-ancestor', mergeBase, found])) !== null)
+      mergeBase = found;
+  }
+  return mergeBase ? { head, mergeBase } : null;
 }
 
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M'];

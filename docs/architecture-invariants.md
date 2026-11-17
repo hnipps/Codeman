@@ -2122,7 +2122,7 @@ Design and slices: [`intent/2026-11-16-reviews-page.md`](../intent/2026-11-16-re
 | --- | --- |
 | `src/reviews/review-model.ts` | Schemas, limits, the state word, note rules, the Request changes prompt, `toView`. No IO. |
 | `src/reviews/review-store.ts` | One file per review, `<data dir>/reviews/<id>.json`, `{ version: 1, review }`. |
-| `src/reviews/review-git.ts` | The branch a folder has checked out, and the files and diffs between its merge base and its tip. |
+| `src/reviews/review-git.ts` | The branch a folder has checked out, and the files and diffs between its merge base and its tip. The merge base is taken against the base branch here AND the one fetched from `origin`, and the one nearest the tip wins: a local base branch that is behind would otherwise show everything merged since as this branch's work. |
 | `src/reviews/review-merge.ts` | Approve's merge. The only part that writes to a repository. |
 | `src/web/routes/review-routes.ts` | The routes, and who may call each. |
 | `src/web/public/reviews.{html,js,css}` | The page. Served only at `/reviews` and `/reviews/:id`. |
