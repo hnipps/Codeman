@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataPath } from '../src/config/instance.js';
 import type { DeployOverviewConfigured } from '../src/deploy-control.js';
+import { fetchHead, resolveHead, reviewChanges } from '../src/reviews/review-git.js';
 import { mergeReviewedBranch } from '../src/reviews/review-merge.js';
+import { runGit } from '../src/git-workspace-status.js';
 import { settledDeploy, type Decision } from '../src/reviews/review-model.js';
 import { registerReviewPageRoutes, type ReviewRouteOptions } from '../src/web/routes/review-routes.js';
 import { createRouteTestHarness, type RouteTestHarness } from './routes/_route-test-utils.js';
@@ -52,7 +54,7 @@ function makeRepo({ remote = false } = {}): { dir: string; git: (...args: string
 const input = (repo: { dir: string; git: (...args: string[]) => string }, title = 'Work') => ({
   repoRoot: repo.dir,
   base: 'main',
-  branch: 'feat/x',
+  head: { from: 'local-first' as const, branch: 'feat/x' },
   headSha: repo.git('rev-parse', 'feat/x'),
   title,
 });
@@ -142,6 +144,86 @@ describe('the merge Approve makes', () => {
     // Nothing was pushed, and nothing local moved.
     expect(gitIn(repo.origin!)('rev-parse', 'main')).toBe(theirs('rev-parse', 'HEAD'));
     expect(repo.git('status', '--porcelain')).toBe('');
+  });
+});
+
+describe('a head read from origin only', () => {
+  /** A clone that has never seen `feat/pr`: the pull request's branch exists only on origin. */
+  function prOnOrigin() {
+    const upstream = makeRepo({ remote: true });
+    const pusher = gitIn(upstream.dir);
+    pusher('checkout', '-q', '-b', 'feat/pr', 'main');
+    writeFileSync(join(upstream.dir, 'p.txt'), 'pr\n');
+    pusher('add', 'p.txt');
+    pusher('commit', '-q', '-m', 'pr work');
+    pusher('push', '-q', 'origin', 'feat/pr');
+    const dir = temp('review-clone-');
+    execFileSync('git', ['clone', '-q', upstream.origin!, dir], { stdio: 'ignore' });
+    const git = gitIn(dir);
+    git('config', 'user.name', 't');
+    git('config', 'user.email', 't@example.invalid');
+    git('config', 'commit.gpgsign', 'false');
+    git('update-ref', '-d', 'refs/remotes/origin/feat/pr');
+    return { dir, git, tip: pusher('rev-parse', 'feat/pr'), pusher, upstream };
+  }
+  const origin = (branch: string) => ({ from: 'origin' as const, branch });
+
+  it('fetches the branch, then the Changes tab and Approve read the same commit', async () => {
+    const clone = prOnOrigin();
+    expect(await resolveHead(runGit, clone.dir, origin('feat/pr'))).toBeNull();
+    expect(await fetchHead(clone.dir, 'feat/pr')).toBe('fetched');
+    expect(await fetchHead(clone.dir, 'feat/none')).toBe('absent');
+    const changes = await reviewChanges(clone.dir, 'main', origin('feat/pr'));
+    expect(changes).toMatchObject({ gone: false, headSha: clone.tip });
+    expect(changes.files.map((f) => f.path)).toEqual(['p.txt']);
+    const merged = await mergeReviewedBranch({
+      repoRoot: clone.dir,
+      base: 'main',
+      head: origin('feat/pr'),
+      headSha: clone.tip,
+      title: 'PR',
+    });
+    if (!merged.ok) throw new Error(merged.message);
+    expect(gitIn(clone.upstream.origin!)('show', 'main:p.txt')).toBe('pr');
+  });
+
+  it('is never shadowed by a stale local branch of the same name', async () => {
+    const clone = prOnOrigin();
+    // A local feat/pr from an older look at the work: one commit behind what origin has now.
+    clone.git('branch', 'feat/pr', 'main');
+    expect(await fetchHead(clone.dir, 'feat/pr')).toBe('fetched');
+    const stale = clone.git('rev-parse', 'refs/heads/feat/pr');
+    expect(stale).not.toBe(clone.tip);
+    expect((await reviewChanges(clone.dir, 'main', origin('feat/pr'))).headSha).toBe(clone.tip);
+    // The same lookup through a session's locator reads the local branch first: that is what origin-only prevents.
+    expect((await reviewChanges(clone.dir, 'main', { from: 'local-first', branch: 'feat/pr' })).headSha).toBe(stale);
+    const merged = await mergeReviewedBranch({
+      repoRoot: clone.dir,
+      base: 'main',
+      head: origin('feat/pr'),
+      headSha: clone.tip,
+      title: 'PR',
+    });
+    expect(merged).toMatchObject({ ok: true });
+  });
+
+  it('reads a branch deleted on origin as absent, and a push past the shown commit as MOVED', async () => {
+    const clone = prOnOrigin();
+    expect(await fetchHead(clone.dir, 'feat/pr')).toBe('fetched');
+    writeFileSync(join(clone.upstream.dir, 'p.txt'), 'pr, again\n');
+    clone.pusher('commit', '-q', '-am', 'more');
+    clone.pusher('push', '-q', 'origin', 'feat/pr');
+    expect(await fetchHead(clone.dir, 'feat/pr')).toBe('fetched');
+    const moved = await mergeReviewedBranch({
+      repoRoot: clone.dir,
+      base: 'main',
+      head: origin('feat/pr'),
+      headSha: clone.tip,
+      title: 'PR',
+    });
+    expect(moved).toMatchObject({ ok: false, code: 'MOVED' });
+    clone.pusher('push', '-q', 'origin', ':feat/pr');
+    expect(await fetchHead(clone.dir, 'feat/pr')).toBe('absent');
   });
 });
 

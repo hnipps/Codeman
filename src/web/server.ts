@@ -115,6 +115,7 @@ import webpush from 'web-push';
 import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
+import { announceWorkChange } from './routes/canvas-work-routes.js';
 import { INTERNAL_PRINCIPAL_HEADER } from './internal-principal.js';
 import {
   canvasOn,
@@ -1538,7 +1539,10 @@ export class WebServer extends EventEmitter {
     registerOrchestratorRoutes(this.app, ctx);
     registerWebviewRoutes(this.app, ctx, this.basePath);
     registerPreviewRoutes(this.app, ctx, this.basePath);
-    registerReviewPageRoutes(this.app, ctx, { basePath: this.basePath });
+    registerReviewPageRoutes(this.app, ctx, {
+      basePath: this.basePath,
+      announceWork: (workspaceId) => void announceWorkChange(canvasPort, workspaceId).catch(() => undefined),
+    });
     if (!this.testMode) {
       this.cleanup.setInterval(
         () => {

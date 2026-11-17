@@ -24,9 +24,7 @@ import { sanitizeGitOutput } from '../git-clone.js';
 import { runFetch } from '../git-fetch.js';
 import { runGit, type GitRunner } from '../git-workspace-status.js';
 import { cleanLine } from './review-model.js';
-import { line, SHA, tryGit, validRef } from './review-git.js';
-
-export const MERGE_NETWORK_TIMEOUT_MS = 60_000;
+import { line, NETWORK_TIMEOUT_MS, resolveHead, SHA, tryGit, validRef, type HeadLocator } from './review-git.js';
 
 export type MergeRefusalCode =
   | 'GONE'
@@ -79,7 +77,8 @@ export async function checkedOutSomewhere(git: GitRunner, cwd: string, branch: s
 export interface MergeInput {
   repoRoot: string;
   base: string;
-  branch: string;
+  /** Where the reviewed branch is read (`review-git.ts`). */
+  head: HeadLocator;
   /** The branch tip the reviewer was shown. */
   headSha: string;
   title: string;
@@ -91,13 +90,12 @@ export async function mergeReviewedBranch(
 ): Promise<MergeResult> {
   const git = deps.git ?? runGit;
   const net = deps.net ?? runFetch;
-  const { repoRoot, base, branch } = input;
+  const { repoRoot, base } = input;
+  const branch = input.head.branch;
   if (!SHA.test(input.headSha) || !(await validRef(git, repoRoot, base)) || !(await validRef(git, repoRoot, branch)))
     return refuse('FAILED', 'FAILED: the review names a branch or commit git does not accept');
 
-  const head =
-    (await shaOf(git, repoRoot, `refs/heads/${branch}`)) ??
-    (await shaOf(git, repoRoot, `refs/remotes/origin/${branch}`));
+  const head = await resolveHead(git, repoRoot, input.head);
   if (!head) return refuse('GONE', `GONE: the branch ${branch} no longer exists`);
   if (head !== input.headSha)
     return refuse('MOVED', `MOVED: ${branch} has changed since you read it; reload the review and read what is new`);
@@ -108,7 +106,7 @@ export async function mergeReviewedBranch(
       await net(
         repoRoot,
         ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`],
-        { timeoutMs: MERGE_NETWORK_TIMEOUT_MS }
+        { timeoutMs: NETWORK_TIMEOUT_MS }
       );
     } catch (err) {
       // A base branch that exists only here is merged here; any other failure stops before anything is written.
@@ -165,7 +163,7 @@ export async function mergeReviewedBranch(
   if (publish && merged !== remote) {
     try {
       await net(repoRoot, ['push', '--quiet', '--no-verify', 'origin', `${merged}:refs/heads/${base}`], {
-        timeoutMs: MERGE_NETWORK_TIMEOUT_MS,
+        timeoutMs: NETWORK_TIMEOUT_MS,
       });
     } catch (err) {
       return refuse(

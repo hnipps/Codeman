@@ -194,6 +194,8 @@ function makeRepo(): string {
   return dir;
 }
 
+const local = (branch: string) => ({ from: 'local-first' as const, branch });
+
 describe('review git reader', () => {
   let repo: string;
   beforeAll(() => {
@@ -204,18 +206,18 @@ describe('review git reader', () => {
   it('reads the branch, its base and what it changes', async () => {
     const f = await repoFacts(repo, undefined);
     expect(f).toMatchObject({ repoRoot: repo, branch: 'feat/x', base: 'main' });
-    const changes = await reviewChanges(repo, f.base, f.branch);
+    const changes = await reviewChanges(repo, f.base, local(f.branch));
     expect(changes).toMatchObject({ commits: 1, added: 2, deleted: 1, gone: false, headSha: f.headSha });
     expect(changes.files.map((x) => x.path)).toEqual(['a.txt', 'b.txt']);
-    const diff = await reviewFileDiff(repo, f.base, f.branch, { path: 'a.txt' });
+    const diff = await reviewFileDiff(repo, f.base, local(f.branch), { path: 'a.txt' });
     expect(diff?.diff).toContain('-two\n+TWO');
   });
 
   it('refuses the base branch itself, an unknown base, and an option-shaped name', async () => {
     await expect(repoFacts(repo, 'feat/x')).rejects.toBeInstanceOf(ReviewGitRefusal);
     await expect(repoFacts(repo, 'nope')).rejects.toThrow(/NO_BASE/);
-    expect((await reviewChanges(repo, '--output=/tmp/x', 'feat/x')).gone).toBe(true);
-    expect(await reviewFileDiff(repo, 'main', 'feat/x', { path: '../a.txt' })).toBeNull();
+    expect((await reviewChanges(repo, '--output=/tmp/x', local('feat/x'))).gone).toBe(true);
+    expect(await reviewFileDiff(repo, 'main', local('feat/x'), { path: '../a.txt' })).toBeNull();
   });
 
   it('compares with the base fetched from origin when the local base is behind it', async () => {
@@ -228,17 +230,17 @@ describe('review git reader', () => {
       writeFileSync(join(dir, 'c.txt'), 'c\n');
       git('add', 'c.txt');
       git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'the work');
-      const changes = await reviewChanges(dir, 'main', 'feat/x');
+      const changes = await reviewChanges(dir, 'main', local('feat/x'));
       expect(changes.files.map((x) => x.path)).toEqual(['c.txt']);
       expect(changes.commits).toBe(2);
-      expect((await reviewFileDiff(dir, 'main', 'feat/x', { path: 'a.txt' }))?.diff ?? '').toBe('');
+      expect((await reviewFileDiff(dir, 'main', local('feat/x'), { path: 'a.txt' }))?.diff ?? '').toBe('');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it('reports a deleted branch as gone', async () => {
-    expect(await reviewChanges(repo, 'main', 'feat/missing')).toMatchObject({ gone: true, files: [] });
+    expect(await reviewChanges(repo, 'main', local('feat/missing'))).toMatchObject({ gone: true, files: [] });
   });
 });
 

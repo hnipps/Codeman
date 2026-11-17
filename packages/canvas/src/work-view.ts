@@ -15,7 +15,14 @@
 import { uuid } from './ids.js';
 import { STATE_GLYPHS, STATE_WORDS, parseSessions } from './sessions.js';
 import type { ShellSessionRow } from '../../../src/canvas/shell-sessions.js';
-import { WORK_STATUSES, WORK_STATUS_NAMES, workClosed, workKey, type WorkStatus } from '../../../src/canvas/work.js';
+import {
+  isHttpsUrl,
+  WORK_STATUSES,
+  WORK_STATUS_NAMES,
+  workClosed,
+  workKey,
+  type WorkStatus,
+} from '../../../src/canvas/work.js';
 import {
   assigneeLabel,
   authorLabel,
@@ -31,7 +38,7 @@ import {
   type WorkFilter,
   type WorkRow,
 } from './work-model.js';
-import { parseWaitingReviews, reviewWords, type WaitingReview } from './reviews.js';
+import { parseWaitingReviews, reviewWords, workReviewKey, type WaitingReviews } from './reviews.js';
 import { RoutinesView } from './routines-view.js';
 
 export type WorkHost = {
@@ -116,7 +123,7 @@ export class WorkView {
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
   private sessionsAt = 0;
   /** The review each session has waiting on the Reviews page, by session id. Read with the sessions. */
-  private reviews = new Map<string, WaitingReview>();
+  private reviews: WaitingReviews = { count: 0, bySession: new Map(), byWork: new Map() };
   private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
   private toastTimer: ReturnType<typeof setTimeout> | undefined;
   private drag: {
@@ -280,7 +287,7 @@ export class WorkView {
       // Offline: the items already shown stay.
     }
     this.paint();
-    if (this.items.some((i) => i.sessions.length)) this.refreshSessions();
+    if (this.items.some((i) => i.sessions.length || i.pr)) this.refreshSessions();
   }
   /** `canvas:changed` from the stream: a commit that changed work items says so. */
   serverChanged(raw: unknown): void {
@@ -303,7 +310,7 @@ export class WorkView {
   }
   /** A session event: the linked sessions' states may have changed. */
   event(): void {
-    if (this.items.some((i) => i.sessions.length) || this.menu) this.refreshSessions();
+    if (this.items.some((i) => i.sessions.length || i.pr) || this.menu) this.refreshSessions();
   }
   private refreshSessions(): void {
     if (document.hidden || this.sessionsTimer) return;
@@ -325,11 +332,11 @@ export class WorkView {
     }, wait);
   }
 
-  /** Reviews that wait for a verdict, keyed by the session that wrote each. Null when they could not be read. */
-  private async readReviews(): Promise<Map<string, WaitingReview> | null> {
+  /** Reviews that wait for a verdict, by the session that wrote each and by work item. Null when unreadable. */
+  private async readReviews(): Promise<WaitingReviews | null> {
     try {
       const response = await fetch(this.host.url('/api/reviews'));
-      return response.ok ? (parseWaitingReviews(await response.json())?.bySession ?? null) : null;
+      return response.ok ? parseWaitingReviews(await response.json()) : null;
     } catch {
       return null;
     }
@@ -775,7 +782,15 @@ export class WorkView {
         call.append(el('b', '', 'Still working: '), item.outcome.text);
         card.append(call);
       }
-      if (item.createdFrom !== undefined) card.append(el('div', 'work-from', `From ${workKey(item.createdFrom)}`));
+      if (item.createdFrom !== undefined || item.pr) {
+        const from = el('div', 'work-from', item.createdFrom !== undefined ? `From ${workKey(item.createdFrom)}` : '');
+        if (item.pr) {
+          const chip = el('span', 'work-pr-chip', 'PR');
+          chip.title = item.pr.url;
+          from.append(chip);
+        }
+        card.append(from);
+      }
     }
     card.addEventListener('pointerdown', (e) => this.startDrag(e, item.number, card));
     card.addEventListener('keydown', (e) => this.cardKey(e, item));
@@ -1069,6 +1084,28 @@ export class WorkView {
       parts.push(box);
     }
 
+    if (item.pr) {
+      const prSec = el('div', 'work-sec');
+      prSec.append(el('h3', '', 'Pull request'));
+      const link = el('a', 'work-pr-link', item.pr.url);
+      if (isHttpsUrl(item.pr.url)) {
+        link.href = item.pr.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      }
+      link.dataset.workDetail = 'pr';
+      prSec.append(link);
+      if (item.pr.branch) prSec.append(el('p', 'work-pr-branch', item.pr.branch));
+      const review = this.reviews.byWork.get(workReviewKey(this.host.workspace, workKey(item.number)));
+      if (review) {
+        const open = el('a', 'work-link-review', reviewWords(review.state));
+        open.href = this.host.url(`/reviews/${review.id}`);
+        open.dataset.workDetail = 'pr-review';
+        prSec.append(open);
+      }
+      parts.push(prSec);
+    }
+
     const links = el('div', 'work-sec');
     links.append(el('h3', '', 'Linked sessions'));
     if (!item.sessions.length) links.append(el('p', 'work-empty', 'No sessions yet'));
@@ -1090,7 +1127,7 @@ export class WorkView {
       unlink.dataset.workDetail = `unlink-${id}`;
       unlink.setAttribute('aria-label', `Unlink ${sessionLabel(id, sessions)}`);
       link.append(name, unlink, meta);
-      const review = this.reviews.get(id);
+      const review = this.reviews.bySession.get(id);
       if (review) {
         // The session handed its work in: the walkthrough, the changes and the verdict are on the Reviews page.
         const open = el('a', 'work-link-review', reviewWords(review.state));

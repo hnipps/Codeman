@@ -1,0 +1,245 @@
+/**
+ * @fileoverview Reviews of the pull requests canvas work items carry. The one module that reads both `reviews/` and
+ * `canvas/work*`; routes never see a workspace path, a refspec or the stored `work:` form.
+ *
+ * An item with `pr.branch` that is not closed wants a review. `sync` makes or updates that review from the item and from
+ * `origin`, and is safe to run for any item any number of times: the review id is derived from the item and the pull
+ * request (`workReviewId`), so two syncs cannot make two reviews. It runs when an item is written (`subscribeWork`),
+ * when a work review's page is read, before Approve, and once after boot for items that have no review yet. Never on a
+ * timer, and never for the polled queue read.
+ *
+ * Git runs in the repository of the workspace's case, and never for a remote or Docker case or for a repository at or
+ * inside a Docker case workspace. The head is read from `origin` only (`headOf`). Only the live deploy colour writes,
+ * checked at the moment of each write.
+ */
+import { basename } from 'node:path';
+import { getDataDir } from '../config/instance.js';
+import { deployRole } from '../deploy-role.js';
+import { readDockerCases } from '../docker-hosts.js';
+import { isInsideAny, runGit, type GitRunner } from '../git-workspace-status.js';
+import { readRemoteCases } from '../remote-hosts.js';
+import { probePathKind } from '../utils/bounded-path-probe.js';
+import type { Author } from '../canvas/model.js';
+import { approveWork, findWork, requestChangesOnWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
+import { changeWork, readWork, subscribeWork } from '../canvas/work-store.js';
+import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
+import { defaultBase, fetchHead, line, resolveHead, tryGit, validRef } from './review-git.js';
+import { isOpen, MAX_OPEN_REVIEWS, sourceOf, type Review, type WorkFacts, type WorkRef } from './review-model.js';
+import { listReviews, readReview, writeReview } from './review-store.js';
+import { syncedReview, walkthroughOf, wanted, workReviewId } from './work-review-model.js';
+
+export type SyncProblem = 'NO_BRANCH' | 'NO_BASE' | 'NO_REPO' | 'REFUSED' | 'FETCH_FAILED' | 'FULL' | 'NOT_LIVE';
+export type SyncResult =
+  | { review: Review; changed: boolean }
+  | { problem: SyncProblem; message: string }
+  | { unwanted: true };
+
+export interface WorkReviewDeps {
+  /** The case folder of a workspace, as the canvas resolves it for its owner. */
+  casePath: (workspace: Workspace) => Promise<string>;
+  /** Host paths of Docker case workspaces; rejects when the list cannot be read. */
+  dockerWorkspaces: () => Promise<string[]>;
+  announce: (review: Review) => void;
+  /** Tells canvas pages that a workspace's items changed. */
+  announceWork?: (workspaceId: string) => void;
+  git?: GitRunner;
+  net?: GitRunner;
+  now?: () => number;
+}
+
+export interface WorkReviews {
+  /** Brings one item's review in step with the item and with origin. */
+  sync(work: WorkRef, opts?: { fetch?: boolean }): Promise<SyncResult>;
+  /** What the tracker says now about each work review in `reviews`, by review id. One read per workspace. */
+  facts(reviews: Review[]): Map<string, WorkFacts>;
+  /** Puts the reviewer's notes on the item and moves it to the top of Ready for work. */
+  sendChanges(
+    review: Review,
+    text: string,
+    author: Author
+  ): { ok: true; key: string; position: number } | { ok: false; message: string };
+  /** Approve merged the pull request: the item is done. */
+  accepted(review: Review, mergedSha: string, author: Author): void;
+  /** One pass after boot: syncs every item that wants a review and has none yet. */
+  catchUp(): Promise<void>;
+  /** Follows item writes until the returned function is called. */
+  follow(): () => void;
+}
+
+const problem = (code: SyncProblem, message: string): SyncResult => ({ problem: code, message: `${code}: ${message}` });
+const workOf = (review: Review): WorkRef | null => {
+  const source = sourceOf(review);
+  return source.kind === 'work' ? source.work : null;
+};
+
+export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
+  const git = deps.git ?? runGit;
+  const now = deps.now ?? Date.now;
+  /** One fetch per repository and branch at a time; a second sync waits for the first. */
+  const fetching = new Map<string, Promise<'fetched' | 'absent' | 'failed'>>();
+
+  const fetchOnce = (repoRoot: string, branch: string) => {
+    const key = `${repoRoot}\n${branch}`;
+    let running = fetching.get(key);
+    if (!running) {
+      running = fetchHead(repoRoot, branch, { git, net: deps.net }).finally(() => fetching.delete(key));
+      fetching.set(key, running);
+    }
+    return running;
+  };
+
+  const itemOf = (work: WorkRef): WorkItem | undefined => {
+    const read = readWork(work.workspaceId);
+    return read.ok ? findWork(read.file, work.number) : undefined;
+  };
+
+  /** The repository top level of a workspace's case, or why git may not run there. */
+  const repoOf = async (workspace: Workspace): Promise<{ repoRoot: string } | SyncResult> => {
+    const owner = workspace.owner;
+    const sameCase = (c: { name: string; owner?: string }) => c.name === workspace.caseName && c.owner === owner;
+    if ((await readRemoteCases(getDataDir())).some(sameCase))
+      return problem('REFUSED', 'a remote case cannot be reviewed here');
+    if ((await readDockerCases(getDataDir())).some(sameCase))
+      return problem('REFUSED', 'a Docker case cannot be reviewed here');
+    const path = await deps.casePath(workspace);
+    if ((await probePathKind(path)) !== 'directory')
+      return problem('NO_REPO', `the folder of case ${workspace.caseName} cannot be read`);
+    const repoRoot = line((await tryGit(git, path, ['rev-parse', '--show-toplevel'])) ?? '');
+    if (!repoRoot) return problem('NO_REPO', `case ${workspace.caseName} is not a git repository`);
+    let roots: string[];
+    try {
+      roots = await deps.dockerWorkspaces();
+    } catch {
+      return problem('REFUSED', 'the Docker case list could not be read, so no repository is inspected');
+    }
+    if (await isInsideAny(repoRoot, roots))
+      return problem('REFUSED', 'a repository inside a Docker case cannot be reviewed here');
+    return { repoRoot };
+  };
+
+  const accepted: WorkReviews['accepted'] = (review, mergedSha, author) => {
+    const work = workOf(review);
+    if (!work || !deployRole.allows('persist')) return;
+    const changed = changeWork(work.workspaceId, (file) =>
+      approveWork(file, work.number, mergedSha, { author, now: now() })
+    );
+    if (changed.ok) deps.announceWork?.(work.workspaceId);
+  };
+
+  const sync: WorkReviews['sync'] = async (work, opts = {}) => {
+    const item = itemOf(work);
+    if (!item?.pr?.branch) return { unwanted: true };
+    const id = workReviewId(work, item.pr.url);
+    const stored = readReview(id);
+    const existing = stored.ok ? stored.review : undefined;
+    if (existing?.decision) {
+      // A merge recorded before the item heard of it (a crash in between) marks the item done now.
+      if (existing.decision.mergedSha && !workClosed(item.status))
+        accepted(existing, existing.decision.mergedSha, { kind: 'human', userId: existing.owner ?? 'admin' });
+      return { review: existing, changed: false };
+    }
+    if (workClosed(item.status)) return { unwanted: true };
+    const workspace = readWorkspaces().find((w) => w.id === work.workspaceId);
+    if (!workspace) return problem('NO_REPO', 'the workspace no longer exists');
+    const repo = await repoOf(workspace);
+    if (!('repoRoot' in repo)) return repo;
+    const { repoRoot } = repo;
+    const branch = item.pr.branch;
+    if (opts.fetch !== false) {
+      const fetched = await fetchOnce(repoRoot, branch);
+      if (fetched === 'absent') return problem('NO_BRANCH', `${branch} is not on origin`);
+      if (fetched === 'failed') return problem('FETCH_FAILED', `${branch} could not be fetched from origin`);
+    }
+    const headSha = await resolveHead(git, repoRoot, { from: 'origin', branch });
+    if (!headSha) return problem('NO_BRANCH', `${branch} is not on origin`);
+    const base = item.pr.base ?? (await defaultBase(git, repoRoot));
+    if (!base || !(await validRef(git, repoRoot, base)) || base === branch)
+      return problem('NO_BASE', `no base branch to compare ${branch} with`);
+
+    // No await from here: the item and the review are read again and written in one tick.
+    const fresh = itemOf(work);
+    if (!fresh || !wanted(fresh, { id }, work) || fresh.pr?.branch !== branch) return { unwanted: true };
+    const againRead = readReview(id);
+    const open = againRead.ok ? againRead.review : undefined;
+    if (!againRead.ok && againRead.reason !== 'missing')
+      return problem('REFUSED', 'the review file could not be read; nothing was changed');
+    const owner = workspace.owner ?? null;
+    if (!open && listReviews().filter((r) => isOpen(r) && r.owner === owner).length >= MAX_OPEN_REVIEWS)
+      return problem('FULL', 'too many reviews are waiting; decide some first');
+    const next = syncedReview(
+      open,
+      {
+        repoRoot,
+        project: basename(repoRoot),
+        branch,
+        base,
+        headSha,
+        title: fresh.title,
+        walkthrough: walkthroughOf(fresh),
+        owner,
+      },
+      work,
+      id,
+      now()
+    );
+    if (next === open) return { review: next, changed: false };
+    if (!deployRole.allows('persist')) return problem('NOT_LIVE', 'only the live colour writes reviews');
+    writeReview(next);
+    deps.announce(next);
+    return { review: next, changed: true };
+  };
+
+  const facts: WorkReviews['facts'] = (reviews) => {
+    const files = new Map<string, ReturnType<typeof readWork>>();
+    const out = new Map<string, WorkFacts>();
+    for (const review of reviews) {
+      const work = workOf(review);
+      if (!work) continue;
+      let read = files.get(work.workspaceId);
+      if (!read) files.set(work.workspaceId, (read = readWork(work.workspaceId)));
+      const item = read.ok ? findWork(read.file, work.number) : undefined;
+      if (!item?.pr || workReviewId(work, item.pr.url) !== review.id) continue;
+      out.set(review.id, {
+        workspaceId: work.workspaceId,
+        key: workKey(item.number),
+        title: item.title,
+        status: item.status,
+        prUrl: item.pr.url,
+        wanted: wanted(item, review, work),
+      });
+    }
+    return out;
+  };
+
+  const sendChanges: WorkReviews['sendChanges'] = (review, text, author) => {
+    const work = workOf(review);
+    if (!work) return { ok: false, message: 'This review is not of a work item' };
+    const changed = changeWork(work.workspaceId, (file) =>
+      requestChangesOnWork(file, work.number, { text, reviewId: review.id, at: now() }, { author, now: now() })
+    );
+    if (!changed.ok) return { ok: false, message: changed.message };
+    deps.announceWork?.(work.workspaceId);
+    return { ok: true, key: workKey(work.number), position: 1 };
+  };
+
+  const catchUp: WorkReviews['catchUp'] = async () => {
+    for (const workspace of readWorkspaces()) {
+      const read = readWork(workspace.id);
+      if (!read.ok) continue;
+      for (const item of read.file.items) {
+        const work = { workspaceId: workspace.id, number: item.number };
+        if (!item.pr?.branch || workClosed(item.status)) continue;
+        if (readReview(workReviewId(work, item.pr.url)).ok) continue;
+        await sync(work).catch(() => undefined);
+      }
+    }
+  };
+
+  const follow = () =>
+    subscribeWork((workspaceId, change) => {
+      for (const item of [change.item, ...change.filed])
+        if (item.pr) void sync({ workspaceId, number: item.number }).catch(() => undefined);
+    });
+
+  return { sync, facts, sendChanges, accepted, catchUp, follow };
+}

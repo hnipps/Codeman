@@ -2,6 +2,19 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-17 — A work item's pull request is reviewed on the Reviews page, made by the server
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/work-reviews.ts`, `src/reviews/review-model.ts`, `src/canvas/work.ts`, `docs/architecture-invariants.md#reviews-page`
+**Why:** Routine-built Work items end in a GitHub pull request that never reached the Reviews page. Two designs were weighed: the agent submits a review at the end of its run, or the server makes one from the item.
+**Links:** [intent/2026-11-17-work-pr-reviews.md](../intent/2026-11-17-work-pr-reviews.md)
+
+The server makes it. An agent-submit-only design depends on the run that built the work still being there, and on every routine prompt remembering the step; it also leaves a review open after the item is closed or its pull request is cleared. With the server deriving the review from `item.pr`, the tracker stays the one owner of whether a review is wanted (read at each list), and the review record holds only what the person did and the last tip seen.
+
+The review has no author session, and the review file's schema is strict, so the previous release would refuse a new key. The source is therefore encoded in the existing `sessionId` as `work:<workspaceId>:<n>` (session name `W-n`), behind one encoder (`storedSource`) and one decoder (`sourceOf`); every reader that means the author session goes through `authorSessionId`, which is null for a work review. The previous release reads such a review as one by a session that no longer exists: it refuses Request changes, shows no preview, still merges on Approve only the commit the page showed, and leaves the item for a person to close.
+
+Request changes on a work review writes the notes on the item and moves it to the top of Ready for work instead of pasting into a session, since the routine's session has usually ended. Approve merges what `origin` has, never a local branch of the same name, and marks the item Done.
+
 ## 2026-11-17 — Review previews: host phases 1 to 3 are applied
 
 **Type:** status-transition
