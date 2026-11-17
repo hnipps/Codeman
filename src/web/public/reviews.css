@@ -1007,9 +1007,41 @@ textarea {
 
 /* Open live sits with the stage's own controls and never wraps: its label changes with the preview's state. */
 .rv-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   white-space: nowrap;
 }
 .rv-live:disabled {
   opacity: 0.6;
   cursor: default;
+}
+/* Busy (a build running, or a request out): full strength with a spinner, so it does not read as unavailable. */
+.rv-live[aria-busy='true']:disabled {
+  opacity: 1;
+  color: var(--text-soft);
+  cursor: progress;
+}
+.rv-spin {
+  display: none;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(56, 182, 240, 0.32);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rv-spin 0.9s linear infinite;
+}
+.rv-live[aria-busy='true'] .rv-spin {
+  display: block;
+}
+@keyframes rv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rv-spin {
+    animation-duration: 2.4s;
+  }
 }
