@@ -310,12 +310,7 @@ export class AssistantView {
     window.addEventListener('focus', this.onFocus);
     void this.loadProviders();
     const fresh = (): void => {
-      this.agentChose = false;
-      this.options.dispatch({ kind: 'conversation', id: null });
-      this.say('The next message starts a new conversation.');
-      this.threadSignature = '';
-      this.paintPicker();
-      this.paintThread();
+      this.startFresh();
       this.draft.focus({ preventScroll: true });
     };
     node('newConversation').addEventListener('click', fresh);
@@ -649,6 +644,19 @@ export class AssistantView {
     // The turn starts a moment after the message is taken; read once more so the thread says Working without waiting for an event.
     clearTimeout(this.listTimer);
     this.listTimer = setTimeout(() => void this.refreshList(), 1_500);
+  }
+  /** Unbinds the rail, as New conversation does, with `text` as the unsent draft; the caller opens the rail. */
+  startConversation(text: string): void {
+    this.setDraft(text);
+    this.startFresh();
+  }
+  private startFresh(): void {
+    this.agentChose = false;
+    this.options.dispatch({ kind: 'conversation', id: null });
+    this.say('The next message starts a new conversation.');
+    this.threadSignature = '';
+    this.paintPicker();
+    this.paintThread();
   }
   /** Binds the rail to one conversation, as the picker does; the caller opens the rail. */
   showConversation(id: string): void {

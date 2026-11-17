@@ -1,10 +1,11 @@
 /**
  * @fileoverview The Work view's pure part (`packages/canvas/src/work-model.ts`): an item's live state in the
  * Sessions vocabulary, lane order (Ready for work by position), filters, counts, the outline's list and the steps
- * Shift+Left/Right and Shift+Up/Down take.
+ * Shift+Left/Right and Shift+Up/Down take, and the draft Ask an agent writes.
  */
 import { describe, expect, it } from 'vitest';
 import {
+  askAgentDraft,
   assigneeLabel,
   itemState,
   laneItems,
@@ -165,5 +166,13 @@ describe('work model', () => {
     expect(assigneeLabel({ assignee: { kind: 'person' } }, sessions)).toBe('You');
     expect(assigneeLabel({ assignee: { kind: 'session', sessionId: 'abcdef1234' } }, sessions)).toBe('w4-codeman');
     expect(assigneeLabel({ assignee: { kind: 'session', sessionId: 'zzzzzzzzzzzz' } }, sessions)).toBe('zzzzzzzz');
+  });
+
+  it('drafts a prompt that names the item and leaves the description to the agent', () => {
+    const draft = askAgentDraft(row(43, { title: 'Ask from the detail', description: 'secret long text' }));
+    expect(draft).toBe(
+      'Work on W-43: Ask from the detail. Read it with canvas_work (action read, key W-43), assign it to yourself and follow its acceptance checks.'
+    );
+    expect(draft).not.toContain('secret long text');
   });
 });

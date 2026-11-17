@@ -1,7 +1,8 @@
 /**
  * Work lanes in the browser after W-48: seven lanes in board order (Done and Not doing share the last column on a
  * desktop), a `work.json` from before the split migrated on read, Ready for work in pickup order with Shift+Up/Down
- * and a drag reordering it, the outline's Human required first, and the phone's wrapping lane tabs.
+ * and a drag reordering it, the outline's Human required first, Ask an agent's unsent draft in a new conversation
+ * (W-43), and the phone's wrapping lane tabs.
  *
  * Port: 0 (WebServer binds an ephemeral port).
  */
@@ -190,6 +191,33 @@ describe('canvas work lanes (W-48)', () => {
     await expect.poll(ready).toEqual([5, 6, 4]);
     await expect.poll(() => page.locator('#workDetail [data-work-detail="up"]').isDisabled()).toBe(true);
     await page.keyboard.press('Escape');
+  });
+
+  it('opens a new conversation with an unsent draft from Ask an agent (W-43)', async () => {
+    const posts: string[] = [];
+    const onRequest = (r: { method(): string; url(): string }) => {
+      if (r.method() === 'POST' && /\/(conversations|tasks)\b/.test(r.url())) posts.push(r.url());
+    };
+    page.on('request', onRequest);
+    await page.locator('#assistantDraft').evaluate((el) => ((el as HTMLTextAreaElement).value = 'older draft'));
+    await page.locator('.work-card[data-number="5"]').focus();
+    await page.keyboard.press('Enter');
+    await page.locator('#workDetail [data-work-detail="ask"]').click();
+    await page.waitForSelector('#assistantView:not([hidden])');
+    const draft =
+      'Work on W-5: Ready B. Read it with canvas_work (action read, key W-5), assign it to yourself and follow its acceptance checks.';
+    expect(await page.locator('#assistantDraft').inputValue()).toBe(draft);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe('assistantDraft');
+    expect(await page.locator('#conversationPicker').inputValue()).toBe('');
+    expect(await page.locator('#workView').isVisible()).toBe(true);
+    const rail = (await page.locator('#rail').boundingBox())!;
+    const room = await page.locator('.work-lanes').evaluate((el) => parseFloat(getComputedStyle(el).paddingRight));
+    expect(room).toBeGreaterThanOrEqual(rail.width);
+    await page.waitForTimeout(500);
+    expect(posts).toEqual([]);
+    page.off('request', onRequest);
+    await page.screenshot({ path: resolve(MEDIA, `w43-${stamp}-ask-agent.png`) });
+    await page.locator('#assistantDraft').fill('');
   });
 
   it('puts every lane one tap away behind wrapping tabs on a phone', async () => {

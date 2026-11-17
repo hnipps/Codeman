@@ -25,6 +25,7 @@ import {
 } from '../../../src/canvas/work.js';
 import {
   assigneeLabel,
+  askAgentDraft,
   authorLabel,
   itemState,
   laneItems,
@@ -56,6 +57,8 @@ export type WorkHost = {
   say(message: string): void;
   /** Opens the Tasks list in the rail, where a routine's runs live. */
   showTasks(): void;
+  /** Opens the assistant on a new conversation with `text` as its unsent draft. */
+  askAgent(text: string): void;
   /** Opens the outline; the view's own button shows only while it is closed (CSS). */
   openOutline(): void;
   /** Opens the assistant in the rail, beside the lanes. */
@@ -1050,6 +1053,13 @@ export class WorkView {
     const assign = this.field('Assignee', pick);
     if (this.menu) assign.append(this.assigneeMenu(item));
     parts.push(assign);
+
+    const ask = btn('line', 'Ask an agent', () => this.host.askAgent(askAgentDraft(item)));
+    ask.dataset.workDetail = 'ask';
+    ask.title = 'Opens a new conversation with a draft about this item. Nothing is sent until you press Send.';
+    const askRow = el('div', 'work-actions');
+    askRow.append(ask);
+    parts.push(askRow);
 
     if (item.needs) {
       const box = el('div', 'work-box needs');
