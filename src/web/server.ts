@@ -1538,7 +1538,12 @@ export class WebServer extends EventEmitter {
     registerOrchestratorRoutes(this.app, ctx);
     registerWebviewRoutes(this.app, ctx, this.basePath);
     registerPreviewRoutes(this.app, ctx, this.basePath);
-    registerReviewPageRoutes(this.app, ctx, { basePath: this.basePath });
+    registerReviewPageRoutes(this.app, ctx, {
+      basePath: this.basePath,
+      startSession: (headers, request) => this.startConversationSession(headers, request),
+      discardSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
+      announceWork: (workspaceId) => void this.announceCanvasWork(workspaceId),
+    });
     if (!this.testMode) {
       this.cleanup.setInterval(
         () => {
@@ -2661,6 +2666,22 @@ export class WebServer extends EventEmitter {
     await this.app
       .inject({ method: 'DELETE', url: `/api/sessions/${encodeURIComponent(sessionId)}`, headers: forwarded })
       .catch(() => undefined);
+  }
+
+  /** Tells canvas readers that a workspace's Work items changed, the way the work routes do. */
+  private async announceCanvasWork(workspaceId: string): Promise<void> {
+    try {
+      const { readWorkspaces } = await import('../canvas/workspace-registry.js');
+      const seq = (await this.getCanvasStores()).get(workspaceId).read().seq;
+      this.broadcast(SseEvent.CanvasChanged, {
+        workspaceId,
+        seq,
+        owner: readWorkspaces().find((w) => w.id === workspaceId)?.owner,
+        work: true,
+      });
+    } catch {
+      /* A reader that misses this sees the link on its next read. */
+    }
   }
 
   private async getCanvasStores(): Promise<CanvasStores> {

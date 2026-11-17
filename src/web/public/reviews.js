@@ -7,7 +7,8 @@
  *   it goes through `marked` and then `window.sanitizeMarkdownHtml`, the dashboard's sanitizer, and is shown as
  *   plain text when either is missing.
  * - A preview is a sandboxed frame without `allow-same-origin`, like a preview tab on the dashboard.
- * - Nothing is sent to a session without a press of Request changes.
+ * - Nothing is sent to a session without a press of Request changes (or, once the author session has ended, Send to
+ *   a new session).
  * - All addresses are relative, so the page works under a reverse-proxy base path through `<base href>`.
  */
 (function () {
@@ -47,6 +48,8 @@
     id: null,
     review: null,
     sessionLive: false,
+    /** A hand-over to a new session is in flight. */
+    sending: false,
     /** What Approve will do for this review: `{ deploys }`. */
     approve: null,
     /** The review's live preview as the server describes it, or null when it has none. */
@@ -285,15 +288,15 @@
     const open = !['merged', 'deployed', 'deploying'].includes(r.state);
     const request = $('rvRequest');
     request.hidden = !open;
-    request.textContent = r.unsent
-      ? `Request changes · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}`
-      : 'Request changes';
-    request.disabled = !r.unsent || !state.sessionLive;
-    request.title = !state.sessionLive
-      ? 'The session that wrote this review has ended, so there is nowhere to send notes.'
-      : r.unsent
+    const count = r.unsent ? ` · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}` : '';
+    // Once the author session has ended, the notes go to a new session that is given the whole review.
+    request.textContent = `${state.sessionLive ? 'Request changes' : 'Send to a new session'}${count}`;
+    request.disabled = !r.unsent || state.sending;
+    request.title = !r.unsent
+      ? 'Add a note first.'
+      : state.sessionLive
         ? 'Sends every unsent note to the session as one prompt.'
-        : 'Add a note first.';
+        : 'The session that wrote this review has ended. Starts a new session on the branch and sends it the whole review: the walkthrough, the changed files, the work items it belongs to and every unsent note.';
     renderApprove();
     renderNotice();
     watchDeploy();
@@ -409,7 +412,9 @@
         `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
       );
     if (state.review && !state.sessionLive && !d)
-      lines.push('The session that wrote this has ended. You can still read it and keep notes.');
+      lines.push(
+        'The session that wrote this has ended. Your notes go to a new session that is given the whole review.'
+      );
     box.hidden = !lines.length;
     box.replaceChildren(...lines.map((line) => el('p', '', line)));
   }
@@ -732,6 +737,7 @@
   }
 
   async function requestChanges() {
+    if (!state.sessionLive) return sendToNewSession();
     const button = $('rvRequest');
     button.disabled = true;
     button.textContent = 'Sending…';
@@ -753,6 +759,41 @@
     }
     renderHeader();
     renderNotes();
+  }
+
+  /** The author session has ended: a new session is started on the branch and handed the review with its notes. */
+  async function sendToNewSession() {
+    const id = state.id;
+    const button = $('rvRequest');
+    state.sending = true;
+    button.disabled = true;
+    // Claude Code takes up to a minute before it accepts a first prompt, so this can take a while.
+    button.textContent = 'Starting a session…';
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(id)}/new-session`, { method: 'POST', body: {} });
+      if (state.id === id) {
+        state.review = data.review;
+        state.sessionLive = true;
+      }
+      const work = data.work && data.work.length ? ` and linked it to ${data.work.join(', ')}` : '';
+      toast(
+        data.confirmed
+          ? `Started ${data.sessionName || 'a new session'}, sent it the review with ${data.sent.length} ${
+              data.sent.length === 1 ? 'note' : 'notes'
+            }${work}.`
+          : `Started ${data.sessionName || 'a new session'} and wrote the review to it${work}, but it has not confirmed it started. Check the session.`,
+        data.confirmed ? 'ok' : 'warn'
+      );
+      loadQueue();
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      state.sending = false;
+    }
+    if (state.id !== id) return;
+    renderHeader();
+    renderNotes();
+    renderNotice();
   }
 
   // ---------------------------------------------------------------- changes

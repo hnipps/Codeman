@@ -424,18 +424,123 @@ const where = (n: Note): string => {
  * words and text the agent wrote; it is labelled as notes so the agent reads it as a request, not as output.
  */
 export function requestChangesPrompt(r: Review, notes: Note[]): { text: string } | { refusal: string } {
-  if (!notes.length) return { refusal: 'NOTHING: there is no unsent note to send' };
-  if (notes.length > MAX_NOTES_PER_SEND)
-    return { refusal: `TOO_MANY: at most ${MAX_NOTES_PER_SEND} notes go in one request; resolve or split them` };
+  const refused = sendRefusal(notes);
+  if (refused) return { refusal: refused };
   const lines = [
     `Review notes on "${r.title}" (branch ${r.branch}). The reviewer asked for changes.`,
     '',
-    ...notes.flatMap((n, i) => [`${i + 1}. ${where(n)}`, ...n.text.split('\n').map((l) => `   ${l}`), '']),
+    ...noteLines(notes),
     'Address each note on the same branch. When you are done, submit the review again with an updated walkthrough',
     '(`codeman agent review submit`). Do not merge or deploy; the reviewer decides.',
   ];
   return { text: lines.join('\n') };
 }
+
+function sendRefusal(notes: Note[]): string | null {
+  if (!notes.length) return 'NOTHING: there is no unsent note to send';
+  if (notes.length > MAX_NOTES_PER_SEND)
+    return `TOO_MANY: at most ${MAX_NOTES_PER_SEND} notes go in one request; resolve or split them`;
+  return null;
+}
+const noteLines = (notes: Note[]): string[] =>
+  notes.flatMap((n, i) => [`${i + 1}. ${where(n)}`, ...n.text.split('\n').map((l) => `   ${l}`), '']);
+
+/** How much of the walkthrough a hand-over prompt quotes; the rest is named, not pasted. */
+export const MAX_HANDOVER_WALKTHROUGH_CHARS = 20_000;
+/** How many changed files a hand-over prompt lists by name. */
+export const MAX_HANDOVER_FILES = 60;
+/** A work item linked to the session that wrote the review, as a hand-over prompt shows it. */
+export type HandoverWork = {
+  key: string;
+  title: string;
+  status: string;
+  description: string;
+  /** The item's open question, if it has one. */
+  question?: string;
+  /** The last outcome an agent reported on it. */
+  outcome?: string;
+};
+export type HandoverContext = {
+  /** Files the branch changes against its base, as `path (+added -deleted)` or the path alone. */
+  files: string[];
+  /** More files changed than `files` names. */
+  moreFiles: number;
+  /** Commits on the branch since the base. */
+  commits?: number;
+  work: HandoverWork[];
+};
+
+/**
+ * The one prompt that starts a NEW session on a review whose author session has ended. The new session knows nothing,
+ * so the prompt carries the whole review: what the branch is for (title, walkthrough), where it stands (branch,
+ * base, changed files), the work items the old session was linked to, and the person's notes. Everything quoted is
+ * labelled as material, so the agent reads the notes as the request and the rest as background.
+ */
+export function handoverPrompt(
+  r: Review,
+  notes: Note[],
+  context: HandoverContext
+): { text: string } | { refusal: string } {
+  const refused = sendRefusal(notes);
+  if (refused) return { refusal: refused };
+  const walkthrough =
+    r.walkthrough.length > MAX_HANDOVER_WALKTHROUGH_CHARS
+      ? `${r.walkthrough.slice(0, MAX_HANDOVER_WALKTHROUGH_CHARS)}\n[... the rest of the walkthrough is cut here]`
+      : r.walkthrough;
+  const files = context.files.slice(0, MAX_HANDOVER_FILES);
+  const more = context.moreFiles + (context.files.length - files.length);
+  const work = context.work.flatMap((w) => [
+    `- ${w.key} "${oneLine(w.title, 200)}" (${w.status})`,
+    ...(w.description.trim()
+      ? w.description
+          .trim()
+          .split('\n')
+          .map((l) => `    ${l}`)
+      : []),
+    ...(w.question ? [`    Open question: ${oneLine(w.question, 400)}`] : []),
+    ...(w.outcome ? [`    Last reported: ${oneLine(w.outcome, 400)}`] : []),
+  ]);
+  const lines = [
+    `You are taking over a piece of work that is in review. The session that wrote it has ended, so you start with`,
+    `none of its context: everything below is what the reviewer and the earlier session left.`,
+    '',
+    `Review: "${r.title}" (revision ${r.revision})`,
+    `Branch: ${r.branch}, compared with ${r.base}. It is checked out in this folder; stay on it.`,
+    `The branch tip when the walkthrough was written: ${r.headSha}`,
+    ...(context.commits !== undefined ? [`Commits on the branch since ${r.base}: ${context.commits}`] : []),
+    '',
+    ...(files.length
+      ? [
+          'Files the branch changes:',
+          ...files.map((f) => `- ${f}`),
+          ...(more > 0 ? [`- and ${more} more (git diff ${r.base}...${r.branch} lists them all)`] : []),
+          '',
+        ]
+      : []),
+    ...(work.length ? ['Work items this belongs to (on the canvas, read them with canvas_work):', ...work, ''] : []),
+    "--- The earlier session's walkthrough of the change (its words, not the reviewer's) ---",
+    walkthrough,
+    '--- End of walkthrough ---',
+    '',
+    'The reviewer asked for changes. Their notes:',
+    '',
+    ...noteLines(notes),
+    'Read the change first (git log and git diff against the base), then address each note on the same branch.',
+    'When you are done, submit the review again with an updated walkthrough (`codeman agent review submit`); it',
+    'updates this same review. Do not merge or deploy; the reviewer decides.',
+  ];
+  return { text: lines.join('\n') };
+}
+
+/**
+ * The review now belongs to the session that took it over: its resubmissions update this review. `updatedAt` is left
+ * alone, since it marks the agent's last answer and a hand-over is not one.
+ */
+export const handOver = (r: Review, to: { sessionId: string; sessionName: string }): Review => ({
+  ...r,
+  sessionId: to.sessionId,
+  sessionName: to.sessionName.slice(0, 200),
+});
 
 /** What a browser gets: everything but the path on this machine. */
 export type ReviewView = Omit<Review, 'repoRoot'> & { state: ReviewState; unsent: number };
