@@ -1309,15 +1309,21 @@
     button.hidden = !state.live;
     if (!state.live) return;
     const kind = state.live.state;
-    button.disabled = kind === 'building' || state.liveBusy;
+    const busy = kind === 'building' || state.liveBusy;
+    const label = $('rvOpenLiveLabel');
+    button.disabled = busy;
+    // aria-busy also shows the spinner (reviews.css), so the wait reads as work, not as a dead button.
+    button.setAttribute('aria-busy', String(busy));
     button.title = '';
-    if (kind === 'none') button.textContent = 'Build live preview';
-    else if (kind === 'building') button.textContent = 'Building live preview…';
-    else if (kind === 'build-failed') {
-      button.textContent = 'Live build failed. Build again';
-      button.title = state.live.error || '';
+    if (kind === 'none') label.textContent = state.liveBusy ? 'Starting the build…' : 'Build live preview';
+    else if (kind === 'building') {
+      label.textContent = 'Building live preview…';
+      button.title = 'A build takes about two minutes. This page notices when it is done.';
+    } else if (kind === 'build-failed') {
+      label.textContent = state.liveBusy ? 'Starting the build…' : 'Live build failed. Build again';
+      button.title = state.liveBusy ? '' : state.live.error || '';
     } else {
-      button.textContent = state.liveBusy ? 'Waking the preview…' : 'Open live';
+      label.textContent = state.liveBusy ? 'Waking the preview…' : 'Open live';
       button.title = 'Opens this branch running on its own address, in a new tab';
     }
     if (kind === 'building') livePoll = setTimeout(pollLive, LIVE_POLL_MS);
