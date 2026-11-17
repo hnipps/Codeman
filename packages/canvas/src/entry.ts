@@ -44,6 +44,7 @@ import { sessionRows } from './sessions.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
 import { installPanelResize } from './panel-widths.js';
+import { installOutlineSections } from './outline-sections.js';
 import { ReviewView, REVIEW_RAIL_WIDTH } from './review.js';
 import { uuid } from './ids.js';
 import { PrototypeVersions } from './prototype-versions.js';
@@ -1600,6 +1601,7 @@ const prototypes = new PrototypesView({
   slots: () => (mobile.matches || mobile.touch ? [] : fullView ? ['rail', 'full'] : ['rail']),
   say: (message) => (node('announcement').textContent = message),
 });
+installOutlineSections({ outline: node('outline'), isPhone: () => mobile.matches, storage });
 button('pageReload').onclick = () => {
   if (state.page) slots.reload(state.page);
 };

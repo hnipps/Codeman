@@ -1,5 +1,7 @@
 /** Per-viewer localStorage keys for the canvas edit queue, drafts and clipboard. */
 export const SINGLE_USER_VIEWER = '@single';
+/** Per device, not per viewer: which outline sections are collapsed and the heights set on them. */
+export const OUTLINE_SECTIONS_KEY = 'codeman:canvas:outline-sections';
 /** A stored clipboard larger than this is refused rather than written. */
 export const MAX_CLIPBOARD_BYTES = 1024 * 1024;
 type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
