@@ -15,7 +15,14 @@
 import { uuid } from './ids.js';
 import { STATE_GLYPHS, STATE_WORDS, parseSessions } from './sessions.js';
 import type { ShellSessionRow } from '../../../src/canvas/shell-sessions.js';
-import { WORK_STATUSES, WORK_STATUS_NAMES, workClosed, workKey, type WorkStatus } from '../../../src/canvas/work.js';
+import {
+  isHttpsUrl,
+  WORK_STATUSES,
+  WORK_STATUS_NAMES,
+  workClosed,
+  workKey,
+  type WorkStatus,
+} from '../../../src/canvas/work.js';
 import {
   assigneeLabel,
   authorLabel,
@@ -775,7 +782,15 @@ export class WorkView {
         call.append(el('b', '', 'Still working: '), item.outcome.text);
         card.append(call);
       }
-      if (item.createdFrom !== undefined) card.append(el('div', 'work-from', `From ${workKey(item.createdFrom)}`));
+      if (item.createdFrom !== undefined || item.pr) {
+        const from = el('div', 'work-from', item.createdFrom !== undefined ? `From ${workKey(item.createdFrom)}` : '');
+        if (item.pr) {
+          const chip = el('span', 'work-pr-chip', 'PR');
+          chip.title = item.pr.url;
+          from.append(chip);
+        }
+        card.append(from);
+      }
     }
     card.addEventListener('pointerdown', (e) => this.startDrag(e, item.number, card));
     card.addEventListener('keydown', (e) => this.cardKey(e, item));
@@ -1067,6 +1082,21 @@ export class WorkView {
           el('p', 'work-box-by', `${sessionLabel(item.outcome.sessionId, sessions)} · ${clock(item.outcome.at)}`)
         );
       parts.push(box);
+    }
+
+    if (item.pr) {
+      const prSec = el('div', 'work-sec');
+      prSec.append(el('h3', '', 'Pull request'));
+      const link = el('a', 'work-pr-link', item.pr.url);
+      if (isHttpsUrl(item.pr.url)) {
+        link.href = item.pr.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      }
+      link.dataset.workDetail = 'pr';
+      prSec.append(link);
+      if (item.pr.branch) prSec.append(el('p', 'work-pr-branch', item.pr.branch));
+      parts.push(prSec);
     }
 
     const links = el('div', 'work-sec');

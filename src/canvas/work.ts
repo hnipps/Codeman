@@ -15,6 +15,7 @@
  * and the server only records it.
  */
 import { z } from 'zod';
+import { RefSchema } from '../reviews/review-model.js';
 import { AuthorSchema, IdSchema, type Author } from './model.js';
 
 export type WorkAssignee = { kind: 'person' } | { kind: 'session'; sessionId: string };
@@ -73,6 +74,7 @@ export const MAX_WORK_HISTORY = 50;
 export const MAX_FILED_ITEMS = 10;
 /** The person's instruction an agent quotes to move an item out of Backlog. */
 export const MAX_INSTRUCTION_CHARS = 300;
+export const MAX_PR_URL_CHARS = 300;
 
 export const workKey = (number: number): string => `W-${number}`;
 /** `W-12`, `w-12` or `12`; anything else is not a key. */
@@ -115,6 +117,26 @@ const AssigneeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session'), sessionId: IdSchema }).strict(),
 ]);
 
+/** True for an `https:` address and nothing else, so a link built from it can never run script. */
+export function isHttpsUrl(text: string): boolean {
+  if (text.length > MAX_PR_URL_CHARS) return false;
+  try {
+    return new URL(text).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+const PrUrl = z.string().trim().refine(isHttpsUrl, 'A pull request link is an https address of at most 300 characters');
+/**
+ * The pull request that carries an item's work. `url` is a link for people and nothing parses it; `branch` is the head
+ * branch on `origin`, which is what a review reads, so an item without it shows the link and has no review; `base` is
+ * the branch it merges into, the repository's default when absent.
+ */
+const WorkPrSchema = z.object({ url: PrUrl, branch: RefSchema.optional(), base: RefSchema.optional() }).strict();
+export type WorkPr = z.infer<typeof WorkPrSchema>;
+/** What the API takes: the full shape, or a bare https address as `{ url }`. */
+const WorkPrInput = z.union([PrUrl.transform((url): WorkPr => ({ url })), WorkPrSchema]);
+
 const at = z.number().int().nonnegative();
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
 const itemFields = {
@@ -125,6 +147,7 @@ const itemFields = {
   sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).catch([]),
   createdFrom: z.number().int().positive().optional().catch(undefined),
   requestId: z.uuid().optional().catch(undefined),
+  pr: WorkPrSchema.optional().catch(undefined),
   author: AuthorSchema,
   createdAt: at,
   updatedAt: at,
@@ -235,6 +258,7 @@ export const CreateWorkSchema = z
     assignee: AssigneeInput.optional(),
     sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).optional(),
     createdFrom: Key.optional(),
+    pr: WorkPrInput.optional(),
   })
   .strict();
 export type CreateWork = z.infer<typeof CreateWorkSchema>;
@@ -257,6 +281,8 @@ export const UpdateWorkSchema = z
     position: z.number().int().positive().optional(),
     /** An agent moving an item out of Backlog quotes the person's instruction to do so; refused without it. */
     instruction: Instruction.optional(),
+    /** The item's pull request; `null` clears it. */
+    pr: WorkPrInput.nullable().optional(),
   })
   .strict();
 export type UpdateWork = z.infer<typeof UpdateWorkSchema>;
@@ -318,6 +344,8 @@ function link(item: WorkItem, ids: readonly string[]): string | null {
 }
 const describeAssignee = (a: WorkAssignee | null): string =>
   a === null ? 'Unassigned' : a.kind === 'person' ? 'Assigned to the person' : `Assigned to session ${a.sessionId}`;
+const samePr = (a: WorkPr | undefined, b: WorkPr): boolean =>
+  !!a && a.url === b.url && a.branch === b.branch && a.base === b.base;
 function touch(item: WorkItem, ctx: WorkContext): void {
   item.updatedAt = ctx.now;
   item.revision += 1;
@@ -373,6 +401,7 @@ function newItem(
   fields: Pick<WorkItem, 'title' | 'status' | 'description' | 'assignee' | 'sessions'> & {
     createdFrom?: number;
     requestId?: string;
+    pr?: WorkPr;
   },
   firstEvent: string
 ): WorkItem {
@@ -385,6 +414,7 @@ function newItem(
     sessions: fields.sessions,
     ...(fields.createdFrom !== undefined ? { createdFrom: fields.createdFrom } : {}),
     ...(fields.requestId ? { requestId: fields.requestId } : {}),
+    ...(fields.pr ? { pr: fields.pr } : {}),
     author: ctx.author,
     createdAt: ctx.now,
     updatedAt: ctx.now,
@@ -392,6 +422,7 @@ function newItem(
     history: [],
   };
   log(item, ctx, firstEvent);
+  if (fields.pr) log(item, ctx, `Linked PR ${fields.pr.url}`);
   file.next += 1;
   file.items.push(item);
   if (item.status === 'ready-for-work') file.readyOrder.push(item.number);
@@ -425,6 +456,7 @@ export function createWork(file: WorkFile, input: CreateWork, ctx: WorkContext):
       sessions,
       createdFrom: input.createdFrom,
       requestId: input.requestId,
+      pr: input.pr,
     },
     input.createdFrom !== undefined
       ? `Created from ${workKey(input.createdFrom)} in ${WORK_STATUS_NAMES[input.status]}`
@@ -514,6 +546,15 @@ export function updateWork(
     changed = true;
   }
   if (patch.position !== undefined && place(next, item, patch.position, ctx)) changed = true;
+  if (patch.pr === null && item.pr) {
+    delete item.pr;
+    log(item, ctx, 'Unlinked PR');
+    changed = true;
+  } else if (patch.pr && !samePr(item.pr, patch.pr)) {
+    item.pr = patch.pr;
+    log(item, ctx, `Linked PR ${patch.pr.url}`);
+    changed = true;
+  }
   if (!changed) return { ok: true, file, item: findWork(file, number)!, filed: [], duplicate: false };
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
@@ -641,6 +682,7 @@ export function workBrief(item: WorkItem, file?: WorkFile) {
     revision: item.revision,
     updatedAt: item.updatedAt,
     ...(item.createdFrom !== undefined ? { createdFrom: workKey(item.createdFrom) } : {}),
+    ...(item.pr ? { pr: item.pr.url } : {}),
     ...(item.needs ? { needsYou: true } : {}),
   };
 }
