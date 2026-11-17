@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { extractArchive } from '../src/extensions/archive.js';
 import { classifyTree } from '../src/extensions/classify.js';
 import { looksLikeGitHub, parseGitHubSource } from '../src/extensions/github.js';
-import { pluginPlans } from '../src/extensions/plugin-plans.js';
+import { pluginPlans, uninstallStep } from '../src/extensions/plugin-plans.js';
 import { importExtensions, listExtensions, removeExtension } from '../src/extensions/service.js';
 import { ExtensionError, type ExtensionDeps, type RunResult } from '../src/extensions/types.js';
 import { resolveExtensionSource } from '../src/cli-extensions.js';
@@ -58,9 +58,11 @@ function deps(
         calls.push([bin, ...args]);
         return opts.run ? opts.run(bin, args) : { code: 0, stdout: '', stderr: '' };
       },
-      clone: opts.clone ?? (async () => {
-        throw new ExtensionError('OPERATION_FAILED', 'clone was not stubbed');
-      }),
+      clone:
+        opts.clone ??
+        (async () => {
+          throw new ExtensionError('OPERATION_FAILED', 'clone was not stubbed');
+        }),
     },
   };
 }
@@ -204,7 +206,12 @@ describe('archives', () => {
     const slipped = join(root, 'slipped.zip');
     await writeFile(slipped, zipStore([{ name: '../evil.txt', data: Buffer.from('nope') }]));
     await expect(extractArchive(slipped, join(root, 'out-slip'))).rejects.toThrow(/\.\./);
-    await expect(lstat(join(root, 'evil.txt')).then(() => true, () => false)).resolves.toBe(false);
+    await expect(
+      lstat(join(root, 'evil.txt')).then(
+        () => true,
+        () => false
+      )
+    ).resolves.toBe(false);
 
     const linked = join(root, 'link.zip');
     await writeFile(linked, zipStore([{ name: 'link', data: Buffer.from('x'), mode: 0o120777 }]));
@@ -241,7 +248,10 @@ describe('import and remove', () => {
   it('copies a skill into every CLI directory and will not replace a foreign one', async () => {
     const { home, data } = await layout();
     await mkdir(join(home, '.claude', 'skills', 'codeman'), { recursive: true });
-    await writeFile(join(home, '.claude', 'skills', 'codeman', 'SKILL.md'), '<!-- codeman-managed-agent-skill -->\nowned');
+    await writeFile(
+      join(home, '.claude', 'skills', 'codeman', 'SKILL.md'),
+      '<!-- codeman-managed-agent-skill -->\nowned'
+    );
     await mkdir(join(home, '.claude', 'skills', 'mine'), { recursive: true });
     await writeFile(join(home, '.claude', 'skills', 'mine', 'SKILL.md'), 'user authored');
     const source = join(data, 'src');
@@ -254,7 +264,9 @@ describe('import and remove', () => {
     const claude = result.installed[0].targets.find((target) => target.cli === 'claude');
     expect(claude?.status).toBe('skipped');
     expect(await readFile(join(home, '.agents', 'skills', 'mine', 'SKILL.md'), 'utf8')).toContain('name: Mine');
-    const marker = JSON.parse(await readFile(join(home, '.agents', 'skills', 'mine', '.codeman-extension.json'), 'utf8'));
+    const marker = JSON.parse(
+      await readFile(join(home, '.agents', 'skills', 'mine', '.codeman-extension.json'), 'utf8')
+    );
     expect(marker).toEqual({ managedBy: 'codeman', id: 'skill:mine' });
   });
 
@@ -276,11 +288,15 @@ describe('import and remove', () => {
     const { home, data } = await layout();
     const source = join(data, 'plugin');
     await mkdir(join(source, '.claude-plugin'), { recursive: true });
-    await writeFile(join(source, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'demo', description: 'Demo' }));
+    await writeFile(
+      join(source, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'demo', description: 'Demo' })
+    );
     await writeSkill(join(source, 'skills', 'inner'), 'Inner');
     const fake = deps(home, data, {
       bins: ['claude', 'grok'],
-      run: (bin) => (bin === 'claude' ? { code: 1, stdout: '', stderr: 'claude refused' } : { code: 0, stdout: '', stderr: '' }),
+      run: (bin) =>
+        bin === 'claude' ? { code: 1, stdout: '', stderr: 'claude refused' } : { code: 0, stdout: '', stderr: '' },
     });
     const result = await importExtensions({ path: source }, fake.deps);
     expect(result.installed[0].plugins.map((plugin) => plugin.cli)).toEqual(['grok']);
@@ -362,6 +378,27 @@ describe('import and remove', () => {
     expect(await readFile(join(home, '.copilot', 'skills', 'inner', 'SKILL.md'), 'utf8')).toContain('name: Inner');
   });
 
+  it('uninstalls a recorded plugin with the argv its own plan names', () => {
+    const plans = pluginPlans({
+      name: 'demo',
+      pluginDir: '/tmp/plugin',
+      marketplaceDir: '/tmp/market',
+      githubRepo: 'acme/plugins',
+    });
+    expect(Object.fromEntries(plans.map((plan) => [plan.bin, plan.uninstall[0].args]))).toEqual({
+      claude: ['plugin', 'uninstall', 'demo@codeman-imports', '--scope', 'user', '--yes', '--json'],
+      grok: ['plugin', 'uninstall', 'demo', '--confirm'],
+      codex: ['plugin', 'remove', 'demo@codeman-imports', '--json'],
+      agy: ['plugin', 'uninstall', 'demo'],
+      copilot: ['plugin', 'uninstall', 'demo'],
+    });
+    for (const plan of plans) {
+      expect(uninstallStep({ cli: plan.bin, selector: plan.selector })).toEqual(plan.uninstall[0]);
+    }
+    expect(uninstallStep({ cli: 'gemini', selector: 'demo' })).toBeUndefined();
+    expect(uninstallStep({ cli: 'constructor', selector: 'demo' })).toBeUndefined();
+  });
+
   it('builds the installer argv and prefers a local path over a repository name', async () => {
     const plans = pluginPlans({
       name: 'demo',
@@ -381,10 +418,14 @@ describe('import and remove', () => {
       '--yes',
       '--json',
     ]);
-    expect(plans.find((plan) => plan.bin === 'copilot')?.install[0].args).toEqual(['plugin', 'install', 'acme/plugins']);
-    expect(pluginPlans({ name: 'demo', pluginDir: '/p', marketplaceDir: '/m' }).some((plan) => plan.bin === 'copilot')).toBe(
-      false
-    );
+    expect(plans.find((plan) => plan.bin === 'copilot')?.install[0].args).toEqual([
+      'plugin',
+      'install',
+      'acme/plugins',
+    ]);
+    expect(
+      pluginPlans({ name: 'demo', pluginDir: '/p', marketplaceDir: '/m' }).some((plan) => plan.bin === 'copilot')
+    ).toBe(false);
 
     const root = await scratch();
     await writeFile(join(root, 'owner'), 'not a repo');

@@ -208,6 +208,7 @@ import { findLatestOmpSessionId } from '../../utils/omp-session-resolver.js';
 import { readOmpConversation, scanOmpSessionsHistory } from '../../omp-transcript.js';
 import { scanCodexSessionsHistory, codexThreadBySessionId } from '../../codex-transcript.js';
 import {
+  transcriptBufferUsable,
   transcriptNeedsScreenCapture,
   getLastTranscriptResponse,
   isExternalCliTranscriptMode,
@@ -3009,9 +3010,7 @@ export function registerSessionRoutes(
         transcriptNeedsScreenCapture(session.mode) && session.muxName
           ? (ctx.mux.capturePaneText?.(session.muxName) ?? null)
           : null;
-      // Grok's raw redraw stream is not a transcript. If capture is unavailable,
-      // return no context rather than displaying concatenated repaints.
-      const source = screen ?? (session.mode === 'grok' ? '' : session.terminalBuffer);
+      const source = screen ?? (transcriptBufferUsable(session.mode) ? session.terminalBuffer : '');
       const blocks = parseExternalCliTranscript(source, session.mode);
       return {
         text: getLastTranscriptResponse(blocks),

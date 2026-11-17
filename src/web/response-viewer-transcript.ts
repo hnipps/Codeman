@@ -54,6 +54,11 @@ interface PaneDialect {
   startup: RegExp[];
 }
 
+/** TUIs whose transcript can only be read from the captured screen, each with its own parser. */
+const SCREEN_ONLY_PARSERS: Record<string, (cleaned: string) => ResponseViewerTranscriptBlock[]> = {
+  grok: parseGrokScreen,
+};
+
 const PANE_DIALECTS: Record<string, PaneDialect> = {
   // GitHub Copilot CLI, measured on 1.0.95 inside tmux: ` ❯ <prompt>   HH:MM`, then ` ● <answer>`
   // with 3-space continuation lines, a cwd + `Session: N AIC used` row, the composer between two
@@ -341,7 +346,21 @@ export function isExternalCliTranscriptMode(mode: string | null | undefined): bo
  * stripping the escapes from the stream concatenates every row into one run of text.
  */
 export function transcriptNeedsScreenCapture(mode: string | null | undefined): boolean {
-  return mode === 'grok' || Object.prototype.hasOwnProperty.call(PANE_DIALECTS, String(mode || ''));
+  const key = String(mode || '');
+  return hasOwn(SCREEN_ONLY_PARSERS, key) || hasOwn(PANE_DIALECTS, key);
+}
+
+/**
+ * Whether the raw output buffer can stand in for the screen when there is no pane to capture.
+ * A screen-only TUI's redraw stream is not a transcript, so it shows nothing rather than
+ * concatenated repaints.
+ */
+export function transcriptBufferUsable(mode: string | null | undefined): boolean {
+  return !hasOwn(SCREEN_ONLY_PARSERS, String(mode || ''));
+}
+
+function hasOwn(table: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(table, key);
 }
 
 function parseGrokScreen(cleaned: string): ResponseViewerTranscriptBlock[] {
@@ -508,7 +527,7 @@ export function parseExternalCliTranscript(
   const cleaned = cleanTerminalTranscript(buffer);
   if (!cleaned) return [];
 
-  if (resolvedMode === 'grok') return parseGrokScreen(cleaned);
+  if (hasOwn(SCREEN_ONLY_PARSERS, resolvedMode)) return SCREEN_ONLY_PARSERS[resolvedMode](cleaned);
 
   const dialect = PANE_DIALECTS[resolvedMode];
   if (dialect) return parseDialectTranscript(cleaned, dialect);

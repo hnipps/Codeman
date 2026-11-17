@@ -3,6 +3,7 @@ import {
   getLastTranscriptResponse,
   isExternalCliTranscriptMode,
   parseExternalCliTranscript,
+  transcriptBufferUsable,
   transcriptNeedsScreenCapture,
 } from '../src/web/response-viewer-transcript.js';
 import { isExternalCliMode } from '../src/session.js';
@@ -495,6 +496,9 @@ describe('Grok rendered screen', () => {
 
   it('uses the screen and separates clean prompts, answers, tools, and thinking', () => {
     expect(transcriptNeedsScreenCapture('grok')).toBe(true);
+    expect(transcriptBufferUsable('grok')).toBe(false);
+    expect(transcriptBufferUsable('copilot')).toBe(true);
+    expect(transcriptBufferUsable('codex')).toBe(true);
     const blocks = parseExternalCliTranscript(screen, 'grok');
     expect(blocks.find((block) => block.kind === 'prompt')?.text).toBe('explain the parser and its limits');
     expect(blocks.filter((block) => block.kind === 'response').map((block) => block.text)).toEqual([
