@@ -1,6 +1,6 @@
 # Review previews on throwaway VMs: proposal
 
-**Status:** Proposal for Harry, revised 2026-11-16 after his answers to the first version. Nothing in it has been applied. `docs/self-building.md` rule 11 says changes to the supervisor, the proxy or the deploy design are proposed in writing; this is that proposal.
+**Status:** Proposal for Harry, revised 2026-11-16 after his answers to the first version. Harry approved it, and the host-side parts are being applied in phases; see "What has been applied". `docs/self-building.md` rule 11 says changes to the supervisor, the proxy or the deploy design are proposed in writing; this is that proposal.
 
 The first version proposed one review instance inside the Codeman VM, run as a second OS user on one fixed hostname. Harry asked for a throwaway VM per preview, outside the Codeman VM, each on its own generated hostname. This version describes that design. The section "What changed from the first version" lists the differences.
 
@@ -201,6 +201,17 @@ None of this can be done from inside the Codeman VM.
 5. **Install `<broker>`** as a host service with its limits and the access application's verification keys.
 6. **Add the three wildcard entries** at the edge and in the tunnel config. Changing the tunnel config restarts the tunnel, which interrupts `<live-host>` briefly.
 7. **Create the request directory** in the Codeman VM, writable only by the supervisor, and add the three `review` commands to the supervisor.
+
+## What has been applied
+
+| Phase | What | State |
+| --- | --- | --- |
+| 1 | Storage pool, `<preview-net>` and `<base-image>` on the host | Done 2026-11-16 |
+| 2 | `<broker>` as a host service, with the limits above | Done 2026-11-16 |
+| 3 | The request directory in the Codeman VM, the supervisor's `review` commands and `CODEMAN_REVIEW_PREVIEWS=1` for the live colour | Applied 2026-11-17 |
+| 4 | The wildcard entries at the edge, the tunnel rule and the access application | Not applied |
+
+Until phase 4 is applied, the Reviews page builds, wakes, puts to sleep and destroys previews, but the address **Open live** opens does not answer.
 
 ## What changed from the first version
 

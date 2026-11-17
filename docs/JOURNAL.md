@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-17 — Review previews: host phases 1 to 3 are applied
+
+**Type:** status-transition
+**Touches:** `docs/review-instance-address-plan.md`
+**Why:** The plan still said nothing had been applied. Harry approved it and the host-side session applied three of its four phases.
+**Links:** [docs/review-instance-address-plan.md](review-instance-address-plan.md)
+
+The storage pool, the preview network, the base image, the broker, the request directory and the supervisor's `review` commands exist, and the live colour runs with `CODEMAN_REVIEW_PREVIEWS=1`. The edge (wildcard entries, tunnel rule, access application) is not applied, so the address **Open live** opens does not answer yet.
+
 ## 2026-11-16 — The caller writes a review preview request, and the broker is the gate
 
 **Type:** intent-refinement
