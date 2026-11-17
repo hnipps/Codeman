@@ -31,6 +31,7 @@ A Work item that carries a pull request on a branch, and is not closed, has a re
 - Git never runs for a remote or Docker case, nor at or inside a Docker case workspace; the case folder is probed bounded.
 - The fetch is the existing non-interactive, timed runner. Nothing fetches on a timer or on the polled queue read. No `gh`.
 - A person's press is still the only thing that sends notes, merges or deploys.
+- Checked 2026-11-17 with a throwaway draft PR: when Approve pushes a merge commit whose second parent is the PR head, GitHub marks the PR merged (a draft too) and records that commit as its merge commit. The repository deletes a merged PR's head branch on its own.
 
 ## Open questions
 

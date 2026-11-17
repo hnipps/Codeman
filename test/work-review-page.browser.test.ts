@@ -129,13 +129,47 @@ describe('a work item pull request on the Reviews page', () => {
     await page.click('#rvTabChanges');
   });
 
-  it('names the item in the Approve confirmation', async () => {
+  it('names the item in a short Approve confirmation, with the detail folded away', async () => {
     await page.click('#rvApprove');
     await page.waitForSelector('#rvConfirm[open]');
-    expect(await page.textContent('#rvConfirmBody')).toContain('W-1 is then marked done.');
-    expect(await page.textContent('#rvConfirmGo')).toBe('Merge and mark done');
-    await shoot('approve');
+    expect(await page.textContent('#rvConfirmTitle')).toBe('Merge?');
+    expect(await page.textContent('#rvConfirmBody > p')).toBe(
+      'Merges 1 commit from build/w-1-outline into main and marks W-1 done.'
+    );
+    expect(await page.textContent('#rvConfirmGo')).toBe('Merge');
+    const more = page.locator('#rvConfirmBody details.rv-confirm-more');
+    expect(await more.locator('summary').textContent()).toBe('What is this?');
+    expect(await more.getAttribute('open')).toBeNull();
+    expect(await more.textContent()).toContain('A merge cannot be undone from this page.');
     await page.click('#rvConfirmCancel');
+  });
+
+  it('says Merge and deploy when approving deploys Codeman', async () => {
+    // Only Codeman's own repository deploys, and this fixture is not it: the page is told it is.
+    const pattern = /\/api\/reviews\/[0-9a-f]{16}$/;
+    await page.route(pattern, async (route) => {
+      const res = await route.fetch();
+      const json = (await res.json()) as { data: { approve?: { deploys: boolean } } };
+      json.data.approve = { deploys: true };
+      await route.fulfill({ response: res, json });
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.getElementById('rvMeta')?.textContent?.includes('files'));
+    await page.click('#rvApprove');
+    await page.waitForSelector('#rvConfirm[open]');
+    expect(await page.textContent('#rvConfirmTitle')).toBe('Merge and deploy?');
+    expect(await page.textContent('#rvConfirmBody > p')).toBe(
+      'Merges 1 commit from build/w-1-outline into main, deploys Codeman and marks W-1 done.'
+    );
+    expect(await page.textContent('#rvConfirmGo')).toBe('Merge and deploy');
+    await shoot('approve');
+    await page.click('#rvConfirmBody summary');
+    expect(await page.textContent('#rvConfirmBody details')).toContain('switches Codeman to it');
+    await shoot('approve-more');
+    await page.click('#rvConfirmCancel');
+    await page.unroute(pattern);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.getElementById('rvMeta')?.textContent?.includes('files'));
   });
 
   it('sends notes to the item and says where they went', async () => {
