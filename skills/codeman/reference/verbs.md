@@ -837,7 +837,9 @@ codeman agent preview rm web                    # stop it and delete the preview
   to `127.0.0.1` (`--bind 127.0.0.1`, `--host 127.0.0.1`): Codeman reaches it on
   loopback, and other machines then cannot. Never hard-code a port.
 - **Keep the server in the foreground.** The command runs as `/bin/sh -c` in your
-  session's directory, in its own process group. Never daemonize it or let it leave
+  session's directory, in its own process group. That is not the directory you ran
+  `preview add` from: to serve another checkout or worktree, start the command with
+  `cd <that tree> &&`. Never daemonize it or let it leave
   that group: no trailing `&`, `nohup`, `setsid`, `tmux new-session -d`, `screen -dm`,
   `docker run -d`, `systemd-run` or `env -i`. Codeman stops a server through its
   process group and an environment marker, so a server that escapes both keeps running
