@@ -104,6 +104,8 @@ export const WORK_FILE_TYPES: Readonly<Record<string, string>> = {
   '.yml': 'application/yaml',
   '.xml': 'application/xml',
 };
+/** Comments one item's thread holds; a full thread refuses a new one and never drops the oldest. */
+export const MAX_WORK_COMMENTS = 200;
 
 export const workKey = (number: number): string => `W-${number}`;
 /** `W-12`, `w-12` or `12`; anything else is not a key. */
@@ -187,6 +189,9 @@ const WorkAttachmentSchema = z
   .passthrough();
 export type WorkAttachment = z.infer<typeof WorkAttachmentSchema>;
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
+const StoredComment = z
+  .object({ at, author: AuthorSchema, text: z.string().min(1).max(MAX_WORK_NOTE_CHARS) })
+  .passthrough();
 const itemFields = {
   number: z.number().int().positive(),
   title: z.string().min(1).max(MAX_WORK_TITLE_CHARS),
@@ -225,6 +230,7 @@ const itemFields = {
     .optional()
     .catch(undefined),
   history: z.array(StoredEvent).max(MAX_WORK_HISTORY).catch([]),
+  comments: z.array(StoredComment).max(MAX_WORK_COMMENTS).catch([]),
 };
 /** An item as `work.json` holds it: the old five statuses, `todoStatus` naming which of the three a Todo is. */
 const StoredItem = z
@@ -238,6 +244,7 @@ const StoredItem = z
 const Item = z.object({ ...itemFields, status: WorkStatusSchema }).passthrough();
 export type WorkItem = z.infer<typeof Item>;
 export type WorkEvent = WorkItem['history'][number];
+export type WorkComment = WorkItem['comments'][number];
 type FileFields = { version: 1; next: number; items: WorkItem[]; readyOrder: number[] };
 export type WorkFile = FileFields & { [key: string]: unknown };
 
@@ -361,6 +368,7 @@ export const ReportWorkSchema = z
   })
   .strict();
 export type ReportWork = z.infer<typeof ReportWorkSchema>;
+export const CommentWorkSchema = z.object({ text: Note }).strict();
 
 /** The `canvas_work` tool. */
 export const WorkToolSchema = z.discriminatedUnion('action', [
@@ -369,6 +377,7 @@ export const WorkToolSchema = z.discriminatedUnion('action', [
   CreateWorkSchema.extend({ action: z.literal('create') }).strict(),
   UpdateWorkSchema.extend({ action: z.literal('update'), key: Key }).strict(),
   ReportWorkSchema.extend({ action: z.literal('report'), key: Key }).strict(),
+  CommentWorkSchema.extend({ action: z.literal('comment'), key: Key }).strict(),
 ]);
 export type WorkTool = z.infer<typeof WorkToolSchema>;
 
@@ -477,6 +486,7 @@ function newItem(
     updatedAt: ctx.now,
     revision: 1,
     history: [],
+    comments: [],
   };
   log(item, ctx, firstEvent);
   if (fields.pr) log(item, ctx, `Linked PR ${fields.pr.url}`);
@@ -747,6 +757,20 @@ export function approveWork(
   delete item.needs;
   delete item.changes;
   log(item, ctx, `Approved and merged ${mergedSha.slice(0, 7)} in review`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
+/** Adds a comment to the end of the item's thread. It changes no other field: status, `needs` and the rest stay. */
+export function commentWork(file: WorkFile, number: number, text: string, ctx: WorkContext): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  if (findWork(file, number)!.comments.length >= MAX_WORK_COMMENTS)
+    return refuse('FULL', `An item holds at most ${MAX_WORK_COMMENTS} comments`);
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  item.comments = [...item.comments, { at: ctx.now, author: ctx.author, text }];
+  log(item, ctx, 'Commented');
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }

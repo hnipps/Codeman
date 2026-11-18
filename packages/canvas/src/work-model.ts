@@ -31,6 +31,14 @@ const Attachment = z.object({
   size: z.number(),
   at: z.number(),
 });
+const Event = z.object({
+  at: z.number(),
+  author: z.union([
+    z.object({ kind: z.literal('human'), userId: z.string() }),
+    z.object({ kind: z.literal('agent'), sessionId: z.string() }),
+  ]),
+  text: z.string(),
+});
 const Row = z
   .object({
     key: z.string(),
@@ -68,18 +76,8 @@ const Row = z
       })
       .optional()
       .catch(undefined),
-    history: z
-      .array(
-        z.object({
-          at: z.number(),
-          author: z.union([
-            z.object({ kind: z.literal('human'), userId: z.string() }),
-            z.object({ kind: z.literal('agent'), sessionId: z.string() }),
-          ]),
-          text: z.string(),
-        })
-      )
-      .catch([]),
+    history: z.array(Event).catch([]),
+    comments: z.array(Event).catch([]),
     // Entry by entry, as the server reads them: an id that is not one never reaches a URL.
     attachments: z
       .array(z.unknown())
