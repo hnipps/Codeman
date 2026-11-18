@@ -14,10 +14,10 @@ The owner reviews the ticket, not the work.
 
 ## Proposed outcome
 
-A work review shows the agent's own walkthrough and screenshots of the change. It still shows the item, but only as context.
+A work review opens on the agent's own walkthrough and screenshots of the change. The item's text is one press away, never in the same pane as the walkthrough.
 
 - The agent that built the item runs `codeman agent review submit` (or MCP `submit_review`) on its branch, as any session can today. When the branch is the pull request branch of an open Work item that links the session, the submission writes into that item's work review. No second review is made.
-- The page shows the agent's walkthrough first, with its byline, and the item's text folded under it. A work review that has no agent walkthrough says so plainly. The routine's closing question is not dressed up as the walkthrough.
+- The walkthrough column holds only the agent's walkthrough, with its byline. The item's text (its open question, description and pull request link) moves to a "Work item" tab on the stage, beside Preview, Captures and Changes. That tab is never the one a review opens on. A work review that has no agent walkthrough says so plainly in the column and points to the tab. The routine's closing question is not dressed up as the walkthrough.
 - Captures from that session land on the work review. A UI change arrives with at least one screenshot.
 - A resubmission after Request changes moves the review to "updated", so the owner can see the notes were answered.
 - The Build routine's brief gains the submit step, both for a first build and for a revision.

@@ -50,15 +50,16 @@ With exactly one match, the submission writes that work review. With none, the r
 
 **Who may add a capture.** The capture route admits `authorSessionId(review)` as today, or, on a work review, `review.authored?.sessionId`. No other session. A capture upload never creates `authored`, so a session must submit a walkthrough before its screenshots are accepted.
 
-**Reading.** `toView()` passes `authored` through. `walkthroughOf()` stays as it is. The item's open question can be a real one (a blocked build asks something), so it is never dropped. It moves under the fold once the agent has written a walkthrough.
+**Reading.** `toView()` passes `authored` through. `walkthroughOf()` stays as it is. The item's open question can be a real one (a blocked build asks something), so it is never dropped. It is shown on the stage's Work item tab, never in the walkthrough column (see the page).
 
 ## The page
 
-In `src/web/public/reviews.js`:
+In `src/web/public/reviews.html` and `reviews.js`. The walkthrough column holds the agent's words and nothing else. The item's text has a place of its own on the stage.
 
-- With `authored`, the walkthrough column renders `authored.walkthrough` (same sanitizer and link handling) under the byline "Walkthrough by <sessionName>". The item's text follows in a closed `<details>` titled "Work item W-n". Capture links and capture notes work as on a session review.
+- **The Work item tab.** A work review gets a fourth stage tab, "Work item W-n", after Changes. It renders `walkthrough` (the item's text, same sanitizer and link handling as today), with the item's open question first. The tab is hidden on a session review. It is never the tab a review opens on: the stage still opens on a running preview, then Captures, then Changes, as today. Notes are not anchored in this tab, because the text is the tracker's and changes at every sync; a general note still covers it.
+- **With `authored`.** The walkthrough column renders `authored.walkthrough` (same sanitizer and link handling) under the byline "Walkthrough by <sessionName>". Capture links and capture notes work as on a session review.
 - When `authored.headSha !== review.headSha`, the notice says "The branch has new commits since this walkthrough was written." The existing moved-branch notice reads the same, so this is one notice with a second trigger.
-- Without `authored`, the column shows a one-line notice above the item text: "No walkthrough from the agent yet. This is the work item." Nothing else changes.
+- **Without `authored`.** The column shows one line, "No walkthrough from the agent yet.", and a button "Open the work item" that selects the Work item tab. The item's text is not copied into the column.
 
 ## The Build routine
 
@@ -74,15 +75,14 @@ The order matters. `pr` must be set before the submit, or the submit makes a ses
 
 Each release is one PR, verified before the next.
 
-1. **Release 1: read only.** `ReviewSchema` accepts `authored`. `toView()` passes it through, and the page renders it when present. Nothing writes it. Tests: a review file with `authored` parses, and the previous shape still parses. A route read of such a file returns it. Deploy this before release 2. Rule 5 then holds for release 2, since release 1 reads everything release 2 writes.
-2. **Release 2: write.** The resolver in `POST /api/reviews`, `authorWorkReview()`, the capture route rule and the "no walkthrough yet" notice. Tests, in `test/review-*.test.ts`:
+1. **Release 1: read only.** `ReviewSchema` accepts `authored`. `toView()` passes it through, and the page renders it when present. The page also moves the item's text to the Work item tab and shows the "no walkthrough yet" line, since neither needs the new key. Nothing writes `authored`. Tests: a review file with `authored` parses, and the previous shape still parses. A route read of such a file returns it. Browser check against a throwaway instance: a work review opens with only the walkthrough (or the "no walkthrough yet" line) in the column, the Work item tab holds the item's text and is not selected, and a session review has no such tab. Deploy this before release 2. Rule 5 then holds for release 2, since release 1 reads everything release 2 writes.
+2. **Release 2: write.** The resolver in `POST /api/reviews`, `authorWorkReview()` and the capture route rule. Tests, in `test/review-*.test.ts`:
    - A linked session's submit on the item's branch writes `authored` on the work review and makes no session review.
    - An unlinked session on that branch gets 403. An unpushed head gets 409 `UNPUSHED`.
    - A sync after the item is edited keeps `authored` unchanged.
    - Captures from the authoring session land on the work review, and any other session gets 403.
    - After Request changes, a resubmission reads `updated`.
    - A decided work review refuses the submission.
-   - Browser check against a throwaway instance: the page shows the agent text first and the item folded.
 3. **Routine prompt.** Edit R-2's prompt as above. Check: the next Ready item it builds arrives on the Reviews page with an agent walkthrough and at least one capture for a UI change.
 4. **Docs.** `docs/architecture-invariants.md#reviews-page` gains the `authored` rules. The JOURNAL entry of 2026-11-18 records why a separate key.
 
@@ -90,4 +90,4 @@ Each release is one PR, verified before the next.
 
 - A Build routine run ends with a work review whose walkthrough the agent wrote, with screenshots when the change is visible.
 - A Request changes round ends with the review in `updated` and a walkthrough that answers each note.
-- No work review presents the item's text as if the agent wrote it. It is either folded under the agent's walkthrough or labelled as the work item.
+- No work review shows the item's text in the walkthrough column. It is on the Work item tab, one press away, and a review never opens on that tab.
