@@ -54,7 +54,8 @@ The owner's gate moves to the start. The owner approves specs and designs. Agent
 - Self-building rule 5: no new key on the strict review schema.
 - The 8 GiB host: the WIP caps stay. Only one agent deploy runs at a time, and the rest queue.
 - A person's approval of a spec is still the only thing that authorises a merge or a deploy. Agents never approve specs.
-- **Pilot first.** One real feature spec runs end to end before R-1 and R-2 are rewritten.
+- **Pilot first.** One real feature spec runs end to end before R-1 and R-2 are rewritten. The pilot is W-22 (Work: delete an item), chosen by the agent at the owner's request (review note, 2026-11-18). It is in Backlog, so the owner moves it to Needs refinement when the pilot starts.
+- R-3 reads poteto-mode's SKILL.md file, as R-2 does. No unattended version of poteto-mode is built (owner, review note 2026-11-18).
 
 ## Out of scope
 
@@ -64,5 +65,4 @@ The owner's gate moves to the start. The owner approves specs and designs. Agent
 
 ## Open questions
 
-- Which feature to use as the pilot spec.
-- Whether a version of poteto-mode that runs unattended is worth building, or whether R-3 keeps reading the SKILL.md file.
+None. Both were settled in review on 2026-11-18 and are recorded under Constraints: the pilot is W-22, and R-3 reads the SKILL.md file.

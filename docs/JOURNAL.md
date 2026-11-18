@@ -9,7 +9,7 @@ Newest entries first. After an entry is on the default branch, correct it with a
 **Why:** Asking the owner to review every finished PR put the only gate at the end, where every decision is already made. The owner decided to review specs and designs before work starts and to let agents build, review and ship what an approved spec covers.
 **Links:** [intent/2026-11-18-spec-first-lifecycle.md](../intent/2026-11-18-spec-first-lifecycle.md)
 
-The product principle now reads "Nothing is merged or deployed without a person's approval of the spec that authorises it." A separate reviewer routine (R-3) checks each ticket against its spec. A fixed list of triggers decides when R-3 escalates, and a builder's deviation that keeps the spec's outcomes, constraints and invariants is not one of them. Merged spec files are immutable, so a change is a new spec that names what it supersedes. One real feature spec runs as a pilot before the routines are rewritten.
+The product principle now reads "Nothing is merged or deployed without a person's approval of the spec that authorises it." A separate reviewer routine (R-3) checks each ticket against its spec. A fixed list of triggers decides when R-3 escalates, and a builder's deviation that keeps the spec's outcomes, constraints and invariants is not one of them. Merged spec files are immutable, so a change is a new spec that names what it supersedes. One real feature spec, W-22 (Work: delete an item), runs as a pilot before the routines are rewritten. R-3 reads poteto-mode's SKILL.md file rather than an unattended version of poteto-mode.
 
 ## 2026-11-17 — Work item attachments: quota from the record, bytes by id
 
