@@ -32,6 +32,7 @@ const r = await page.evaluate(async ({ term, btn, proto }) => {
   return { capture: { ...capture, path: { ...capture.path, points: capture.path.points.length + ' points' } }, cleanSize: [img.width, img.height], terminalLitPixels: termLit, hoverPixel: hex(btn.x + 3, btn.y + 3), protoPixel: hex(proto.x + 150, proto.y + 80), toastPixel: hex(img.width - 30, img.height - 25) };
 }, { term, btn, proto: await page.locator('#proto').boundingBox() });
 for (const [n, url] of Object.entries(await page.evaluate(() => window.__lastCapture.files))) fs.writeFileSync(path.join(outDir, n), Buffer.from(url.split(',')[1], 'base64'));
+fs.writeFileSync(path.join(outDir, 'capture.json'), JSON.stringify(await page.evaluate(() => window.__lastCapture.capture), null, 2));
 await page.screenshot({ path: path.join(outDir, 'demo-result.png'), fullPage: true });
 console.log(JSON.stringify({ ...r, errors }, null, 2));
 await browser.close(); srv.close();

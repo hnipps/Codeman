@@ -10,10 +10,36 @@ Everything in this folder is throwaway. Codeman does not load any of it.
 | `check-demo.mjs` | Drives the demo headlessly, draws a loop, sends a note and checks the bundle. |
 | `probes/probe-rasterisers.mjs` | Compares two DOM rasterisers with tab capture on `probes/fixture.html`. |
 | `probes/probe-patches.mjs` | Measures the two fixes that make the DOM path see a terminal and a sandboxed frame (`probes/fixture2.html`). |
+| `probes/probe-filing.mjs` | Files a bundle from `check-demo.mjs` as a real Work item with its four attachments, over plain HTTP, against a running Codeman. Takes the bundle folder, the base URL and a workspace id. |
 
-Run each script with node from the repository after `npm install`, for example `node docs/spikes/w-49-ambient-capture/probes/probe-patches.mjs`. `check-demo.mjs` takes the demo folder and an output folder as arguments. The pages load html-to-image, html2canvas and xterm from a CDN, pinned to exact versions. On this host Chromium also needs `LD_LIBRARY_PATH=~/.codeman/mermaid-runtime/lib`.
+Run each script with node from the repository after `npm install`, for example `node docs/spikes/w-49-ambient-capture/probes/probe-patches.mjs`. `check-demo.mjs` takes the demo folder and an output folder as arguments, and writes the bundle there, `capture.json` included. The pages load html-to-image, html2canvas and xterm from a CDN, pinned to exact versions. On this host Chromium also needs `LD_LIBRARY_PATH=~/.codeman/mermaid-runtime/lib`.
 
 All numbers below were measured on 2026-11-17 in headless Chromium 148 (Playwright 1223 build, SwiftShader WebGL, device scale factor 1).
+
+## Checklist against the item
+
+Added 2026-11-18 in answer to the review note "Did you do these and answer the questions?". Each line says what was done and how it was checked. Measured means a script in this folder produced the result. Inferred means it was reasoned from code or documentation and not run. Not verified means it was neither.
+
+### Requirements
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Everything, everywhere | Partly. Each kind of surface was tested, but the live dashboard was not. | Measured on the probe pages: plain DOM, 2D canvas, WebGL terminal (with `WebglAddon(true)`), sandboxed frame (with self-capture), hover state. Settings, the Work view and side panels are plain DOM, so they fall in a measured class (inferred). Capturing the real dashboard with 6 tiles is build item 1. |
+| Exactly what the person sees | Close, not exact by construction. | A DOM rasteriser redraws the DOM in the page. On every measured surface its pixel matched the expected colour (table under question 1). Only tab capture is exact by construction, and it was not run here (no display on this host). |
+| Freeze first, then draw | Done in the demo. | Measured: the hover colour is still in `clean.png` after the pointer moves to draw. Freeze took 136 to 188 ms on the demo page. A toast that ends inside that window is lost (inferred). |
+| Highlight as its own layer | Done in the demo. | Measured: the bundle holds `clean.png`, the path in CSS pixels with the device pixel ratio, `marked-crop.png` and `marked-wide.png` as separate files. |
+| What is under the outline | Done in the demo. | Measured: `capture.json` lists canvas object ids, DOM selectors with their text, the terminal, the frame by title, and the page facts (path, view, theme, window, ratio, build, session, case, workspace). |
+| Item goes to the workspace on screen | Proposed, not built. | The demo reads the workspace from the page. Resolving it in the real shell is build item 3. The default when none is on screen is Harry's call. |
+| Filing does not depend on an agent | Done, measured on 2026-11-18. | `probe-filing.mjs` against a throwaway Codeman built from master `6be75738`. The results are under question 4. |
+
+### Questions
+
+| Question | Status |
+| --- | --- |
+| 1. Desktop capture | Answered. The recommendation is a DOM rasteriser plus two fixes, both measured. Whether tab capture prompts on every capture is answered from the spec and Chromium's documented behaviour. It was not run here. |
+| 2. Phone | See section 2. |
+| 3. Entry point | Answered as a proposal from the code: the shortcut registry, the xterm key handler, the frame bridge and the phone surfaces. No entry point was built. |
+| 4. Attaching to a Work item | Answered and measured on 2026-11-18, now that W-42 is on master. |
 
 ## Answers
 
@@ -67,12 +93,19 @@ A native screenshot carries no DOM context. Capture can record only the page it 
 
 ### 4. Attaching the image to a Work item
 
-W-42 is in progress. It adds `attachments` to an item, an upload route that reuses the prompt-upload rules (`ALLOWED_DOCUMENT_EXTS`, which includes PNG and text, and `imageMagicMatchesExt`) and a raw route. Filing then takes two steps, and neither involves an agent:
+W-42 is on master. It adds `attachments` to an item, an upload route that reuses the prompt-upload rules (`ALLOWED_DOCUMENT_EXTS` and `imageMagicMatchesExt`) and a raw route. Filing takes two steps, and neither involves an agent:
 
 1. `POST /api/canvas/:workspaceId/work` with a `requestId`, a title from the note's first line, and the note as the description.
-2. Upload `clean.png`, `marked-crop.png`, `marked-wide.png` and `capture.json` to the new item.
+2. `POST /api/canvas/:workspaceId/work/:key/attachments?name=...` once each for `clean.png`, `marked-crop.png`, `marked-wide.png` and `capture.json`.
 
-`capture.json` holds the path in CSS pixels with the device pixel ratio, what lies under the outline, and the page facts. The demo builds that bundle. The `requestId` makes a retry safe. The demo's bundle from `check-demo.mjs` was:
+Measured on 2026-11-18 with `probe-filing.mjs`, against a throwaway Codeman from master `6be75738` on this host:
+
+- The item existed once the create call returned, 65 ms after it was sent. A second create with the same `requestId` returned the same key in 10 ms, so a retry cannot file twice.
+- Each attachment took 17 to 34 ms. The item read back with four attachments: three `image/png` and one `application/json`.
+- The stored `clean.png` came back byte for byte the same as the file sent.
+- The item landed in Backlog, the create route's default. The build should decide whether captures land in Needs refinement instead, as the Work tool describes for new captures.
+
+`capture.json` holds the path in CSS pixels with the device pixel ratio, what lies under the outline, and the page facts. In the demo's bundle:
 
 - `under` listed `obj-sticky-1` (a `data-object-id`), the terminal (`terminal: true`), the prototype frame by title, and DOM selectors with their own text.
 - `page` listed the path, title, theme, window size, device pixel ratio, build hash, session, case and workspace.
@@ -83,7 +116,7 @@ The workspace is the one on screen: a canvas page's own, or the canvas workspace
 
 1. **Capture core, desktop.** Rasterise the top document, recurse into same-origin frames, paint frame-bridge captures into place, and use `WebglAddon(true)` for the main terminal, tiles and Pane B. Measure the freeze time on a real dashboard with 6 tiles, and the WebGL frame time before and after. Needs a vendored rasteriser (decision below).
 2. **Highlight layer and context.** The freeze overlay, freehand outline, note, Redraw and Cancel. It keeps the clean image, the path and the marked crop and wide shot separate. It records what is under the outline: canvas object ids, selectors and text, page, theme, window, build, session and case.
-3. **Filing.** Resolve the workspace, create the item, attach through W-42 and keep a retry-safe outbox. Depends on W-42.
+3. **Filing.** Resolve the workspace, create the item, attach through W-42 and keep a retry-safe outbox. The routes exist and the two-step filing is measured (question 4).
 4. **Entry points.** The `capture` registry entry, the xterm swallow, chord forwarding from frames, and the header, outline and phone buttons.
 5. **Phone capture.** Pick the native screenshot through the admission helper, draw with touch, and prove it on the iPhone rig once WebDriverAgent is re-signed. Try the clipboard path too.
 6. **Optional: exact-pixels mode.** Tab capture on desktop Chromium with one consent per page load. Build it only if item 1 shows a real gap.
