@@ -1,6 +1,6 @@
 # Intent: W-22 delete a Work item (spec, pilot)
 
-**Status:** Draft (spec for W-22, the pilot of `intent/2026-11-18-spec-first-lifecycle.md`; revision 2, after the owner's notes of 2026-11-18)
+**Status:** Draft (spec for W-22, the pilot of `intent/2026-11-18-spec-first-lifecycle.md`; revision 3: the owner's notes of 2026-11-18 are addressed and every decision is settled)
 
 ## Problem statement
 
@@ -222,11 +222,11 @@ The design is a status move, with the same Undo the Work view already has for mo
 
 ## Decisions for Harry
 
-Your notes settled soft delete, agent delete and "any status". These three remain, each written so you can approve the recommendation as it stands.
+All settled by the owner in review on 2026-11-18. Revision 1's notes chose soft delete, agent delete and "any status". Revision 2's note agreed to the three below as recommended.
 
-1. **Only a person restores.** Recommended. An agent needs your words (`instruction`) to bring an item back, as it does to move one out of Backlog. Without this rule, an agent finishing a run could report `done` and pull a deleted item back into the lanes.
-2. **An agent gives a reason when it deletes.** Recommended. The reason is shown on the deleted item and kept in its history. It is the only record of why an agent hid something, and you will read it when deciding whether to restore. A person's reason is optional.
-3. **After a rollback, deleted items show in Not doing.** Recommended, and it follows from rule 5. The previous release refuses any status it does not know. So a Deleted item is stored as Not doing plus a marker, and that release shows it as Not doing. The alternative, hiding them in the old release, is impossible without changing the old release.
+1. **Only a person restores.** Agreed. An agent needs your words (`instruction`) to bring an item back, as it does to move one out of Backlog. Without this rule, an agent finishing a run could report `done` and pull a deleted item back into the lanes.
+2. **An agent gives a reason when it deletes.** Agreed. The reason is shown on the deleted item and kept in its history. It is the only record of why an agent hid something, and you will read it when deciding whether to restore. A person's reason is optional.
+3. **After a rollback, deleted items show in Not doing.** Agreed. It follows from rule 5. The previous release refuses any status it does not know. So a Deleted item is stored as Not doing plus a marker, and that release shows it as Not doing. The alternative, hiding them in the old release, is impossible without changing the old release.
 
 ## Checks run
 
