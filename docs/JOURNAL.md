@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-18 — The owner's gate moves from finished work to the spec
+
+**Type:** intent-refinement
+**Touches:** `PRODUCT.md`, `intent/2026-11-18-spec-first-lifecycle.md`
+**Why:** Asking the owner to review every finished PR put the only gate at the end, where every decision is already made. The owner decided to review specs and designs before work starts and to let agents build, review and ship what an approved spec covers.
+**Links:** [intent/2026-11-18-spec-first-lifecycle.md](../intent/2026-11-18-spec-first-lifecycle.md)
+
+The product principle now reads "Nothing is merged or deployed without a person's approval of the spec that authorises it." A separate reviewer routine (R-3) checks each ticket against its spec. A fixed list of triggers decides when R-3 escalates, and a builder's deviation that keeps the spec's outcomes, constraints and invariants is not one of them. Merged spec files are immutable, so a change is a new spec that names what it supersedes. One real feature spec runs as a pilot before the routines are rewritten.
+
 ## 2026-11-17 — Work item attachments: quota from the record, bytes by id
 
 **Type:** intent-refinement
