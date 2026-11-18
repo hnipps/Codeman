@@ -37,7 +37,7 @@ Added 2026-11-18 in answer to the review note "Did you do these and answer the q
 | Question | Status |
 | --- | --- |
 | 1. Desktop capture | Answered. The recommendation is a DOM rasteriser plus two fixes, both measured. Whether tab capture prompts on every capture is answered from the spec and Chromium's documented behaviour. It was not run here. |
-| 2. Phone | See section 2. |
+| 2. Phone | Answered and verified on a real iPhone on 2026-11-18: pick, draw and outline, plus the shorter paste path. A saved image stood in for the hardware screenshot. |
 | 3. Entry point | Answered as a proposal from the code: the shortcut registry, the xterm key handler, the frame bridge and the phone surfaces. No entry point was built. |
 | 4. Attaching to a Work item | Answered and measured on 2026-11-18, now that W-42 is on master. |
 
@@ -71,12 +71,17 @@ Freeze cost with html-to-image was 73 to 155 ms on the probe page and 136 to 166
 
 ### 2. Phone: native screenshot plus the highlight tool
 
-**Not verified on a real iPhone.** The test rig's WebDriverAgent signing profile expired at 14:32 on 2026-11-17, and a rebuild needs Harry at the Mac. This run started after that. The flow below is a proposal for the build item to prove on the rig.
+**Verified on a real iPhone on 2026-11-18** (iPhone XR, iOS 18.1.1, Safari, 414 CSS px wide at 2x). WebDriverAgent drove it through the test rig. It ran on a small probe page with the demo's pick, draw and read-back, not on Codeman. A hardware screenshot cannot be taken over WebDriverAgent, so a PNG saved to Photos from Safari ("Save to Photos") stood in for the native screenshot. All of the following was measured:
 
-1. The person takes a native screenshot.
-2. They open Capture from Codeman's phone entry point.
-3. Capture opens the image picker at once. On iOS, recent screenshots are at the top of the photo library.
-4. The person draws on the image with the same highlight tool, using touch, and adds the note.
+1. The person takes a native screenshot. (Stood in for, as above.)
+2. They open Capture in Codeman and press Pick.
+3. iOS does not open the photo grid at once. A menu comes first, offering Photo Library, Take Photo and Choose File. Photo Library opens the grid, and after the photo is tapped, iOS needs **Done**. That makes four taps: Pick, Photo Library, the photo, Done.
+4. The page got the file as `image/png` with the source's exact 1,773 bytes, so iOS did not re-encode it. It decoded at 600 by 400 in 42 ms and was drawn into a canvas.
+5. One touch loop on the canvas arrived as 74 pointer events, all of type `touch`. Reading the canvas back, all 73 outline segments were red, and the image pixels under the outline still read their source colours.
+
+**The shorter path works, through the `paste` event.** Safari's image Copy, then focus a field, tap the caret and choose Paste. The event carried one `image/png` file of the same 1,773 bytes, which drew in 33 ms. That is about three taps and skips the picker. It also worked over plain `http://` on a LAN address. `navigator.clipboard.read()` could not be tested, because that API only exists in a secure context and the probe page was not served over HTTPS. Use `clipboardData.files` from the `paste` event, the route Codeman's paste-image upload already takes. Not driven: copying from the screenshot editor's "Copy and Delete", which WebDriverAgent cannot open. That it fills the clipboard the same way is inferred.
+
+Device screenshots and step reports from this run are not committed. The rig's WebDriverAgent signing profile expired on 2026-11-17. This run used a copy of WebDriverAgent that was still running, and a fresh launch needs Harry to re-sign it at the Mac.
 
 Capture should reuse the client admission helper `_admitPromptAttachments()` and `_promptAttachKind()` for the pick. It must not reuse `POST /api/sessions/:id/paste-image`, which writes into a session workspace. The image belongs to the Work item through W-42.
 
@@ -118,7 +123,7 @@ The workspace is the one on screen: a canvas page's own, or the canvas workspace
 2. **Highlight layer and context.** The freeze overlay, freehand outline, note, Redraw and Cancel. It keeps the clean image, the path and the marked crop and wide shot separate. It records what is under the outline: canvas object ids, selectors and text, page, theme, window, build, session and case.
 3. **Filing.** Resolve the workspace, create the item, attach through W-42 and keep a retry-safe outbox. The routes exist and the two-step filing is measured (question 4).
 4. **Entry points.** The `capture` registry entry, the xterm swallow, chord forwarding from frames, and the header, outline and phone buttons.
-5. **Phone capture.** Pick the native screenshot through the admission helper, draw with touch, and prove it on the iPhone rig once WebDriverAgent is re-signed. Try the clipboard path too.
+5. **Phone capture.** Offer Paste first (the `paste` event) and Pick second, both through the admission helper, then draw with touch. Both were proven on a real iPhone (section 2).
 6. **Optional: exact-pixels mode.** Tab capture on desktop Chromium with one consent per page load. Build it only if item 1 shows a real gap.
 
 ## Decisions only Harry can make
