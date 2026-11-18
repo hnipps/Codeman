@@ -46,6 +46,7 @@ The vision, minimal PRD, coding brief, approved initial-version plan, owner revi
 - Make containment, per-message starting context and authorship explicit. Agents can discover the whole workspace; an attached group guides attention without silently hiding everything else.
 - Treat sessions, comment threads, references and tools as addressable workspace records with shared context; the assistant stays ambient and keyboard accessible.
 - Preserve work and sessions across releases and recovery.
+- Nothing is merged or deployed without a person's approval of the spec that authorises it. The owner decides at the spec, before work starts; agents build, review and ship what an approved spec covers, and escalate only what it does not.
 - Keep frequent actions accessible from keyboard, pointer and touch where supported.
 
 ## Accessibility & Inclusion

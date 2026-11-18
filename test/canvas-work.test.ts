@@ -13,9 +13,12 @@ import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import {
   attachWork,
+  commentWork,
+  CommentWorkSchema,
   createWork,
   detachWork,
   MAX_WORK_ATTACHMENTS,
+  MAX_WORK_COMMENTS,
   workBrief,
   CreateWorkSchema,
   emptyWorkFile,
@@ -394,6 +397,64 @@ describe('work items: pure changes', () => {
     });
   });
 
+  describe('comments', () => {
+    it('appends comments oldest first with their author, changing nothing but the thread, history and revision', () => {
+      const base = made(emptyWorkFile(), 'Talk about it', { status: 'needs-refinement' });
+      const asked = reportWork(
+        base.file,
+        1,
+        ReportWorkSchema.parse({ outcome: 'ask', note: 'n', question: 'Which?' }),
+        ctx(agent)
+      );
+      if (!asked.ok) throw new Error(asked.message);
+      const first = commentWork(asked.file, 1, 'From the person', ctx(person, 3000));
+      if (!first.ok) throw new Error(first.message);
+      const second = commentWork(first.file, 1, 'From the agent', ctx(agent, 4000));
+      if (!second.ok) throw new Error(second.message);
+      expect(second.item.comments).toEqual([
+        { at: 3000, author: person, text: 'From the person' },
+        { at: 4000, author: agent, text: 'From the agent' },
+      ]);
+      expect(second.item.history[0]!.text).toBe('Commented');
+      expect(second.item.revision).toBe(asked.item.revision + 2);
+      expect(second.item.status).toBe('human-required');
+      expect(second.item.needs).toEqual(asked.item.needs);
+      expect(second.item.outcome).toEqual(asked.item.outcome);
+      expect(workBrief(second.item)).not.toHaveProperty('comments');
+      const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(encodeWorkFile(second.file))));
+      expect(back.items[0]!.comments.map((c) => c.text)).toEqual(['From the person', 'From the agent']);
+    });
+
+    it('refuses empty, blank and over-long text', () => {
+      for (const text of ['', '  \n\t ', 'x'.repeat(2001)]) {
+        expect(CommentWorkSchema.safeParse({ text }).success, JSON.stringify(text.slice(0, 5))).toBe(false);
+        expect(WorkToolSchema.safeParse({ action: 'comment', key: 'W-1', text }).success).toBe(false);
+      }
+      expect(CommentWorkSchema.parse({ text: 'x'.repeat(2000) }).text).toHaveLength(2000);
+      expect(WorkToolSchema.safeParse({ action: 'comment', key: 'W-1', text: 'ok' }).success).toBe(true);
+    });
+
+    it('refuses a comment on a full thread and keeps every comment', () => {
+      let current = made(emptyWorkFile(), 'Busy').file;
+      for (let n = 0; n < MAX_WORK_COMMENTS; n++) {
+        const r = commentWork(current, 1, `c${n}`, ctx());
+        if (!r.ok) throw new Error(r.message);
+        current = r.file;
+      }
+      const refused = commentWork(current, 1, 'one more', ctx());
+      expect(!refused.ok && refused.code).toBe('FULL');
+      expect(current.items[0]!.comments).toHaveLength(MAX_WORK_COMMENTS);
+      expect(current.items[0]!.comments[0]!.text).toBe('c0');
+      expect(!commentWork(current, 9, 'x', ctx()).ok).toBe(true);
+    });
+
+    it('reads an item written before comments with an empty thread', () => {
+      const disk = encodeWorkFile(made(emptyWorkFile(), 'Old').file) as { items: Record<string, unknown>[] };
+      delete disk.items[0]!.comments;
+      expect(WorkFileSchema.parse(JSON.parse(JSON.stringify(disk))).items[0]!.comments).toEqual([]);
+    });
+  });
+
   describe('attachments', () => {
     const file = (n: number, size = 10) => ({
       id: n.toString(16).padStart(32, '0'),
@@ -676,6 +737,48 @@ describe('work items: routes and side file', () => {
         })
       ).statusCode
     ).toBe(404);
+  });
+
+  it('adds comments from a person and from an agent through the tool, returned by read and left out of list', async () => {
+    const created = await inject({ method: 'POST', url: api(), payload: { title: 'Discuss' } });
+    const key = (created.json().data?.item as { key: string }).key;
+    const posted = await inject({ method: 'POST', url: api(`/${key}/comments`), payload: { text: 'Person here' } });
+    expect(posted.statusCode).toBe(201);
+    const got = await inject({ method: 'GET', url: api(`/${key}`) });
+    expect(got.json().data).toMatchObject({
+      item: { comments: [{ text: 'Person here', author: { kind: 'human' } }] },
+    });
+    expect((await inject({ method: 'POST', url: api(`/${key}/comments`), payload: { text: '  ' } })).statusCode).toBe(
+      400
+    );
+    expect((await inject({ method: 'POST', url: api('/nope/comments'), payload: { text: 'x' } })).statusCode).toBe(400);
+
+    const sessionId = 'sess-comment-agent';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessions = (server as any).sessions as Map<string, unknown>;
+    sessions.set(sessionId, { id: sessionId, workingDir: resolve(resolveCasesDir(), 'work-case') });
+    try {
+      const tool = (args: Record<string, unknown>) =>
+        inject({
+          method: 'POST',
+          url: `/api/canvas/${ws}/command`,
+          payload: { tool: 'canvas_work', arguments: args },
+          headers: { 'x-codeman-parent-session': sessionId },
+        });
+      const added = await tool({ action: 'comment', key, text: 'Agent here' });
+      expect(added.statusCode).toBe(201);
+      const read = await tool({ action: 'read', key });
+      expect((read.json().data?.item as { comments: unknown[] }).comments).toEqual([
+        expect.objectContaining({ text: 'Person here', author: expect.objectContaining({ kind: 'human' }) }),
+        expect.objectContaining({ text: 'Agent here', author: { kind: 'agent', sessionId } }),
+      ]);
+      const listed = await tool({ action: 'list' });
+      for (const item of (listed.json().data as { items: Record<string, unknown>[] }).items)
+        expect(item).not.toHaveProperty('comments');
+      expect((await tool({ action: 'comment', key, text: '' })).statusCode).toBe(400);
+    } finally {
+      sessions.delete(sessionId);
+    }
   });
 
   it('removes the stored bytes when the canvas quota refuses the record', async () => {
