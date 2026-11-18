@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-18 — Canvas flip is recorded as unsupported, not built
+
+**Type:** intent-refinement
+**Touches:** `docs/agentic-canvas/initial-version-plan.md`
+**Why:** Three plan boxes and their summary lines cited flip as a reason to stay open. No current canvas element type supports flip, and the foundations allow that: "rotate/flip where the element type supports them ... report unsupported operations rather than guessing" (`docs/agentic-canvas/canvas-foundations.md`).
+**Links:** Work item W-6
+
+Flip is recorded as unsupported for every current element type. The server and `canvas_capabilities` already report it (`src/canvas/commands.ts`, `packages/canvas/src/edit.ts`), so the clause is met by reporting. The PC4 "Exercise every required control" box is ticked on its existing evidence. The PC2 agent-surface box stays open for the human-only conversation and task starts and for voice. The foundations-matrix box stays open for the locked-sibling reorder defect. Building flip for images, shapes and drawings (a typed transform, a toolbar control, undo, capabilities and a browser test) is a later, separate item.
+
 ## 2026-11-18 — The owner's gate moves from finished work to the spec
 
 **Type:** intent-refinement
