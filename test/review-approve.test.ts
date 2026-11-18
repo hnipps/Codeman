@@ -238,21 +238,35 @@ describe('how a deploy ended', () => {
   });
   it('reads the supervisor’s record, then the live commit, and gives up only when neither knows it', () => {
     const base = { live: { sha: 'b'.repeat(40) }, busy: false };
-    expect(settledDeploy(deploying, { ...base, recent: [run('success')] }, 2000)).toMatchObject({ kind: 'deployed' });
-    expect(settledDeploy(deploying, { ...base, recent: [run('failed', 'test')] }, 2000)).toMatchObject({
+    expect(settledDeploy(deploying, { ...base, recent: [run('success')] }, 2000, false)).toMatchObject({
+      kind: 'deployed',
+    });
+    expect(settledDeploy(deploying, { ...base, recent: [run('failed', 'test')] }, 2000, false)).toMatchObject({
       kind: 'deploy-failed',
       error: 'The deploy failed at test',
     });
-    expect(settledDeploy(deploying, { ...base, recent: [run('running', null, null)] }, 2000)).toBeNull();
-    expect(settledDeploy(deploying, { live: { sha: 'a'.repeat(40) }, busy: false, recent: [] }, 2000)).toMatchObject({
+    expect(settledDeploy(deploying, { ...base, recent: [run('running', null, null)] }, 2000, false)).toBeNull();
+    expect(
+      settledDeploy(deploying, { live: { sha: 'a'.repeat(40) }, busy: false, recent: [] }, 2000, true)
+    ).toMatchObject({
       kind: 'deployed',
     });
-    expect(settledDeploy(deploying, { ...base, recent: [] }, 2000)).toBeNull();
-    expect(settledDeploy(deploying, { ...base, busy: true, recent: [] }, 1000 + 46 * 60_000)).toBeNull();
-    expect(settledDeploy(deploying, { ...base, recent: [] }, 1000 + 46 * 60_000)).toMatchObject({
+    expect(settledDeploy(deploying, { ...base, recent: [] }, 2000, false)).toBeNull();
+    expect(settledDeploy(deploying, { ...base, busy: true, recent: [] }, 1000 + 46 * 60_000, false)).toBeNull();
+    expect(settledDeploy(deploying, { ...base, recent: [] }, 1000 + 46 * 60_000, false)).toMatchObject({
       kind: 'deploy-failed',
     });
-    expect(settledDeploy({ kind: 'merged', at: 1, mergedSha: 'a'.repeat(40) }, { ...base, recent: [] }, 2)).toBeNull();
+    expect(
+      settledDeploy({ kind: 'merged', at: 1, mergedSha: 'a'.repeat(40) }, { ...base, recent: [] }, 2, false)
+    ).toBeNull();
+  });
+  it('reads a failed deploy as deployed once a later deploy ships the merge, and only then', () => {
+    const failed: Decision = { ...deploying, kind: 'deploy-failed', error: 'The deploy failed at health' };
+    const base = { live: { sha: 'b'.repeat(40) }, busy: false, recent: [run('failed', 'health')] };
+    const shipped = settledDeploy(failed, base, 3000, true);
+    expect(shipped).toEqual({ kind: 'deployed', at: 3000, mergedSha: 'a'.repeat(40), deployRequestId: 'r1' });
+    expect(settledDeploy(failed, base, 3000, false)).toBeNull();
+    expect(settledDeploy(deploying, base, 3000, true)).toMatchObject({ kind: 'deployed' });
   });
 });
 
@@ -384,6 +398,53 @@ describe('approve routes', () => {
       expect(deployed.state).toBe('deployed');
       const retry = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/deploy`, payload: {} });
       expect(retry.statusCode).toBe(409);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves the queue when a later deploy ships a merge whose own deploy failed', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const id = await start({
+      deploy: {
+        cli: () => '/fake/supervisor',
+        readOverview: async () => overview,
+        requestDeploy: async () => ({ requestId: 'req-1' }),
+      },
+    });
+    const mergedSha = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data.review.decision
+      .mergedSha as string;
+    overview.recent = [
+      {
+        id: 'd1',
+        action: 'deploy',
+        sha: mergedSha,
+        outcome: 'failed',
+        failedStep: 'health',
+        startedAt: 't',
+        finishedAt: 't',
+      },
+    ];
+    // The settle throttle is module-wide, and the test before this one left it ahead of the real clock.
+    vi.useFakeTimers({ now: Date.now() + 60_000, toFake: ['Date'] });
+    try {
+      expect((await harness.app.inject({ url: '/api/reviews' })).json().data.waiting).toHaveLength(1);
+
+      repo.git('checkout', '-q', 'main');
+      repo.git('commit', '-q', '--allow-empty', '-m', 'later work');
+      overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
+      vi.setSystemTime(Date.now() + 10_000);
+      const queue = (await harness.app.inject({ url: '/api/reviews' })).json().data;
+      expect(queue.waiting).toHaveLength(0);
+      expect(queue.decided).toMatchObject([{ id, state: 'deployed' }]);
+      const review = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+      expect(review.decision).not.toHaveProperty('error');
     } finally {
       vi.useRealTimers();
     }

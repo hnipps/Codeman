@@ -387,7 +387,9 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   const settleDeploys = async (): Promise<void> => {
     if (Date.now() - settledAt < SETTLE_EVERY_MS || !deployRole.allows('persist')) return;
     settledAt = Date.now();
-    const waiting = listReviews().filter((r) => r.decision?.kind === 'deploying');
+    const waiting = listReviews().filter(
+      (r) => r.decision?.kind === 'deploying' || r.decision?.kind === 'deploy-failed'
+    );
     const cli = deploy.cli();
     if (!waiting.length || !cli) return;
     let overview: DeployOverviewConfigured;
@@ -396,8 +398,15 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     } catch {
       return;
     }
+    const liveSha = overview.live?.sha;
     for (const review of waiting) {
-      const next = review.decision ? settledDeploy(review.decision, overview, Date.now()) : null;
+      const merge = review.decision?.mergedSha;
+      const liveHasMerge =
+        !!merge &&
+        !!liveSha &&
+        SHA.test(liveSha) &&
+        (await tryGit(runGit, review.repoRoot, ['merge-base', '--is-ancestor', merge, liveSha])) !== null;
+      const next = review.decision ? settledDeploy(review.decision, overview, Date.now(), liveHasMerge) : null;
       if (!next) continue;
       const changed = changeReview(review.id, (r) => decide(r, next));
       if (changed.ok) announce(changed.review);
