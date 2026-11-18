@@ -61,6 +61,14 @@ describe('work model', () => {
     expect(parseWork({ success: false, error: 'x' })).toBeNull();
   });
 
+  it('leaves Deleted rows out until the page learns to show them, so lanes, counts and steps are unchanged', () => {
+    const gone = { ...row(2), status: 'deleted', deleted: { at: 1, from: 'backlog', author: { kind: 'human' } } };
+    const parsed = parseWork({ success: true, data: { next: 'W-3', items: [row(1), gone] } });
+    expect(parsed?.items.map((i) => i.key)).toEqual(['W-1']);
+    expect(workCounts(parsed!.items).map((c) => c.status)).not.toContain('deleted');
+    expect(stepStatus('not-doing', 1)).toBeNull();
+  });
+
   it('keeps the attachments it can read and drops one whose id could reach another URL', () => {
     const good = { id: 'a'.repeat(32), name: 'shot.png', type: 'image/png', size: 2048, at: 1 };
     const bad = { id: '../../x', name: 'x.png', type: 'image/png', size: 1, at: 1 };

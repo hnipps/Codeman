@@ -238,10 +238,10 @@ export async function workTool(
   switch (input.action) {
     case 'list': {
       const listed = listWork(workspaceId, true);
-      if (!input.status || listed.code !== 200) return listed;
+      if (listed.code !== 200) return listed;
       const data = (listed.body as { data: { next: string; items: { status: string; position?: number }[] } }).data;
-      // Ready for work answers in pickup order, top first.
-      const items = data.items.filter((i) => i.status === input.status);
+      // Deleted items are hidden unless asked for by status. Ready for work answers in pickup order, top first.
+      const items = data.items.filter((i) => (input.status ? i.status === input.status : i.status !== 'deleted'));
       if (input.status === 'ready-for-work') items.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
       return ok({ ...data, items });
     }

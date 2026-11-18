@@ -6,8 +6,9 @@
  * assignee (the person, an agent session, or nobody), linked sessions, the item it was created from and a short
  * history. Items live in `work.json` per workspace (`work-store.ts`), never on the board or in the operation log.
  *
- * Statuses follow W-48: Backlog, Needs refinement, Human required, Ready for work, In progress, Done, Not doing. Only a
- * person moves an item out of Backlog (an agent quotes their `instruction`), an answered question goes back to Needs
+ * Statuses follow W-48: Backlog, Needs refinement, Human required, Ready for work, In progress, Done, Not doing, plus
+ * Deleted (W-22), a soft delete that keeps the whole item. Only a person moves an item out of Backlog or Deleted (an
+ * agent quotes their `instruction`), an agent deletes only with a `reason`, an answered question goes back to Needs
  * refinement, and the order of Ready for work (`readyOrder`, `readyQueue()`) is the pickup order.
  *
  * Nothing changes an item by itself. `report` is the run-end rule an agent applies to its own work when a run ends
@@ -23,9 +24,11 @@ export type WorkAssignee = { kind: 'person' } | { kind: 'session'; sessionId: st
 /**
  * Board order. Needs refinement, Human required and Ready for work replaced Todo (W-48): Needs refinement is the
  * intake queue that pickup routines ignore, Human required waits for a person (a question in `needs`, or work only a
- * person can do), Ready for work is what an agent may pick up, top first.
+ * person can do), Ready for work is what an agent may pick up, top first. This is every status but Deleted: what an
+ * item is created in, what a deleted item came from, and all a routine trigger or gate may name, so `routines.json`
+ * never holds a value the release before W-22 refuses.
  */
-export const WORK_STATUSES = [
+export const NOT_DELETED_STATUSES = [
   'backlog',
   'needs-refinement',
   'human-required',
@@ -34,6 +37,9 @@ export const WORK_STATUSES = [
   'done',
   'not-doing',
 ] as const;
+export const NotDeletedStatusSchema = z.enum(NOT_DELETED_STATUSES);
+/** Deleted (W-22) comes last: a soft delete, hidden unless asked for. */
+export const WORK_STATUSES = [...NOT_DELETED_STATUSES, 'deleted'] as const;
 export const WorkStatusSchema = z.enum(WORK_STATUSES);
 export type WorkStatus = z.infer<typeof WorkStatusSchema>;
 export const WORK_STATUS_NAMES: Record<WorkStatus, string> = {
@@ -44,6 +50,7 @@ export const WORK_STATUS_NAMES: Record<WorkStatus, string> = {
   'in-progress': 'In progress',
   done: 'Done',
   'not-doing': 'Not doing',
+  deleted: 'Deleted',
 };
 /**
  * The three statuses that replaced Todo. On disk they are `status: "todo"` plus `todoStatus`, so the release before
@@ -61,8 +68,9 @@ const isTodoStatus = (status: WorkStatus): status is TodoStatus =>
  */
 export const migrateTodo = (assignee: WorkAssignee | null): TodoStatus =>
   assignee?.kind === 'person' ? 'human-required' : 'needs-refinement';
-/** Done and Not doing: the item is closed and its lane is quiet. */
-export const workClosed = (status: WorkStatus): boolean => status === 'done' || status === 'not-doing';
+/** Done, Not doing and Deleted: the item is closed and its lane is quiet. */
+export const workClosed = (status: WorkStatus): boolean =>
+  status === 'done' || status === 'not-doing' || status === 'deleted';
 
 export const MAX_WORK_ITEMS = 2000;
 export const MAX_WORK_TITLE_CHARS = 200;
@@ -74,6 +82,8 @@ export const MAX_WORK_HISTORY = 50;
 export const MAX_FILED_ITEMS = 10;
 /** The person's instruction an agent quotes to move an item out of Backlog. */
 export const MAX_INSTRUCTION_CHARS = 300;
+/** Why an item was deleted; an agent must give one. */
+export const MAX_DELETE_REASON_CHARS = 300;
 export const MAX_PR_URL_CHARS = 300;
 /** The reviewer's notes an item carries back to the agent that picks it up next. */
 export const MAX_CHANGES_CHARS = 16_000;
@@ -134,6 +144,7 @@ const Description = z.string().transform(workText).pipe(z.string().max(MAX_WORK_
 const Note = z.string().transform(workText).pipe(z.string().min(1).max(MAX_WORK_NOTE_CHARS));
 /** The person's words, quoted by an agent that moves an item out of Backlog. */
 const Instruction = z.string().transform(workLine).pipe(z.string().min(1).max(MAX_INSTRUCTION_CHARS));
+const Reason = z.string().transform(workLine).pipe(z.string().min(1).max(MAX_DELETE_REASON_CHARS));
 const Key = z.union([z.string().max(16), z.number().int()]).transform((value, ctx) => {
   const n = typeof value === 'number' ? (value > 0 ? value : null) : parseWorkKey(value);
   if (n === null) {
@@ -198,6 +209,19 @@ export const workFiles = (item: { attachments?: WorkAttachment[] }): WorkFileAtt
   (item.attachments ?? []).filter((a): a is WorkFileAttachment => !isObjectAttachment(a));
 export const workObjects = (item: { attachments?: WorkAttachment[] }): WorkObjectAttachment[] =>
   (item.attachments ?? []).filter(isObjectAttachment);
+/**
+ * Who deleted the item, when, from which status and why. On disk a Deleted item is `status: "not-doing"` plus this
+ * record, so the release before W-22 reads it as Not doing (self-building rule 5).
+ */
+const WorkDeletedSchema = z
+  .object({
+    at,
+    from: NotDeletedStatusSchema,
+    author: AuthorSchema,
+    reason: z.string().min(1).max(MAX_DELETE_REASON_CHARS).optional(),
+  })
+  .passthrough();
+export type WorkDeleted = z.infer<typeof WorkDeletedSchema>;
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
 const StoredComment = z
   .object({ at, author: AuthorSchema, text: z.string().min(1).max(MAX_WORK_NOTE_CHARS) })
@@ -241,6 +265,8 @@ const itemFields = {
     .catch(undefined),
   history: z.array(StoredEvent).max(MAX_WORK_HISTORY).catch([]),
   comments: z.array(StoredComment).max(MAX_WORK_COMMENTS).catch([]),
+  /** Present exactly when the item is Deleted. */
+  deleted: WorkDeletedSchema.optional().catch(undefined),
 };
 /** An item as `work.json` holds it: the old five statuses, `todoStatus` naming which of the three a Todo is. */
 const StoredItem = z
@@ -250,7 +276,7 @@ const StoredItem = z
     todoStatus: z.enum(TODO_STATUSES).optional().catch(undefined),
   })
   .passthrough();
-/** An item as every reader above the store sees it: one of the seven statuses. */
+/** An item as every reader above the store sees it: one of the eight statuses. */
 const Item = z.object({ ...itemFields, status: WorkStatusSchema }).passthrough();
 export type WorkItem = z.infer<typeof Item>;
 export type WorkEvent = WorkItem['history'][number];
@@ -267,8 +293,10 @@ function normalizeReady(file: WorkFile): void {
 }
 
 /**
- * `work.json`, decoded: Todo items take their `todoStatus`, or the migration rule when they have none (W-48), and
- * `readyOrder` is cleaned. Unknown keys of the file and of each item are kept on every write.
+ * `work.json`, decoded: Todo items take their `todoStatus`, or the migration rule when they have none (W-48), a Not
+ * doing item with a `deleted` record is Deleted (W-22), and `readyOrder` is cleaned. A `deleted` record on any other
+ * stored status is stale: the release before W-22 moved the item, which restores it, so the record is dropped and the
+ * next write leaves it out. Unknown keys of the file and of each item are kept on every write.
  */
 export const WorkFileSchema = z
   .object({
@@ -279,7 +307,8 @@ export const WorkFileSchema = z
   })
   .passthrough()
   .transform((stored): WorkFile => {
-    const items = stored.items.map(({ status, todoStatus, ...rest }) => {
+    const items = stored.items.map(({ status, todoStatus, deleted, ...rest }) => {
+      if (status === 'not-doing' && deleted) return { ...rest, status: 'deleted', deleted } as WorkItem;
       const decoded: WorkStatus = status === 'todo' ? (todoStatus ?? migrateTodo(rest.assignee)) : status;
       return { ...rest, status: decoded } as WorkItem;
     });
@@ -287,13 +316,17 @@ export const WorkFileSchema = z
     normalizeReady(file);
     return file;
   });
-/** The form written to disk: the three statuses that replaced Todo go back to `status: "todo"` plus `todoStatus`. */
+/**
+ * The form written to disk: the three statuses that replaced Todo go back to `status: "todo"` plus `todoStatus`, and
+ * Deleted to `status: "not-doing"` plus its `deleted` record. No other item carries `deleted`.
+ */
 export function encodeWorkFile(file: WorkFile): unknown {
   return {
     ...file,
     items: file.items.map((item) => {
-      const { todoStatus: _stale, ...rest } = item as WorkItem & { todoStatus?: unknown };
+      const { todoStatus: _stale, deleted, ...rest } = item as WorkItem & { todoStatus?: unknown };
       void _stale;
+      if (item.status === 'deleted') return { ...rest, status: 'not-doing', deleted };
       return isTodoStatus(item.status) ? { ...rest, status: 'todo', todoStatus: item.status } : rest;
     }),
   };
@@ -327,7 +360,8 @@ export const CreateWorkSchema = z
     /** The same id returns the item it made the first time, so a retry never files twice. */
     requestId: z.uuid().optional(),
     title: Title,
-    status: WorkStatusSchema.default('backlog'),
+    /** An item is never created Deleted. */
+    status: NotDeletedStatusSchema.default('backlog'),
     description: Description.optional(),
     assignee: AssigneeInput.optional(),
     sessions: z.array(IdSchema).max(MAX_LINKED_SESSIONS).optional(),
@@ -353,8 +387,10 @@ export const UpdateWorkSchema = z
     needs: z.null().optional(),
     /** Place in Ready for work, 1 at the top; the item is in that lane or moves into it in this call. */
     position: z.number().int().positive().optional(),
-    /** An agent moving an item out of Backlog quotes the person's instruction to do so; refused without it. */
+    /** An agent moving an item out of Backlog or Deleted quotes the person's instruction to do so; refused without it. */
     instruction: Instruction.optional(),
+    /** Why the item is being deleted; only with `status: "deleted"`, and an agent must give it. */
+    reason: Reason.optional(),
     /** The item's pull request; `null` clears it. */
     pr: WorkPrInput.nullable().optional(),
     /** Canvas objects of this workspace to reference from the item; each must exist when attached. */
@@ -376,7 +412,7 @@ export const ReportWorkSchema = z
       .array(z.object({ title: Title, description: Description.optional() }).strict())
       .max(MAX_FILED_ITEMS)
       .optional(),
-    /** As for an update: an agent's report that moves an item out of Backlog quotes the person's instruction. */
+    /** As for an update: an agent's report that moves an item out of Backlog or Deleted quotes the person's instruction. */
     instruction: Instruction.optional(),
     expectedRevision: z.number().int().positive().optional(),
   })
@@ -444,22 +480,40 @@ export function findWork(file: WorkFile, number: number): WorkItem | undefined {
   return file.items.find((i) => i.number === number);
 }
 
-/** Only a person moves an item out of Backlog; an agent may when it quotes the person's instruction. */
+/** The statuses only a person moves an item out of: an agent may when it quotes the person's instruction. */
+const personOnlyExit = (status: WorkStatus): boolean => status === 'backlog' || status === 'deleted';
+/**
+ * Only a person moves an item out of Backlog or Deleted; an agent may when it quotes the person's instruction.
+ * Deleting is not that move: an agent may delete a Backlog item, with a reason.
+ */
 function backlogRefusal(item: WorkItem, to: WorkStatus, ctx: WorkContext, instruction?: string): WorkRefusal | null {
-  if (ctx.author.kind !== 'agent' || item.status !== 'backlog' || to === 'backlog' || instruction) return null;
+  if (ctx.author.kind !== 'agent' || !personOnlyExit(item.status) || to === item.status || instruction) return null;
+  if (item.status === 'backlog' && to === 'deleted') return null;
   return refuse(
     'INVALID_INPUT',
-    `Only a person moves ${workKey(item.number)} out of Backlog. Ask them; if they told you to, quote their words in instruction`
+    `Only a person moves ${workKey(item.number)} out of ${WORK_STATUS_NAMES[item.status]}. Ask them; if they told you to, quote their words in instruction`
   );
 }
 /**
  * Moves an item and logs `Moved from <A> to <B>` (routines read when an item entered a status from that event). An
- * agent's move out of Backlog also logs the instruction it quoted. An item entering Ready for work goes to the bottom.
+ * agent's move out of Backlog or Deleted also logs the instruction it quoted. An item entering Ready for work goes to
+ * the bottom. Moving into Deleted records who, when, from where and why; moving out of it drops that record.
  */
-function setStatus(file: WorkFile, item: WorkItem, to: WorkStatus, ctx: WorkContext, instruction?: string): void {
+function setStatus(
+  file: WorkFile,
+  item: WorkItem,
+  to: WorkStatus,
+  ctx: WorkContext,
+  instruction?: string,
+  reason?: string
+): void {
   log(item, ctx, `Moved from ${WORK_STATUS_NAMES[item.status]} to ${WORK_STATUS_NAMES[to]}`);
-  if (item.status === 'backlog' && ctx.author.kind === 'agent' && instruction)
-    log(item, ctx, `Moved out of Backlog on the person's instruction: "${instruction}"`);
+  if (personOnlyExit(item.status) && to !== 'deleted' && ctx.author.kind === 'agent' && instruction)
+    log(item, ctx, `Moved out of ${WORK_STATUS_NAMES[item.status]} on the person's instruction: "${instruction}"`);
+  if (to === 'deleted' && item.status !== 'deleted') {
+    item.deleted = { at: ctx.now, from: item.status, author: ctx.author, ...(reason ? { reason } : {}) };
+    log(item, ctx, reason ? `Deleted: "${reason}"` : 'Deleted');
+  } else if (to !== 'deleted') delete item.deleted;
   item.status = to;
   file.readyOrder = file.readyOrder.filter((n) => n !== item.number);
   if (to === 'ready-for-work') file.readyOrder.push(item.number);
@@ -592,10 +646,15 @@ export function updateWork(
     );
   if (patch.position !== undefined && (to ?? item.status) !== 'ready-for-work')
     return refuse('INVALID_INPUT', 'position is a place in Ready for work; the item is not in that lane');
+  const deleting = to === 'deleted' && item.status !== 'deleted';
+  if (patch.reason !== undefined && !deleting)
+    return refuse('INVALID_INPUT', 'reason says why an item is deleted; send it with status deleted');
+  if (deleting && ctx.author.kind === 'agent' && !patch.reason)
+    return refuse('INVALID_INPUT', `Say why you are deleting ${workKey(number)} in reason`);
   if (to !== undefined && to !== item.status) {
     const refused = backlogRefusal(item, to, ctx, patch.instruction);
     if (refused) return refused;
-    setStatus(next, item, to, ctx, patch.instruction);
+    setStatus(next, item, to, ctx, patch.instruction, patch.reason);
     changed = true;
   }
   if (patch.assignee !== undefined && !sameAssignee(item.assignee, patch.assignee)) {
