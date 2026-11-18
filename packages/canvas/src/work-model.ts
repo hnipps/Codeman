@@ -14,6 +14,7 @@ import {
 } from '../../../src/canvas/shell-sessions.js';
 import {
   MAX_WORK_DESCRIPTION_CHARS,
+  WORK_FILE_TYPES,
   WORK_STATUSES,
   workClosed,
   type WorkRow,
@@ -23,6 +24,13 @@ import {
 export type { WorkRow, WorkStatus };
 export type WorkFilter = 'all' | 'you' | 'agents' | 'none';
 
+const Attachment = z.object({
+  id: z.string().regex(/^[a-f0-9]{32}$/),
+  name: z.string(),
+  type: z.string(),
+  size: z.number(),
+  at: z.number(),
+});
 const Row = z
   .object({
     key: z.string(),
@@ -72,6 +80,15 @@ const Row = z
         })
       )
       .catch([]),
+    // Entry by entry, as the server reads them: an id that is not one never reaches a URL.
+    attachments: z
+      .array(z.unknown())
+      .optional()
+      .catch(undefined)
+      .transform((list) => {
+        const kept = list?.flatMap((entry) => Attachment.safeParse(entry).data ?? []);
+        return kept?.length ? kept : undefined;
+      }),
   })
   .passthrough();
 /** The list route's answer, or null. A row this release cannot read is left out; the rest still show. */
@@ -197,4 +214,15 @@ export function assigneeLabel(item: Pick<WorkRow, 'assignee'>, sessions: readonl
 }
 export function authorLabel(author: WorkRow['author'], sessions: readonly ShellSessionRow[]): string {
   return author.kind === 'human' ? 'You' : sessionLabel(author.sessionId, sessions);
+}
+
+/** What the Attach button's file picker offers: the extensions the server admits. */
+export const WORK_FILE_ACCEPT = [...Object.keys(WORK_FILE_TYPES), '.jpeg'].join(',');
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+/** The server serves only these as themselves, so only these get a thumbnail. */
+export const isImageAttachment = (type: string): boolean => IMAGE_TYPES.has(type);
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }

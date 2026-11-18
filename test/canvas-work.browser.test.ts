@@ -2,7 +2,7 @@
  * Work lanes in the browser after W-48: seven lanes in board order (Done and Not doing share the last column on a
  * desktop), a `work.json` from before the split migrated on read, Ready for work in pickup order with Shift+Up/Down
  * and a drag reordering it, the outline's Human required first, Ask an agent's unsent draft in a new conversation
- * (W-43), and the phone's wrapping lane tabs.
+ * (W-43), attachments in the detail from the Attach button and a drop (W-60), and the phone's wrapping lane tabs.
  *
  * Port: 0 (WebServer binds an ephemeral port).
  */
@@ -291,6 +291,57 @@ describe('canvas work lanes (W-48)', () => {
     await expect.poll(() => item(11).needs).toBeUndefined();
     expect(item(11)).toMatchObject({ todoStatus: 'needs-refinement', revision: 2 });
     expect(item(11).description).toMatch(/^Ship the thing\.\n\n\d{4}-\d{2}-\d{2} Q \(Which port\?\): 3000$/);
+    await page.keyboard.press('Escape');
+  });
+
+  it('attaches files from the button and by a drop, shows a thumbnail, opens one and removes one (W-60)', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64'
+    );
+    const files = () =>
+      (stored().items.find((i: { number: number }) => i.number === 7).attachments ?? []) as {
+        id: string;
+        name: string;
+      }[];
+    await page.locator('.work-card[data-number="7"]').focus();
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#workDetail [data-work-detail="attach"]');
+    expect(await page.locator('#workDetail .work-file').count()).toBe(0);
+
+    await page.locator('#workFile').setInputFiles([
+      { name: 'shot.png', mimeType: 'image/png', buffer: png },
+      { name: 'evil.html', mimeType: 'text/html', buffer: Buffer.from('<script>1</script>') },
+    ]);
+    await expect.poll(() => files().map((f) => f.name)).toEqual(['shot.png']);
+    await expect.poll(() => page.locator('#workDetail .work-file').count()).toBe(1);
+    const thumb = page.locator('#workDetail .work-file img.work-file-thumb');
+    await expect.poll(() => thumb.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBe(1);
+    expect(await page.locator('#workDetail .work-file-size').textContent()).toBe(`${png.length} B`);
+
+    await page.locator('#workDetail').evaluate((detail) => {
+      const data = new DataTransfer();
+      data.items.add(new File(['line one\n'], 'notes.txt', { type: 'text/plain' }));
+      detail.dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true }));
+      detail.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    await expect.poll(() => files().map((f) => f.name)).toEqual(['shot.png', 'notes.txt']);
+    await expect.poll(() => page.locator('#workDetail .work-file').count()).toBe(2);
+    expect(await page.locator('#workDetail .work-file-ext').textContent()).toBe('TXT');
+    expect(await page.locator('#workDetail #workFilesTitle').textContent()).toBe('Attachments · 2');
+    await page.screenshot({ path: resolve(MEDIA, `w60-${stamp}-attachments.png`) });
+
+    const text = files()[1]!;
+    const href = await page.locator(`#workDetail [data-work-detail="file-${text.id}"]`).getAttribute('href');
+    const served = await page.request.get(`${origin}${href}`);
+    expect(served.status()).toBe(200);
+    expect(served.headers()['content-type']).toMatch(/^text\/plain/);
+    expect(await served.text()).toBe('line one\n');
+
+    await page.locator(`#workDetail [data-work-detail="file-remove-${text.id}"]`).click();
+    await expect.poll(() => files().map((f) => f.name)).toEqual(['shot.png']);
+    await expect.poll(() => page.locator('#workDetail .work-file').count()).toBe(1);
+    expect((await page.request.get(`${origin}${href}`)).status()).toBe(404);
     await page.keyboard.press('Escape');
   });
 
