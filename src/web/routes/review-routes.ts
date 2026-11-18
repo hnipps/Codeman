@@ -387,9 +387,8 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   const settleDeploys = async (): Promise<void> => {
     if (Date.now() - settledAt < SETTLE_EVERY_MS || !deployRole.allows('persist')) return;
     settledAt = Date.now();
-    const waiting = listReviews().filter(
-      (r) => r.decision?.kind === 'deploying' || r.decision?.kind === 'deploy-failed'
-    );
+    const all = listReviews();
+    const waiting = all.filter((r) => r.decision?.kind === 'deploying' || r.decision?.kind === 'deploy-failed');
     const cli = deploy.cli();
     if (!waiting.length || !cli) return;
     let overview: DeployOverviewConfigured;
@@ -399,13 +398,19 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       return;
     }
     const liveSha = overview.live?.sha;
+    /**
+     * A review's folder is often a worktree that was removed after the merge, so every repository a review names is
+     * asked. A commit id is the same commit in any of them, so one that answers yes is enough.
+     */
+    const repos = [...new Set(all.map((r) => r.repoRoot))];
+    const liveContains = async (review: Review, merge: string, live: string): Promise<boolean> => {
+      for (const repo of [review.repoRoot, ...repos.filter((r) => r !== review.repoRoot)])
+        if ((await tryGit(runGit, repo, ['merge-base', '--is-ancestor', merge, live])) !== null) return true;
+      return false;
+    };
     for (const review of waiting) {
       const merge = review.decision?.mergedSha;
-      const liveHasMerge =
-        !!merge &&
-        !!liveSha &&
-        SHA.test(liveSha) &&
-        (await tryGit(runGit, review.repoRoot, ['merge-base', '--is-ancestor', merge, liveSha])) !== null;
+      const liveHasMerge = !!merge && !!liveSha && SHA.test(liveSha) && (await liveContains(review, merge, liveSha));
       const next = review.decision ? settledDeploy(review.decision, overview, Date.now(), liveHasMerge) : null;
       if (!next) continue;
       const changed = changeReview(review.id, (r) => decide(r, next));

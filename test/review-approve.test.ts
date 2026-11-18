@@ -450,6 +450,60 @@ describe('approve routes', () => {
     }
   });
 
+  it('settles a failed deploy whose review folder was removed after the merge', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const id = await start({
+      deploy: {
+        cli: () => '/fake/supervisor',
+        readOverview: async () => overview,
+        requestDeploy: async () => ({ requestId: 'req-1' }),
+      },
+    });
+    const mergedSha = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data.review.decision
+      .mergedSha as string;
+    overview.recent = [
+      {
+        id: 'd1',
+        action: 'deploy',
+        sha: mergedSha,
+        outcome: 'failed',
+        failedStep: 'health',
+        startedAt: 't',
+        finishedAt: 't',
+      },
+    ];
+    const worktree = `${repo.dir}-removed`;
+    repo.git('worktree', 'add', '-q', '--detach', worktree, 'feat/x');
+    const path = dataPath('reviews', `${id}.json`);
+    const file = JSON.parse(readFileSync(path, 'utf8'));
+    const otherId = 'b'.repeat(16);
+    const { decision: _none, ...undecided } = file.review;
+    writeFileSync(
+      dataPath('reviews', `${otherId}.json`),
+      JSON.stringify({ ...file, review: { ...undecided, id: otherId } })
+    );
+    file.review.repoRoot = worktree;
+    writeFileSync(path, JSON.stringify(file));
+    repo.git('worktree', 'remove', worktree);
+
+    repo.git('checkout', '-q', 'main');
+    repo.git('commit', '-q', '--allow-empty', '-m', 'later work');
+    overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
+    vi.useFakeTimers({ now: Date.now() + 120_000, toFake: ['Date'] });
+    try {
+      const queue = (await harness.app.inject({ url: '/api/reviews' })).json().data;
+      expect(queue.decided).toMatchObject([{ id, state: 'deployed' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('records the merge even when the deploy cannot be requested', async () => {
     const overview: DeployOverviewConfigured = {
       configured: true,
