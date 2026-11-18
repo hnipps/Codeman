@@ -5,6 +5,7 @@
  * `POST  /api/canvas/:workspaceId/work`            creates one (`CreateWorkSchema`; `requestId` makes a retry safe).
  * `PATCH /api/canvas/:workspaceId/work/:key`       changes one (`UpdateWorkSchema`; `expectedRevision` guards it).
  * `POST  /api/canvas/:workspaceId/work/:key/report` the run-end rule an agent applies (`ReportWorkSchema`).
+ * `POST  /api/canvas/:workspaceId/work/:key/comments` adds a comment to the item's thread (`CommentWorkSchema`).
  * `POST  /api/canvas/:workspaceId/work/:key/attachments?name=<file name>` attaches the raw body (`work-files.ts`).
  * `GET   /api/canvas/:workspaceId/work/:key/attachments/:id` the attached bytes, Range-aware.
  * `DELETE /api/canvas/:workspaceId/work/:key/attachments/:id` takes the file off the item and removes its bytes.
@@ -27,6 +28,8 @@ import { SseEvent } from '../sse-events.js';
 import type { Author } from '../../canvas/model.js';
 import {
   attachWork,
+  commentWork,
+  CommentWorkSchema,
   createWork,
   detachWork,
   CreateWorkSchema,
@@ -199,6 +202,23 @@ export async function reportWorkItem(
   );
 }
 
+export async function commentWorkItem(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  number: number,
+  body: unknown
+): Promise<Outcome> {
+  const { text } = CommentWorkSchema.parse(body);
+  const context = { author: authorOf(req), now: Date.now() };
+  return answer(
+    ctx,
+    workspaceId,
+    changeWork(workspaceId, (file) => commentWork(file, number, text, context)),
+    true
+  );
+}
+
 /** The `canvas_work` tool: the routes' own functions. */
 export async function workTool(
   ctx: CanvasPort,
@@ -233,6 +253,8 @@ export async function workTool(
       void _action;
       return reportWorkItem(ctx, req, workspaceId, key, body);
     }
+    case 'comment':
+      return commentWorkItem(ctx, req, workspaceId, input.key, { text: input.text });
   }
 }
 
@@ -376,6 +398,12 @@ export function registerWorkRoutes(scope: FastifyInstance, ctx: CanvasPort): voi
     const number = parseWorkKey(req.params.key);
     const outcome =
       number === null ? badKey() : await reportWorkItem(ctx, req, req.params.workspaceId, number, req.body);
+    return reply.code(outcome.code).send(outcome.body);
+  });
+  scope.post<One>('/api/canvas/:workspaceId/work/:key/comments', { bodyLimit: 64 * 1024 }, async (req, reply) => {
+    const number = parseWorkKey(req.params.key);
+    const outcome =
+      number === null ? badKey() : await commentWorkItem(ctx, req, req.params.workspaceId, number, req.body);
     return reply.code(outcome.code).send(outcome.body);
   });
 }
