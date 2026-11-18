@@ -21,6 +21,8 @@ import {
   WORK_STATUS_NAMES,
   workClosed,
   workKey,
+  workFiles,
+  workObjects,
   type WorkStatus,
 } from '../../../src/canvas/work.js';
 import {
@@ -68,6 +70,12 @@ export type WorkHost = {
   openOutline(): void;
   /** Opens the assistant in the rail, beside the lanes. */
   openAssistant(): void;
+  /** The name of a canvas object on the board, or null when it is not there (deleted, or never was). */
+  objectLabel(id: string): string | null;
+  /** Selects the object on the board and brings it into view. */
+  showObject(id: string): void;
+  /** The objects selected on the board. */
+  selectedObjects(): string[];
 };
 
 const FILTERS: [WorkFilter, string][] = [
@@ -446,6 +454,39 @@ export class WorkView {
     const at = this.items.findIndex((i) => i.number === item.number);
     if (at >= 0) this.items[at] = item;
     else this.items.push(item);
+  }
+  /** The canvas objects attached to an item, by reference: a deleted one reads as missing and can still be removed. */
+  private objectsSection(item: WorkRow): HTMLElement {
+    const sec = el('div', 'work-sec');
+    sec.append(el('h3', '', 'Canvas objects'));
+    const refs = workObjects(item);
+    if (!refs.length) sec.append(el('p', 'work-empty', 'No objects attached'));
+    for (const ref of refs) {
+      const name = this.host.objectLabel(ref.id);
+      const row = el('div', 'work-link');
+      const shown = name === null ? el('span', 'work-link-name work-object-missing', 'Deleted from the canvas') : null;
+      const open =
+        shown ??
+        btn('work-link-name', name || 'Untitled object', () => {
+          if (this.host.objectLabel(ref.id) === null) this.paintDetail();
+          else this.host.showObject(ref.id);
+        });
+      open.dataset.workDetail = `object-${ref.id}`;
+      if (!shown) open.title = 'Select it on the board';
+      const remove = btn('work-unlink', 'Remove', () => void this.patch(item, { detachObjects: [ref.id] }));
+      remove.dataset.workDetail = `detach-${ref.id}`;
+      remove.setAttribute('aria-label', `Remove ${name || 'the deleted object'}`);
+      row.append(open, remove);
+      sec.append(row);
+    }
+    const attach = btn('work-link-add', 'Attach selected objects', () => {
+      const ids = this.host.selectedObjects();
+      if (ids.length) void this.patch(item, { attachObjects: ids });
+      else this.host.say('Select objects on the board first');
+    });
+    attach.dataset.workDetail = 'attach-objects';
+    sec.append(attach);
+    return sec;
   }
   private async patch(item: WorkRow, body: Record<string, unknown>): Promise<WorkRow | null> {
     const saved = await this.send('PATCH', `/${item.key}`, { ...body, expectedRevision: item.revision });
@@ -1288,7 +1329,7 @@ export class WorkView {
       select.onchange = () => select.value && void this.patch(item, { linkSessions: [select.value] });
       links.append(select);
     }
-    parts.push(links);
+    parts.push(links, this.objectsSection(item));
 
     const desc = el('textarea', 'work-desc');
     desc.rows = 4;
@@ -1362,11 +1403,12 @@ export class WorkView {
     const sec = el('div', 'work-sec work-files');
     sec.setAttribute('role', 'group');
     sec.setAttribute('aria-labelledby', 'workFilesTitle');
-    const head = el('h3', '', item.attachments ? `Attachments · ${item.attachments.length}` : 'Attachments');
+    const files = workFiles(item);
+    const head = el('h3', '', files.length ? `Attachments · ${files.length}` : 'Attachments');
     head.id = 'workFilesTitle';
     sec.append(head);
     const list = el('ul', 'work-file-list');
-    for (const file of item.attachments ?? []) {
+    for (const file of files) {
       const url = this.host.url(`/api/canvas/${this.host.workspace}/work/${item.key}/attachments/${file.id}`);
       const li = el('li', 'work-file');
       const open = el('a', 'work-file-open');

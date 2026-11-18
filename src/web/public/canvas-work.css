@@ -1106,3 +1106,8 @@ body:has(#outline:not([hidden])) .work-outline,
   font-size: 12px;
   font-weight: 600;
 }
+.work-object-missing {
+  color: var(--muted);
+  text-decoration: none;
+  font-style: italic;
+}

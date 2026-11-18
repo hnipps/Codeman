@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-18 — Work reviews take the agent's walkthrough in a key of its own
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/review-model.ts`, `src/reviews/work-review-model.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.js`, `docs/architecture-invariants.md#reviews-page`
+**Why:** Work reviews showed the item's text as the walkthrough and never had screenshots, because the server makes them from the item and no agent submission reached them.
+**Links:** [intent/2026-11-18-work-review-walkthroughs.md](../intent/2026-11-18-work-review-walkthroughs.md), [docs/work-review-walkthroughs-spec.md](work-review-walkthroughs-spec.md)
+
+The 2026-11-17 decision stands: the server makes a work review, and the tracker decides whether it waits. What changes is that the session linked to the item may now write into it. Its submission lands in a new optional `authored` key, never in `walkthrough`, which stays the item's text and is replaced at every sync. Reusing `walkthrough` would need a marker that the strict schema has no room for, and a sync without the marker would wipe the agent's text. The key ships in two releases, the first reading it and the second writing it, so the release before the writer always reads what it writes (self-building rule 5).
+
 ## 2026-11-18 — The owner's gate moves from finished work to the spec
 
 **Type:** intent-refinement

@@ -13,6 +13,7 @@ import {
   type ShellSessionState,
 } from '../../../src/canvas/shell-sessions.js';
 import {
+  WorkAttachmentSchema,
   MAX_WORK_DESCRIPTION_CHARS,
   WORK_FILE_TYPES,
   WORK_STATUSES,
@@ -24,13 +25,6 @@ import {
 export type { WorkRow, WorkStatus };
 export type WorkFilter = 'all' | 'you' | 'agents' | 'none';
 
-const Attachment = z.object({
-  id: z.string().regex(/^[a-f0-9]{32}$/),
-  name: z.string(),
-  type: z.string(),
-  size: z.number(),
-  at: z.number(),
-});
 const Event = z.object({
   at: z.number(),
   author: z.union([
@@ -84,7 +78,7 @@ const Row = z
       .optional()
       .catch(undefined)
       .transform((list) => {
-        const kept = list?.flatMap((entry) => Attachment.safeParse(entry).data ?? []);
+        const kept = list?.flatMap((entry) => WorkAttachmentSchema.safeParse(entry).data ?? []);
         return kept?.length ? kept : undefined;
       }),
   })

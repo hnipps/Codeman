@@ -15,7 +15,7 @@ import { dataPath } from '../config/instance.js';
 import { ALLOWED_DOCUMENT_EXTS, imageMagicMatchesExt } from '../web/routes/session-routes.js';
 import { requireCanvasWriter } from './canvas-store.js';
 import { IdSchema } from './model.js';
-import { MAX_ATTACHMENT_NAME_CHARS, WORK_FILE_TYPES, workLine, type WorkAttachment } from './work.js';
+import { MAX_ATTACHMENT_NAME_CHARS, WORK_FILE_TYPES, workLine, type WorkFileAttachment } from './work.js';
 
 export const MAX_WORK_FILE_BYTES = 8 * 1024 * 1024;
 
@@ -71,7 +71,7 @@ export async function storeWorkFile(
   admitted: { name: string; type: string },
   data: Buffer,
   now: number
-): Promise<WorkAttachment> {
+): Promise<WorkFileAttachment> {
   requireCanvasWriter();
   const id = randomBytes(16).toString('hex');
   const dir = itemDir(workspaceId, number);
@@ -109,7 +109,7 @@ export async function removeWorkFile(workspaceId: string, number: number, id: st
  * How a stored file is sent back. Only images keep their own type; text is inert `text/plain`; everything else is a
  * download, so nothing a person attached ever runs as a page of this origin.
  */
-export function servedAs(attachment: WorkAttachment): { type: string; download: boolean } {
+export function servedAs(attachment: WorkFileAttachment): { type: string; download: boolean } {
   if (IMAGE_TYPES.has(attachment.type)) return { type: attachment.type, download: false };
   if (attachment.type.startsWith('text/') || TEXT_TYPES.has(attachment.type))
     return { type: 'text/plain; charset=utf-8', download: false };
