@@ -12,6 +12,7 @@ import { WebServer } from '../src/web/server.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import {
+  attachedBytes,
   attachWork,
   createWork,
   detachWork,
@@ -38,6 +39,7 @@ import { readWork, workPath } from '../src/canvas/work-store.js';
 import { toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
 import { admitWorkFile, MAX_WORK_FILE_BYTES, servedAs } from '../src/canvas/work-files.js';
 import { png } from './canvas-media-fixtures.js';
+import { create } from './canvas-fixtures.js';
 
 const person = { kind: 'human' as const, userId: 'admin' };
 const agent = { kind: 'agent' as const, sessionId: 'sess-agent-1' };
@@ -438,6 +440,56 @@ describe('work items: pure changes', () => {
       expect(attachWork(first.file, 2, file(2, 400), 1000, ctx()).ok).toBe(true);
     });
 
+    it('references canvas objects by id beside files, and takes a reference off without touching the files', () => {
+      const withFile = attachWork(made(emptyWorkFile(), 'Refs').file, 1, file(1), 1000, ctx());
+      if (!withFile.ok) throw new Error(withFile.message);
+      const update = (f: WorkFile, patch: Record<string, unknown>) =>
+        updateWork(f, 1, UpdateWorkSchema.parse(patch), ctx(agent, 3000));
+      const added = update(withFile.file, { attachObjects: ['note-a', 'note-b', 'note-a'] });
+      if (!added.ok) throw new Error(added.message);
+      expect(added.item.attachments).toEqual([
+        file(1),
+        { kind: 'object', id: 'note-a', at: 3000 },
+        { kind: 'object', id: 'note-b', at: 3000 },
+      ]);
+      expect(added.item.history[0]!.text).toBe('Attached 2 objects');
+      expect(update(added.file, { attachObjects: ['note-a'] }).file).toBe(added.file);
+      const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(encodeWorkFile(added.file))));
+      expect(back.items[0]!.attachments).toEqual(added.item.attachments);
+      // A file's id never names an object reference, and an object id never reaches the file bytes.
+      expect(detachWork(added.file, 1, 'note-a', ctx()).ok).toBe(false);
+      const removed = update(added.file, { detachObjects: ['note-a', 'never-attached'] });
+      if (!removed.ok) throw new Error(removed.message);
+      expect(removed.item.attachments).toEqual([file(1), { kind: 'object', id: 'note-b', at: 3000 }]);
+      expect(removed.item.history[0]!.text).toBe('Removed object note-a');
+      const fileGone = detachWork(removed.file, 1, file(1).id, ctx());
+      if (!fileGone.ok) throw new Error(fileGone.message);
+      expect(fileGone.item.attachments).toEqual([{ kind: 'object', id: 'note-b', at: 3000 }]);
+      expect(() => UpdateWorkSchema.parse({ attachObjects: ['../x'] })).toThrow();
+    });
+
+    it('counts object references toward the per-item cap and none toward the byte quota', () => {
+      const ids = Array.from({ length: MAX_WORK_ATTACHMENTS }, (_, n) => `obj-${n}`);
+      const full = updateWork(
+        made(emptyWorkFile(), 'Full').file,
+        1,
+        UpdateWorkSchema.parse({ attachObjects: ids }),
+        ctx()
+      );
+      if (!full.ok) throw new Error(full.message);
+      const more = updateWork(full.file, 1, UpdateWorkSchema.parse({ attachObjects: ['one-more'] }), ctx());
+      expect(!more.ok && more.code).toBe('FULL');
+      expect(!attachWork(full.file, 1, file(1), 1000, ctx()).ok).toBe(true);
+      const small = updateWork(
+        made(emptyWorkFile(), 'S').file,
+        1,
+        UpdateWorkSchema.parse({ attachObjects: ['a'] }),
+        ctx()
+      );
+      if (!small.ok) throw new Error(small.message);
+      expect(attachedBytes(small.file)).toBe(0);
+    });
+
     it('drops only the attachment records that do not parse, keeping the rest and the item', () => {
       const disk = encodeWorkFile(made(emptyWorkFile(), 'Odd').file) as { items: Record<string, unknown>[] };
       disk.items[0]!.attachments = [file(1), { id: '../../etc/passwd', name: 'x', type: 'text/plain', size: 1, at: 1 }];
@@ -676,6 +728,39 @@ describe('work items: routes and side file', () => {
         })
       ).statusCode
     ).toBe(404);
+  });
+
+  it('attaches a canvas object by reference, and reads it back after the object is deleted', async () => {
+    const created = await inject({ method: 'POST', url: api(), payload: { title: 'Points at a note' } });
+    const key = (created.json().data?.item as { key: string }).key;
+    const command = (tool: string, args: Record<string, unknown>) =>
+      inject({ method: 'POST', url: `/api/canvas/${ws}/command`, payload: { tool, arguments: args } });
+    expect((await command('canvas_create', { operations: [create('work-note')] })).statusCode).toBe(200);
+
+    const unknown = await inject({
+      method: 'PATCH',
+      url: api(`/${key}`),
+      payload: { attachObjects: ['no-such-object'] },
+    });
+    expect(unknown.statusCode).toBe(404);
+    const attached = await command('canvas_work', { action: 'update', key, attachObjects: ['work-note'] });
+    expect(attached.statusCode).toBe(200);
+    expect(attached.json().data?.item).toMatchObject({ attachments: [{ kind: 'object', id: 'work-note' }] });
+    expect((await inject({ method: 'GET', url: api(`/${key}/attachments/work-note`) })).statusCode).toBe(404);
+
+    const deleted = await command('canvas_delete', {
+      operations: [{ kind: 'delete', opId: 'drop-work-note', objectId: 'work-note' }],
+    });
+    expect(deleted.statusCode).toBe(200);
+    const read = await inject({ method: 'GET', url: api(`/${key}`) });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().data?.item).toMatchObject({ attachments: [{ kind: 'object', id: 'work-note' }] });
+    expect(
+      (await inject({ method: 'PATCH', url: api(`/${key}`), payload: { attachObjects: ['work-note'] } })).statusCode
+    ).toBe(404);
+    const removed = await inject({ method: 'PATCH', url: api(`/${key}`), payload: { detachObjects: ['work-note'] } });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().data?.item).not.toHaveProperty('attachments');
   });
 
   it('removes the stored bytes when the canvas quota refuses the record', async () => {
