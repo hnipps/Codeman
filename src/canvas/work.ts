@@ -154,7 +154,7 @@ export type WorkChanges = z.infer<typeof WorkChangesSchema>;
  * A file attached to an item. `id` names the stored bytes and is the only thing a request uses to reach them; `name`
  * is the person's file name, shown and never used as a path; `type` is the MIME type its extension and bytes proved.
  */
-const WorkAttachmentSchema = z
+const WorkFileAttachmentSchema = z
   .object({
     id: z.string().regex(/^[a-f0-9]{32}$/),
     name: z.string().min(1).max(MAX_ATTACHMENT_NAME_CHARS),
@@ -163,7 +163,17 @@ const WorkAttachmentSchema = z
     at,
   })
   .passthrough();
-export type WorkAttachment = z.infer<typeof WorkAttachmentSchema>;
+export type WorkFileAttachment = z.infer<typeof WorkFileAttachmentSchema>;
+/** A canvas object of the item's own workspace, by id. It may be deleted since; readers show it as missing. */
+const WorkObjectAttachmentSchema = z.object({ kind: z.literal('object'), id: IdSchema, at }).passthrough();
+export type WorkObjectAttachment = z.infer<typeof WorkObjectAttachmentSchema>;
+const WorkAttachmentSchema = z.union([WorkObjectAttachmentSchema, WorkFileAttachmentSchema]);
+export type WorkAttachment = WorkFileAttachment | WorkObjectAttachment;
+export const isObjectAttachment = (a: WorkAttachment): a is WorkObjectAttachment => a.kind === 'object';
+export const workFiles = (item: { attachments?: WorkAttachment[] }): WorkFileAttachment[] =>
+  (item.attachments ?? []).filter((a): a is WorkFileAttachment => !isObjectAttachment(a));
+export const workObjects = (item: { attachments?: WorkAttachment[] }): WorkObjectAttachment[] =>
+  (item.attachments ?? []).filter(isObjectAttachment);
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
 const StoredComment = z
   .object({ at, author: AuthorSchema, text: z.string().min(1).max(MAX_WORK_NOTE_CHARS) })
@@ -323,6 +333,10 @@ export const UpdateWorkSchema = z
     instruction: Instruction.optional(),
     /** The item's pull request; `null` clears it. */
     pr: WorkPrInput.nullable().optional(),
+    /** Canvas objects of this workspace to reference from the item; each must exist when attached. */
+    attachObjects: z.array(IdSchema).min(1).max(MAX_WORK_ATTACHMENTS).optional(),
+    /** Object references to take off the item; a deleted object's reference can still be removed. */
+    detachObjects: z.array(IdSchema).min(1).max(MAX_WORK_ATTACHMENTS).optional(),
   })
   .strict();
 export type UpdateWork = z.infer<typeof UpdateWorkSchema>;
@@ -598,6 +612,26 @@ export function updateWork(
     log(item, ctx, `Linked PR ${patch.pr.url}`);
     changed = true;
   }
+  const held = new Set(workObjects(item).map((a) => a.id));
+  const attaching = [...new Set(patch.attachObjects ?? [])].filter((id) => !held.has(id));
+  if (attaching.length) {
+    if ((item.attachments ?? []).length + attaching.length > MAX_WORK_ATTACHMENTS)
+      return refuse('FULL', `An item carries at most ${MAX_WORK_ATTACHMENTS} attachments`);
+    item.attachments = [
+      ...(item.attachments ?? []),
+      ...attaching.map((id): WorkObjectAttachment => ({ kind: 'object', id, at: ctx.now })),
+    ];
+    log(item, ctx, `Attached ${attaching.length === 1 ? `object ${attaching[0]}` : `${attaching.length} objects`}`);
+    changed = true;
+  }
+  const detaching = (patch.detachObjects ?? []).filter((id) => held.has(id));
+  if (detaching.length) {
+    const left = item.attachments!.filter((a) => !isObjectAttachment(a) || !detaching.includes(a.id));
+    if (left.length) item.attachments = left;
+    else delete item.attachments;
+    log(item, ctx, `Removed ${detaching.length === 1 ? `object ${detaching[0]}` : `${detaching.length} objects`}`);
+    changed = true;
+  }
   if (!changed) return { ok: true, file, item: findWork(file, number)!, filed: [], duplicate: false };
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
@@ -753,7 +787,7 @@ export function commentWork(file: WorkFile, number: number, text: string, ctx: W
 
 /** Bytes every attachment of the file takes, as recorded on the items. */
 export const attachedBytes = (file: WorkFile): number =>
-  file.items.reduce((sum, i) => sum + (i.attachments ?? []).reduce((s, a) => s + a.size, 0), 0);
+  file.items.reduce((sum, i) => sum + workFiles(i).reduce((s, a) => s + a.size, 0), 0);
 
 /**
  * Records a file whose bytes are already stored. Refused when the item is full or the workspace's attachments would
@@ -762,14 +796,14 @@ export const attachedBytes = (file: WorkFile): number =>
 export function attachWork(
   file: WorkFile,
   number: number,
-  attachment: WorkAttachment,
+  attachment: WorkFileAttachment,
   quotaBytes: number,
   ctx: WorkContext
 ): WorkChange | WorkRefusal {
   const refused = unchangeable(file, number, undefined);
   if (refused) return refused;
   if ((findWork(file, number)!.attachments ?? []).length >= MAX_WORK_ATTACHMENTS)
-    return refuse('FULL', `An item carries at most ${MAX_WORK_ATTACHMENTS} files`);
+    return refuse('FULL', `An item carries at most ${MAX_WORK_ATTACHMENTS} attachments`);
   if (attachedBytes(file) + attachment.size > quotaBytes)
     return refuse(
       'FULL',
@@ -787,11 +821,11 @@ export function attachWork(
 export function detachWork(file: WorkFile, number: number, id: string, ctx: WorkContext): WorkChange | WorkRefusal {
   const refused = unchangeable(file, number, undefined);
   if (refused) return refused;
-  const attachment = findWork(file, number)!.attachments?.find((a) => a.id === id);
+  const attachment = workFiles(findWork(file, number)!).find((a) => a.id === id);
   if (!attachment) return refuse('NOT_FOUND', `${workKey(number)} has no attachment ${id}`);
   const next = structuredClone(file);
   const item = findWork(next, number)!;
-  const left = item.attachments!.filter((a) => a.id !== id);
+  const left = item.attachments!.filter((a) => isObjectAttachment(a) || a.id !== id);
   if (left.length) item.attachments = left;
   else delete item.attachments;
   log(item, ctx, `Removed attachment ${attachment.name}`);
