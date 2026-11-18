@@ -15,6 +15,21 @@ export const MARKETPLACE_NAME = 'codeman-imports';
 const CLI_TIMEOUT_MS = 60_000;
 const SLOW_TIMEOUT_MS = 90_000;
 
+/** Uninstall argv per binary, given the selector its install was recorded under. */
+const UNINSTALL_ARGS = {
+  claude: (selector: string) => ['plugin', 'uninstall', selector, '--scope', 'user', '--yes', '--json'],
+  grok: (selector: string) => ['plugin', 'uninstall', selector, '--confirm'],
+  codex: (selector: string) => ['plugin', 'remove', selector, '--json'],
+  agy: (selector: string) => ['plugin', 'uninstall', selector],
+  copilot: (selector: string) => ['plugin', 'uninstall', selector],
+} satisfies Record<string, (selector: string) => string[]>;
+
+type PluginBin = keyof typeof UNINSTALL_ARGS;
+
+function uninstallFor(bin: PluginBin, selector: string): PluginInstallStep {
+  return { bin, args: UNINSTALL_ARGS[bin](selector) };
+}
+
 export type PluginSkillRoot = 'claude' | 'codex' | 'grok' | 'copilot';
 
 export interface CliPluginPlan {
@@ -61,12 +76,7 @@ export function pluginPlans(input: {
           args: ['plugin', 'install', name, '--marketplace', marketplaceDir, '--scope', 'user', '--yes', '--json'],
         },
       ],
-      uninstall: [
-        {
-          bin: 'claude',
-          args: ['plugin', 'uninstall', selector, '--scope', 'user', '--yes', '--json'],
-        },
-      ],
+      uninstall: [uninstallFor('claude', selector)],
     },
     {
       bin: 'grok',
@@ -75,7 +85,7 @@ export function pluginPlans(input: {
       timeoutMs: CLI_TIMEOUT_MS,
       skillRoot: 'grok',
       install: [{ bin: 'grok', args: ['plugin', 'install', pluginDir, '--trust'] }],
-      uninstall: [{ bin: 'grok', args: ['plugin', 'uninstall', name, '--confirm'] }],
+      uninstall: [uninstallFor('grok', name)],
     },
     {
       bin: 'codex',
@@ -87,7 +97,7 @@ export function pluginPlans(input: {
         { bin: 'codex', args: ['plugin', 'marketplace', 'add', marketplaceDir, '--json'], tolerateExists: true },
         { bin: 'codex', args: ['plugin', 'add', selector, '--json'] },
       ],
-      uninstall: [{ bin: 'codex', args: ['plugin', 'remove', selector, '--json'] }],
+      uninstall: [uninstallFor('codex', selector)],
     },
     {
       bin: 'agy',
@@ -95,7 +105,7 @@ export function pluginPlans(input: {
       selector: name,
       timeoutMs: CLI_TIMEOUT_MS,
       install: [{ bin: 'agy', args: ['plugin', 'install', pluginDir] }],
-      uninstall: [{ bin: 'agy', args: ['plugin', 'uninstall', name] }],
+      uninstall: [uninstallFor('agy', name)],
     },
   ];
   if (githubRepo && /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(githubRepo)) {
@@ -106,7 +116,7 @@ export function pluginPlans(input: {
       timeoutMs: SLOW_TIMEOUT_MS,
       skillRoot: 'copilot',
       install: [{ bin: 'copilot', args: ['plugin', 'install', githubRepo] }],
-      uninstall: [{ bin: 'copilot', args: ['plugin', 'uninstall', name] }],
+      uninstall: [uninstallFor('copilot', name)],
     });
   }
   return plans;
@@ -114,18 +124,6 @@ export function pluginPlans(input: {
 
 /** Uninstall argv for a selector the catalog stored. Unknown CLIs are skipped. */
 export function uninstallStep(plugin: ExtensionPluginInstall): PluginInstallStep | undefined {
-  switch (plugin.cli) {
-    case 'claude':
-      return { bin: 'claude', args: ['plugin', 'uninstall', plugin.selector, '--scope', 'user', '--yes', '--json'] };
-    case 'grok':
-      return { bin: 'grok', args: ['plugin', 'uninstall', plugin.selector, '--confirm'] };
-    case 'codex':
-      return { bin: 'codex', args: ['plugin', 'remove', plugin.selector, '--json'] };
-    case 'agy':
-      return { bin: 'agy', args: ['plugin', 'uninstall', plugin.selector] };
-    case 'copilot':
-      return { bin: 'copilot', args: ['plugin', 'uninstall', plugin.selector] };
-    default:
-      return undefined;
-  }
+  if (!Object.prototype.hasOwnProperty.call(UNINSTALL_ARGS, plugin.cli)) return undefined;
+  return uninstallFor(plugin.cli as PluginBin, plugin.selector);
 }
