@@ -12,7 +12,13 @@ import {
   type ShellSessionRow,
   type ShellSessionState,
 } from '../../../src/canvas/shell-sessions.js';
-import { WORK_STATUSES, workClosed, type WorkRow, type WorkStatus } from '../../../src/canvas/work.js';
+import {
+  MAX_WORK_DESCRIPTION_CHARS,
+  WORK_STATUSES,
+  workClosed,
+  type WorkRow,
+  type WorkStatus,
+} from '../../../src/canvas/work.js';
 
 export type { WorkRow, WorkStatus };
 export type WorkFilter = 'all' | 'you' | 'agents' | 'none';
@@ -164,6 +170,21 @@ export function stepStatus(status: WorkStatus, step: -1 | 1): WorkStatus | null 
 /** The prompt "Ask an agent" puts in a new conversation's composer. The agent reads the description itself. */
 export function askAgentDraft(item: Pick<WorkRow, 'key' | 'title'>): string {
   return `Work on ${item.key}: ${item.title}. Read it with canvas_work (action read, key ${item.key}), assign it to yourself and follow its acceptance checks.`;
+}
+
+/**
+ * The description an item gets when the person answers its Needs-you question on the item: the old text, then a dated
+ * `Q (question): answer` line the next agent reads. Null when the answer is blank or the result would be refused as
+ * too long.
+ */
+export function answeredDescription(description: string, question: string, answer: string, at: Date): string | null {
+  const text = answer.trim();
+  if (!text) return null;
+  const day = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+  const line = `${day} Q (${question}): ${text}`;
+  const head = description.trimEnd();
+  const next = head ? `${head}\n\n${line}` : line;
+  return next.length > MAX_WORK_DESCRIPTION_CHARS ? null : next;
 }
 
 /** The name a session goes by here: its row's name, else the first eight characters of its id. */
