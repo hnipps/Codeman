@@ -215,6 +215,19 @@ describe('canvas MCP HTTP parity', () => {
       await h.app.close();
     }
   });
+  it('types every top-level field of a union tool, so a client sends null as null', () => {
+    for (const def of buildToolDefinitions(['claude']).filter((d) => canvasToolNames.includes(d.name as never))) {
+      const properties = (def.inputSchema as { properties: Record<string, object> }).properties;
+      for (const [field, schema] of Object.entries(properties))
+        expect(Object.keys(schema).length, `${def.name}.${field}`).toBeGreaterThan(0);
+    }
+    const work = buildToolDefinitions(['claude']).find((d) => d.name === 'canvas_work')!;
+    const properties = (work.inputSchema as { properties: Record<string, unknown> }).properties;
+    expect(properties.needs).toEqual({ type: 'null' });
+    expect(JSON.stringify(properties.pr)).toContain('{"type":"null"}');
+    expect(JSON.stringify(properties.assignee)).toContain('{"type":"null"}');
+    expect(Buffer.byteLength(JSON.stringify(capabilities()))).toBeLessThanOrEqual(MAX_CANVAS_TEXT_BYTES);
+  });
   it('publishes executable strict JSON schemas for typed union tools', async () => {
     const app = Fastify({ ajv: { customOptions: { removeAdditional: false, useDefaults: false } } });
     const definitions = buildToolDefinitions(['claude']);
@@ -222,6 +235,7 @@ describe('canvas MCP HTTP parity', () => {
       ['canvas_query', { shape: 'point', point: { x: 0, y: 0 } }],
       ['canvas_arrange', { action: 'ungroup', targetIds: ['g'] }],
       ['canvas_history', { action: 'read' }],
+      ['canvas_work', { action: 'update', key: 'W-1', needs: null, pr: null }],
     ] as const;
     for (const [name] of examples) {
       const schema = structuredClone(definitions.find((d) => d.name === name)!.inputSchema);

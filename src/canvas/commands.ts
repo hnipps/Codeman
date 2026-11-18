@@ -227,13 +227,28 @@ const inputJsonSchema = (schema: z.ZodType) =>
       if (jsonSchema.format === 'uuid') delete jsonSchema.pattern;
     },
   });
-export function canvasJsonSchema(schema: z.ZodType) {
+/**
+ * A union tool's schema with every branch's fields typed at the top level. MCP clients shape arguments from the
+ * top-level `properties`: an untyped field reached the server as a string, so `needs: null` arrived as "null" (W-47).
+ * The capability document passes `typed` false: its branches carry the types and it sits at MAX_CANVAS_TEXT_BYTES.
+ */
+export function canvasJsonSchema(schema: z.ZodType, typed = true) {
   const generated = inputJsonSchema(schema);
   if (generated.type === 'object') return generated;
+  const variants = new Map<string, Map<string, unknown>>();
+  for (const branch of generated.anyOf ?? generated.oneOf ?? []) {
+    if (typeof branch !== 'object') continue;
+    for (const [name, property] of Object.entries(branch.properties ?? {})) {
+      const seen = variants.get(name) ?? new Map<string, unknown>();
+      if (typed) seen.set(JSON.stringify(property), property);
+      variants.set(name, seen);
+    }
+  }
   const properties = Object.fromEntries(
-    (generated.anyOf ?? generated.oneOf ?? []).flatMap((branch) =>
-      typeof branch === 'object' ? Object.keys(branch.properties ?? {}).map((name) => [name, {}]) : []
-    )
+    [...variants].map(([name, seen]) => [
+      name,
+      seen.size <= 1 ? ([...seen.values()][0] ?? {}) : { anyOf: [...seen.values()] },
+    ])
   );
   return { ...generated, type: 'object', properties, additionalProperties: false };
 }
@@ -249,7 +264,7 @@ export function capabilities() {
         .filter((name) => !BRIEF_CAPABILITY.has(name))
         .map((name) => ({
           name,
-          schema: canvasJsonSchema(toolSchemas[name]),
+          schema: canvasJsonSchema(toolSchemas[name], false),
           ...(OBJECTLESS_TOOLS.has(name) ? {} : { objectTypes: types }),
         })),
       // This document sits at MAX_CANVAS_TEXT_BYTES: a tool listed briefly carries its schema in the MCP tool listing.
