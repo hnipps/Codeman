@@ -15,30 +15,11 @@ import { dataPath } from '../config/instance.js';
 import { ALLOWED_DOCUMENT_EXTS, imageMagicMatchesExt } from '../web/routes/session-routes.js';
 import { requireCanvasWriter } from './canvas-store.js';
 import { IdSchema } from './model.js';
-import { MAX_ATTACHMENT_NAME_CHARS, workLine, type WorkFileAttachment } from './work.js';
+import { MAX_ATTACHMENT_NAME_CHARS, WORK_FILE_TYPES, workLine, type WorkFileAttachment } from './work.js';
 
 export const MAX_WORK_FILE_BYTES = 8 * 1024 * 1024;
 
-const TYPES: Readonly<Record<string, string>> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.pdf': 'application/pdf',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.zip': 'application/zip',
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.csv': 'text/csv',
-  '.tsv': 'text/tab-separated-values',
-  '.json': 'application/json',
-  '.log': 'text/plain',
-  '.yaml': 'application/yaml',
-  '.yml': 'application/yaml',
-  '.xml': 'application/xml',
-};
+const TYPES = WORK_FILE_TYPES;
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.gif', '.webp']);
 const ALLOWED = new Set([...IMAGE_EXTS, ...ALLOWED_DOCUMENT_EXTS]);
 const IMAGE_TYPES = new Set([...IMAGE_EXTS].map((ext) => TYPES[ext]));

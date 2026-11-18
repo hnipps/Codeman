@@ -80,6 +80,30 @@ export const MAX_CHANGES_CHARS = 16_000;
 /** Files one item may carry; their bytes live beside `work.json` (`work-files.ts`). */
 export const MAX_WORK_ATTACHMENTS = 20;
 export const MAX_ATTACHMENT_NAME_CHARS = 200;
+/**
+ * The type each attachable extension is stored as. `work-files.ts` admits only these (and only the ones the prompt
+ * uploads also admit); the page offers the same extensions in its file picker.
+ */
+export const WORK_FILE_TYPES: Readonly<Record<string, string>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.zip': 'application/zip',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.json': 'application/json',
+  '.log': 'text/plain',
+  '.yaml': 'application/yaml',
+  '.yml': 'application/yaml',
+  '.xml': 'application/xml',
+};
 /** Comments one item's thread holds; a full thread refuses a new one and never drops the oldest. */
 export const MAX_WORK_COMMENTS = 200;
 
@@ -167,7 +191,7 @@ export type WorkFileAttachment = z.infer<typeof WorkFileAttachmentSchema>;
 /** A canvas object of the item's own workspace, by id. It may be deleted since; readers show it as missing. */
 const WorkObjectAttachmentSchema = z.object({ kind: z.literal('object'), id: IdSchema, at }).passthrough();
 export type WorkObjectAttachment = z.infer<typeof WorkObjectAttachmentSchema>;
-const WorkAttachmentSchema = z.union([WorkObjectAttachmentSchema, WorkFileAttachmentSchema]);
+export const WorkAttachmentSchema = z.union([WorkObjectAttachmentSchema, WorkFileAttachmentSchema]);
 export type WorkAttachment = WorkFileAttachment | WorkObjectAttachment;
 export const isObjectAttachment = (a: WorkAttachment): a is WorkObjectAttachment => a.kind === 'object';
 export const workFiles = (item: { attachments?: WorkAttachment[] }): WorkFileAttachment[] =>

@@ -8,6 +8,8 @@ import {
   answeredDescription,
   askAgentDraft,
   assigneeLabel,
+  fileSize,
+  isImageAttachment,
   itemState,
   laneItems,
   matchesFilter,
@@ -17,8 +19,10 @@ import {
   readyStep,
   stepStatus,
   workCounts,
+  WORK_FILE_ACCEPT,
   type WorkRow,
 } from '../packages/canvas/src/work-model.js';
+import { WORK_FILE_TYPES } from '../src/canvas/work.js';
 import type { ShellSessionRow } from '../src/canvas/shell-sessions.js';
 
 const row = (number: number, patch: Partial<WorkRow> = {}): WorkRow => ({
@@ -55,6 +59,28 @@ describe('work model', () => {
     expect(parsed?.next).toBe('W-3');
     expect(parsed?.items.map((i) => i.key)).toEqual(['W-1']);
     expect(parseWork({ success: false, error: 'x' })).toBeNull();
+  });
+
+  it('keeps the attachments it can read and drops one whose id could reach another URL', () => {
+    const good = { id: 'a'.repeat(32), name: 'shot.png', type: 'image/png', size: 2048, at: 1 };
+    const bad = { id: '../../x', name: 'x.png', type: 'image/png', size: 1, at: 1 };
+    const body = (attachments: unknown) => ({
+      success: true,
+      data: { next: 'W-2', items: [{ ...row(1), attachments }] },
+    });
+    expect(parseWork(body([good, bad]))?.items[0]!.attachments).toEqual([good]);
+    expect(parseWork(body([bad]))?.items[0]!.attachments).toBeUndefined();
+    expect(parseWork(body('nope'))?.items[0]!.key).toBe('W-1');
+  });
+
+  it('offers every extension the server admits and thumbnails only the images it serves as themselves', () => {
+    const offered = WORK_FILE_ACCEPT.split(',');
+    for (const ext of Object.keys(WORK_FILE_TYPES)) expect(offered).toContain(ext);
+    expect(offered).toContain('.jpeg');
+    expect(isImageAttachment('image/png')).toBe(true);
+    expect(isImageAttachment('image/svg+xml')).toBe(false);
+    expect(isImageAttachment('application/pdf')).toBe(false);
+    expect([fileSize(900), fileSize(2048), fileSize(3.5 * 1024 * 1024)]).toEqual(['900 B', '2 KB', '3.5 MB']);
   });
 
   it('says Needs you while the item holds a question, else the most urgent linked session, Ended when gone', () => {

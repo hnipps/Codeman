@@ -21,6 +21,7 @@ import {
   WORK_STATUS_NAMES,
   workClosed,
   workKey,
+  workFiles,
   workObjects,
   type WorkStatus,
 } from '../../../src/canvas/work.js';
@@ -29,6 +30,8 @@ import {
   assigneeLabel,
   askAgentDraft,
   authorLabel,
+  fileSize,
+  isImageAttachment,
   itemState,
   laneItems,
   openCount,
@@ -38,6 +41,7 @@ import {
   sessionLabel,
   stepStatus,
   workCounts,
+  WORK_FILE_ACCEPT,
   type WorkFilter,
   type WorkRow,
 } from './work-model.js';
@@ -133,6 +137,9 @@ export class WorkView {
   private menu = false;
   /** Unsent answers to Needs-you questions by item number, so a refused save or a repaint keeps the typed text. */
   private answers = new Map<number, string>();
+  /** The item whose files are uploading; its Attach button waits. */
+  private attaching: number | null = null;
+  private fileInput = el('input');
   /** Unsent comment text per item, so a repaint while the person is elsewhere in the detail keeps it. */
   private commentDrafts = new Map<number, string>();
   private commenting = false;
@@ -189,6 +196,35 @@ export class WorkView {
     this.detail.id = 'workDetail';
     this.detail.tabIndex = -1;
     this.detail.hidden = true;
+    this.fileInput.id = 'workFile';
+    this.fileInput.type = 'file';
+    this.fileInput.multiple = true;
+    this.fileInput.accept = WORK_FILE_ACCEPT;
+    this.fileInput.hidden = true;
+    this.fileInput.onchange = () => {
+      const item = this.items.find((i) => i.number === this.open);
+      const files = [...(this.fileInput.files ?? [])];
+      this.fileInput.value = '';
+      if (item) void this.attach(item, files);
+    };
+    document.body.append(this.fileInput);
+    this.detail.addEventListener('dragover', (e) => {
+      if (this.open === null || !e.dataTransfer?.types.includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      this.detail.classList.add('dropping');
+    });
+    this.detail.addEventListener('dragleave', (e) => {
+      if (!(e.relatedTarget instanceof Node && this.detail.contains(e.relatedTarget)))
+        this.detail.classList.remove('dropping');
+    });
+    this.detail.addEventListener('drop', (e) => {
+      const item = this.items.find((i) => i.number === this.open);
+      if (!item || !e.dataTransfer?.types.includes('Files')) return;
+      e.preventDefault();
+      this.detail.classList.remove('dropping');
+      void this.attach(item, [...e.dataTransfer.files]);
+    });
     const rail = document.getElementById('rail');
     rail?.append(this.detail);
     // Over the board, under the rail: the item detail opens beside the lanes.
@@ -376,7 +412,13 @@ export class WorkView {
     }
   }
 
-  private async send(method: 'POST' | 'PATCH', path: string, body: unknown): Promise<WorkRow | null> {
+  /** A `Blob` body goes as the raw bytes; `label` names what a refusal is about. */
+  private async send(
+    method: 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+    label = ''
+  ): Promise<WorkRow | null> {
     if (!this.host.online()) {
       this.host.say('Work items cannot change while Codeman cannot be reached');
       return null;
@@ -384,8 +426,11 @@ export class WorkView {
     try {
       const response = await fetch(this.host.url(`/api/canvas/${this.host.workspace}/work${path}`), {
         method,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        ...(body instanceof Blob
+          ? { headers: { 'content-type': 'application/octet-stream' }, body }
+          : body === undefined
+            ? {}
+            : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
       });
       const answer = (await response.json().catch(() => null)) as {
         data?: { item?: WorkRow };
@@ -393,7 +438,8 @@ export class WorkView {
       } | null;
       if (!response.ok || !answer?.data?.item) {
         const message = answer?.error?.replace(/^[A-Z_]+: /, '') ?? 'The change was not saved';
-        this.host.say(response.status === 409 ? `${message}. Showing the latest.` : message);
+        const said = label ? `${label}: ${message}` : message;
+        this.host.say(response.status === 409 ? `${said}. Showing the latest.` : said);
         void this.load();
         return null;
       }
@@ -452,6 +498,34 @@ export class WorkView {
   }
 
   // ---- Actions ----------------------------------------------------------------
+
+  /** Uploads one file at a time; a refused file is named and the rest still go. */
+  private async attach(item: WorkRow, files: File[]): Promise<void> {
+    if (!files.length) return;
+    if (this.attaching !== null) return this.host.say('Files are still being attached. Try again in a moment.');
+    this.attaching = item.number;
+    this.paintDetail();
+    try {
+      for (const file of files) {
+        const path = `/${item.key}/attachments?name=${encodeURIComponent(file.name)}`;
+        const saved = await this.send('POST', path, file, file.name);
+        if (saved) {
+          this.replace(saved);
+          this.paintDetail();
+        }
+      }
+    } finally {
+      this.attaching = null;
+      this.paint();
+    }
+  }
+  private async detach(item: WorkRow, id: string, name: string): Promise<void> {
+    const saved = await this.send('DELETE', `/${item.key}/attachments/${id}`, undefined, name);
+    if (saved) {
+      this.replace(saved);
+      this.paint();
+    }
+  }
 
   /** Moves an item to another lane. A person's move is undoable from the notice for a few seconds. */
   async move(item: WorkRow, to: WorkStatus, undoable = true, position?: number): Promise<void> {
@@ -1271,7 +1345,7 @@ export class WorkView {
     const descTitle = el('h3', '', 'Description');
     descTitle.id = 'workDescTitle';
     descSec.append(descTitle, desc);
-    parts.push(descSec, this.commentSection(item));
+    parts.push(descSec, this.filesSection(item), this.commentSection(item));
 
     const parent = item.createdFrom !== undefined ? this.items.find((i) => i.number === item.createdFrom) : undefined;
     const children = this.items.filter((i) => i.createdFrom === item.number);
@@ -1323,6 +1397,55 @@ export class WorkView {
       this.detail
         .querySelector<HTMLElement>(`[data-work-detail="${CSS.escape(keep)}"]`)
         ?.focus({ preventScroll: true });
+  }
+
+  private filesSection(item: WorkRow): HTMLElement {
+    const sec = el('div', 'work-sec work-files');
+    sec.setAttribute('role', 'group');
+    sec.setAttribute('aria-labelledby', 'workFilesTitle');
+    const files = workFiles(item);
+    const head = el('h3', '', files.length ? `Attachments · ${files.length}` : 'Attachments');
+    head.id = 'workFilesTitle';
+    sec.append(head);
+    const list = el('ul', 'work-file-list');
+    for (const file of files) {
+      const url = this.host.url(`/api/canvas/${this.host.workspace}/work/${item.key}/attachments/${file.id}`);
+      const li = el('li', 'work-file');
+      const open = el('a', 'work-file-open');
+      open.href = url;
+      open.target = '_blank';
+      open.rel = 'noopener noreferrer';
+      open.title = `Open ${file.name}`;
+      open.dataset.workDetail = `file-${file.id}`;
+      if (isImageAttachment(file.type)) {
+        const thumb = el('img', 'work-file-thumb');
+        thumb.src = url;
+        thumb.alt = '';
+        thumb.loading = 'lazy';
+        thumb.decoding = 'async';
+        open.append(thumb);
+      } else {
+        const ext = file.name.includes('.') ? file.name.split('.').pop()!.slice(0, 4).toUpperCase() : 'FILE';
+        const badge = el('span', 'work-file-thumb work-file-ext', ext);
+        badge.setAttribute('aria-hidden', 'true');
+        open.append(badge);
+      }
+      open.append(el('span', 'work-file-name', file.name), el('span', 'work-file-size', fileSize(file.size)));
+      const remove = btn('work-unlink', 'Remove', () => void this.detach(item, file.id, file.name));
+      remove.dataset.workDetail = `file-remove-${file.id}`;
+      remove.setAttribute('aria-label', `Remove ${file.name}`);
+      li.append(open, remove);
+      list.append(li);
+    }
+    if (list.childElementCount) sec.append(list);
+    const zone = el('div', 'work-drop');
+    const busy = this.attaching === item.number;
+    const attach = btn('line', busy ? 'Attaching…' : 'Attach files', () => this.fileInput.click());
+    attach.dataset.workDetail = 'attach';
+    attach.disabled = this.attaching !== null;
+    zone.append(attach, el('span', 'work-drop-hint', 'or drop files here'));
+    sec.append(zone);
+    return sec;
   }
 
   private commentSection(item: WorkRow): HTMLElement {
