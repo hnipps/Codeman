@@ -294,6 +294,90 @@ describe('canvas work lanes (W-48)', () => {
     await page.keyboard.press('Escape');
   });
 
+  it('attaches the board selection by reference, selects it from the detail, and reads a deleted one as missing (W-59)', async () => {
+    const item = () => stored().items.find((i: { number: number }) => i.number === 7);
+    const openDetail = async () => {
+      await page.locator('#board').focus();
+      await page.keyboard.press('Shift+W');
+      await page.waitForSelector('#workView:not([hidden]) .work-card[data-number="7"]');
+      await page.locator('.work-card[data-number="7"]').focus();
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#workDetail [data-work-detail="attach-objects"]');
+    };
+    const closeAll = async () => {
+      await page.keyboard.press('Escape');
+      if (await page.locator('#workView').isVisible()) {
+        await page.locator('#board').focus();
+        await page.keyboard.press('Shift+W');
+      }
+      await page.waitForSelector('#workView', { state: 'hidden' });
+    };
+    const command = (tool: string, operations: unknown[]) =>
+      page.request.post(`${origin}/x/api/canvas/${workspace}/command`, { data: { tool, arguments: { operations } } });
+    const made = await command('canvas_create', [
+      {
+        kind: 'create',
+        opId: 'w59-create',
+        objectId: 'w59',
+        patch: {
+          parentId: null,
+          order: 1,
+          position: { x: 260, y: 0 },
+          size: { width: 180, height: 90 },
+          content: { type: 'text', text: 'Spec' },
+        },
+      },
+    ]);
+    expect(made.status(), await made.text()).toBe(200);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-object-id="w59"]');
+    await openDetail();
+    expect(await page.locator('#workDetail .work-sec', { hasText: 'Canvas objects' }).textContent()).toContain(
+      'No objects attached'
+    );
+    // Nothing selected: the press says so and writes nothing.
+    await page.locator('#workDetail [data-work-detail="attach-objects"]').click();
+    await expect.poll(() => page.locator('#announcement').textContent()).toBe('Select objects on the board first');
+    expect(item().attachments).toBeUndefined();
+    await closeAll();
+
+    await page.locator('[data-object-id="w59"]').click();
+    await expect.poll(() => page.locator('[data-object-id="w59"].selected').count()).toBe(1);
+    await openDetail();
+    await page.locator('#workDetail [data-work-detail="attach-objects"]').click();
+    await expect.poll(() => item().attachments).toMatchObject([{ kind: 'object', id: 'w59' }]);
+    const open = page.locator('#workDetail [data-work-detail="object-w59"]');
+    await expect.poll(() => open.textContent()).toBe('Spec');
+    await page.screenshot({ path: resolve(MEDIA, `w59-${stamp}-object-attached.png`) });
+
+    // Clear the selection, then the link selects the object on the board again and closes the lanes over it.
+    await closeAll();
+    await page.locator('#board').focus();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => page.locator('[data-object-id="w59"].selected').count()).toBe(0);
+    await openDetail();
+    await open.click();
+    await expect.poll(() => page.locator('[data-object-id="w59"].selected').count()).toBe(1);
+    expect(await page.locator('#workView').isHidden()).toBe(true);
+
+    const deleted = await page.request.post(`${origin}/x/api/canvas/${workspace}/command`, {
+      data: {
+        tool: 'canvas_delete',
+        arguments: { operations: [{ kind: 'delete', opId: 'w59-del', objectId: 'w59' }] },
+      },
+    });
+    expect(deleted.status(), await deleted.text()).toBe(200);
+    await page.waitForSelector('[data-object-id="w59"]', { state: 'detached' });
+    await openDetail();
+    const row = page.locator('#workDetail [data-work-detail="object-w59"]');
+    await expect.poll(() => row.textContent()).toBe('Deleted from the canvas');
+    expect(await row.evaluate((n) => n.tagName)).toBe('SPAN');
+    await page.screenshot({ path: resolve(MEDIA, `w59-${stamp}-object-deleted.png`) });
+    await page.locator('#workDetail [data-work-detail="detach-w59"]').click();
+    await expect.poll(() => item().attachments).toBeUndefined();
+    await closeAll();
+  });
+
   it('puts every lane one tap away behind wrapping tabs on a phone', async () => {
     const phone = await browser.newContext({
       viewport: { width: 375, height: 812 },

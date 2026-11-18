@@ -9,6 +9,7 @@
  * `POST  /api/canvas/:workspaceId/work/:key/attachments?name=<file name>` attaches the raw body (`work-files.ts`).
  * `GET   /api/canvas/:workspaceId/work/:key/attachments/:id` the attached bytes, Range-aware.
  * `DELETE /api/canvas/:workspaceId/work/:key/attachments/:id` takes the file off the item and removes its bytes.
+ * Canvas objects are attached by reference through the PATCH (`attachObjects`, `detachObjects`); no bytes move.
  *
  * The `canvas_work` tool calls the same functions through the command route, so a person and an agent are held to the
  * same rules. The author is the route's (`req.canvasAuthor`, else the signed-in person). A session may be linked or
@@ -40,6 +41,7 @@ import {
   updateWork,
   UpdateWorkSchema,
   workBrief,
+  workFiles,
   workKey,
   workRelated,
   workRow,
@@ -165,6 +167,13 @@ export async function updateWorkItem(
   if (!assignee.ok) return refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_INPUT: ${assignee.message}`);
   const linking = resolveSessions(ctx, req, patch.linkSessions ?? []);
   if (!linking.ok) return refuse(400, ApiErrorCode.INVALID_INPUT, `INVALID_INPUT: ${linking.message}`);
+  if (patch.attachObjects) {
+    // Detaching needs no check: the reference to an object deleted since can still be taken off.
+    const objects = (await ctx.canvasStores()).get(workspaceId).read().objects;
+    const missing = patch.attachObjects.find((id) => !objects[id] || objects[id].deletedAt !== null);
+    if (missing !== undefined)
+      return refuse(404, ApiErrorCode.NOT_FOUND, `NOT_FOUND: no object ${missing} on this canvas`);
+  }
   const author = authorOf(req);
   // Unlinking needs no check: a session that has gone can still be taken off an item.
   const unlink = (patch.unlinkSessions ?? []).map((id) =>
@@ -368,7 +377,7 @@ export function registerWorkRoutes(scope: FastifyInstance, ctx: CanvasPort): voi
     }
     const read = readWork(req.params.workspaceId);
     const attachment = read.ok
-      ? findWork(read.file, number)?.attachments?.find((a) => a.id === req.params.id)
+      ? workFiles(findWork(read.file, number) ?? {}).find((a) => a.id === req.params.id)
       : undefined;
     const stored = attachment ? findWorkFile(req.params.workspaceId, number, attachment.id) : null;
     if (!attachment || !stored) {

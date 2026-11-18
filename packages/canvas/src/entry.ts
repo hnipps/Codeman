@@ -1594,6 +1594,15 @@ const work = new WorkView({
     if (!state.outlineOpen) dispatch({ kind: 'outline', open: true });
   },
   openAssistant: () => openAssistant(true),
+  objectLabel: (id) => {
+    const object = objects.find((o) => o.id === id);
+    return object ? label(object) : null;
+  },
+  showObject: (id) => {
+    if (work.isFull()) work.closeFull();
+    showOnBoard(id);
+  },
+  selectedObjects: () => [...state.selected],
 });
 void work.load();
 const prototypes = new PrototypesView({
