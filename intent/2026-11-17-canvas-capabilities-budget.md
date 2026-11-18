@@ -2,7 +2,7 @@
 
 **Status:** Draft
 
-Work item W-8. This note is a recommendation. It changes no code. Harry decides; the chosen fix is filed as its own Backlog item.
+Work item W-8. This note is a recommendation. It changes no code. Harry reviewed it on 2026-11-18 and chose (c), code mode, because the canvas tools will likely grow a lot. The chosen fix is filed as its own Backlog item.
 
 ## Problem statement
 
@@ -90,44 +90,53 @@ Expose the canvas as a typed TypeScript API. The agent writes a short script tha
   - Clients with no shell and no runner, such as a desktop MCP client, need the MCP tools, so the tools stay during any migration and both surfaces have to be maintained.
   - It is several PRs over more than one release, with a security review. It is not the next small fix.
 - **Does it remove the limit.** Yes for this document. The types become files read on demand, so `MAX_CANVAS_TEXT_BYTES` no longer applies. A typed client for the current schemas would be roughly the size of the schemas (about 40 to 50 KB of `.d.ts`, estimated), so the bytes move rather than vanish. They are only read when needed, and an agent could read one module at a time.
-- **Judgment.** It is worth a separate design note if the goal is a smaller `tools/list` and fewer round trips. It is the wrong tool for a 38-byte problem.
+- **Judgment.** For today's 38-byte problem alone, (a) is cheaper. If the tool surface keeps growing, (a) only delays the problem: the cost moves to `tools/list`, which already carries 49,646 bytes of canvas schema into every session. Code mode is the only option whose cost does not grow with the number of tools in context.
 
 ## Comparison
 
-|                    | (a) by reference, a2                                            | (b) sections                               | (c) code mode                                                       |
-| ------------------ | --------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------- |
-| Size after         | 12,471 bytes, one call                                          | 491-byte index plus up to 32 KB a section  | Document gone; about 40 to 50 KB of types read on demand (estimate) |
-| Room for growth    | About 47 KB, about 100 bytes per new tool                       | About 28 KB in `tools`, then paging        | No cap                                                              |
-| Callers broken     | HTTP callers that read schemas from it (none in the repo); docs | Every `{}` caller if `{}` becomes an index | None at first (it is additive); MCP tools would be retired later    |
-| Duplication        | Removed                                                         | Kept                                       | Removed                                                             |
-| Agent context cost | About 3k tokens                                                 | Two calls, the same bytes in total         | Smaller `tools/list`, types on demand                               |
-| Work               | One small PR                                                    | One small PR                               | Several PRs, a sandbox and a security review                        |
+|                    | (a) by reference, a2                                            | (b) sections                               | (c) code mode                                                             |
+| ------------------ | --------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
+| Size after         | 12,471 bytes, one call                                          | 491-byte index plus up to 32 KB a section  | Document gone; about 40 to 50 KB of types read on demand (estimate)       |
+| Room for growth    | About 47 KB, about 100 bytes per new tool                       | About 28 KB in `tools`, then paging        | No cap                                                                    |
+| Callers broken     | HTTP callers that read schemas from it (none in the repo); docs | Every `{}` caller if `{}` becomes an index | None at first (it is additive); MCP tools would be retired later          |
+| Duplication        | Removed                                                         | Kept                                       | Removed                                                                   |
+| Agent context cost | About 3k tokens                                                 | Two calls, the same bytes in total         | Smaller `tools/list`, types on demand                                     |
+| Work               | One small PR                                                    | One small PR                               | Several PRs; agent-side runner, so no server sandbox (see Recommendation) |
 
 ## Recommendation
 
-**(a), variant a2.** List every canvas tool by name, `objectTypes` and note, and drop the schema copies in `tools`, `commands`, `compoundCommands` and `transforms`. Keep the operation names, type support, restrictions, geometry, views, conversations, tasks, clipboard and `reserved`. Delete `BRIEF_CAPABILITY`, because every tool is then brief.
+**(c), code mode.** Harry chose it in review on 2026-11-18. His reason is that the canvas tools will likely grow a lot. (a) fixes this document but leaves the larger cost, the 49,646 bytes of canvas schemas that `tools/list` loads into every session. Each new tool adds to that. Code mode is the only option that stops tool count from driving context size.
 
-Why this one:
+### Where the code runs
 
-- It removes the cause: about 50 KB of the 60 KB is a copy of what `tools/list` already gives every MCP agent. (b) keeps that copy and adds a second call. (c) removes it but needs a sandbox for a problem one map can fix.
-- The document goes from 59,962 to 12,471 bytes. A new tool then costs about 100 bytes, so the "list it briefly or it does not fit" rule in `docs/architecture-invariants.md` and `docs/subsystem-rules.md` can be removed rather than repeated.
-- The diff is small. One function, the test, and four doc passages.
+The analysis of (c) above assumed the script runs on the Codeman server and needs a sandbox there. That assumption was wrong. `codeman mcp` is a stdio process that the agent's own CLI starts, as the agent's user, and it reaches Codeman only through the HTTP API (`src/mcp-server.ts`, "A CLIENT of the HTTP API"). A script that the MCP process runs, or that `codeman agent` runs, has no more authority than the agent's shell already has. The server keeps its rule of running only fixed argv. Authorship keeps flowing through `X-Codeman-Parent-Session` as it does today.
 
-Do a3, the hoisted type list, only if a2 turns out not to be enough. It saves another 2.2 KB and makes the document harder to read.
+The runner still needs limits on time, memory and output so a bad script cannot hang the agent's tool call. Those limits protect the agent, not the server. They do not need a security review of a new server surface.
 
-Keep (c) as its own Backlog idea if Harry still wants it after (a) lands. The case for it is a smaller `tools/list` and fewer round trips, not this cap.
+### Proposed shape
+
+1. **A typed client.** Generate it from `toolSchemas` (the same zod schemas, through `z.infer`), plus a `.d.ts` an agent can read one module at a time. Add a test that fails when the client drifts from the schemas.
+2. **One runner, two entry points.** `codeman agent canvas run <file>` for agents with a shell. One MCP tool, `canvas_run`, that takes a script for clients without one. Both run the script in a child process with only the client in scope.
+3. **Discovery replaces the document.** `canvas_capabilities` becomes a short index that names the modules and points at the types. `MAX_CANVAS_TEXT_BYTES` no longer constrains the surface.
+4. **Retire the JSON-schema tools.** Once agents use the runner, drop the 21 `canvas_*` tool definitions from `tools/list`, in the same wave as the migration. Do not keep both surfaces long term.
+
+### Until code mode lands
+
+The cap blocks the next canvas tool now. A brief entry costs about 100 bytes and 38 remain. If a tool has to land before step 3, delete `tools[].schema` from the document (variant a1). That gives 29 KB of room, takes one `.map` change, and deletes code that code mode removes anyway. Do not build a2 or (b).
 
 ## Affected users and systems
 
-MCP agents on the canvas see a shorter `canvas_capabilities` answer and take schemas from their tool listing, which they already do in practice. HTTP callers of the command route lose the schema fields. `docs/api-reference.md`, `skills/codeman/reference/verbs.md` (and its plugin mirror), `docs/architecture-invariants.md` (Capabilities) and `docs/subsystem-rules.md` (Canvas work) need updates in the same change.
+Agents on the canvas write a short typed script instead of calling many canvas tools in turn, and every session's `tools/list` shrinks by about 50 KB once the JSON-schema tools are retired. HTTP callers of the command route are unaffected, because the runner calls the same route. `canvas_capabilities` becomes an index, so `docs/api-reference.md`, `skills/codeman/reference/verbs.md` (and its plugin mirror), `docs/architecture-invariants.md` (Capabilities) and `docs/subsystem-rules.md` (Canvas work) change with step 3.
 
 ## Constraints
 
-- Keep `MAX_CANVAS_TEXT_BYTES` and the test that measures the document. The fix makes room under the cap; it does not raise it.
+- Keep `MAX_CANVAS_TEXT_BYTES` and the test that measures the document until the document becomes an index. Do not raise the cap.
+- The runner runs on the agent's side only. No route on the Codeman server executes agent-written code.
 - `truncated: false`, `reserved: []`, and the `conversations` and `tasks` command lists stay, because the tests and callers read them.
 - `docs/versioning-policy.md` covers the `/api/v1` response shape. Decide whether removing schema fields from this response needs a changeset note or a minor bump, or whether the canvas surface counts as experimental.
 
 ## Open questions
 
-- Is the canvas command route under `/api/v1` covered by SemVer, or is it experimental? This decides how the a2 change is announced, not whether it is made.
-- Does anyone outside this repository call `canvas_capabilities` over HTTP for schemas? Nothing in the repository does.
+- Is the canvas command route under `/api/v1` covered by SemVer, or is it experimental? This decides how retiring the tools and shrinking `canvas_capabilities` is announced.
+- Which runtime runs the script on the agent's side: Node's type stripping, `tsx`, or a bundled transpile in the MCP process? This is a build-item decision and can be settled by a prototype.
+- Do clients other than Claude Code and Codex call `canvas_*` tools today? If one cannot run `canvas_run`, step 4 waits for it.
