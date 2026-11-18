@@ -220,6 +220,80 @@ describe('canvas work lanes (W-48)', () => {
     await page.locator('#assistantDraft').fill('');
   });
 
+  it('answers a Needs-you question in the detail, with or without an asker, and keeps the text on a conflict (W-52)', async () => {
+    const file = stored();
+    const asked = (number: number, title: string, extra: Record<string, unknown>) => ({
+      number,
+      title,
+      status: 'todo',
+      todoStatus: 'human-required',
+      description: number === 11 ? 'Ship the thing.' : '',
+      assignee: null,
+      sessions: [],
+      author: person,
+      createdAt: stamp,
+      updatedAt: stamp,
+      revision: 1,
+      history: [],
+      ...extra,
+    });
+    file.items.push(
+      asked(11, 'Asked by a routine', { needs: { question: 'Which port?', at: stamp }, createdFrom: 7 }),
+      asked(12, 'Asked by a session', { needs: { question: 'Keep the flag?', sessionId: 'sess-gone', at: stamp } })
+    );
+    file.next = 13;
+    writeFileSync(workPath(workspace), JSON.stringify(file));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-object-id="n1"]');
+    await page.locator('#board').focus();
+    await page.keyboard.press('Shift+W');
+    await page.waitForSelector('#workView:not([hidden]) .work-card[data-number="12"]');
+    const box = page.locator('#workDetail [aria-label="Needs you"]');
+    const text = page.locator('#workDetail [data-work-detail="answer-text"]');
+    const send = page.locator('#workDetail [data-work-detail="answer-send"]');
+    const item = (number: number) => stored().items.find((i: { number: number }) => i.number === number);
+
+    await page.locator('.work-card[data-number="12"]').focus();
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#workDetail [data-work-detail="answer-text"]');
+    expect(await box.locator('.work-box-why').textContent()).toBe('Asked by sess-gon.');
+    expect(await page.locator('#workDetail [data-work-detail="answer"]').textContent()).toBe('Open conversation');
+    expect(await page.getByLabel('Your answer').count()).toBe(1);
+    expect(await send.isDisabled()).toBe(true);
+    await text.fill('   ');
+    expect(await send.isDisabled()).toBe(true);
+    await text.fill('Yes, keep it');
+    // Another writer saves first: the answer is refused, and the typed text survives the reload.
+    const raced = stored();
+    raced.items.find((i: { number: number }) => i.number === 12).revision = 2;
+    writeFileSync(workPath(workspace), JSON.stringify(raced));
+    await text.evaluate((node) => ((node as HTMLElement).dataset.before = 'conflict'));
+    await send.click();
+    await expect.poll(() => page.locator('#announcement').textContent()).toMatch(/Showing the latest\.$/);
+    await page.waitForSelector('#workDetail [data-work-detail="answer-text"]:not([data-before])');
+    expect(await text.inputValue()).toBe('Yes, keep it');
+    expect(item(12).needs).toMatchObject({ question: 'Keep the flag?' });
+    await send.click();
+    await expect.poll(() => item(12).needs).toBeUndefined();
+    expect(item(12)).toMatchObject({ todoStatus: 'needs-refinement', revision: 3 });
+    expect(item(12).description).toMatch(/^\d{4}-\d{2}-\d{2} Q \(Keep the flag\?\): Yes, keep it$/);
+    await expect.poll(() => box.count()).toBe(0);
+    await page.keyboard.press('Escape');
+
+    await page.locator('.work-card[data-number="11"]').focus();
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#workDetail [data-work-detail="answer-text"]');
+    expect(await box.locator('.work-box-why').textContent()).toBe('Asked by an agent. From W-7.');
+    expect(await page.locator('#workDetail [data-work-detail="answer"]').count()).toBe(0);
+    await text.fill('3000');
+    await page.screenshot({ path: resolve(MEDIA, `w52-${stamp}-answer-needs.png`) });
+    await send.click();
+    await expect.poll(() => item(11).needs).toBeUndefined();
+    expect(item(11)).toMatchObject({ todoStatus: 'needs-refinement', revision: 2 });
+    expect(item(11).description).toMatch(/^Ship the thing\.\n\n\d{4}-\d{2}-\d{2} Q \(Which port\?\): 3000$/);
+    await page.keyboard.press('Escape');
+  });
+
   it('puts every lane one tap away behind wrapping tabs on a phone', async () => {
     const phone = await browser.newContext({
       viewport: { width: 375, height: 812 },

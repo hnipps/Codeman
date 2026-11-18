@@ -24,6 +24,7 @@ import {
   type WorkStatus,
 } from '../../../src/canvas/work.js';
 import {
+  answeredDescription,
   assigneeLabel,
   askAgentDraft,
   authorLabel,
@@ -122,6 +123,8 @@ export class WorkView {
   private query = '';
   private adding: WorkStatus | null = null;
   private menu = false;
+  /** Unsent answers to Needs-you questions by item number, so a refused save or a repaint keeps the typed text. */
+  private answers = new Map<number, string>();
   private phoneLane: WorkStatus = 'in-progress';
   private showAllDone = false;
   private lanesStale = false;
@@ -1069,10 +1072,35 @@ export class WorkView {
       const glyph = el('span', 'work-glyph', '!');
       glyph.setAttribute('aria-hidden', 'true');
       hd.append(glyph, 'Needs you');
-      const asker = item.needs.sessionId;
+      const { question, sessionId: asker } = item.needs;
+      const answer = el('textarea', 'work-desc work-answer');
+      answer.id = 'workAnswer';
+      answer.rows = 3;
+      answer.value = this.answers.get(item.number) ?? '';
+      answer.dataset.workDetail = 'answer-text';
+      const label = el('label', 'work-answer-label', 'Your answer');
+      label.htmlFor = answer.id;
+      const send = btn('primary', 'Answer', () => {
+        const description = answeredDescription(item.description, question, answer.value, new Date());
+        if (description === null) return;
+        send.disabled = true;
+        void this.patch(item, { description, needs: null }).then((saved) => {
+          if (saved) this.answers.delete(item.number);
+        });
+      });
+      send.dataset.workDetail = 'answer-send';
+      send.title = 'Adds the question and your answer to the description and clears Needs you';
+      const sync = () => {
+        if (answer.value) this.answers.set(item.number, answer.value);
+        else this.answers.delete(item.number);
+        send.disabled = answeredDescription(item.description, question, answer.value, new Date()) === null;
+      };
+      answer.addEventListener('input', sync);
+      sync();
       const actions = el('div', 'work-actions');
+      actions.append(send);
       if (asker) {
-        const go = btn('primary', 'Open conversation', (e) =>
+        const go = btn('line', 'Open conversation', (e) =>
           this.host.openSession(
             sessions.find((s) => s.id === asker),
             asker,
@@ -1083,18 +1111,21 @@ export class WorkView {
         actions.append(go);
       }
       // Answered, a Human required item goes back to Needs refinement so its readiness is checked again.
-      const answered = btn('line', 'Mark answered', () => void this.patch(item, { needs: null }));
+      const answered = btn('line', 'Mark answered', () => {
+        this.answers.delete(item.number);
+        void this.patch(item, { needs: null });
+      });
       if (item.status === 'human-required') answered.title = 'Moves it to Needs refinement';
       answered.dataset.workDetail = 'answered';
       actions.append(answered);
+      const why = [asker ? `Asked by ${sessionLabel(asker, sessions)}.` : 'Asked by an agent.'];
+      if (item.createdFrom !== undefined) why.push(`From ${workKey(item.createdFrom)}.`);
       box.append(
         hd,
-        el('p', 'work-question', item.needs.question),
-        el(
-          'p',
-          'work-box-why',
-          asker ? `Asked by ${sessionLabel(asker, sessions)}. Answer in its conversation.` : 'Asked by an agent.'
-        ),
+        el('p', 'work-question', question),
+        el('p', 'work-box-why', why.join(' ')),
+        label,
+        answer,
         actions
       );
       parts.push(box);

@@ -1010,3 +1010,9 @@ body:has(#outline:not([hidden])) .work-outline,
     font-size: 16px;
   }
 }
+.work-answer-label {
+  display: block;
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}

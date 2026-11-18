@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  answeredDescription,
   askAgentDraft,
   assigneeLabel,
   itemState,
@@ -174,5 +175,16 @@ describe('work model', () => {
       'Work on W-43: Ask from the detail. Read it with canvas_work (action read, key W-43), assign it to yourself and follow its acceptance checks.'
     );
     expect(draft).not.toContain('secret long text');
+  });
+
+  it('appends a dated Q and A to the description, refusing a blank answer or an over-long result', () => {
+    const at = new Date(2026, 10, 7, 23, 30);
+    expect(answeredDescription('Ship it.\n\n', 'Which port?', '  3000 \n', at)).toBe(
+      'Ship it.\n\n2026-11-07 Q (Which port?): 3000'
+    );
+    expect(answeredDescription('', 'Which port?', '3000', at)).toBe('2026-11-07 Q (Which port?): 3000');
+    expect(answeredDescription('Ship it.', 'Which port?', ' \n ', at)).toBeNull();
+    expect(answeredDescription('x'.repeat(7980), 'Which port?', '3000', at)).toBeNull();
+    expect(answeredDescription('x'.repeat(7950), 'Which port?', '3000', at)).toHaveLength(7950 + 2 + 32);
   });
 });
