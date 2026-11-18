@@ -77,6 +77,9 @@ export const MAX_INSTRUCTION_CHARS = 300;
 export const MAX_PR_URL_CHARS = 300;
 /** The reviewer's notes an item carries back to the agent that picks it up next. */
 export const MAX_CHANGES_CHARS = 16_000;
+/** Files one item may carry; their bytes live beside `work.json` (`work-files.ts`). */
+export const MAX_WORK_ATTACHMENTS = 20;
+export const MAX_ATTACHMENT_NAME_CHARS = 200;
 
 export const workKey = (number: number): string => `W-${number}`;
 /** `W-12`, `w-12` or `12`; anything else is not a key. */
@@ -145,6 +148,20 @@ const WorkChangesSchema = z
   .object({ text: z.string().min(1).max(MAX_CHANGES_CHARS), reviewId: z.string().max(40), at })
   .passthrough();
 export type WorkChanges = z.infer<typeof WorkChangesSchema>;
+/**
+ * A file attached to an item. `id` names the stored bytes and is the only thing a request uses to reach them; `name`
+ * is the person's file name, shown and never used as a path; `type` is the MIME type its extension and bytes proved.
+ */
+const WorkAttachmentSchema = z
+  .object({
+    id: z.string().regex(/^[a-f0-9]{32}$/),
+    name: z.string().min(1).max(MAX_ATTACHMENT_NAME_CHARS),
+    type: z.string().min(1).max(100),
+    size: z.number().int().nonnegative(),
+    at,
+  })
+  .passthrough();
+export type WorkAttachment = z.infer<typeof WorkAttachmentSchema>;
 const StoredEvent = z.object({ at, author: AuthorSchema, text: z.string().max(400) }).passthrough();
 const itemFields = {
   number: z.number().int().positive(),
@@ -156,6 +173,14 @@ const itemFields = {
   requestId: z.uuid().optional().catch(undefined),
   pr: WorkPrSchema.optional().catch(undefined),
   changes: WorkChangesSchema.optional().catch(undefined),
+  // Entry by entry: one record that does not parse is dropped alone, so a write never loses the others.
+  attachments: z
+    .array(z.unknown())
+    .max(MAX_WORK_ITEMS)
+    .transform((list) => list.flatMap((entry) => WorkAttachmentSchema.safeParse(entry).data ?? []))
+    .transform((list) => (list.length ? list : undefined))
+    .optional()
+    .catch(undefined),
   author: AuthorSchema,
   createdAt: at,
   updatedAt: at,
@@ -702,6 +727,54 @@ export function approveWork(
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }
 
+/** Bytes every attachment of the file takes, as recorded on the items. */
+export const attachedBytes = (file: WorkFile): number =>
+  file.items.reduce((sum, i) => sum + (i.attachments ?? []).reduce((s, a) => s + a.size, 0), 0);
+
+/**
+ * Records a file whose bytes are already stored. Refused when the item is full or the workspace's attachments would
+ * pass `quotaBytes`; the caller then removes the bytes it stored.
+ */
+export function attachWork(
+  file: WorkFile,
+  number: number,
+  attachment: WorkAttachment,
+  quotaBytes: number,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  if ((findWork(file, number)!.attachments ?? []).length >= MAX_WORK_ATTACHMENTS)
+    return refuse('FULL', `An item carries at most ${MAX_WORK_ATTACHMENTS} files`);
+  if (attachedBytes(file) + attachment.size > quotaBytes)
+    return refuse(
+      'FULL',
+      `This canvas has reached its ${Math.round(quotaBytes / 1024 / 1024)} MB limit for attached files`
+    );
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  item.attachments = [...(item.attachments ?? []), attachment];
+  log(item, ctx, `Attached ${attachment.name}`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
+/** Takes a file off an item. The caller removes its bytes once this is written. */
+export function detachWork(file: WorkFile, number: number, id: string, ctx: WorkContext): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  const attachment = findWork(file, number)!.attachments?.find((a) => a.id === id);
+  if (!attachment) return refuse('NOT_FOUND', `${workKey(number)} has no attachment ${id}`);
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  const left = item.attachments!.filter((a) => a.id !== id);
+  if (left.length) item.attachments = left;
+  else delete item.attachments;
+  log(item, ctx, `Removed attachment ${attachment.name}`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
 // ---- Reading --------------------------------------------------------------
 
 /** An item as the API answers it: its key spelled out, its request id left out. */
@@ -741,6 +814,7 @@ export function workBrief(item: WorkItem, file?: WorkFile) {
     updatedAt: item.updatedAt,
     ...(item.createdFrom !== undefined ? { createdFrom: workKey(item.createdFrom) } : {}),
     ...(item.pr ? { pr: item.pr.url } : {}),
+    ...(item.attachments?.length ? { attachments: item.attachments.length } : {}),
     ...(item.needs ? { needsYou: true } : {}),
   };
 }

@@ -6,13 +6,17 @@
  * Port: 0 (app.inject, no listener is used).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { WebServer } from '../src/web/server.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import {
+  attachWork,
   createWork,
+  detachWork,
+  MAX_WORK_ATTACHMENTS,
+  workBrief,
   CreateWorkSchema,
   emptyWorkFile,
   encodeWorkFile,
@@ -32,6 +36,8 @@ import {
 } from '../src/canvas/work.js';
 import { readWork, workPath } from '../src/canvas/work-store.js';
 import { toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
+import { admitWorkFile, MAX_WORK_FILE_BYTES, servedAs } from '../src/canvas/work-files.js';
+import { png } from './canvas-media-fixtures.js';
 
 const person = { kind: 'human' as const, userId: 'admin' };
 const agent = { kind: 'agent' as const, sessionId: 'sess-agent-1' };
@@ -388,6 +394,81 @@ describe('work items: pure changes', () => {
     });
   });
 
+  describe('attachments', () => {
+    const file = (n: number, size = 10) => ({
+      id: n.toString(16).padStart(32, '0'),
+      name: `f${n}.png`,
+      type: 'image/png',
+      size,
+      at: 5,
+    });
+
+    it('records a file on the item, logs it, and takes it off again', () => {
+      const base = made(emptyWorkFile(), 'With files');
+      const attached = attachWork(base.file, 1, file(1), 1000, ctx(agent, 2000));
+      if (!attached.ok) throw new Error(attached.message);
+      expect(attached.item.attachments).toEqual([file(1)]);
+      expect(attached.item.revision).toBe(2);
+      expect(attached.item.history[0]!.text).toBe('Attached f1.png');
+      expect(workBrief(attached.item)).toMatchObject({ attachments: 1 });
+      const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(encodeWorkFile(attached.file))));
+      expect(back.items[0]!.attachments).toEqual([file(1)]);
+      const detached = detachWork(attached.file, 1, file(1).id, ctx());
+      if (!detached.ok) throw new Error(detached.message);
+      expect(detached.item.attachments).toBeUndefined();
+      expect(detached.item.history[0]!.text).toBe('Removed attachment f1.png');
+      const missing = detachWork(detached.file, 1, file(1).id, ctx());
+      expect(!missing.ok && missing.code).toBe('NOT_FOUND');
+    });
+
+    it('refuses past the per-item count and the workspace byte quota, changing nothing', () => {
+      let current = made(emptyWorkFile(), 'Full').file;
+      for (let n = 1; n <= MAX_WORK_ATTACHMENTS; n++) {
+        const r = attachWork(current, 1, file(n), 1_000_000, ctx());
+        if (!r.ok) throw new Error(r.message);
+        current = r.file;
+      }
+      const tooMany = attachWork(current, 1, file(99), 1_000_000, ctx());
+      expect(!tooMany.ok && tooMany.code).toBe('FULL');
+      const two = made(made(emptyWorkFile(), 'A').file, 'B').file;
+      const first = attachWork(two, 1, file(1, 600), 1000, ctx());
+      if (!first.ok) throw new Error(first.message);
+      const over = attachWork(first.file, 2, file(2, 401), 1000, ctx());
+      expect(!over.ok && over.code).toBe('FULL');
+      expect(attachWork(first.file, 2, file(2, 400), 1000, ctx()).ok).toBe(true);
+    });
+
+    it('drops only the attachment records that do not parse, keeping the rest and the item', () => {
+      const disk = encodeWorkFile(made(emptyWorkFile(), 'Odd').file) as { items: Record<string, unknown>[] };
+      disk.items[0]!.attachments = [file(1), { id: '../../etc/passwd', name: 'x', type: 'text/plain', size: 1, at: 1 }];
+      const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(disk)));
+      expect(back.items[0]!.attachments).toEqual([file(1)]);
+      disk.items[0]!.attachments = [{ id: 'nope' }];
+      expect(WorkFileSchema.parse(JSON.parse(JSON.stringify(disk))).items[0]!.attachments).toBeUndefined();
+      disk.items[0]!.attachments = 'not a list';
+      const odd = WorkFileSchema.parse(JSON.parse(JSON.stringify(disk))).items[0]!;
+      expect(odd.attachments).toBeUndefined();
+      expect(odd.title).toBe('Odd');
+    });
+
+    it('admits allowlisted files whose bytes match their name, and serves only images as themselves', () => {
+      expect(admitWorkFile('shot.PNG', png(2, 2))).toMatchObject({ ok: true, name: 'shot.PNG', type: 'image/png' });
+      expect(admitWorkFile('C:\\tmp\\notes.md', Buffer.from('# hi'))).toMatchObject({ ok: true, name: 'notes.md' });
+      expect(admitWorkFile('a.png', Buffer.from('<html>'))).toMatchObject({ ok: false, reason: 'bytes' });
+      expect(admitWorkFile('page.html', Buffer.from('<html>'))).toMatchObject({ ok: false, reason: 'type' });
+      expect(admitWorkFile('a.svg', Buffer.from('<svg/>'))).toMatchObject({ ok: false, reason: 'type' });
+      expect(admitWorkFile('noext', Buffer.from('x'))).toMatchObject({ ok: false, reason: 'type' });
+      expect(admitWorkFile('a.txt', Buffer.alloc(0))).toMatchObject({ ok: false, reason: 'empty' });
+      expect(admitWorkFile('/', Buffer.from('x'))).toMatchObject({ ok: false, reason: 'name' });
+      const big = Buffer.alloc(MAX_WORK_FILE_BYTES + 1, 0x61);
+      expect(admitWorkFile('big.txt', big)).toMatchObject({ ok: false, reason: 'size' });
+      const as = (type: string) => servedAs({ id: '0'.repeat(32), name: 'x', type, size: 1, at: 1 });
+      expect(as('image/png')).toEqual({ type: 'image/png', download: false });
+      expect(as('application/json')).toEqual({ type: 'text/plain; charset=utf-8', download: false });
+      expect(as('application/pdf')).toEqual({ type: 'application/octet-stream', download: true });
+    });
+  });
+
   it('is one command tool, with the run-end rule in its schema', () => {
     expect(canvasToolNames).toContain('canvas_work');
     expect(toolSchemas.canvas_work).toBe(WorkToolSchema);
@@ -399,8 +480,10 @@ describe('work items: pure changes', () => {
 describe('work items: routes and side file', () => {
   let server: WebServer;
   let ws: string;
-  let inject: (o: { method: string; url: string; payload?: unknown }) => Promise<{
+  let inject: (o: { method: string; url: string; payload?: unknown; headers?: Record<string, string> }) => Promise<{
     statusCode: number;
+    headers: Record<string, unknown>;
+    rawPayload: Buffer;
     json: () => { success: boolean; data?: Record<string, unknown>; error?: string };
   }>;
   const api = (path = '') => `/api/canvas/${ws}/work${path}`;
@@ -539,5 +622,78 @@ describe('work items: routes and side file', () => {
     expect(
       JSON.parse(readFileSync(workPath(ws), 'utf8')).items.find((i: { title: string }) => i.title === 'PR item').pr
     ).toBeUndefined();
+  });
+
+  it('attaches, serves, lists and removes a file, keeping the bytes private and out of every path', async () => {
+    const created = await inject({ method: 'POST', url: api(), payload: { title: 'Has a file' } });
+    const key = (created.json().data?.item as { key: string }).key;
+    const number = Number(key.slice(2));
+    const bytes = png(3, 2);
+    const upload = (name: string, payload: Buffer) =>
+      inject({
+        method: 'POST',
+        url: api(`/${key}/attachments?name=${encodeURIComponent(name)}`),
+        payload,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    const up = await upload('../../shot.png', bytes);
+    expect(up.statusCode).toBe(201);
+    const attachment = up.json().data?.attachment as { id: string; name: string; size: number; type: string };
+    expect(attachment).toMatchObject({ name: 'shot.png', size: bytes.length, type: 'image/png' });
+    const stored = resolve(workPath(ws), '..', 'work-files', String(number), attachment.id);
+    expect(statSync(stored).mode & 0o777).toBe(0o600);
+    expect(readFileSync(stored).equals(bytes)).toBe(true);
+
+    expect((await upload('fake.png', Buffer.from('<script>alert(1)</script>xxxx'))).statusCode).toBe(400);
+    expect((await upload('page.html', Buffer.from('<html></html>'))).statusCode).toBe(415);
+
+    const got = await inject({ method: 'GET', url: api(`/${key}/attachments/${attachment.id}`) });
+    expect(got.statusCode).toBe(200);
+    expect(got.rawPayload.equals(bytes)).toBe(true);
+    expect(got.headers['content-type']).toBe('image/png');
+    expect(got.headers['x-content-type-options']).toBe('nosniff');
+    expect(got.headers['content-security-policy']).toBe('sandbox');
+
+    const tool = await inject({
+      method: 'POST',
+      url: `/api/canvas/${ws}/command`,
+      payload: { tool: 'canvas_work', arguments: { action: 'read', key } },
+    });
+    expect(tool.json().data).toMatchObject({ item: { attachments: [{ id: attachment.id, name: 'shot.png' }] } });
+
+    const gone = await inject({ method: 'DELETE', url: api(`/${key}/attachments/${attachment.id}`) });
+    expect(gone.statusCode).toBe(200);
+    expect(existsSync(stored)).toBe(false);
+    expect((await inject({ method: 'GET', url: api(`/${key}/attachments/${attachment.id}`) })).statusCode).toBe(404);
+    expect((await inject({ method: 'GET', url: api(`/${key}/attachments/..%2F..%2Fwork.json`) })).statusCode).toBe(404);
+    expect(
+      (
+        await inject({
+          method: 'POST',
+          url: api('/W-999/attachments?name=a.png'),
+          payload: bytes,
+          headers: { 'content-type': 'application/octet-stream' },
+        })
+      ).statusCode
+    ).toBe(404);
+  });
+
+  it('removes the stored bytes when the canvas quota refuses the record', async () => {
+    const created = await inject({ method: 'POST', url: api(), payload: { title: 'Over quota' } });
+    const key = (created.json().data?.item as { key: string }).key;
+    process.env.CODEMAN_CANVAS_ASSET_QUOTA_BYTES = '10';
+    try {
+      const refused = await inject({
+        method: 'POST',
+        url: api(`/${key}/attachments?name=big.png`),
+        payload: png(3, 2),
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+      expect(refused.statusCode).toBe(409);
+    } finally {
+      delete process.env.CODEMAN_CANVAS_ASSET_QUOTA_BYTES;
+    }
+    const dir = resolve(workPath(ws), '..', 'work-files', key.slice(2));
+    expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
   });
 });

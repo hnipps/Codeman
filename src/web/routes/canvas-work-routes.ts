@@ -5,6 +5,9 @@
  * `POST  /api/canvas/:workspaceId/work`            creates one (`CreateWorkSchema`; `requestId` makes a retry safe).
  * `PATCH /api/canvas/:workspaceId/work/:key`       changes one (`UpdateWorkSchema`; `expectedRevision` guards it).
  * `POST  /api/canvas/:workspaceId/work/:key/report` the run-end rule an agent applies (`ReportWorkSchema`).
+ * `POST  /api/canvas/:workspaceId/work/:key/attachments?name=<file name>` attaches the raw body (`work-files.ts`).
+ * `GET   /api/canvas/:workspaceId/work/:key/attachments/:id` the attached bytes, Range-aware.
+ * `DELETE /api/canvas/:workspaceId/work/:key/attachments/:id` takes the file off the item and removes its bytes.
  *
  * The `canvas_work` tool calls the same functions through the command route, so a person and an agent are held to the
  * same rules. The author is the route's (`req.canvasAuthor`, else the signed-in person). A session may be linked or
@@ -12,13 +15,20 @@
  * committed change is announced as `canvas:changed` with `work: true`; nothing here changes an item by itself.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import type { CanvasPort } from '../ports/canvas-port.js';
-import { canAccessOwned, getAuthUser } from '../route-helpers.js';
+import { canAccessOwned, getAuthUser, ownerFor } from '../route-helpers.js';
+import { deployRole } from '../../deploy-role.js';
+import { canvasAssetQuotaBytes, CANVAS_UPLOADS_PER_MINUTE } from '../../config/canvas-limits.js';
+import { buildContentDisposition, localFileSource, sendFileBody } from './file-routes.js';
+import { takeToken } from './session-routes.js';
 import { ApiErrorCode } from '../../types.js';
 import { SseEvent } from '../sse-events.js';
 import type { Author } from '../../canvas/model.js';
 import {
+  attachWork,
   createWork,
+  detachWork,
   CreateWorkSchema,
   findWork,
   parseWorkKey,
@@ -34,6 +44,14 @@ import {
   type WorkTool,
 } from '../../canvas/work.js';
 import { changeWork, readWork, workFileProblem } from '../../canvas/work-store.js';
+import {
+  admitWorkFile,
+  findWorkFile,
+  MAX_WORK_FILE_BYTES,
+  removeWorkFile,
+  servedAs,
+  storeWorkFile,
+} from '../../canvas/work-files.js';
 import { ok, refuse, type Outcome } from './canvas-conversation-routes.js';
 
 const authorOf = (req: FastifyRequest): Author =>
@@ -218,6 +236,72 @@ export async function workTool(
   }
 }
 
+const attachBuckets = new Map<string, { tokens: number; lastRefill: number }>();
+const LIVE_ONLY = 'Only the live colour may write canvas data';
+
+/**
+ * Stores the body, then records it on the item in one write; a refused record removes the bytes again. The quota is
+ * the sum the items record, checked inside that write, so two uploads cannot both pass it.
+ */
+export async function attachWorkFile(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  number: number,
+  rawName: string | undefined,
+  body: unknown
+): Promise<Outcome> {
+  if (!deployRole.allows('persist')) return refuse(409, ApiErrorCode.CONFLICT, LIVE_ONLY);
+  const owner = ownerFor(req);
+  const caller = owner === undefined ? `ip:${req.ip}` : `user:${owner}`;
+  if (!takeToken(attachBuckets, `${caller}\n${workspaceId}`, CANVAS_UPLOADS_PER_MINUTE, Date.now()))
+    return refuse(429, ApiErrorCode.RATE_LIMITED, 'Too many files attached at once. Try again in a minute.');
+  if (!Buffer.isBuffer(body))
+    return refuse(415, ApiErrorCode.INVALID_INPUT, 'Send the file bytes as application/octet-stream with ?name=');
+  const admitted = admitWorkFile(rawName ?? '', body);
+  if (!admitted.ok)
+    return refuse(
+      admitted.reason === 'size' ? 413 : admitted.reason === 'type' ? 415 : 400,
+      ApiErrorCode.INVALID_INPUT,
+      admitted.message
+    );
+  const read = readWork(workspaceId);
+  if (!read.ok) return refuse(409, ApiErrorCode.CONFLICT, workFileProblem(read.reason));
+  if (!findWork(read.file, number))
+    return refuse(404, ApiErrorCode.NOT_FOUND, `NOT_FOUND: ${workKey(number)} does not exist`);
+  const now = Date.now();
+  const attachment = await storeWorkFile(workspaceId, number, admitted, body, now);
+  const context = { author: authorOf(req), now };
+  let result: ReturnType<typeof changeWork>;
+  try {
+    result = changeWork(workspaceId, (file) => attachWork(file, number, attachment, canvasAssetQuotaBytes(), context));
+  } catch (error) {
+    await removeWorkFile(workspaceId, number, attachment.id);
+    throw error;
+  }
+  if (!result.ok) {
+    await removeWorkFile(workspaceId, number, attachment.id);
+    return answer(ctx, workspaceId, result);
+  }
+  const outcome = await answer(ctx, workspaceId, result, true);
+  const answered = outcome.body as { success: true; data: Record<string, unknown> };
+  return { ...outcome, body: { ...answered, data: { ...answered.data, attachment } } };
+}
+
+export async function detachWorkFile(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspaceId: string,
+  number: number,
+  id: string
+): Promise<Outcome> {
+  if (!deployRole.allows('persist')) return refuse(409, ApiErrorCode.CONFLICT, LIVE_ONLY);
+  const context = { author: authorOf(req), now: Date.now() };
+  const result = changeWork(workspaceId, (file) => detachWork(file, number, id, context));
+  if (result.ok) await removeWorkFile(workspaceId, number, id);
+  return answer(ctx, workspaceId, result);
+}
+
 const badKey = (): Outcome => refuse(400, ApiErrorCode.INVALID_INPUT, 'INVALID_INPUT: a work key looks like W-12');
 
 export function registerWorkRoutes(scope: FastifyInstance, ctx: CanvasPort): void {
@@ -240,6 +324,52 @@ export function registerWorkRoutes(scope: FastifyInstance, ctx: CanvasPort): voi
     const number = parseWorkKey(req.params.key);
     const outcome =
       number === null ? badKey() : await updateWorkItem(ctx, req, req.params.workspaceId, number, req.body);
+    return reply.code(outcome.code).send(outcome.body);
+  });
+  type File = { Params: { workspaceId: string; key: string; id: string } };
+  scope.post<One & { Querystring: { name?: string } }>(
+    '/api/canvas/:workspaceId/work/:key/attachments',
+    { bodyLimit: MAX_WORK_FILE_BYTES + 1024 },
+    async (req, reply) => {
+      const number = parseWorkKey(req.params.key);
+      const { name } = z.object({ name: z.string().max(1000).optional() }).parse(req.query);
+      const outcome =
+        number === null ? badKey() : await attachWorkFile(ctx, req, req.params.workspaceId, number, name, req.body);
+      return reply.code(outcome.code).send(outcome.body);
+    }
+  );
+  scope.get<File>('/api/canvas/:workspaceId/work/:key/attachments/:id', async (req, reply) => {
+    const number = parseWorkKey(req.params.key);
+    if (number === null) {
+      const outcome = badKey();
+      return reply.code(outcome.code).send(outcome.body);
+    }
+    const read = readWork(req.params.workspaceId);
+    const attachment = read.ok
+      ? findWork(read.file, number)?.attachments?.find((a) => a.id === req.params.id)
+      : undefined;
+    const stored = attachment ? findWorkFile(req.params.workspaceId, number, attachment.id) : null;
+    if (!attachment || !stored) {
+      const outcome = refuse(404, ApiErrorCode.NOT_FOUND, 'Attachment not found');
+      return reply.code(outcome.code).send(outcome.body);
+    }
+    const served = servedAs(attachment);
+    reply
+      .header('Content-Type', served.type)
+      .header(
+        'Content-Disposition',
+        buildContentDisposition(served.download ? 'attachment' : 'inline', attachment.name)
+      )
+      .header('Content-Security-Policy', 'sandbox')
+      .header('Cache-Control', 'private, no-cache')
+      .header('X-Content-Type-Options', 'nosniff');
+    sendFileBody(reply, stored.size, req.headers.range, localFileSource(stored.path));
+    return reply;
+  });
+  scope.delete<File>('/api/canvas/:workspaceId/work/:key/attachments/:id', async (req, reply) => {
+    const number = parseWorkKey(req.params.key);
+    const outcome =
+      number === null ? badKey() : await detachWorkFile(ctx, req, req.params.workspaceId, number, req.params.id);
     return reply.code(outcome.code).send(outcome.body);
   });
   scope.post<One>('/api/canvas/:workspaceId/work/:key/report', { bodyLimit: 64 * 1024 }, async (req, reply) => {
