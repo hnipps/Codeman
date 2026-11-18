@@ -34,6 +34,7 @@ const row = (number: number, patch: Partial<WorkRow> = {}): WorkRow => ({
   updatedAt: number,
   revision: 1,
   history: [],
+  comments: [],
   ...patch,
 });
 const session = (id: string, state: ShellSessionRow['state'], name = id): ShellSessionRow => ({
