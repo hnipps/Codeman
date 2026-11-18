@@ -1,207 +1,258 @@
 # Intent: W-22 delete a Work item (spec, pilot)
 
-**Status:** Draft (spec for W-22, the pilot of `intent/2026-11-18-spec-first-lifecycle.md`)
+**Status:** Draft (spec for W-22, the pilot of `intent/2026-11-18-spec-first-lifecycle.md`; revision 2, after the owner's notes of 2026-11-18)
 
 ## Problem statement
 
-A canvas Work item can never be removed. A duplicate, a test item or a capture filed by mistake stays on the board for good. #52 shipped Not doing as the stand-in for delete, so today such an item sits in the Not doing lane forever, with its attached files still counted against the canvas quota.
+A canvas Work item can never be removed. #52 shipped Not doing as the stand-in for delete, but Not doing means something else: it is the explicit list of work that is out of scope. Items that are wrong, outdated, duplicated or filed by mistake have no place to go, so they clutter the lanes, the counts and agents' lists.
 
 ## Outcomes
 
-1. Harry can delete one Work item from its detail panel, on desktop and on a phone.
-2. Before anything is removed, Harry sees what goes with the item and confirms. Keep, or Escape, leaves everything as it was.
-3. After a delete, the item is gone from every lane, the outline's counts and `canvas_work list`, in every open tab.
-4. The item's attached files are removed from disk and no longer count against the canvas quota.
-5. A later read, update or report of the deleted key answers that the item was deleted, so an agent holding the key learns why.
-6. A deleted key is never given to a new item.
+1. Harry, or an agent, can delete an item. A deleted item moves to a new status, **Deleted**.
+2. Deleted items are hidden by default: from the lanes, the outline's counts, Needs you, and `canvas_work list`.
+3. Harry can show the Deleted lane, open a deleted item, read who deleted it, when and why, and restore it.
+4. A delete made on the page can be undone from its notice for a few seconds.
+5. Nothing is lost. A deleted item keeps its key, history, attachments, links and pull request. Restoring it brings all of them back.
+6. Deleted items get no agent work. Pickup, routines and the Reviews queue ignore them.
 
 ## Constraints
 
-- **Self-building rule 5.** After any delete, `work.json` stays readable by the release before this one (master 9c3641fa). `version` stays 1, stored statuses stay in the old five-value enum, and any new data is an unknown key that release passes through.
-- **Rule 6, live colour only.** The delete route checks `deployRole.allows('persist')` before it reads anything, as the attachment routes do. Off the live colour it answers 409 and changes nothing.
-- **The 8 GiB host.** No new background work: no sweep, timer or directory walk. The one filesystem change is removing the item's `work-files/<n>/` folder after the write.
-- **No id-branching.** Nothing branches on a CLI id. The person-only check reads the request's author kind, as routines do.
-- **Rules live in `work.ts`.** The refusal for an agent, the revision check and the tombstone are in the pure `deleteWork()`, not the route, so the HTTP route and any later caller hold the same rules.
-- **`work.json` stays readable by this release too.** An unparsable or newer file is still reported (409 `FILE`) and never overwritten, delete included.
-- **`canvas_capabilities` is at its 60 KB cap.** This change adds no tool and no `canvas_work` action, so that document does not grow.
-- Strings from items reach the DOM through `textContent` only, as everywhere in the Work view.
+- **Self-building rule 5.** After any delete, `work.json` stays readable by the release before this one (master 9c3641fa).
+  - `version` stays 1.
+  - Stored `status` stays in the old five-value enum. A Deleted item is stored as `status: "not-doing"` plus a new item key, `deleted`, the same way W-48 stored its three statuses under `todo`.
+- **Routines stay readable too.** `routines.json` and `routine-state.json` never hold the value `deleted`. Routine triggers and gates take a status list without it, so the previous release, which refuses an unknown status there, still reads both files.
+- **Rule 6, live colour only.** Delete and restore are item writes through `changeWork()`, which already writes only on the live colour.
+- **The 8 GiB host.** No new background work: no sweep, no timer, no purge.
+- **No id-branching.** Nothing branches on a CLI id. The agent rules read the request's author kind, as the Backlog rule does.
+- **Rules live in `work.ts`.** The Deleted status, its encoding and its agent rules sit in the pure functions every caller reaches: the routes, `canvas_work` and the Reviews page.
+- **`canvas_capabilities` is at its 60 KB cap.** No tool and no action is added. `canvas_work` gains one status value and one field, described in its own tool listing, not in that document.
+- Strings from items reach the DOM through `textContent` only.
 
 ## Invariants
 
-## I1: DeletedKeyNeverReused
+## I1: DeleteKeepsEverything
 
-After any sequence of creates, splits and deletes, every item's number is unique among all items ever created in the workspace. Deleting an item, including the newest one, never lowers the file's `next`.
+Deleting an item never removes it from `work.json`, never changes its number, and never touches its attachments' bytes, linked sessions, pull request, `createdFrom` or the items created from it. The only changes are its status, the `deleted` record, one history event, `revision` and `updatedAt`.
 
-- *Why:* the Canvas work rules say keys are "never reused". Agents, routine marks, history lines and work review ids (`workReviewId`) all name items by number, so a reused number would attach old reviews and marks to a new item.
-- *Test:* random create/split/delete sequences; after each step, assert `next` never decreases and no created number repeats.
+- *Why:* the owner asked for soft delete (review note, 2026-11-18). The Canvas work rules say keys are "never reused", and W-42 says the record is the source of truth for attached bytes.
+- *Test:* random item with attachments, links and `pr`; delete; diff the item before and after; only the listed fields differ; the attachment files are byte-identical; `next` is unchanged.
 
-## I2: OnlyAPersonDeletes
+## I2: PreviousReleaseReadsDeletedItems
 
-A delete whose author is an agent (a request carrying `X-Codeman-Parent-Session`, which sets `req.canvasAuthor`) is refused 403 and leaves `work.json` and the item's files byte-for-byte unchanged.
-
-- *Why:* "Nothing moves an item by itself". A delete cannot be undone, and routines (W-44) already keep their own delete for a person (`PERSON_ONLY`).
-- *Test:* route test with the agent header: 403, file bytes and attachment folder unchanged, no `canvas:changed` broadcast.
-
-## I3: DeleteNeedsTheRevisionSeen
-
-A delete names the revision the person saw. A delete without `expectedRevision` is refused 400; a stale one is refused 409 `CONFLICT`. Neither changes anything.
-
-- *Why:* two tabs, or an agent editing the item, can change it between the press and the request. The person must delete what they read, as every other item write is guarded.
-- *Test:* create, update (revision 2), delete with revision 1: 409 and the item is still there; delete with no revision: 400.
-
-## I4: DeleteTouchesOnlyThatItem
-
-A delete removes exactly one item. Every other item keeps its fields and its `revision`, including items whose `createdFrom` names the deleted one. The only other change to the file is that the number leaves `readyOrder` and a tombstone is added.
-
-- *Why:* the reorder rule already says "only the moved item's revision changes". Bumping other items' revisions would make agents' and other tabs' `expectedRevision` writes fail for no visible reason.
-- *Test:* random file; delete one item; diff every other item's JSON before and after: equal. `readyOrder` equals the old one without that number.
-
-## I5: PreviousReleaseReadsTheFile
-
-After any delete, the written `work.json` parses with the pre-change file schema (master 9c3641fa): `version` 1, stored statuses in `backlog`, `todo`, `in-progress`, `done`, `not-doing`, and the tombstones under a top-level key that schema passes through.
+After any delete, the written `work.json` parses with the pre-change file schema (master 9c3641fa). Every Deleted item is stored with `status: "not-doing"` and its `deleted` record. That release shows it in Not doing.
 
 - *Why:* self-building rule 5, and the W-48 journal entry: the old schema "refuses a whole file over one unknown status and any version but 1".
-- *Test:* a gate test parses the encoded file with a frozen copy of the 9c3641fa `WorkFileSchema` and asserts success and that the tombstone key survives its round trip.
+- *Test:* a gate test parses the encoded file with a frozen copy of the 9c3641fa `WorkFileSchema`, asserts success, and asserts the item reads as `not-doing` with `deleted` kept.
 
-## I6: RecordFirstThenBytes
+## I3: AnOldReleaseMoveRestores
 
-An item's attached bytes are removed only after the delete was written. A refused delete (any code) removes no bytes. After a delete, the canvas quota counts only the attachments the remaining items record.
+An item stored with a `deleted` record but a stored status other than `not-doing` decodes to that stored status, not Deleted. The next write of the item drops the stale record. The previous release only knows Not doing, so a person who moved the item after a rollback meant to restore it.
 
-- *Why:* the W-42 rule "the record is the source of truth for what exists". Removing bytes first would leave a live item pointing at missing files if the write failed.
-- *Test:* item with two attachments; a refused delete leaves both files on disk; an accepted one leaves `work-files/<n>/` absent and `attachedBytes()` lower by their sizes.
+- *Why:* rollback restores code only (rule 5). Without this rule, an item the old release moved to In progress would turn back into Deleted after the roll forward.
+- *Test:* a stored item `{status: "in-progress", deleted: {...}}` decodes as `in-progress`; one write later the encoded item has no `deleted`.
 
-## I7: DeletedKeySaysDeleted
+## I4: HiddenByDefault
 
-While its tombstone is kept, a read, update, report or attach of a deleted key answers 404 `NOT_FOUND` with a message saying the item was deleted and when. A number that was never issued still answers "does not exist".
+A Deleted item does not appear in:
+- the outline's counts or its Human required and In progress lists;
+- Needs you;
+- the Work view's lanes while "Show deleted" is off;
+- `canvas_work list` without a status.
 
-- *Why:* routine runs and agents hold item keys across a long run (W-44 work-item triggers). "Does not exist" for a key they just read looks like a bug; "was deleted" tells them to stop.
-- *Test:* delete W-n; GET, PATCH, report and attach each give 404 with "deleted" in the message; GET of `next` gives 404 with "does not exist".
+`canvas_work list` with `status: "deleted"` lists only Deleted items, and `canvas_work read` of a Deleted key answers it with its status.
 
-## I8: DeletedItemLeavesTheReviewQueue
+- *Why:* the owner's note: deleted items "should be hidden by default". An agent reading a list without a status must not pick up or reason about deleted items.
+- *Test:* a file with items in every status, some Deleted with a `needs` question; assert the model's counts, the outline rows, the Needs you rows and the brief list leave out every Deleted item; `list` with `status: "deleted"` returns exactly them.
 
-When an item with a pull request is deleted, its work review stops waiting on the Reviews page and its record is kept, unchanged. Nothing can bring that review back, since the number is never reused.
+## I5: AgentsMayDeleteWithAReason
 
-- *Why:* "Wanted is the tracker's": `wanted()` is already false for a missing item. This pins it for delete, so a review cannot sit in the queue for an item that is gone, and Approve on it answers 409 `GONE`.
-- *Test:* item with `pr.branch` and a synced review; delete it; `queueOf` no longer lists it as waiting; the review file is byte-identical; Approve answers `GONE`.
+An agent may move any item, in any status (Backlog included), into Deleted. It must give a `reason`. The reason is stored on the `deleted` record and quoted in the history event. A person may give one and need not.
+
+- *Why:* the owner's note: "Agents must be able to soft-delete". A reason is the only trace of why an agent hid an item.
+- *Test:* an agent update to `deleted` without `reason` is refused 400, and the file is unchanged. With `reason`, it succeeds from each of the seven other statuses, including Backlog with no `instruction`. The history reads `Deleted: "<reason>"`.
+
+## I6: OnlyAPersonRestores
+
+Only a person moves an item out of Deleted. An agent's update or report that would do so is refused unless it carries `instruction`, the person's words, under the same rule as moving out of Backlog. A `continue` report, and edits that leave the status alone, are allowed.
+
+- *Why:* "Only a person moves an item out of Backlog" exists so an agent cannot commit work nobody asked for. Restoring a deleted item is the same act. Without this rule, an agent mid-run could report `done` and pull an item back out of Deleted.
+- *Test:* on a Deleted item, an agent's `status: "ready-for-work"` without `instruction` is refused; `report done` is refused; `report continue` is accepted and the item stays Deleted; a person's restore is accepted.
+
+## I7: DeletedIsQuiet
+
+A Deleted item gets no agent work:
+- It is closed (`workClosed()` is true), so its work review does not wait on the Reviews page.
+- It is not in `readyOrder`.
+- Request changes on its review is refused, as for any closed item.
+- No routine trigger or gate can name the Deleted status.
+
+Restoring the item to an open status with the same pull request brings the same review back with its notes.
+
+- *Why:* "Wanted is the tracker's": closing an item already hides its review "with no delete" and brings it back when it reopens. This pins Deleted as one of the closed statuses.
+- *Test:* an item with `pr.branch` and a synced review is deleted. `queueOf` no longer lists it as waiting, and the review file is byte-identical. `readyQueue()` leaves it out. A routine trigger or gate with `status: "deleted"` is refused 400. Restore it, and the same review id waits again.
+
+## I8: UndoIsAnOrdinaryMove
+
+Restoring an item, whether from Undo or Restore, puts it back in the status its `deleted` record names. A Ready for work item goes to the bottom of that lane. Restore is a normal status change: it is logged and announced, and it is guarded by `expectedRevision`.
+
+- *Why:* the Work view already offers Undo on a person's move ("undoable from the notice"). Delete reuses that path rather than adding a second one.
+- *Test:* delete a Ready for work item at position 1, then restore it. Its status is `ready-for-work`, its position is last, and two history events record the move away and the move back.
 
 ## Non-goals
 
-- Deleting from a card, a lane or the keyboard without opening the item. No Delete-key shortcut.
+- Permanent delete, a purge or emptying the Deleted lane. Deleted items, and their attachments, stay on disk and count against the canvas quota. A purge would be a later spec.
 - Deleting several items at once.
-- Undo, a trash lane, or a "recently deleted" view.
-- An agent delete, or a `canvas_work delete` action.
-- Changing Not doing. It stays the way to close an item and keep it.
-- Removing anything from linked sessions, review records, routine records or canvas history.
+- A Delete-key shortcut on cards.
+- A new `canvas_work` action. Delete is `update` with `status: "deleted"`.
+- Changing Not doing. It stays the list of out-of-scope work.
+- Routines that trigger on, or count, Deleted items.
 
 ## Acceptance checks
 
-1. `npm test -- test/canvas-work.test.ts` passes, with one or more cases for each of I1 to I8, each marked `// Invariant I<N>: <Name>`.
+1. `npm test -- test/canvas-work.test.ts test/canvas-work-model.test.ts test/canvas-routines.test.ts` passes. Each of I1 to I8 has one or more cases, each marked `// Invariant I<N>: <Name>`.
 2. On a throwaway instance (`CODEMAN_INSTANCE`, its own port), with `curl`:
-   - create an item, attach a file, then `DELETE /api/canvas/<ws>/work/W-n?expectedRevision=<r>` answers 200 with `{ deleted: "W-n" }`;
-   - `GET /api/canvas/<ws>/work/W-n` answers 404 and the message says it was deleted;
-   - a new create gets W-(n+1) or later, never W-n;
-   - the same DELETE with `X-Codeman-Parent-Session` answers 403; with a stale revision, 409;
-   - the item's `work-files/<n>/` folder is gone.
-3. The browser suite's `test/canvas-work.browser.test.ts` passes, run by hand on an idle host (not during a deploy), with new cases: delete from the detail at 1440px, Keep and Escape cancel, focus lands on the next card, and the phone layout at 390px.
-4. By hand on the throwaway instance, desktop and phone: open an item, press Delete item, read the confirmation, press Keep (nothing changes), then confirm (the item leaves its lane and the notice says so). In a second tab with the same item open, the detail says it was deleted.
+   - Create an item, attach a file, and `PATCH /api/canvas/<ws>/work/W-n` with `{status: "deleted", expectedRevision}`. It answers 200 with `status: "deleted"`.
+   - The `work.json` file stores it as `status: "not-doing"` with a `deleted` record. The attachment file is still on disk.
+   - `GET /api/canvas/<ws>/work` still returns it. A `canvas_work list` through the command route without a status leaves it out.
+   - The same PATCH with `X-Codeman-Parent-Session` and no `reason` answers 400. With a `reason` it answers 200.
+   - An agent PATCH back to `backlog` without `instruction` answers 400. A person's answers 200.
+3. Run the browser suite by hand on an idle host, not during a deploy. `test/canvas-work.browser.test.ts` passes, with new cases:
+   - delete from the detail at 1440px, then Undo;
+   - Show deleted, open the item, Restore;
+   - the phone layout at 390px.
+4. By hand on the throwaway instance, desktop and phone:
+   - Delete an item. It leaves its lane, and the notice offers Undo.
+   - Turn on Show deleted. The item is there with its reason. Restore it.
+   - In a second tab, the item disappears without a reload.
 
 ## Design
 
-The design is a button and an inline confirmation, the same pattern the Tasks list uses for Remove (`tasks-view.ts`, `.revert-confirm`). No prototype was made, because the pattern already ships.
+The design is a status move, with the same Undo the Work view already has for moves. Deleted is a lane that stays hidden unless "Show deleted" is on, plus a banner on a deleted item. Every piece reuses a pattern that already ships: a lane, the move notice with Undo, a line button, and the stacked closed column. A delete can be undone, so the inline confirmation in revision 1 is gone. No prototype was made yet, because this spec agent's session cannot reach the canvas. One can be added before approval if the description below is not enough.
 
-**Entry point.** The item's detail in the rail gets a last section, below History, separated by a rule: one line button, **Delete item**. It is not on cards, lanes or the outline. On a phone the rail is full width and the button is 44px high, like the other detail controls.
+**Entry points.**
+- The item's detail gets a **Delete item** line button in its last section, below History. On a phone it is 44px high, like the other detail controls.
+- The detail's Status select lists **Deleted** last.
+- When the Deleted lane is shown, a card can be dragged into it.
+- Shift+Left/Right on a card never steps into or out of Deleted, so no keyboard shortcut deletes.
 
-**Confirmation.** Pressing Delete item replaces the button, in place, with a group (`role="group"`, label "Delete W-n"):
+**No confirmation; Undo instead.** Delete moves the item at once. The rail closes the detail. Focus moves to the card after the deleted one in its lane, else the card before it, else that lane's "+ Add item". The notice says "W-22 deleted" with **Undo** for 5 seconds, the same notice a move uses. Undo restores the item and reopens nothing.
 
-- One sentence built from what the item has, for example: "Delete W-22 for good? Its history and its 2 attached files go with it, and its pull request review leaves the Reviews queue. This cannot be undone." The file and review parts appear only when they apply. When agent sessions are linked, it adds "Linked sessions keep running."
-- Two buttons: **Keep** and **Delete W-22** (danger style). Keep gets focus first, so Enter on arrival does not delete.
-- Keep or Escape closes the group and returns focus to Delete item. Opening another item, or the panel repainting for another item, also closes it.
-- While the request travels, both buttons are disabled.
+**Show deleted.** The Work view's header gets a **Show deleted (N)** toggle button (`aria-pressed`), shown only when N > 0. The setting lives in the page and is not stored.
+- When on, a Deleted lane joins the stacked closed column on a desktop, below Done and Not doing.
+- On a phone, a Deleted tab joins the wrapping tabs.
+- Deleted cards are muted. They show the title, key and "Deleted <date>", and list newest deletion first.
 
-**After a delete.** The rail closes the detail. Focus moves to the card after the deleted one in its lane, else the card before it, else that lane's "+ Add item". With the lanes closed, focus goes back to where the outline's Work section was opened. The page says "W-22 deleted" through the live region, and the Work view's notice shows the same words with no Undo. The lane, counts and outline repaint from the server's answer and the `canvas:changed` broadcast.
+**A deleted item's detail.** A banner at the top reads "Deleted by you on 18 Nov" or "Deleted by <session> on 18 Nov", with the reason below when there is one. It has one primary button, **Restore to <status>**, which names the status the item came from. Everything else in the detail reads as usual and can be edited.
 
-**Refused.** A 409 conflict reloads the item and the group says "W-22 changed since you opened it. Read it again before deleting." with only Keep. Any other refusal shows the server's message in the group and keeps the item.
+**Deleted elsewhere.** When another tab, a person or an agent deletes the item open here, the detail switches to that banner. It does not close under the reader.
 
-**Deleted elsewhere.** When another tab or person deletes the item that is open here, the detail shows "W-22 was deleted." in place of the fields, instead of today's "Pick a work item".
-
-**Keyboard.** Tab reaches Delete item at the end of the detail. Enter or Space opens the confirmation. Tab moves between Keep and Delete W-n. Escape is Keep. There is no shortcut that deletes.
+**Keyboard.**
+- Tab reaches Delete item at the end of the detail. Enter or Space deletes.
+- Undo in the notice is reachable by Tab. The page also announces the delete through its live region.
+- In a deleted item's detail, Restore is the first control after the title.
 
 ## Technical design
 
-**Hard delete with a tombstone.** The item is removed from `items`. A short tombstone is added under a new top-level file key, `deleted: [{ number, title, at, author }]`, newest first, at most 500. That is the item's whole audit trail after a delete: who, when and what it was called. The item's own history goes with it. The previous release passes the unknown file key through on its own writes (`WorkFileSchema` is passthrough), so a rollback keeps the tombstones. A soft-delete flag on the item was rejected: the previous release would show every deleted item again after a rollback.
+**Soft delete as a status.** `WORK_STATUSES` gains `deleted`, last, named "Deleted". `workClosed()` is true for it. A hard delete was dropped at the owner's request.
 
-**Data shape.** `WorkFileSchema` gains `deleted` as an optional array that drops a bad entry alone (`.catch([])` per entry, as `attachments` does). `next`, `version` and the item schema are unchanged. `encodeWorkFile()` writes `deleted` only when it is non-empty.
+**Stored shape.**
+- The decoded status `deleted` is stored as `status: "not-doing"` plus an item key: `deleted: { at, from, author, reason? }`.
+  - `from` is the status it left.
+  - `reason` is at most 300 characters, one line.
+- `WorkFileSchema` decodes `not-doing` + `deleted` as Deleted.
+- Any other stored status with a `deleted` record decodes as that status (I3).
+- `encodeWorkFile()` writes `deleted` only for a Deleted item and drops it otherwise.
+- Only `work.ts` sees the stored form, as with `todo`. `version`, `next` and the stored enum are unchanged.
+- A soft delete stored this way shows in Not doing after a rollback. It does not disappear, and it is not shown as open work.
 
-**Key number.** Never reused. `deleteWork()` never touches `next` (I1).
+**Rules in `work.ts`.**
+- **Moving into Deleted.** `setStatus()` to Deleted records `deleted` and logs `Deleted` (with `: "<reason>"` when given). It removes the number from `readyOrder`, as leaving Ready for work does.
+- **Reason.** `UpdateWorkSchema` gains `reason`, which an agent must give when moving into Deleted (I5).
+- **Moving out.** `backlogRefusal()` becomes "out of Backlog or Deleted": the same `instruction` rule and the same history line (I6). Moving into Deleted is exempt from the Backlog rule.
+- **Restore.** A restore clears `deleted`. Undo and Restore both send `status: <from>` (I8).
+- **Report.** `reportWork()` already passes through `backlogRefusal()` for `done`, `split` and `ask`, so it inherits I6. `continue` does not move.
 
-**`deleteWork(file, number, expectedRevision, ctx)`** in `src/canvas/work.ts`, pure:
+**Hidden by default.**
+- `canvas_work list` without a status filters out Deleted. With `status: "deleted"`, it lists them.
+- `GET /work` keeps returning every item, because the page filters.
+- In the page's `work-model.ts`, `workCounts`, `outlineItems`, `openCount`, the Needs you rows and `laneItems` leave Deleted out unless Show deleted is on.
+- `stepStatus()` skips Deleted.
+- A page from before the deploy drops rows it cannot parse (`parseWork`), so an open old tab simply does not show Deleted items.
 
-1. An agent author is refused with a new `WorkRefusal` code `PERSON_ONLY`, answered 403 `FORBIDDEN`.
-2. `unchangeable()` gives 404 or the 409 revision conflict. `expectedRevision` is required by the route's schema.
-3. It removes the item and its number from `readyOrder`, and adds the tombstone. It returns the removed item, so the route knows which bytes to remove.
+**HTTP route.** No new route. Delete and restore are `PATCH /work/:key`.
 
-The not-found message reads the tombstones: "W-22 was deleted on <date>" when one matches, else today's "W-22 does not exist" (I7). `unchangeable()` and `createWork()`'s `createdFrom` check share that one message function.
+**MCP `canvas_work`.**
+- No new action. `update` takes `status: "deleted"` and `reason`.
+- The tool description gains one sentence: delete hides wrong or outdated items, gives a reason, and only a person restores.
+- `canvas_capabilities` is unchanged.
 
-**HTTP route.** `DELETE /api/canvas/:workspaceId/work/:key?expectedRevision=<n>` in `canvas-work-routes.ts`. It checks `deployRole.allows('persist')` first, then `changeWork(deleteWork)`, then removes `work-files/<n>/` with `rm({recursive, force})`. A failure there is logged and not returned, since the record is already gone and orphaned bytes count against nothing. Then it broadcasts `canvas:changed` with `work: true`. It answers `{ success: true, data: { deleted: "W-n" } }`. A query parameter is used, not a body, because some clients drop a DELETE body.
+**Who may delete.**
+- **Delete:** a person, or an agent with a reason.
+- **Restore:** a person, or an agent quoting the person's `instruction`.
 
-**MCP `canvas_work`.** No new action, so the tool listing and `canvas_capabilities` are unchanged. An agent that holds a deleted key gets the "was deleted" 404 through `read`, `update` and `report`.
+**Key number.** Never reused, and never freed: the item stays.
 
-**Who may delete.** A person only (see Decision 2).
+**Attachments' bytes.** Kept. They still count against the quota, and they are served as before. Purge is a non-goal.
 
-**Attachments' bytes.** Removed after the write, as `detachWork` does (I6). The whole `work-files/<n>/` folder goes, which also catches an upload that was in flight. Its own refused `attachWork` (now "was deleted") removes its bytes as it does today.
+**Items whose `createdFrom` points at it.** Unchanged. The Related items section shows the deleted item with its status.
 
-**Items whose `createdFrom` points at it.** Left as they are (I4). `workRelated()` already skips a missing parent, so their detail shows no "created from" link. `workBrief()` still lists the key, which a reader can look up and find deleted.
+**Linked sessions.** Untouched. A session working on the item sees `status: "deleted"` on its next read. Any move it then tries is refused (I6).
 
-**Linked sessions.** Untouched. Sessions hold no reference to items. A session working on the item finds out at its next `canvas_work` call (I7).
+**Waiting work review.** It leaves the queue because Deleted is closed (`wanted()`). An Approve already in progress syncs first and answers `GONE`. Restore brings the same review back (I7).
 
-**Waiting work review.** The review leaves the queue with no write, because `wanted()` is false for a missing item. Its record stays (I8). An Approve already in progress syncs first and answers `GONE`. A merge recorded just before the delete keeps its deploy and its record; `accepted()` finds no item and does nothing.
+**Routines.**
+- `routines.ts` takes `RoutineStatusSchema`, the work statuses without `deleted`, for triggers, gates and the marks in `routine-state.json`. A trigger or gate naming `deleted` is refused, so neither file can hold the value (constraints).
+- Gates and triggers never see Deleted items, because those are not in any status a routine can name.
 
-**Routines.** A work-item trigger's marks are pruned to items still in their status, so the deleted item's mark goes on the next tick. Gates count only existing items. A claim on a deleted item fails the way a claim on an item that left its status fails. No routine code changes.
-
-**History and audit.** The tombstone (above). Nothing is added to the canvas operation log.
+**History and audit.** The item's own history: `Moved from <A> to Deleted`, `Deleted: "<reason>"`, and on restore `Moved from Deleted to <B>`. The `deleted` record holds who, when, from where and why.
 
 **Modules touched.**
-- `src/canvas/work.ts`: `deleteWork()`, the tombstone schema, `PERSON_ONLY`, the shared not-found message.
-- `src/web/routes/canvas-work-routes.ts`: the DELETE route and the 403 mapping.
-- `src/canvas/work-files.ts`: `removeWorkFiles(workspaceId, number)` for the folder.
-- `packages/canvas/src/work-view.ts` and its stylesheet: the Delete item section, confirmation, focus and the deleted-elsewhere text.
-- `docs/architecture-invariants.md` "Canvas work" and `docs/subsystem-rules.md` "Canvas work": the sentence "Items are never deleted, so no other path removes bytes" is replaced, and delete is added to the route list.
-- Tests: `test/canvas-work.test.ts`, `test/canvas-work.browser.test.ts`.
+- `src/canvas/work.ts`: the status, its encoding, `reason`, the refusal rule and the list filter.
+- `src/web/routes/canvas-work-routes.ts`: `list` filtering only.
+- `src/canvas/routines.ts`: `RoutineStatusSchema`.
+- `src/canvas/commands.ts` or the tool listing: the `canvas_work` description sentence.
+- `packages/canvas/src/work-model.ts`, `work-view.ts` and their stylesheet: Delete item, the select option, Show deleted, the lane and tab, the banner, Restore and Undo.
+- `docs/architecture-invariants.md` "Canvas work" and "Canvas routines", and `docs/subsystem-rules.md` "Canvas work": the statuses, the stored form and the Backlog-or-Deleted rule.
+- Tests: `test/canvas-work.test.ts`, `test/canvas-work-model.test.ts`, `test/canvas-routines.test.ts`, `test/canvas-work.browser.test.ts`.
 
 **Risks.**
-- *A create retried after its item was deleted files a new item*, because the `requestId` it matched on went with the item. The window is a client retry of a few seconds, and a person must have deleted the item in it. Accepted, not handled.
-- *Rollback after a delete.* The previous release reads the file, keeps `deleted`, and answers "does not exist" for the deleted key. The bytes are already gone, which matches the record. Nothing to repair.
-- *Orphaned bytes* if the folder removal fails. They count against nothing and are logged. No sweep is added.
+- *Deleted items grow without bound.* They count toward `MAX_WORK_ITEMS` (2,000) and the attachment quota. At today's rate (63 items in about two weeks), that limit is far off. Purge is the later spec.
+- *A rollback shows deleted items in Not doing.* After a roll forward they are Deleted again, unless someone moved them (I3).
+- *An old page tab* hides Deleted items rather than showing an error, because the page drops rows it cannot parse.
 
 ## Decisions for Harry
 
-1. **Delete for good, with a confirmation, and no Undo.** Recommended. Undo would need a soft delete or a restore path, and a soft-deleted item reappears after a rollback. Not doing already covers "close it but keep it", so delete can be the rare, deliberate act.
-2. **Only a person deletes.** Recommended. Agents keep Not doing and get no `canvas_work` delete action. This matches routines, whose delete is also person-only, and keeps "nothing moves an item by itself" true for the one act that cannot be undone.
-3. **Any status can be deleted, including In progress and an item with a waiting review.** Recommended. The confirmation says what goes with it (files, review, linked sessions), and refusing by status would send Harry to move the item first just to delete it.
+Your notes settled soft delete, agent delete and "any status". These three remain, each written so you can approve the recommendation as it stands.
+
+1. **Only a person restores.** Recommended. An agent needs your words (`instruction`) to bring an item back, as it does to move one out of Backlog. Without this rule, an agent finishing a run could report `done` and pull a deleted item back into the lanes.
+2. **An agent gives a reason when it deletes.** Recommended. The reason is shown on the deleted item and kept in its history. It is the only record of why an agent hid something, and you will read it when deciding whether to restore. A person's reason is optional.
+3. **After a rollback, deleted items show in Not doing.** Recommended, and it follows from rule 5. The previous release refuses any status it does not know. So a Deleted item is stored as Not doing plus a marker, and that release shows it as Not doing. The alternative, hiding them in the old release, is impossible without changing the old release.
 
 ## Checks run
 
-- `crosscheck:draft-invariants` drafted I1 to I8 from `docs/architecture-invariants.md` "Canvas work", "Work item pull requests" and self-building rule 5. Its red-pen step is this Spec review, and its property tests are left to ticket 1, since this branch is docs only. One departure from the skill: the code was read before the invariants were drafted, because the brief asked for it. The invariants are phrased from the rules docs, and the gap analysis is in the Technical design.
-- `crosscheck:audit-invariant-consistency` ran I1 to I8 against the same sections. It found:
-  - *Contradiction:* "Items are never deleted, so no other path removes bytes" (Attachments). Resolved: ticket 1 replaces that sentence.
-  - *Strength mismatch:* "A person and an agent go through the SAME functions" against I2's person-only delete. Resolved: the refusal lives inside `deleteWork()`, so both still reach the same function, as routines do.
-  - *Scope gap:* "`requestId` makes a create retry safe" does not hold across a delete. Recorded under Risks and accepted.
-  - *Consistent, no change:* keys never reused (I1), only the changed item's revision moves (I4), `wanted()` hides the review (I8), routine marks pruned to existing items.
-- These are layer 5 and 6 searches. They point at contradictions and are not proof that none remain.
+**Revision 1.** `crosscheck:draft-invariants` drafted the invariants from `docs/architecture-invariants.md` "Canvas work", "Work item pull requests" and self-building rule 5. Its red-pen step is this Spec review. Its property tests are left to ticket 1, since this branch is docs only. One departure from the skill: the code was read before drafting, because the brief asked for that.
+
+**Revision 2.** The invariants were redrafted for soft delete. `crosscheck:audit-invariant-consistency` ran them again against "Canvas work", "Work item pull requests" and "Canvas routines". It found:
+- *Contradiction:* routine triggers and gates take `WorkStatusSchema`, so adding `deleted` there would let `routines.json` hold a value the previous release refuses. Resolved with `RoutineStatusSchema` (constraints, I7).
+- *Contradiction:* "never store a new status value into `status`". Resolved: the stored form is `not-doing` + `deleted` (I2).
+- *Scope gap:* the Backlog rule did not cover a report moving an item out of a closed status. Resolved by I6.
+- *Consistent, no change:* keys never reused (I1), the closed-item review rule (I7), and the existing Undo on moves (I8).
+
+These are layer 5 and 6 searches. They point at contradictions and are not proof that none remain.
 
 <details><summary>Tickets (2)</summary>
 
-**Ticket 1: Delete a Work item on the server.** Order 1. No dependencies.
-- Serves outcomes 3 to 6 for the server and the API.
-- `deleteWork()` and the tombstone in `work.ts`. The DELETE route, folder removal and broadcast. The shared "was deleted" message.
-- Updates the two "Canvas work" docs paragraphs.
-- Gate tests for I1 to I8, each marked `// Invariant I<N>: <Name>`, plus acceptance checks 1 and 2.
-- Reviewable alone: it adds a route and nothing in the page calls it yet.
+**Ticket 1: Deleted status on the server.** Order 1. No dependencies.
+- Serves outcomes 1, 2, 5 and 6 for the server, the API and `canvas_work`.
+- The Deleted status and its stored form, `reason`, the Backlog-or-Deleted rule, the `list` filter, `RoutineStatusSchema` and the tool description sentence.
+- Updates the docs paragraphs.
+- Gate tests for I1 to I3 and I5 to I7, each marked `// Invariant I<N>: <Name>`, plus I4's `list` half, I8's server half, and acceptance checks 1 and 2.
+- Reviewable alone: the page, which drops rows it cannot parse, keeps working unchanged.
 
-**Ticket 2: Delete item in the Work detail panel.** Order 2. Depends on ticket 1.
-- Serves outcomes 1 to 3 on desktop and phone.
-- The Delete item section, the inline confirmation, focus after a delete, the refusal text and the deleted-elsewhere text, as described in Design.
+**Ticket 2: Delete, Show deleted and Restore on the page.** Order 2. Depends on ticket 1.
+- Serves outcomes 1 to 4 on desktop and phone.
+- Delete item, the Status select option, Undo, Show deleted with its lane and tab, the deleted banner with Restore, the deleted-elsewhere switch, and the model's filtering (I4's page half, I8's Undo).
 - Browser tests and acceptance checks 3 and 4.
-- Reviewable alone against ticket 1's route.
+- Reviewable alone against ticket 1's API.
 
 </details>
