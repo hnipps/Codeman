@@ -150,6 +150,24 @@ export const DecisionSchema = z
   .strict();
 export type Decision = z.infer<typeof DecisionSchema>;
 
+/**
+ * A work review's walkthrough as the agent that built the item wrote it. Kept apart from `walkthrough`, which on a work
+ * review is the item's text and is replaced at every sync, so neither ever overwrites the other. Absent until an agent
+ * submits one (`docs/work-review-walkthroughs-spec.md`); this release reads it and nothing writes it yet.
+ */
+export const AuthoredSchema = z
+  .object({
+    /** The session that submitted it, linked to the item. */
+    sessionId: z.string().min(1).max(100),
+    sessionName: z.string().max(200),
+    walkthrough: z.string().max(MAX_WALKTHROUGH_CHARS),
+    /** The origin tip the agent wrote it for; the page says so when the review's head has moved past it. */
+    headSha: Sha,
+    at: z.number().int().nonnegative(),
+  })
+  .strict();
+export type Authored = z.infer<typeof AuthoredSchema>;
+
 export const ReviewSchema = z
   .object({
     id: ReviewIdSchema,
@@ -172,6 +190,8 @@ export const ReviewSchema = z
     notes: z.array(NoteSchema).max(MAX_NOTES_PER_REVIEW),
     /** Stills of the running branch, for a project whose preview cannot be framed. Absent when there are none. */
     captures: z.array(CaptureSchema).max(MAX_CAPTURES).optional(),
+    /** On a work review only: the agent's own walkthrough. Absent on every other review. */
+    authored: AuthoredSchema.optional(),
     /** When notes were last sent as Request changes. */
     requestedAt: z.number().int().nonnegative().optional(),
     decision: DecisionSchema.optional(),

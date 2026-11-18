@@ -46,7 +46,8 @@ export type WorkReviewFacts = {
  * goes up and `updatedAt` too, so a review whose notes were sent reads `updated`. When only the words or the base
  * differ they are replaced and `updatedAt` stays, or sending notes (which edits the item) would mark the review
  * updated by itself. When nothing differs `open` itself comes back, which the caller reads as nothing to write. A
- * review with a decision is never reopened here.
+ * review with a decision is never reopened here. `authored`, the agent's own walkthrough, is carried through unchanged
+ * on every path: the item's text is `walkthrough`, and a sync never writes the agent's.
  */
 export function syncedReview(
   open: Review | undefined,
