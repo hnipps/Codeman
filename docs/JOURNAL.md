@@ -20,6 +20,15 @@ A session the new colour does not list now passes only when the live colour's `m
 
 The health-check timeout and the reverse proxy are ticked, each citing the key in `/etc/codeman-supervisor/config.json` that sets it: 90 seconds (`limits.healthTimeoutSeconds`) and Caddy (`proxy.upstreamFile`, `proxy.reloadCommand`). Recording what was built is taken as agreeing the default; the owner can overrule it in review. The nightly off-server copy stays open: backups stay on the VM, and the proposal under it needs the owner. The other three open questions are untouched.
 
+## 2026-11-18 — Agents read Work item attachments through MCP, client-side
+
+**Type:** intent-refinement
+**Touches:** `src/mcp-server.ts`, `src/cli-agent.ts`
+**Why:** `canvas_work read` listed attachments, but an agent could not read their bytes.
+**Links:** Work item W-61, [intent/2026-11-18-w61-work-attachment-mcp.md](../intent/2026-11-18-w61-work-attachment-mcp.md)
+
+The read is a separate MCP tool, `canvas_work_attachment`, rather than a new `canvas_work` action. `canvas_work`'s schema is shared with the HTTP command route, which returns JSON only, so an action there would be handled on one side and refused on the other. The new tool calls the existing attachment route like `canvas_screenshot` calls its route, so the server is unchanged. Images up to 5 MiB of base64 and text come back inline. Every other type, and any larger image, is saved to a new absolute `path` the agent chooses, because a PDF or an Office file is only useful to the agent's own file tools.
+
 ## 2026-11-18 — Deleted Work items on the server (W-22 ticket 1)
 
 **Type:** propagated-discovery
