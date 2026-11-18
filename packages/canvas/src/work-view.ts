@@ -43,6 +43,7 @@ import {
 } from './work-model.js';
 import { parseWaitingReviews, reviewWords, workReviewKey, type WaitingReviews } from './reviews.js';
 import { RoutinesView } from './routines-view.js';
+import { relativeTime } from './comments.js';
 
 export type WorkHost = {
   url(path: string): string;
@@ -132,6 +133,9 @@ export class WorkView {
   private menu = false;
   /** Unsent answers to Needs-you questions by item number, so a refused save or a repaint keeps the typed text. */
   private answers = new Map<number, string>();
+  /** Unsent comment text per item, so a repaint while the person is elsewhere in the detail keeps it. */
+  private commentDrafts = new Map<number, string>();
+  private commenting = false;
   private phoneLane: WorkStatus = 'in-progress';
   private showAllDone = false;
   private lanesStale = false;
@@ -1267,7 +1271,7 @@ export class WorkView {
     const descTitle = el('h3', '', 'Description');
     descTitle.id = 'workDescTitle';
     descSec.append(descTitle, desc);
-    parts.push(descSec);
+    parts.push(descSec, this.commentSection(item));
 
     const parent = item.createdFrom !== undefined ? this.items.find((i) => i.number === item.createdFrom) : undefined;
     const children = this.items.filter((i) => i.createdFrom === item.number);
@@ -1319,6 +1323,76 @@ export class WorkView {
       this.detail
         .querySelector<HTMLElement>(`[data-work-detail="${CSS.escape(keep)}"]`)
         ?.focus({ preventScroll: true });
+  }
+
+  private commentSection(item: WorkRow): HTMLElement {
+    const sec = el('div', 'work-sec');
+    sec.append(el('h3', '', 'Comments'));
+    const now = Date.now();
+    if (!item.comments.length) sec.append(el('p', 'work-empty', 'No comments yet'));
+    else {
+      const list = el('ol', 'work-comments');
+      list.setAttribute('aria-label', 'Comments');
+      for (const comment of item.comments) {
+        const li = el('li');
+        const meta = el('div', 'work-comment-meta', `${authorLabel(comment.author, this.sessions)} · `);
+        const time = el('time', '', relativeTime(comment.at, now));
+        time.dateTime = new Date(comment.at).toISOString();
+        meta.append(time);
+        li.append(meta, el('p', 'work-comment-text', comment.text));
+        list.append(li);
+      }
+      sec.append(list);
+    }
+    const box = el('textarea', 'work-desc');
+    box.rows = 3;
+    box.maxLength = 2000;
+    box.value = this.commentDrafts.get(item.number) ?? '';
+    box.dataset.workDetail = 'comment';
+    box.setAttribute('aria-label', 'Add a comment');
+    const send = btn('line', 'Comment', () => void this.comment(item, box, send));
+    send.dataset.workDetail = 'comment-send';
+    const ready = () => (send.disabled = this.commenting || !box.value.trim());
+    ready();
+    box.addEventListener('input', () => {
+      this.commentDrafts.set(item.number, box.value);
+      ready();
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
+        e.preventDefault();
+        if (!send.disabled) void this.comment(item, box, send);
+      }
+    });
+    const actions = el('div', 'work-actions');
+    actions.append(send);
+    sec.append(box, actions);
+    return sec;
+  }
+
+  private async comment(item: WorkRow, box: HTMLTextAreaElement, send: HTMLButtonElement): Promise<void> {
+    const text = box.value;
+    if (this.commenting || !text.trim()) return;
+    this.commenting = true;
+    send.disabled = true;
+    const saved = await this.send('POST', `/${item.key}/comments`, { text });
+    this.commenting = false;
+    if (!saved) {
+      send.disabled = !box.value.trim();
+      return;
+    }
+    const typedSince = box.value !== text;
+    if (!typedSince) {
+      this.commentDrafts.delete(item.number);
+      box.value = '';
+    }
+    // The emptied Comment button is disabled, so focus goes back to the field.
+    const refocus = document.activeElement === box || document.activeElement === send;
+    // paintDetail leaves the detail alone while a textarea in it has focus, and the new comment must show.
+    if (refocus) box.blur();
+    this.replace(saved);
+    this.paint();
+    if (refocus) this.detail.querySelector<HTMLElement>('[data-work-detail="comment"]')?.focus({ preventScroll: true });
   }
 
   private field(label: string, control: HTMLElement): HTMLElement {

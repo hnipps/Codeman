@@ -303,7 +303,11 @@ export const NotePatchSchema = z
   .object({ text: z.string().min(1).max(MAX_NOTE_CHARS).optional(), resolved: z.boolean().optional() })
   .strict();
 
-/** How a deploy this review asked for stands, from the supervisor's own record. Pure. */
+/**
+ * How a deploy this review asked for stands, from the supervisor's own record. Pure. `liveHasMerge` is whether the
+ * live commit contains the merge: a later deploy ships an earlier merge whose own deploy failed, so that review is
+ * deployed too.
+ */
 export function settledDeploy(
   decision: Decision,
   overview: {
@@ -317,9 +321,15 @@ export function settledDeploy(
     }[];
     busy: boolean;
   },
-  now: number
+  now: number,
+  liveHasMerge: boolean
 ): Decision | null {
-  if (decision.kind !== 'deploying' || !decision.mergedSha) return null;
+  if (!decision.mergedSha) return null;
+  if (liveHasMerge && (decision.kind === 'deploying' || decision.kind === 'deploy-failed')) {
+    const { error: _old, ...rest } = decision;
+    return { ...rest, kind: 'deployed', at: now };
+  }
+  if (decision.kind !== 'deploying') return null;
   const sha = decision.mergedSha;
   const run = overview.recent.find((d) => d.action === 'deploy' && d.sha === sha && d.finishedAt !== null);
   if (run?.outcome === 'success' || (!run && overview.live?.sha === sha))
