@@ -17,7 +17,7 @@ import { STATE_GLYPHS, STATE_WORDS, parseSessions } from './sessions.js';
 import type { ShellSessionRow } from '../../../src/canvas/shell-sessions.js';
 import {
   isHttpsUrl,
-  WORK_STATUSES,
+  NOT_DELETED_STATUSES,
   WORK_STATUS_NAMES,
   workClosed,
   workKey,
@@ -92,6 +92,7 @@ const EMPTY: Record<WorkStatus, string> = {
   'in-progress': 'Nobody is working on anything',
   done: 'Finished work shows here',
   'not-doing': 'Decided against',
+  deleted: 'Deleted items are hidden',
 };
 const OUTCOME_HEADS = {
   done: 'Done and verified',
@@ -320,7 +321,7 @@ export class WorkView {
     head.append(outline, h1, this.modeSeg, seg, this.search, el('span', 'work-grow'), hint, add, assistant, close);
     this.tabs.setAttribute('aria-label', 'Lanes');
     // Built once and relabelled on paint, so a tab keeps the keyboard and a press across a refresh.
-    for (const status of WORK_STATUSES) {
+    for (const status of NOT_DELETED_STATUSES) {
       const b = btn('', WORK_STATUS_NAMES[status], () => {
         this.phoneLane = status;
         this.paintLanes();
@@ -779,7 +780,7 @@ export class WorkView {
     // Done and Not doing share one column on a desktop; a phone shows one lane at a time either way.
     const closed = el('div', 'work-closed');
     closed.append(this.lane('done'), this.lane('not-doing'));
-    this.lanes.replaceChildren(...WORK_STATUSES.filter((s) => !workClosed(s)).map((s) => this.lane(s)), closed);
+    this.lanes.replaceChildren(...NOT_DELETED_STATUSES.filter((s) => !workClosed(s)).map((s) => this.lane(s)), closed);
     if (focusCard)
       this.lanes.querySelector<HTMLElement>(`.work-card[data-number="${focusCard}"]`)?.focus({ preventScroll: true });
     else if (focusAdd) this.lanes.querySelector<HTMLElement>(`[data-work-add="${focusAdd}"]`)?.focus();
@@ -1139,7 +1140,7 @@ export class WorkView {
 
     const status = el('select');
     status.dataset.workDetail = 'status';
-    for (const s of WORK_STATUSES) {
+    for (const s of NOT_DELETED_STATUSES) {
       const option = el('option', '', WORK_STATUS_NAMES[s]);
       option.value = s;
       option.selected = s === item.status;

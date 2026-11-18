@@ -16,7 +16,7 @@ import {
   WorkAttachmentSchema,
   MAX_WORK_DESCRIPTION_CHARS,
   WORK_FILE_TYPES,
-  WORK_STATUSES,
+  NOT_DELETED_STATUSES,
   workClosed,
   type WorkRow,
   type WorkStatus,
@@ -38,7 +38,7 @@ const Row = z
     key: z.string(),
     number: z.number(),
     title: z.string(),
-    status: z.enum(WORK_STATUSES),
+    status: z.enum(NOT_DELETED_STATUSES),
     position: z.number().int().positive().optional().catch(undefined),
     description: z.string().catch(''),
     assignee: z
@@ -145,7 +145,7 @@ export function laneItems(
 export type WorkCount = { status: WorkStatus; count: number; unassigned: number };
 /** A count per status; Ready for work also says how many have nobody on them (what a pickup routine may take). */
 export function workCounts(items: readonly WorkRow[]): WorkCount[] {
-  return WORK_STATUSES.map((status) => {
+  return NOT_DELETED_STATUSES.map((status) => {
     const inLane = items.filter((i) => i.status === status);
     return {
       status,
@@ -173,7 +173,8 @@ export function outlineItems(items: readonly WorkRow[], sessions: readonly Shell
 
 /** The status one step left or right, or null past either end. */
 export function stepStatus(status: WorkStatus, step: -1 | 1): WorkStatus | null {
-  return WORK_STATUSES[WORK_STATUSES.indexOf(status) + step] ?? null;
+  const at = (NOT_DELETED_STATUSES as readonly WorkStatus[]).indexOf(status);
+  return at === -1 ? null : (NOT_DELETED_STATUSES[at + step] ?? null);
 }
 
 /** The prompt "Ask an agent" puts in a new conversation's composer. The agent reads the description itself. */

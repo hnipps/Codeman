@@ -15,8 +15,8 @@ import { AuthorSchema, type Author } from './model.js';
 import type { TaskState } from './tasks.js';
 import {
   laneOrder,
+  NotDeletedStatusSchema,
   WORK_STATUS_NAMES,
-  WorkStatusSchema,
   workKey,
   type WorkFile,
   type WorkItem,
@@ -46,6 +46,12 @@ export function parseRoutineKey(key: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * The Work statuses a trigger, a gate or a fire mark may name: every one but Deleted (W-22). Deleted items get no
+ * agent work, and the release before W-22 refuses `deleted` in `routines.json` and `routine-state.json`.
+ */
+export const RoutineStatusSchema = NotDeletedStatusSchema;
+
 const Time = z.string().refine((value) => parseHHMM(value) !== null, 'A time looks like 07:30');
 export const TriggerSchema = z.discriminatedUnion('kind', [
   z
@@ -73,7 +79,7 @@ export const TriggerSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('work-item'),
-      status: WorkStatusSchema,
+      status: RoutineStatusSchema,
       unassignedOnly: z.boolean().optional(),
       claim: z.boolean().optional(),
     })
@@ -107,7 +113,7 @@ export function asCronSchedule(trigger: ScheduleTrigger): CronSchedule {
 export const GateSchema = z
   .object({
     kind: z.literal('work-count'),
-    status: WorkStatusSchema,
+    status: RoutineStatusSchema,
     assignee: z.enum(['any', 'none', 'routine']),
     min: z.number().int().nonnegative().max(10_000).optional(),
     max: z.number().int().nonnegative().max(10_000).optional(),
@@ -260,7 +266,7 @@ const FireOutcome = z.discriminatedUnion('kind', [
 ]);
 /** A Work item a work-item fire was for: the item, the status it fired on and when it entered that status. */
 const FiredItem = z
-  .object({ number: z.number().int().positive(), status: WorkStatusSchema, enteredAt: at })
+  .object({ number: z.number().int().positive(), status: RoutineStatusSchema, enteredAt: at })
   .passthrough();
 export type FiredItem = z.infer<typeof FiredItem>;
 const StoredFire = z

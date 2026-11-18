@@ -27,6 +27,7 @@ import {
   parseWorkKey,
   readyQueue,
   reportWork,
+  requestChangesOnWork,
   ReportWorkSchema,
   updateWork,
   UpdateWorkSchema,
@@ -34,10 +35,15 @@ import {
   workRelated,
   WorkFileSchema,
   workPosition,
-  WORK_STATUSES,
+  NOT_DELETED_STATUSES,
+  WORK_STATUS_NAMES,
+  workClosed,
   WorkToolSchema,
   type WorkFile,
+  type WorkItem,
 } from '../src/canvas/work.js';
+import { wanted, workReviewId } from '../src/reviews/work-review-model.js';
+import { z } from 'zod';
 import { readWork, workPath } from '../src/canvas/work-store.js';
 import { toolSchemas, canvasToolNames } from '../src/canvas/commands.js';
 import { admitWorkFile, MAX_WORK_FILE_BYTES, servedAs } from '../src/canvas/work-files.js';
@@ -332,7 +338,7 @@ describe('work items: pure changes', () => {
 
     it('writes only the five statuses the previous release reads, and reads back what it wrote', () => {
       let file = emptyWorkFile();
-      for (const status of WORK_STATUSES) file = made(file, status, { status }).file;
+      for (const status of NOT_DELETED_STATUSES) file = made(file, status, { status }).file;
       const disk = encodeWorkFile(file) as { version: number; items: { status: string; todoStatus?: string }[] };
       expect(disk.version).toBe(1);
       expect(disk.items.map((i) => [i.status, i.todoStatus])).toEqual([
@@ -345,7 +351,7 @@ describe('work items: pure changes', () => {
         ['not-doing', undefined],
       ]);
       const back = WorkFileSchema.parse(JSON.parse(JSON.stringify(disk)));
-      expect(back.items.map((i) => i.status)).toEqual([...WORK_STATUSES]);
+      expect(back.items.map((i) => i.status)).toEqual([...NOT_DELETED_STATUSES]);
       expect(back.readyOrder).toEqual([4]);
     });
   });
@@ -579,6 +585,205 @@ describe('work items: pure changes', () => {
       expect(as('image/png')).toEqual({ type: 'image/png', download: false });
       expect(as('application/json')).toEqual({ type: 'text/plain; charset=utf-8', download: false });
       expect(as('application/pdf')).toEqual({ type: 'application/octet-stream', download: true });
+    });
+  });
+
+  describe('Deleted (W-22)', () => {
+    const upd = (file: WorkFile, n: number, patch: Record<string, unknown>, who = ctx(person, 2000)) =>
+      updateWork(file, n, UpdateWorkSchema.parse(patch), who);
+    const must = <T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> => {
+      if (!result.ok) throw new Error(JSON.stringify(result));
+      return result as Extract<T, { ok: true }>;
+    };
+    /** An item with every kind of thing a delete must keep: files, an object, sessions, a pr, a parent and a child. */
+    function rich(status: (typeof NOT_DELETED_STATUSES)[number]) {
+      let file = made(emptyWorkFile(), 'Parent').file;
+      file = made(file, 'Full', {
+        status,
+        createdFrom: 1,
+        sessions: ['s-1', 's-2'],
+        pr: { url: 'https://github.com/o/r/pull/9', branch: 'build/x' },
+      }).file;
+      file = must(
+        attachWork(file, 2, { id: 'a'.repeat(32), name: 'shot.png', type: 'image/png', size: 10, at: 1 }, 1e9, ctx())
+      ).file;
+      file = must(upd(file, 2, { attachObjects: ['obj-1'] })).file;
+      file = made(file, 'Child', { createdFrom: 2 }).file;
+      return file;
+    }
+
+    // Invariant I1: DeleteKeepsEverything
+    it('keeps the item, its number and everything on it; only status, the record, history, revision and time change', () => {
+      for (const status of NOT_DELETED_STATUSES) {
+        const before = rich(status);
+        const after = must(upd(before, 2, { status: 'deleted', reason: 'Duplicate of W-1' }, ctx(person, 4000))).file;
+        expect(after.next, status).toBe(before.next);
+        expect(after.items.map((i) => i.number)).toEqual(before.items.map((i) => i.number));
+        expect(after.items.filter((i) => i.number !== 2)).toEqual(before.items.filter((i) => i.number !== 2));
+        const was = before.items.find((i) => i.number === 2)!;
+        const now = after.items.find((i) => i.number === 2)!;
+        const changed = Object.keys({ ...was, ...now }).filter(
+          (k) => JSON.stringify(was[k as keyof WorkItem]) !== JSON.stringify(now[k as keyof WorkItem])
+        );
+        expect(changed.sort(), status).toEqual(['deleted', 'history', 'revision', 'status', 'updatedAt']);
+        expect(now.status).toBe('deleted');
+        expect(now.deleted).toEqual({ at: 4000, from: status, author: person, reason: 'Duplicate of W-1' });
+        expect(workRelated(after, after.items[0]!).created).toEqual([{ key: 'W-2', title: 'Full', status: 'deleted' }]);
+      }
+    });
+
+    // Invariant I2: PreviousReleaseReadsDeletedItems
+    it('stores a Deleted item as Not doing plus its record, which the release before W-22 parses', () => {
+      // The parts of the 9c3641fa file schema that can refuse a file; every other item field there has a .catch.
+      const Author = z.union([
+        z.object({ kind: z.literal('human'), userId: z.string() }).passthrough(),
+        z.object({ kind: z.literal('agent'), sessionId: z.string() }).passthrough(),
+      ]);
+      const PreviousWorkFileSchema = z
+        .object({
+          version: z.literal(1),
+          next: z.number().int().positive(),
+          items: z
+            .array(
+              z
+                .object({
+                  number: z.number().int().positive(),
+                  title: z.string().min(1).max(200),
+                  status: z.enum(['backlog', 'todo', 'in-progress', 'done', 'not-doing']),
+                  author: Author,
+                  createdAt: z.number().int().nonnegative(),
+                  updatedAt: z.number().int().nonnegative(),
+                  revision: z.number().int().positive(),
+                })
+                .passthrough()
+            )
+            .max(2000),
+        })
+        .passthrough();
+      let file = rich('ready-for-work');
+      file = must(upd(file, 2, { status: 'deleted' })).file;
+      file = must(upd(file, 1, { status: 'deleted', reason: 'Wrong' }, ctx(agent, 3000))).file;
+      const disk = JSON.parse(JSON.stringify(encodeWorkFile(file)));
+      const old = PreviousWorkFileSchema.safeParse(disk);
+      expect(old.success).toBe(true);
+      expect(old.data!.items.slice(0, 2).map((i) => [i.status, (i as { deleted?: unknown }).deleted])).toEqual([
+        ['not-doing', { at: 3000, from: 'backlog', author: agent, reason: 'Wrong' }],
+        ['not-doing', { at: 2000, from: 'ready-for-work', author: person }],
+      ]);
+      expect(disk.items[2]).not.toHaveProperty('deleted');
+      expect(WorkFileSchema.parse(disk).items.map((i) => i.status)).toEqual(['deleted', 'deleted', 'backlog']);
+    });
+
+    // Invariant I3: AnOldReleaseMoveRestores
+    it('reads a stale deleted record on another stored status as that status, and drops it on the next write', () => {
+      const record = { at: 5, from: 'backlog', author: person };
+      const file = WorkFileSchema.parse({
+        version: 1,
+        next: 3,
+        items: [
+          { number: 1, title: 'Moved back', status: 'in-progress', deleted: record },
+          { number: 2, title: 'Still gone', status: 'not-doing', deleted: record },
+        ].map((i) => ({ ...i, author: person, createdAt: 1, updatedAt: 1, revision: 1, history: [] })),
+      });
+      expect(file.items.map((i) => i.status)).toEqual(['in-progress', 'deleted']);
+      const written = must(upd(file, 2, { title: 'Still gone, renamed' })).file;
+      const disk = encodeWorkFile(written) as { items: Record<string, unknown>[] };
+      expect(disk.items[0]).not.toHaveProperty('deleted');
+      expect(disk.items[0]!.status).toBe('in-progress');
+      expect(disk.items[1]).toMatchObject({ status: 'not-doing', deleted: record });
+    });
+
+    // Invariant I5: AgentsMayDeleteWithAReason
+    it('lets an agent delete from any status, Backlog included, only with a reason it records', () => {
+      for (const status of NOT_DELETED_STATUSES) {
+        const file = made(emptyWorkFile(), 'X', { status }).file;
+        const snapshot = structuredClone(file);
+        const bare = upd(file, 1, { status: 'deleted' }, ctx(agent));
+        expect(bare.ok, status).toBe(false);
+        expect(!bare.ok && bare.code).toBe('INVALID_INPUT');
+        expect(file).toEqual(snapshot);
+        const item = must(upd(file, 1, { status: 'deleted', reason: '  Filed by\nmistake ' }, ctx(agent))).item;
+        expect(item.status).toBe('deleted');
+        expect(item.deleted).toMatchObject({ from: status, author: agent, reason: 'Filed by mistake' });
+        expect(item.history.slice(0, 2).map((e) => e.text)).toEqual([
+          'Deleted: "Filed by mistake"',
+          `Moved from ${WORK_STATUS_NAMES[status]} to Deleted`,
+        ]);
+      }
+      const plain = made(emptyWorkFile(), 'X').file;
+      expect(must(upd(plain, 1, { status: 'deleted' })).item.deleted).toEqual({
+        at: 2000,
+        from: 'backlog',
+        author: person,
+      });
+      expect(upd(plain, 1, { reason: 'why' }).ok).toBe(false);
+      expect(UpdateWorkSchema.safeParse({ status: 'deleted', reason: 'x'.repeat(301) }).success).toBe(false);
+      expect(CreateWorkSchema.safeParse({ title: 'Born gone', status: 'deleted' }).success).toBe(false);
+    });
+
+    // Invariant I6: OnlyAPersonRestores
+    it('refuses an agent that moves an item out of Deleted without the person words, by update or report', () => {
+      const file = must(upd(made(emptyWorkFile(), 'X', { status: 'in-progress' }).file, 1, { status: 'deleted' })).file;
+      const asAgent = ctx(agent, 3000);
+      expect(upd(file, 1, { status: 'ready-for-work' }, asAgent).ok).toBe(false);
+      expect(upd(file, 1, { status: 'backlog' }, asAgent).ok).toBe(false);
+      for (const outcome of ['done', 'ask'] as const)
+        expect(
+          reportWork(file, 1, ReportWorkSchema.parse({ outcome, note: 'n', question: 'q?' }), asAgent).ok,
+          outcome
+        ).toBe(false);
+      expect(
+        reportWork(
+          file,
+          1,
+          ReportWorkSchema.parse({ outcome: 'split', note: 'n', newItems: [{ title: 'y' }] }),
+          asAgent
+        ).ok
+      ).toBe(false);
+      const kept = must(reportWork(file, 1, ReportWorkSchema.parse({ outcome: 'continue', note: 'n' }), asAgent));
+      expect(kept.item.status).toBe('deleted');
+      expect(must(upd(file, 1, { title: 'Renamed' }, asAgent)).item.status).toBe('deleted');
+      const told = must(upd(file, 1, { status: 'backlog', instruction: 'bring W-1 back' }, asAgent)).item;
+      expect(told.status).toBe('backlog');
+      expect(told.history[0]!.text).toBe(`Moved out of Deleted on the person's instruction: "bring W-1 back"`);
+      const restored = must(upd(file, 1, { status: 'in-progress' }, ctx(person, 3000))).item;
+      expect(restored.status).toBe('in-progress');
+      expect(restored).not.toHaveProperty('deleted');
+    });
+
+    // Invariant I7: DeletedIsQuiet
+    it('closes the item: out of the pickup queue, no changes requested, and its review waits again on restore', () => {
+      const ref = { workspaceId: 'ws', number: 1 };
+      const pr = { url: 'https://github.com/o/r/pull/1', branch: 'build/w-1' };
+      let file = made(emptyWorkFile(), 'X', { status: 'ready-for-work', pr }).file;
+      const review = { id: workReviewId(ref, pr.url) };
+      expect(wanted(file.items[0], review, ref)).toBe(true);
+      file = must(upd(file, 1, { status: 'deleted' })).file;
+      expect(workClosed('deleted')).toBe(true);
+      expect(wanted(file.items[0], review, ref)).toBe(false);
+      expect(readyQueue(file)).toEqual([]);
+      expect(file.readyOrder).toEqual([]);
+      const changes = requestChangesOnWork(file, 1, { text: 'fix', reviewId: review.id, at: 1 }, ctx());
+      expect(!changes.ok && changes.code).toBe('INVALID_INPUT');
+      file = must(upd(file, 1, { status: 'ready-for-work' })).file;
+      expect(wanted(file.items[0], review, ref)).toBe(true);
+    });
+
+    // Invariant I8: UndoIsAnOrdinaryMove
+    it('restores to the status the record names, at the bottom of Ready for work, logging both moves', () => {
+      let file = made(emptyWorkFile(), 'A', { status: 'ready-for-work' }).file;
+      file = made(file, 'B', { status: 'ready-for-work' }).file;
+      expect(workPosition(file, 1)).toBe(1);
+      file = must(upd(file, 1, { status: 'deleted', expectedRevision: 1 })).file;
+      const from = file.items[0]!.deleted!.from;
+      expect(upd(file, 1, { status: from, expectedRevision: 1 }).ok).toBe(false);
+      file = must(upd(file, 1, { status: from, expectedRevision: 2 })).file;
+      expect(file.items[0]!.status).toBe('ready-for-work');
+      expect(workPosition(file, 1)).toBe(2);
+      expect(file.items[0]!.history.map((e) => e.text).filter((t) => t.startsWith('Moved from'))).toEqual([
+        'Moved from Deleted to Ready for work',
+        'Moved from Ready for work to Deleted',
+      ]);
     });
   });
 
@@ -883,5 +1088,74 @@ describe('work items: routes and side file', () => {
     }
     const dir = resolve(workPath(ws), '..', 'work-files', key.slice(2));
     expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
+  });
+
+  // Invariant I4: HiddenByDefault (the list half)
+  it('deletes through PATCH, stores Not doing plus the record, keeps the file, and hides it from list', async () => {
+    const created = await inject({ method: 'POST', url: api(), payload: { title: 'Filed by mistake' } });
+    const key = (created.json().data?.item as { key: string }).key;
+    const number = Number(key.slice(2));
+    const up = await inject({
+      method: 'POST',
+      url: api(`/${key}/attachments?name=keep.png`),
+      payload: png(2, 2),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+    const attachment = up.json().data?.attachment as { id: string };
+    const stored = resolve(workPath(ws), '..', 'work-files', String(number), attachment.id);
+    const bytes = readFileSync(stored);
+
+    const deleted = await inject({
+      method: 'PATCH',
+      url: api(`/${key}`),
+      payload: { status: 'deleted', expectedRevision: 2 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json().data?.item).toMatchObject({ status: 'deleted', deleted: { from: 'backlog' } });
+    const disk = JSON.parse(readFileSync(workPath(ws), 'utf8')).items.find(
+      (i: { number: number }) => i.number === number
+    );
+    expect(disk).toMatchObject({ status: 'not-doing', deleted: { from: 'backlog', author: { kind: 'human' } } });
+    expect(readFileSync(stored).equals(bytes)).toBe(true);
+    const all = await inject({ method: 'GET', url: api() });
+    expect((all.json().data?.items as { key: string }[]).map((i) => i.key)).toContain(key);
+
+    const sessionId = 'sess-delete-agent';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessions = (server as any).sessions as Map<string, unknown>;
+    sessions.set(sessionId, { id: sessionId, workingDir: resolve(resolveCasesDir(), 'work-case') });
+    try {
+      const tool = (args: Record<string, unknown>, asAgent = true) =>
+        inject({
+          method: 'POST',
+          url: `/api/canvas/${ws}/command`,
+          payload: { tool: 'canvas_work', arguments: args },
+          ...(asAgent ? { headers: { 'x-codeman-parent-session': sessionId } } : {}),
+        });
+      const keys = async (args: Record<string, unknown>) =>
+        ((await tool({ action: 'list', ...args })).json().data as { items: { key: string }[] }).items.map((i) => i.key);
+      expect(await keys({})).not.toContain(key);
+      expect(await keys({ status: 'deleted' })).toEqual([key]);
+      expect((await tool({ action: 'read', key })).json().data).toMatchObject({ item: { status: 'deleted' } });
+
+      const other = await inject({ method: 'POST', url: api(), payload: { title: 'Outdated' } });
+      const otherKey = (other.json().data?.item as { key: string }).key;
+      const agentPatch = (payload: Record<string, unknown>) =>
+        inject({
+          method: 'PATCH',
+          url: api(`/${otherKey}`),
+          payload,
+          headers: { 'x-codeman-parent-session': sessionId },
+        });
+      expect((await agentPatch({ status: 'deleted' })).statusCode).toBe(400);
+      expect((await agentPatch({ status: 'deleted', reason: 'Superseded' })).statusCode).toBe(200);
+      expect((await agentPatch({ status: 'backlog' })).statusCode).toBe(400);
+      const restored = await inject({ method: 'PATCH', url: api(`/${otherKey}`), payload: { status: 'backlog' } });
+      expect(restored.statusCode).toBe(200);
+      expect(restored.json().data?.item).toMatchObject({ status: 'backlog' });
+      expect(restored.json().data?.item).not.toHaveProperty('deleted');
+    } finally {
+      sessions.delete(sessionId);
+    }
   });
 });

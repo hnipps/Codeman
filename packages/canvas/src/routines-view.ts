@@ -9,7 +9,7 @@
  */
 import { uuid } from './ids.js';
 import type { RoutineFire, RoutineGate, RoutineRow, RoutineTrigger } from '../../../src/canvas/routines.js';
-import { WORK_STATUSES, WORK_STATUS_NAMES } from '../../../src/canvas/work.js';
+import { NOT_DELETED_STATUSES, WORK_STATUS_NAMES } from '../../../src/canvas/work.js';
 
 export type RoutinesHost = {
   url(path: string): string;
@@ -434,7 +434,7 @@ export class RoutinesView {
     row.append(el('span', '', 'Count items in'));
     const status = el('select');
     status.setAttribute('aria-label', `Gate ${index + 1} status`);
-    for (const value of WORK_STATUSES) {
+    for (const value of NOT_DELETED_STATUSES) {
       const option = el('option', '', WORK_STATUS_NAMES[value]);
       option.value = value;
       option.selected = gate.status === value;
@@ -505,7 +505,10 @@ export class RoutinesView {
           : kind.value === 'daily'
             ? { kind: 'daily', time: '07:00' }
             : kind.value === 'work-item'
-              ? { kind: 'work-item', status: WORK_STATUSES.find((s) => s !== 'backlog') ?? WORK_STATUSES[0] }
+              ? {
+                  kind: 'work-item',
+                  status: NOT_DELETED_STATUSES.find((s) => s !== 'backlog') ?? NOT_DELETED_STATUSES[0],
+                }
               : { kind: 'weekly', days: [1], time: '07:00' };
       repaint();
       this.form?.querySelectorAll<HTMLSelectElement>('.routine-trigger select')[index]?.focus();
@@ -533,7 +536,7 @@ export class RoutinesView {
     } else if (trigger.kind === 'work-item') {
       const status = el('select');
       status.setAttribute('aria-label', `Trigger ${index + 1} status`);
-      for (const value of WORK_STATUSES) {
+      for (const value of NOT_DELETED_STATUSES) {
         const option = el('option', '', WORK_STATUS_NAMES[value]);
         option.value = value;
         option.selected = trigger.status === value;

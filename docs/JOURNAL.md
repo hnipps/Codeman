@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-18 — Deleted Work items on the server (W-22 ticket 1)
+
+**Type:** propagated-discovery
+**Touches:** `src/canvas/work.ts`, `src/canvas/routines.ts`, `src/web/routes/canvas-work-routes.ts`, `src/mcp-server.ts`, `packages/canvas/src/{work-model,work-view,routines-view}.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** The approved spec puts Deleted in `WORK_STATUSES`, and the page imports that list, so a rebuilt page would have parsed and drawn Deleted rows before ticket 2 designs them.
+**Links:** [intent/2026-11-18-w22-delete-work-item.md](../intent/2026-11-18-w22-delete-work-item.md), Work item W-66
+
+`NOT_DELETED_STATUSES` (and `NotDeletedStatusSchema`) is the seven statuses the page drew before. The page parses rows and walks lanes with it, so it drops Deleted rows exactly as an old tab does, and ticket 2 switches it. The same list is `RoutineStatusSchema` and the create schema. A stale `deleted` record on another stored status (I3) is dropped when the file is read, so any next write of the file leaves it out, not only a write of that item.
+
 ## 2026-11-18 — Canvas flip is recorded as unsupported, not built
 
 **Type:** intent-refinement

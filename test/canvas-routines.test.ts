@@ -27,6 +27,8 @@ import {
   CreateRoutineSchema,
   dueAt,
   emptyRoutineFile,
+  GateSchema,
+  RoutineStateFileSchema,
   emptyRoutineState,
   KEEP_FINISHED_RUNS,
   latestDue,
@@ -318,6 +320,25 @@ describe('work-item triggers', () => {
   it('validates the status against the Work statuses', () => {
     expect(TriggerSchema.safeParse({ kind: 'work-item', status: LANE, claim: true }).success).toBe(true);
     expect(TriggerSchema.safeParse({ kind: 'work-item', status: 'someday' }).success).toBe(false);
+  });
+
+  // Invariant I7: DeletedIsQuiet (no routine names Deleted, so neither routine file can hold it)
+  it('refuses Deleted in a trigger and a gate, and drops a fired-item mark naming it', () => {
+    expect(WORK_STATUSES).toContain('deleted');
+    expect(TriggerSchema.safeParse({ kind: 'work-item', status: 'deleted' }).success).toBe(false);
+    expect(GateSchema.safeParse({ kind: 'work-count', status: 'deleted', assignee: 'any', max: 1 }).success).toBe(
+      false
+    );
+    expect(GateSchema.safeParse({ kind: 'work-count', status: 'not-doing', assignee: 'any', max: 1 }).success).toBe(
+      true
+    );
+    const marks = (status: string) =>
+      RoutineStateFileSchema.parse({
+        version: 1,
+        routines: { [routine().id]: { fires: [], items: [{ number: 1, status, enteredAt: 1 }] } },
+      }).routines[routine().id]!.items;
+    expect(marks('in-progress')).toHaveLength(1);
+    expect(marks('deleted')).toBeUndefined();
   });
 
   it('reads when an item entered its status: the newest move, else its creation, never a later edit', () => {
