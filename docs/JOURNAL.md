@@ -292,6 +292,18 @@ Kept. `CODEMAN_API_URL` names this server and grants nothing: `codeman agent` ne
 Rejected. An allowlist of variables a preview may see: a dev server needs whatever the user's toolchain reads, which Codeman cannot list. Stripping every `CODEMAN_*`: it would drop the markers and the limits for no gain.
 
 Not changed. Session panes, the direct-PTY fallback, `dsh web`, self-update and the headless browser spread the server's environment too. Panes cannot take the same list, because `codeman agent` finds the login through the data dir; the intent lists each site.
+## 2026-11-14 — A deploy of an older commit silently undid a live fix
+
+**Type:** propagated-discovery
+**Touches:** the supervisor's `lib/deploy.mjs` and the `codeman-deploy` wrapper (both outside this repository); `docs/self-building.md` (proposed text only)
+**Why:** A deploy of `b7976495` went through 1.3 s after its child `76101a08` went live. It took the canvas fix out of production and made itself the push target, so the fix would never have been pushed.
+**Links:** [intent/2026-11-14-deploy-ancestor-guard.md](../intent/2026-11-14-deploy-ancestor-guard.md), [self-building](self-building.md)
+
+Finding. The supervisor runs `deploy` and `rollback` through one pipeline, and `resolve()` never compares the requested sha with the live release. The history row's `action` alone decides what is pushed, so a strict ancestor deployed as a `deploy` orphans the newer commits. The request was written while the other deploy held the lock, so any check made when a request is written would have passed. The fork's own `deploy/` scripts cannot hold the guard either, because deploying an ancestor runs the ancestor's copies.
+
+Proposal. Inside `resolve()`, under the lock, refuse a `deploy` whose sha does not contain the live release, or the commit the last push sent. List the commits it would drop, and point to `rollback <sha>` as the explicit way back. `codeman-deploy status` should call the read-only `codeman-supervisor status` and skip the queue, which waits for the deploy lock. The patch and its test passed in a scratch copy of the supervisor (56 tests pass, 1 skipped). Installing it is Harry's decision.
+
+Rejected. An override flag on `deploy`: the request grammar is exactly `{action, arg}`, and `rollback` already means "this older code, on purpose, not pushed". A preflight script in this repository: advisory, and it would have passed this exact case.
 
 ## 2026-11-13 — A prototype is static files that Codeman stores and serves
 
