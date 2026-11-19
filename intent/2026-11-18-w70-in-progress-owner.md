@@ -1,6 +1,6 @@
 # Intent: W-70 In progress always has a live owner
 
-**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 2)
+**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 3)
 
 ## Problem statement
 
@@ -178,12 +178,12 @@ The routine's own `claim()` already sets status and assignee in one write.
 
 ## Decisions for Harry
 
-Settled in review on 2026-11-19 (revision 1 notes).
+Settled in review on 2026-11-19 (notes on revisions 1 and 2). All four are settled.
 
 1. **Where a released item goes.** Accepted as recommended: back to the status it came from (usually Ready, at the top), or Human required when it already has a PR.
 2. **A parent with all tickets Done moves itself to Done (I7).** Accepted.
 3. **Approve of a session review closes the In progress items that link its session (I8).** Accepted.
-4. **Two releases before asking (I4).** Harry asked for an explanation. Still open.
+4. **Two releases before asking (I4).** Accepted as recommended, after the explanation below.
 
 **What decision 4 means.** A *release* is the server taking an item back from a routine run that ended without reporting (I2). The item goes back to Ready, at the top, and R-2 starts a fresh run on it: a new session, worktree and prompt. The count is of releases *in a row*. A `report` from an agent, or any move by a person, resets it.
 
