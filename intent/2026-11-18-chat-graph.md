@@ -1,6 +1,6 @@
 # Intent: Chat Graph (spec)
 
-**Status:** Draft (revision 3, spec for the owner's Spec review. Revision 2 resolved the eight findings of the consistency audit, listed under Checks run. Revision 3 records the owner's answers to the three decisions, given on 2026-11-18. The design is canvas text object `chat-graph-design-doc`, revised 2026-11-18.)
+**Status:** Draft (revision 3, spec for the owner's Spec review. Revision 2 resolved the eight findings of the consistency audit, listed under Checks run. Revision 3 records the owner's answers to the three decisions, given on 2026-11-18, and names the UI design spec's Work item, W-78. The design is canvas text object `chat-graph-design-doc`, revised 2026-11-18.)
 
 ## Problem statement
 
@@ -142,7 +142,7 @@ The design doc on the canvas (`chat-graph-design-doc`) is the product descriptio
 - **Retrieval is BM25 in v1.** There is no embedding model on this host.
 - **Routing is one `claude -p` call.** It resolves references and scores the candidates together.
 
-**The UI is not designed yet.** The doc's UX section is a rough idea. Ticket 6 has no design to build against. It waits in Backlog for a separate design spec with canvas prototypes (see Decisions for Harry).
+**The UI is not designed yet.** The doc's UX section is a rough idea. Ticket 6 has no design to build against. It waits in Backlog for a separate design spec with canvas prototypes, Work item W-78 (see Decisions for Harry).
 
 ## Technical design
 
@@ -219,7 +219,7 @@ Each route answers 503 `CHAT_GRAPH_UNAVAILABLE` when the sidecar is down, and re
 
 All three were settled by the owner on 2026-11-18, before approval.
 
-1. **The UI gets its own design spec.** Agreed. Tickets 1 to 5 and 7 to 9 are built and checked through the API. Ticket 6 stays in Backlog until a design spec with canvas prototypes is approved.
+1. **The UI gets its own design spec.** Agreed. Tickets 1 to 5 and 7 to 9 are built and checked through the API. Ticket 6 stays in Backlog until a design spec with canvas prototypes is approved. That design spec is Work item W-78, filed in Needs refinement on 2026-11-18 at the owner's request so it gets done.
 2. **Chat Graph stores chat text.** Agreed. It departs from the canvas rule that no message text is stored, and it keeps the text 0600 and out of search, as `intents.json` does.
 3. **Routing uses Haiku, and about 5 s per routed message is accepted for the MVP.** Agreed. The owner noted that it seems slow. Haiku and Sonnet measured about the same (4.9 to 5.1 s against 5.0 to 5.6 s), because CLI start-up dominates. Settings can change the model. Cutting that start-up is a later spec, not part of this one.
 
@@ -264,7 +264,7 @@ All three were settled by the owner on 2026-11-18, before approval.
 - The warm or cold choice from `promptCache.expiresAt`, the cold preamble with source ids, reply capture, and summary refresh with versions.
 - I8, the assembly half.
 
-**Ticket 6: Chat UI.** Order 6. Depends on ticket 5 and on an approved design spec. Filed in Backlog.
+**Ticket 6: Chat UI.** Order 6. Depends on ticket 5 and on the approved design spec from W-78. Filed in Backlog.
 - The chat box, chips, the context line, the topic list, the topic view, proposals and Related suggestions.
 - Acceptance check 7.
 
