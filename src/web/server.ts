@@ -684,6 +684,13 @@ export class WebServer extends EventEmitter {
       });
       this.broadcast(SseEvent.MuxDied, data);
     });
+    // A running server noticed tmux sessions that no longer exist (mux-vanish.ts): drop the
+    // dead tabs and offer them back for rebuild, as boot does after a reboot.
+    this.mux.on('sessionsVanished', (data) => {
+      void this.handleVanishedSessions((data as { sessionIds: string[] }).sessionIds).catch((err) =>
+        console.error('[Server] Handling vanished tmux sessions failed:', err)
+      );
+    });
     this.mux.on('statsUpdated', (sessions) => {
       this.broadcast(SseEvent.MuxStatsUpdated, sessions);
     });
@@ -2029,7 +2036,8 @@ export class WebServer extends EventEmitter {
     // to 4 KB of the user's buffered keystrokes.
     this.remoteWake?.drop(sessionId);
 
-    this.broadcast(SseEvent.SessionDeleted, { id: sessionId });
+    // `tmuxGone` tells an open board a restore offer may have appeared (handleVanishedSessions).
+    this.broadcast(SseEvent.SessionDeleted, { id: sessionId, ...(reason === 'tmux-gone' ? { tmuxGone: true } : {}) });
     if (killMux && coordinateLayout) await this._removeSessionWebviews(sessionId, session?.owner);
   }
 
@@ -3981,6 +3989,43 @@ export class WebServer extends EventEmitter {
       console.log(`[Server] Host reboot detected; offering ${restore.length} session(s) for restore`);
     }
     return restore.length;
+  }
+
+  /**
+   * Sessions whose tmux session vanished while this server ran (`TmuxManager.refreshVanishedSessions`).
+   *
+   * Their panes are gone, so the tabs can only mislead: they look idle, accept nothing, and made
+   * the deploy health check expect a new colour to keep them. The records go on offer first, while
+   * `state.json` still holds them, so the reboot-restore banner can rebuild each conversation; then
+   * each session is deleted through the normal path. Nothing is rebuilt until a user clicks.
+   * A session already being cleaned up (a delete racing the read) is neither offered nor touched.
+   */
+  private async handleVanishedSessions(sessionIds: readonly string[]): Promise<void> {
+    if (!deployRole.allows('automate')) return;
+    const ids = sessionIds.filter((id) => this.sessions.has(id) && !this.cleaningUp.has(id));
+    if (ids.length === 0) return;
+
+    try {
+      const persisted = this.store.getSessions();
+      // Bounded (#516): a workspace on a mount that stopped answering is `unknown`, never absent,
+      // so it stays on offer and the restore route probes it again at click time.
+      const reachable = new Map<string, boolean>();
+      for (const id of ids) {
+        const dir = persisted[id]?.workingDir;
+        if (dir && !reachable.has(dir)) reachable.set(dir, (await probePathKind(dir)) !== 'absent');
+      }
+      const { restore, skipped } = planRebootRestore(ids, persisted, (dir) => reachable.get(dir) ?? false);
+      for (const rejection of skipped) {
+        console.log(`[Server] Not offering vanished session ${rejection.sessionId}: ${rejection.reason}`);
+      }
+      rebootRestoreRegistry.offer(restore);
+    } catch (err) {
+      // An offer nobody gets is the right way for this to fail; the dead tabs still go.
+      console.error('[Server] Building the restore offer for vanished sessions failed:', err);
+    }
+
+    console.log(`[Server] Removing ${ids.length} session(s) whose tmux session vanished`);
+    for (const id of ids) await this.cleanupSession(id, true, 'tmux-gone');
   }
 
   /**

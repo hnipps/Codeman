@@ -1197,8 +1197,11 @@ drops it and the offer is gone; the conversations themselves are unaffected,
 since they live in the CLI's own transcript store and stay reachable from the
 Resume list. A plan nobody spends expires after 24 hours.
 
-- `GET /api/v1/reboot-restore` → `{ sessions: RestorableSession[],
-  scrollbackRestored: false }`, ownership-scoped in multi-user mode.
+- `GET /api/v1/reboot-restore` → `{ sessions: RestorableSession[], cause,
+  scrollbackRestored: false }`, ownership-scoped in multi-user mode. `cause` is
+  `reboot` for a plan built at boot, or `tmux` once the running server has
+  added sessions whose tmux session vanished (the tmux server died under it);
+  those are offered, then deleted with `tmuxGone: true` on `session:deleted`.
   `RestorableSession`: `{ id, name?, workingDir, mode, owner? }`. The persisted
   record itself is never sent. `scrollbackRestored` is always `false` and exists
   so a client states it: a restored session is a NEW pane, so the conversation

@@ -58,6 +58,8 @@ tests=(
   test/build-reload.test.ts
   test/deploy-healthcheck.test.ts
   test/session-survival.drt.test.ts
+  test/mux-vanish.test.ts
+  test/vanished-sessions-server.test.ts
   test/deploy-role.test.ts
   test/routes/deploy-routes.test.ts
   test/deploy-control.test.ts

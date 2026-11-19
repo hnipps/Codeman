@@ -2785,6 +2785,8 @@ class CodemanApp {
     // Dashboard: a detached session ended → clear its detached state/timers.
     if (this.detachedSessions.has(data.id)) this._redock(data.id);
     this._cleanupSessionData(data.id);
+    // Its tmux session vanished and the server put it on the restore offer.
+    if (data.tmuxGone) this._scheduleRebootRestoreRefresh?.();
     // ⚠️ Skip the whole active-session handoff while THIS tab is closing that
     // session: closeSession() owns the follow-up selection and moves you to the
     // next tab, so acting here would race it and flash the welcome screen (or

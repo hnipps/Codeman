@@ -21,6 +21,14 @@ The decision lives in its own pure module, `deploy/session-survival.mjs` (`decid
 
 `test/session-survival.drt.test.ts` compares the shipped code with a Python build of the model (`deploy/model/oracle/`) on random inputs. Tier 1 runs `decideSessions` on 5000 abstract cases. Tier 2 runs the real script on 120 scenarios with a real record file (valid, malformed, absent), a real tmux server on a throwaway socket, no server, or no tmux binary. Four bugs planted in the module were each caught. The test is in the deploy gate (`deploy/test.sh`).
 
+### The app cause (asked for by Harry, 2026-11-19)
+
+Harry chose: drop the dead tabs and offer them back, and guard kills in `TmuxManager`.
+
+- While it runs, the live colour reads `tmux list-sessions` on every pane-exit tick (`src/mux-vanish.ts`, `TmuxManager.refreshVanishedSessions()`). A local session is gone after two answering reads in a row without it ("no server" counts as an answer; any other error counts as nothing). The server puts it on the reboot-restore offer while its record is still in `state.json`, then deletes it with `tmuxGone: true` on `session:deleted`. The banner reads "Restore N sessions the tmux server lost", and nothing is rebuilt until a click.
+- A candidate or retired colour can no longer kill a tmux session or respawn a pane: `TmuxManager.killSession()` and `respawnPane()` throw `DeployRoleRefusal`, and the dead-pane respawn on attach is skipped there. This closes the residual risk below for every path that goes through `TmuxManager`.
+- Diagrams of the deploy, the session decision and the vanish path are in `docs/self-building.md` (How a deploy treats sessions) and `deploy/model/README.md`.
+
 ## Affected users and systems
 
 Harry's deploys through the supervisor. Agents that ship through Approve on the Reviews page. The supervisor itself is unchanged: it already runs the health check as the app user with `CODEMAN_DATA_DIR` and `CODEMAN_TMUX_SOCKET` set.
@@ -33,6 +41,6 @@ Harry's deploys through the supervisor. Agents that ship through Approve on the 
 
 ## Open questions
 
-- Residual risk: a new colour that KILLED a live tmux session would also pass, since the check runs after the new colour starts and cannot tell when the session died. Candidates are barred from acting on panes (rule 6, `deployRole`), so this relies on that guard.
+- Residual risk: a new colour that KILLED a live tmux session would also pass, since the check runs after the new colour starts and cannot tell when the session died. `TmuxManager` now refuses a kill or respawn on a non-live colour, so only a raw `tmux` call outside it, or a crash in the build that takes the tmux server down, could still do it unseen. The impact is a missed detection, not a new way to lose a session.
 - CI has no Dafny, so nothing re-verifies the model or checks `oracle/` for drift automatically. `deploy/model/build-oracle.sh --check` does both where Dafny is installed. The DRT itself runs everywhere with python3 (tier 2 also needs tmux).
-- The root of the stale list is in the app: the live colour never notices that its tmux server died and keeps listing dead sessions as idle tabs. A follow-up should mark or drop them at runtime (the `sessionDied` path the boot reconcile already uses).
+- A session whose record had not yet been persisted when it vanished (created moments before) is deleted without an offer. Its conversation stays reachable from the Resume list.

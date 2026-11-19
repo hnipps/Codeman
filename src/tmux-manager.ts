@@ -27,6 +27,7 @@ import { execSync, exec, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -144,6 +145,7 @@ const PROC_SNAPSHOT_TTL_MS = 2000;
 const PROC_SNAPSHOT_WAIT_MS = 1500;
 import { DEFAULT_TMUX_HISTORY_LIMIT, DEFAULT_TERMINAL_BUFFER_MAX_BYTES } from './config/terminal-history.js';
 import { deployRole, DeployRoleRefusal } from './deploy-role.js';
+import { classifyListSessions, nextVanishCounts, type MuxProbe } from './mux-vanish.js';
 
 /**
  * Extra stdout headroom for the full-history `capture-pane` child process on
@@ -2039,6 +2041,9 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
    * and the older one can resolve last and win.
    */
   private paneExitReadInFlight = false;
+  /** Misses per tmux session name, for {@link refreshVanishedSessions} (see `mux-vanish.ts`). */
+  private vanishCounts = new Map<string, number>();
+  private vanishReadInFlight = false;
   /**
    * Bumped by every deliberate {@link clearPaneExit}. A read that started before
    * a clear carries the older generation and is discarded rather than writing
@@ -2851,6 +2856,9 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       docker,
       cliName,
     } = options;
+
+    // `respawn-pane -k` kills whatever runs in the pane, on the socket the live colour shares.
+    if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'respawns panes');
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     const muxName = session.muxName;
@@ -3090,6 +3098,11 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
     if (!session) {
       return false;
     }
+
+    // A candidate or retired colour shares the live colour's tmux socket, so a kill here ends a
+    // session the live colour is running. Refused in this method, not at each caller, because the
+    // deploy health check cannot tell a session this colour killed from one that was already dead.
+    if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'kills sessions');
 
     // COD-108: an intentional kill/detach must NEVER be auto-revived by the
     // remote-reconnect watcher. Guard BEFORE any teardown so a tick that fires
@@ -3661,6 +3674,78 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
   }
 
   /**
+   * Notice sessions whose tmux session no longer exists while this server runs, and drop them.
+   *
+   * Boot does the same in {@link reconcileSessions}; without this, a tmux server that died left
+   * every session listed as an idle tab until the next restart. A session counts as gone only after
+   * `VANISH_CONFIRM_READS` answering reads in a row (`mux-vanish.ts`), and only the live colour
+   * acts: a candidate shares this socket and must not change what the live colour holds.
+   *
+   * Emits `sessionDied` per session, as boot does, then one `sessionsVanished` with all of them so
+   * the server can drop their tabs and offer them back for rebuild.
+   */
+  async refreshVanishedSessions(): Promise<void> {
+    if (!deployRole.allows('automate') || this.vanishReadInFlight) return;
+    const watched = new Map<string, string>(); // muxName -> sessionId
+    for (const [sessionId, session] of this.sessions) {
+      if (!session.remote && !session.docker) watched.set(session.muxName, sessionId);
+    }
+    if (watched.size === 0) {
+      this.vanishCounts.clear();
+      return;
+    }
+    this.vanishReadInFlight = true;
+    let probe: MuxProbe;
+    try {
+      probe = await this.probeMuxSessions();
+    } finally {
+      this.vanishReadInFlight = false;
+    }
+    const { counts, vanished } = nextVanishCounts(this.vanishCounts, watched.keys(), probe);
+    this.vanishCounts = counts;
+    const gone: string[] = [];
+    for (const muxName of vanished) {
+      const sessionId = watched.get(muxName)!;
+      // Killed or replaced while the read was out: nothing vanished.
+      if (this.sessions.get(sessionId)?.muxName !== muxName) continue;
+      this.sessions.delete(sessionId);
+      this.clearPaneExit(muxName);
+      this.clearRemoteReconnectState(sessionId);
+      this.emit('sessionDied', { sessionId });
+      gone.push(sessionId);
+    }
+    if (gone.length > 0) {
+      console.log(`[TmuxManager] ${gone.length} tmux session(s) vanished: ${gone.join(', ')}`);
+      this.saveSessions();
+      this.emit('sessionsVanished', { sessionIds: gone });
+    }
+  }
+
+  /**
+   * One `tmux list-sessions` on this socket, classified. The only part of the vanished-session
+   * watcher that touches tmux, so a test subclass can drive the rest; under test it proves nothing.
+   */
+  protected async probeMuxSessions(): Promise<MuxProbe> {
+    if (IS_TEST_MODE) return { kind: 'unknown' };
+    try {
+      const { stdout } = await execFileAsync(
+        'tmux',
+        ['-L', this.tmuxSocket, 'list-sessions', '-F', '#{session_name}'],
+        {
+          encoding: 'utf-8',
+          timeout: EXEC_TIMEOUT_MS,
+        }
+      );
+      return classifyListSessions(false, stdout, '');
+    } catch (err) {
+      const e = err as { stderr?: string; killed?: boolean };
+      // A timeout proves nothing, whatever it printed.
+      if (e.killed) return { kind: 'unknown' };
+      return classifyListSessions(true, '', String(e.stderr ?? ''));
+    }
+  }
+
+  /**
    * Fold one authoritative observation into {@link paneExits}. Split out from
    * the tmux call so the merge rules are unit-testable.
    *
@@ -3729,6 +3814,9 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       void this.refreshPaneExits()
         .then(() => this.emit('paneExitsUpdated'))
         .catch((err) => console.error('[TmuxManager] Pane exit watcher error:', err));
+      void this.refreshVanishedSessions().catch((err) =>
+        console.error('[TmuxManager] Vanished-session watcher error:', err)
+      );
     }, intervalMs);
   }
 
