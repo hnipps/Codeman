@@ -1,6 +1,6 @@
 # Intent: W-70 In progress always has a live owner
 
-**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 3)
+**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 4)
 
 ## Problem statement
 
@@ -52,6 +52,126 @@ type Release =
 ```
 
 `Owner` is derived every tick and never stored. Its liveness facts come from the same places the task list already reads them: `deriveTaskState()` for a run, and `session ? (paneExit ? 'exited' : 'live') : 'gone'` for a session (`canvas-conversation-routes.ts:125`).
+
+## Lifecycle
+
+How a Work item moves between statuses: first today's code, then what W-70 adds. Every edge below comes from the code on `origin/master` ce40f9af, and each is cited in the table under the diagrams. The model in [`2026-11-18-w70-lifecycle.dfy`](2026-11-18-w70-lifecycle.dfy) is checked against both diagrams (see "How this was checked").
+
+Dashed boxes are groups. An arrow from or to a group stands for one arrow per status in it, and a move to the same status is not a move. Each label reads *path (who) guard*.
+
+**Today.**
+
+```mermaid
+stateDiagram-v2
+  direction TB
+  classDef group fill:none,stroke-dasharray:5 4
+  state "Any status" as ANY
+  state "Any status but Deleted" as NOT_DELETED
+  state "Not closed: Backlog, Needs refinement, Human required, In progress" as NOT_CLOSED
+  state "Fire status: Needs refinement, Human required, Ready, Done, Not doing" as CLAIMABLE
+  state "Open: not Done, Not doing or Deleted" as OPEN
+  state "Needs refinement" as NeedsRefinement
+  state "Human required" as HumanRequired
+  state "Ready for work" as Ready
+  state "In progress" as InProgress
+  state "Not doing" as NotDoing
+  class ANY,NOT_DELETED,NOT_CLOSED,CLAIMABLE,OPEN group
+  [*] --> NOT_DELETED : create (person or agent) default Backlog
+  ANY --> ANY : edit (person, agent) guards in the table
+  HumanRequired --> NeedsRefinement : answer (person or agent) clears the question
+  ANY --> Done : report done (agent or person) done or split
+  ANY --> HumanRequired : report ask (agent or person) sets the question
+  CLAIMABLE --> InProgress : claim (routine run) unassigned item only
+  NOT_CLOSED --> Ready : request changes (person) goes to the top
+  ANY --> Done : approve (person) merges the work review, a closed item only in a race
+  OPEN --> Done : resync (server, as the review owner) its work review already merged
+  Backlog
+  Deleted
+```
+
+**After W-70.** Only the edges W-70 adds or changes are drawn. Arrows labelled `W-70` are new. The others already exist and W-70 changes what they do. The diagram and the model include the fixes proposed for F1 and F2 (see "Verification findings").
+
+```mermaid
+stateDiagram-v2
+  direction TB
+  classDef group fill:none,stroke-dasharray:5 4
+  classDef w70 stroke-width:3px
+  state "Any status" as ANY
+  state "Not closed" as NOT_CLOSED
+  state "Fire status" as CLAIMABLE
+  state "Where it came from (F1: never a closed status)" as CAME_FROM
+  state "Human required" as HumanRequired
+  state "Ready for work" as Ready
+  state "In progress" as InProgress
+  class ANY,NOT_CLOSED,CLAIMABLE,CAME_FROM group
+  class InProgress w70
+  [*] --> InProgress : create (person or agent) W-70 assigns the creator if nobody is named
+  ANY --> InProgress : edit (person or agent) W-70 assigns the mover if nobody is assigned
+  CLAIMABLE --> InProgress : claim (routine run) F2 refused after two releases in a row
+  NOT_CLOSED --> Ready : request changes (person) W-70 also unassigns
+  InProgress --> CAME_FROM : W-70 release (server) run ended or session gone, first release, no PR waiting
+  InProgress --> HumanRequired : W-70 release ask (server) second release in a row, or a PR waiting
+  InProgress --> Done : W-70 parent done (server) no assignee, every ticket Done
+  InProgress --> HumanRequired : W-70 parent ask (server) no assignee, a ticket Not doing or Deleted
+  InProgress --> Done : W-70 session approve (person) Approve merges the session review
+```
+
+| Group box | Statuses |
+| --- | --- |
+| Any status | all eight |
+| Any status but Deleted | all but Deleted |
+| Not closed | Backlog, Needs refinement, Human required, In progress (Ready is already there) |
+| Fire status | Needs refinement, Human required, Ready, Done, Not doing |
+| Open | Backlog, Needs refinement, Human required, Ready, In progress |
+| Where it came from | Backlog, Needs refinement, Human required or Ready: the status in the newest `Moved from <A> to In progress` line. Created into In progress, or (F1) came from a closed status: Needs refinement |
+
+| Path | Who | Edges | Guards | Code (`origin/master` ce40f9af) |
+| --- | --- | --- | --- | --- |
+| create | person or agent | into any status but Deleted | default Backlog | `work.ts:364`, `createWork` `work.ts:568` |
+| edit | person or agent | any status to any other | an agent leaves Backlog or Deleted only when it quotes the person (deleting a Backlog item is not that move); an agent must say why it deletes; nothing enters Ready with an open question | `updateWork` `work.ts:613`, guards `work.ts:489`, `:642`, `:652`, move `:657` |
+| answer | person or agent | Human required to Needs refinement | marking the question answered with no status | `work.ts:636` |
+| report done, split | agent (or person) | any status to Done | the Backlog and Deleted guard | `reportWork` `work.ts:730`, `:746-749`, `:762` |
+| report ask | agent (or person) | any status to Human required | the same guard | `work.ts:746`, `:802` |
+| claim | routine run, written as the run's session | fire status to In progress | unassigned, still in the status it fired on; Backlog is refused by the guard, Deleted is never a fire status | `claim()` `routine-runner.ts:231`, `:241`, `:250`; `routines.ts:53`, `:95` |
+| request changes | person (Reviews page) | not closed to Ready, at the top | closed items refused | `requestChangesOnWork` `work.ts:815`, `:823`, `:829`; `work-reviews.ts:218`; `review-routes.ts:830` |
+| approve | person (Reviews page) | any status but Done to Done | the route refuses a closed item (`GONE`), but one closed during the merge's awaits still goes to Done | `approveWork` `work.ts:837`, `:849`; `work-reviews.ts:124`; `review-routes.ts:605-609`, `:636` |
+| resync | server, written as the review's owner | open to Done | the item's work review already has a merge recorded; runs after every write to an item with a PR | `sync` `work-reviews.ts:136-137`, `follow` `:236-240` |
+| W-70 release | server, routine tick | In progress back where it came from | owner not live (I2, I3), first release in a row, no PR waiting | I2, I3 |
+| W-70 release ask | server | In progress to Human required | second release in a row (I4), or a PR with no changes pending (I2) | I2, I4 |
+| W-70 parent done, parent ask | server | In progress to Done, or to Human required | no assignee and no open tickets (I7) | I7 |
+| W-70 session approve | person | In progress to Done | Approve merges a review of a linked session (I8) | I8 |
+| W-70 changes | | create and edit into In progress assign the mover (I1); request changes unassigns (I6); claim is refused after two releases in a row (F2) | | I1, I6, F2 |
+
+**How this was checked.**
+
+- *Formal: proved.* [`2026-11-18-w70-lifecycle.dfy`](2026-11-18-w70-lifecycle.dfy) models one item: its status, assignee, tickets, PR, question, where it came from, and the release and claim counts. Each write path above is a function in it. Dafny 4.9.1 verifies it with 45 proofs verified and 0 errors, and `dafny audit` reports 0 findings (no axioms, no `assume`). It proves:
+  - *Edge sets.* The two diagrams' edges, expanded from the groups, equal the model's edges. Every status change any write makes is one of them, and each one has a concrete item that makes it (`DiagramTodayIsModel`, `DiagramW70IsModel`, `SoundToday`, `SoundW70`, `Complete`).
+  - *I1.* With W-70, every write to an item leaves In progress with an owner (`I1_EveryWritePreservesOwner`). Today's code does not: an agent can create an unassigned In progress item, as W-56 was (`I1_TodayCounterexample`).
+  - *Backlog and Deleted.* Only a person, or an agent quoting the person's instruction, moves an item out of them. Routines and the server never do (`OnlyAPersonLeavesBacklogOrDeleted`).
+  - *I3.* No release fires on a person, an active run, a live or unknown session, or open tickets (`I3_LiveOwnersAreNeverReleased`).
+  - *I4.* With no report and no person acting, a claimed item is released at most twice and claimed at most twice in a row. Every release after the first goes to Human required (`I4_AutonomousStepsPreserveBound`, `I4_LaterReleasesNeverRequeue`). This needs the F2 fix.
+  - *I5.* The release run on its own output writes nothing (`I5_ReleaseIsIdempotent`).
+  - *Findings.* Each finding below is a lemma that shows its counterexample (`F1_*`, `F2_*`, `F3_*`).
+- *Mechanical: scripted.* The `.dfy` holds the diagrams' edges as two literal sets. A short script expands each Mermaid block above, group by group, and compares the result with those literals: today 99 edges, and 8 new in W-70. It matches. That script is not committed. It checks text against text, and the proof above takes over from there.
+- *Semi-formal: searched, not proved.* A separate agent, running `crosscheck:trace-execution`, read every path that writes a Work item's status on `origin/master` and compared each one with the "Today" diagram. A search like this is not a proof. It found:
+  - *Every edge family matches the code*, once two corrections were made: the *resync* path was missing (it is now in the diagram and the model), and *approve* reaches a closed item only in a race (its label now says so).
+  - *No other writer.* `review-work.ts:58` only links sessions. Comments and attachments never change status. Decoding an old `work.json` (`work.ts:309-314`) maps stored statuses but is not a move.
+  - *"A person" means a caller that did not say it is an agent.* A request without `X-Codeman-Parent-Session` is a person to these routes (`canvas-work-routes.ts:62-63`). The proofs about people rest on that.
+  - *Today's code, not W-70.* (a) Resync re-closes a reopened item: a Done item whose work review merged goes back to Done after any write while it keeps its PR, written as the review's owner. (b) Done and Not doing have no guard for agents, unlike Backlog and Deleted. Neither one changes this spec.
+- *What none of this covers.* The model is one item at a time. It does not prove the TypeScript does what the model says: that link is the citations above and the correspondence search. Timing, the 30-second tick, `expectedRevision` races and history text are outside it.
+
+## Verification findings
+
+The proofs found three gaps in the invariants as written. None changes a decision you made. Each proposed fix is a question for you, and no invariant has changed yet.
+
+**F1. A release can re-delete or re-close an item.** I2 sends a released item back to whatever status it entered In progress from. That can be Deleted, Done or Not doing. A person restores a Deleted item straight into In progress for a session, and the session exits. The next tick moves the item back to Deleted, by the server, with no reason (`F1_ReleaseCanDelete`). A reopened Done item would go back to Done the same way.
+*Proposed fix:* when it came from a closed status, a release goes to Needs refinement instead, as an item created into In progress already does. With the fix, a release never closes an item. Only the parent rule makes Done (`F1_FixedReleaseNeverCloses`).
+
+**F2. I4 stops a storm only when the routine fires on Ready.** The second release goes to Human required. A routine whose trigger is Human required with `claim` (allowed today: any status but Deleted) would claim it again. Then a third run fails and a third release follows, every tick (`F2_StormWithoutFix`).
+*Proposed fix:* `claim()` refuses an item released twice in a row. The count is the one I4 already reads from history. With it, the bound in I4 is proved for any routine.
+
+**F3. A ticket closing breaks I1's wording.** I1 says no write leaves an item In progress with no owner. A parent's last ticket closing is a write to the ticket, and it leaves the parent In progress with no assignee and no open tickets until the next tick (`F3_TicketCloseBreaksI1`). I7 then moves the parent on that tick (`F3_NextTickRestoresI1`).
+*Proposed fix:* reword I1 to "No write to an item leaves it In progress with no owner. A parent whose last ticket closes is moved by I7 on the next tick." The behaviour does not change.
 
 ## Invariants
 
@@ -208,7 +328,7 @@ The limit is one number in `releaseFor()`, so changing it later is a one-line sp
 
 - I read the code paths named above on `origin/master` 3350db0a: `claim()`, `carryOut()` and `runViews()` in `routine-runner.ts`; `deriveTaskState()` in `tasks.ts`; `updateWork()`, `setStatus()`, `requestChangesOnWork()` and `approveWork()` in `work.ts`; `sendChanges()` in `work-reviews.ts`; and the delivery loop in `canvas-conversation-routes.ts`.
 - The W-61 timeline comes from `server.jsonl` (build ids and pids at 19:02:46.9 and 19:02:48.9) and the task's message record in `conversations.json`.
-- No crosscheck audit was run on these invariants. The review is the first check.
+- Revision 4 (2026-11-19) added "Lifecycle" and "Verification findings". It read `origin/master` ce40f9af. Dafny 4.9.1 (the official release binary; the crosscheck `dafny_verify` tool could not start, because it needs docker and this host has none) verifies `2026-11-18-w70-lifecycle.dfy` with 45 verified and 0 errors, the same on three runs, and `dafny audit` reports 0 findings. The edge-set script matches both diagrams. The correspondence search is described under "How this was checked".
 
 <details><summary>Tickets (2)</summary>
 
