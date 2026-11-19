@@ -774,6 +774,17 @@ textarea {
 .rv-view-changes {
   display: flex;
 }
+/* The work item's own text, on a work review: read like the walkthrough, in the stage. */
+.rv-view-work {
+  padding: 28px 32px;
+  overflow-y: auto;
+}
+.rv-view-work .rv-md {
+  max-width: 72ch;
+}
+.rv-walk-none {
+  margin: 0 0 12px;
+}
 .rv-files {
   flex: none;
   width: 240px;

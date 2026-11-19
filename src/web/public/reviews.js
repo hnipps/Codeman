@@ -226,6 +226,7 @@
     $('rvFiles').replaceChildren();
     $('rvDiff').replaceChildren();
     $('rvNotes').hidden = true;
+    renderWorkItem();
   }
 
   async function openReview(id, push) {
@@ -250,6 +251,7 @@
     state.pinRects = new Map();
     state.flashPin = null;
     closeComposer();
+    renderWorkItem();
     renderQueue();
     let data;
     try {
@@ -305,6 +307,15 @@
       );
     } else {
       renderHeader();
+      // A sync can replace the item's text, and the agent can write its walkthrough, with no new revision.
+      if (
+        before &&
+        (before.walkthrough !== data.review.walkthrough ||
+          JSON.stringify(before.authored) !== JSON.stringify(data.review.authored))
+      ) {
+        renderWalkthrough();
+        renderNotice();
+      }
       renderNotes();
       renderCaptures();
     }
@@ -459,12 +470,16 @@
     }
   }
 
+  /** The agent wrote its walkthrough for an earlier tip of the branch than the one the review now shows. */
+  const authoredMoved = () =>
+    !!(state.review && isWork() && state.review.authored && state.review.authored.headSha !== state.review.headSha);
+
   function renderNotice() {
     const box = $('rvNotice');
     const lines = [];
     if (state.changes && state.changes.gone)
       lines.push('The branch no longer exists. The walkthrough is kept as it was written.');
-    else if (state.changes && state.changes.moved)
+    else if ((state.changes && state.changes.moved) || authoredMoved())
       lines.push(
         'The branch has new commits since this walkthrough was written. Its code links may point at lines that moved.'
       );
@@ -496,33 +511,79 @@
 
   // ---------------------------------------------------------------- walkthrough
 
-  function renderWalkthrough() {
-    const r = state.review;
-    const walk = $('rvWalk');
-    walk.replaceChildren();
-    walk.append(
-      el(
-        'div',
-        'rv-by',
-        `${isWork() ? 'From' : 'Written by'} ${r.sessionName || 'a session'} · ${agoText(r.updatedAt)}${
-          r.revision > 1 ? ` · revision ${r.revision}` : ''
-        }`
-      )
-    );
+  /** Agent or tracker Markdown, through the one sanitizer, as plain text when either piece is missing. */
+  function markdownBody(text) {
     const body = el('div', 'rv-md');
     let html = null;
     try {
-      if (window.marked && window.sanitizeMarkdownHtml)
-        html = window.sanitizeMarkdownHtml(window.marked.parse(r.walkthrough));
+      if (window.marked && window.sanitizeMarkdownHtml) html = window.sanitizeMarkdownHtml(window.marked.parse(text));
     } catch (_err) {
       html = null;
     }
     if (typeof html === 'string') body.innerHTML = html;
-    else body.textContent = r.walkthrough;
+    else body.textContent = text;
     for (const a of body.querySelectorAll('a[href]')) wireLink(a);
-    walk.append(body);
+    return body;
+  }
+
+  /**
+   * The column holds the agent's words and nothing else. On a work review `walkthrough` is the item's text, owned by
+   * the tracker; it lives on the Work item tab, and the column shows `authored`, the walkthrough the agent wrote.
+   */
+  function renderWalkthrough() {
+    const r = state.review;
+    const walk = $('rvWalk');
+    walk.replaceChildren();
+    renderWorkItem();
+    const authored = isWork() ? r.authored || null : null;
+    if (isWork() && !authored) {
+      const open = el('button', 'rv-btn rv-btn-sm', 'Open the work item');
+      open.type = 'button';
+      open.id = 'rvOpenWorkItem';
+      open.addEventListener('click', () => {
+        setTab('work');
+        setPane('stage');
+      });
+      walk.append(el('p', 'rv-dim rv-walk-none', 'No walkthrough from the agent yet.'), open);
+      return;
+    }
+    const revision = r.revision > 1 ? ` · revision ${r.revision}` : '';
+    walk.append(
+      el(
+        'div',
+        'rv-by',
+        authored
+          ? `Walkthrough by ${authored.sessionName || 'a session'} · ${agoText(authored.at)}${revision}`
+          : `Written by ${r.sessionName || 'a session'} · ${agoText(r.updatedAt)}${revision}`
+      )
+    );
+    walk.append(markdownBody(authored ? authored.walkthrough : r.walkthrough));
     markStaleLinks();
     paintTextNotes();
+  }
+
+  /**
+   * A work review's Work item tab: the item's text as the tracker has it (its open question first, then its
+   * description and pull request). It is never the tab a review opens on, and notes are not anchored in it, since the
+   * text is replaced at every sync; a general note covers it.
+   */
+  function renderWorkItem() {
+    const r = state.review;
+    const tab = $('rvTabWork');
+    const box = $('rvWorkItem');
+    const shown = !!r && isWork();
+    tab.hidden = !shown;
+    if (!shown) {
+      box.replaceChildren();
+      if (state.tab === 'work') setTab('changes');
+      return;
+    }
+    const work = workOf();
+    tab.textContent = `Work item ${work ? work.key : r.sessionName}`;
+    box.replaceChildren(
+      el('div', 'rv-by', 'The item as the tracker has it now. It changes when the item does.'),
+      markdownBody(r.walkthrough)
+    );
   }
 
   /**
@@ -1528,9 +1589,11 @@
     $('rvTabPreview').setAttribute('aria-selected', String(tab === 'preview'));
     $('rvTabChanges').setAttribute('aria-selected', String(tab === 'changes'));
     $('rvTabCaptures').setAttribute('aria-selected', String(tab === 'captures'));
+    $('rvTabWork').setAttribute('aria-selected', String(tab === 'work'));
     $('rvPreview').hidden = tab !== 'preview';
     $('rvChanges').hidden = tab !== 'changes';
     $('rvCaptures').hidden = tab !== 'captures';
+    $('rvWorkItem').hidden = tab !== 'work';
     if (tab === 'captures') renderCaptures();
     else renderPreview();
   }
@@ -1574,6 +1637,7 @@
     $('rvTabPreview').addEventListener('click', () => setTab('preview'));
     $('rvTabChanges').addEventListener('click', () => setTab('changes'));
     $('rvTabCaptures').addEventListener('click', () => setTab('captures'));
+    $('rvTabWork').addEventListener('click', () => setTab('work'));
     $('rvStillSize').addEventListener('click', () => {
       state.stillActual = !state.stillActual;
       renderCaptures();

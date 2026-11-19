@@ -109,8 +109,12 @@ describe('a work item pull request on the Reviews page', () => {
     expect(await page.textContent('#rvMeta')).toMatch(/^W-1 · Prcase · build\/w-1-outline → main · 1 files/);
     expect(await page.isVisible('#rvPr')).toBe(true);
     expect(await page.getAttribute('#rvPr', 'href')).toBe(URL1);
-    expect(await page.textContent('#rvWalk .rv-by')).toMatch(/^From W-1 · /);
-    expect(await page.textContent('#rvWalk .rv-md')).toContain('Each section of the outline gets a heading.');
+    // No agent walkthrough yet: the column says so, and the item's text is on the Work item tab, not selected.
+    expect(await page.textContent('#rvWalk .rv-walk-none')).toBe('No walkthrough from the agent yet.');
+    expect(await page.locator('#rvWalk .rv-md').count()).toBe(0);
+    expect(await page.textContent('#rvTabWork')).toBe('Work item W-1');
+    expect(await page.getAttribute('#rvTabWork', 'aria-selected')).toBe('false');
+    expect(await page.textContent('#rvWorkItem .rv-md')).toContain('Each section of the outline gets a heading.');
     expect(await page.textContent('#rvRequest')).toBe('Send to W-1');
     expect(await page.isDisabled('#rvRequest')).toBe(true);
     expect(await page.getAttribute('#rvApprove', 'title')).toBe(
