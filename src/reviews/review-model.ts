@@ -91,6 +91,8 @@ const Fraction = z.number().min(0).max(1);
 export const NoteAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('general') }).strict(),
   z.object({ kind: z.literal('text'), anchor: ReviewAnchorSchema }).strict(),
+  /** Words selected in a changed Markdown file, read rendered as the branch tip has it. */
+  z.object({ kind: z.literal('doc'), path: RepoPath, anchor: ReviewAnchorSchema }).strict(),
   z
     .object({
       kind: z.literal('code'),
@@ -482,6 +484,8 @@ const where = (n: Note): string => {
       return 'General';
     case 'text':
       return `On your walkthrough, at "${oneLine(n.at.anchor.quote, 160)}"`;
+    case 'doc':
+      return `On ${n.at.path} (the rendered document), at "${oneLine(n.at.anchor.quote, 160)}"`;
     case 'code':
       return `On ${n.at.path}:${n.at.line}${n.at.side === 'old' ? ' (removed line)' : ''}${
         n.at.text.trim() ? `, \`${oneLine(n.at.text, 160)}\`` : ''

@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-19 — Reviews read a changed Markdown file rendered, and notes anchor to its words
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/review-git.ts`, `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.{js,css}`, `docs/api-reference.md`, `test/review-markdown-doc.test.ts`, `test/review-markdown-doc.browser.test.ts`
+**Why:** Specs and plans arrive as Markdown, and the page showed them only as a line diff, so the owner could not read the document or annotate it Plannotator-style.
+**Links:** [intent/2026-11-19-review-markdown-notes.md](../intent/2026-11-19-review-markdown-notes.md)
+
+Changes opens a changed `.md` file rendered, with changed blocks marked in the margin and a Rendered / Diff switch. Selected words become a note of the new anchor kind `doc` (path + quote with context), which is an ordinary review note: listed, resolved by a person, sent with the others on Request changes. Decision (owner): one plain note kind rather than Comment / Replace / Delete, so a rendered-doc note reads and travels exactly like a walkthrough note. The file text comes from a new read-only route that reads the blob by sha and serves Markdown only. Rejected: rendering the diff itself (raw Markdown hunks do not render as a document), and anchoring to source line numbers (they move with every revision, while quote + context finds the words again).
+
 ## 2026-11-19 — A dead session no longer blocks a deploy
 
 **Type:** propagated-discovery
