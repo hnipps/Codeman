@@ -10,6 +10,7 @@ Everything in this folder is throwaway. Codeman does not load any of it.
 | `check-demo.mjs` | Drives the demo headlessly, draws a loop, sends a note and checks the bundle. |
 | `probes/probe-rasterisers.mjs` | Compares two DOM rasterisers with tab capture on `probes/fixture.html`. |
 | `probes/probe-patches.mjs` | Measures the two fixes that make the DOM path see a terminal and a sandboxed frame (`probes/fixture2.html`). |
+| `prototype/` | The UI prototype for the W-89 spec (`intent/2026-11-19-ambient-capture.md`), published on the canvas as `w89-ambient-capture`. It is a mock of the dashboard, with `index.html` for desktop and `phone.html` for the phone. It needs no network. |
 | `probes/probe-filing.mjs` | Files a bundle from `check-demo.mjs` as a real Work item with its four attachments, over plain HTTP, against a running Codeman. Takes the bundle folder, the base URL and a workspace id. |
 
 Run each script with node from the repository after `npm install`, for example `node docs/spikes/w-49-ambient-capture/probes/probe-patches.mjs`. `check-demo.mjs` takes the demo folder and an output folder as arguments, and writes the bundle there, `capture.json` included. The pages load html-to-image, html2canvas and xterm from a CDN, pinned to exact versions. On this host Chromium also needs `LD_LIBRARY_PATH=~/.codeman/mermaid-runtime/lib`.

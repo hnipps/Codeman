@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ambient capture, desktop</title>
+<link rel="stylesheet" href="proto.css">
+</head>
+<body>
+<!--
+  Prototype of the W-89 spec (intent/2026-11-19-ambient-capture.md), desktop flow.
+  A mock of the dashboard, not Codeman. Nothing here is filed anywhere.
+  Ctrl+Shift+X or the Capture button freezes, drag draws the outline, Send "files".
+  States for screenshots: #idle, #frozen, #drawn, #filed, #frames.
+-->
+<header class="top">
+  <span class="brand">Codeman</span>
+  <nav class="tabs">
+    <span class="tab on">w1 · api</span><span class="tab">w2 · web</span><span class="tab">w3 · docs</span>
+  </nav>
+  <button class="capture-btn" id="captureBtn" title="Capture (Ctrl+Shift+X)">
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 7V4h3M14 4h3v3M17 13v3h-3M6 16H3v-3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="10" r="2.4" fill="currentColor"/></svg>
+    Capture
+    <span class="pending" id="pending" hidden>1</span>
+  </button>
+</header>
+
+<main class="dash">
+  <section class="term main-term">
+    <div class="term-head">w1 · api — main terminal (WebGL)</div>
+    <pre>$ npm test -- test/work-routes.test.ts
+ ✓ creates an item (12 ms)
+ ✓ a repeated requestId returns the same key (4 ms)
+ <span class="red">✗ attaches four files (31 ms)</span>
+   Expected 4 attachments, received 5
+ Tests: 1 failed, 2 passed
+$ <span class="cursor">▍</span></pre>
+  </section>
+  <section class="tiles">
+    <div class="tile"><div class="term-head">w2 · web</div><pre>vite v6 ready in 412 ms
+➜ Local: preview</pre></div>
+    <div class="tile"><div class="term-head">w3 · docs</div><pre>Writing intent/…-capture.md
+Done.</pre></div>
+    <div class="tile frame-tile" id="frameTile">
+      <div class="term-head">Prototype frame (sandboxed, bridged)</div>
+      <div class="frame-body"><div class="mock-card">Pricing<br><b>£12 / mo</b><button>Buy</button></div></div>
+    </div>
+    <div class="tile frame-tile" id="mermaidTile">
+      <div class="term-head">Mermaid frame (sandboxed, no bridge)</div>
+      <div class="frame-body"><svg viewBox="0 0 160 70" width="100%" height="70"><rect x="6" y="20" width="50" height="28" rx="4" fill="none" stroke="#7aa2f7"/><rect x="104" y="20" width="50" height="28" rx="4" fill="none" stroke="#7aa2f7"/><path d="M56 34h48" stroke="#7aa2f7"/><text x="31" y="38" font-size="10" fill="#c0caf5" text-anchor="middle">Send</text><text x="129" y="38" font-size="10" fill="#c0caf5" text-anchor="middle">Work</text></svg></div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="appToast">Session w2 finished its turn</div>
+
+<!-- The capture layer. Everything inside [data-codeman-capture] is left out of the clean picture. -->
+<div class="cap" id="cap" data-codeman-capture hidden>
+  <canvas id="frozen"></canvas>
+  <canvas id="ink"></canvas>
+  <div class="hint" id="hint">Draw around what bothers you · Esc to cancel</div>
+  <form class="panel" id="panel" hidden>
+    <div class="panel-head">New Work item <span class="chip">Needs refinement</span></div>
+    <textarea id="note" rows="4" placeholder="What is wrong here?">Attachment count is off by one
+The test shows 5 files after a retry. Probably the outbox re-sent clean.png.</textarea>
+    <div class="facts" id="facts"></div>
+    <div class="row">
+      <button type="button" id="redraw" class="ghost">Redraw</button>
+      <button type="button" id="cancel" class="ghost">Cancel</button>
+      <button type="submit" id="send" class="primary">Send</button>
+    </div>
+  </form>
+</div>
+<div class="toast filed" id="filedToast" hidden>Filed <a href="#">W-12</a> in api · Needs refinement</div>
+
+<script src="proto.js"></script>
+</body>
+</html>

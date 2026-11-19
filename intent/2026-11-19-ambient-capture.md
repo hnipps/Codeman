@@ -1,6 +1,6 @@
 # Intent: Ambient capture (spec)
 
-**Status:** Draft (revision 1, spec for the owner's Spec review of Work item W-89. Built on the W-49 spike, `docs/spikes/w-49-ambient-capture/README.md`, and its intent `intent/2026-11-17-ambient-capture-spike.md`. The owner settled the spike's three open decisions and a fourth on 2026-11-19; they are recorded under Decisions for Harry.)
+**Status:** Draft (revision 2, spec for the owner's Spec review of Work item W-89. Built on the W-49 spike, `docs/spikes/w-49-ambient-capture/README.md`, and its intent `intent/2026-11-17-ambient-capture-spike.md`. The owner settled the spike's three open decisions and a fourth on 2026-11-19; they are recorded under Decisions for Harry. Revision 2 answers two review notes: I8 now gives its reasons, impact and alternatives, and the flow is a clickable prototype on the canvas, `w89-ambient-capture`, whose source is `docs/spikes/w-49-ambient-capture/prototype/`.)
 
 ## Problem statement
 
@@ -96,7 +96,23 @@ A rule applies only when the person may write that workspace. With none, Send is
 
 A picture posted by a frame is painted only inside that frame's own box, only after it decodes as a PNG within the size cap, and only if it answers the parent's `requestId` within 500 ms. A frame that does not answer in time, or answers with something else, is painted as a neutral placeholder labelled "Frame not captured", and `capture.json` marks it `captured: false`. A frame's answer never delays the freeze by more than 500 ms.
 
-- *Why:* the frame bridge's rule. A page can post any message.
+- *Why:* the parent cannot read a sandboxed frame's pixels, so it has to take the frame's word for what the frame shows, and anything the page runs can post that answer, including a script from the site a web tab shows. Today the bridge only reports boxes and element refs, so a lying page can only mislead the canvas about its own contents. With capture, a page also sends pixels that go into a Work item that people and agents act on. Without the rule, a page could:
+  - paint over the terminal next to it, making a fake error message, or covering up the real one, in the evidence;
+  - send an image of 100 MB or more, or a malformed one, and hang or crash the tab at the moment the person wanted to report something;
+  - never answer, so capture waits forever and the moment is lost;
+  - send an SVG or HTML data URL, which can carry script or load from outside when decoded.
+- *Impact on the person:* small. A well-behaved frame (every prototype, and every web tab the person opens on purpose) answers in about 15 ms (the spike measured 14 to 16 ms for a 200 by 100 frame), so the clip, the decode check and the timeout never show. A slow or hostile frame costs at most 500 ms of freeze and shows as the hatched "Frame not captured" box, which the prototype shows on the Mermaid tile (state `#frames`). What the rule cannot stop: a page can still lie about its own contents within its own box. `capture.json` marks those pixels `selfReported: true` so a reader knows.
+- *Alternatives considered:*
+
+  | Option | What it gives | What it costs | Verdict |
+  | --- | --- | --- | --- |
+  | Trust frame pictures as they come | Simplest code | Every risk above. One web tab can forge or break any capture | Rejected |
+  | Never capture sandboxed frames: always a placeholder | No untrusted pixels at all | Prototypes, web tabs and canvas embeds are much of what people capture on the canvas, and they would all be blank | Rejected: loses outcome 1 where it matters most |
+  | Give frames `allow-same-origin` so the parent reads them directly | Exact pixels, no message channel | Lets every proxied page run with Codeman's origin: its cookies, its API and its password session. That breaks the html-view and web-tab security rule (owner decision 2026-10-13) | Rejected: a security regression |
+  | Server re-render of the frame's URL (as `canvas_screenshot` does) | The server, not the page, makes the pixels | Not what the person saw (scroll position, typed input, hover and live state are gone), a second or more of headless Chromium per frame, and memory on the 8 GiB host | Rejected for the default; still how `canvas_screenshot` works |
+  | Tab capture (`getDisplayMedia`) | Exact pixels from the browser, which no page can forge | A consent prompt per page load, a "sharing this tab" bar, desktop Chromium only | Kept as gated ticket 7 |
+  | **Frame answers, parent checks it (this spec)** | What the person saw in about 15 ms, and the forging stays inside the frame's own box | About 20 KB injected into each bridged page, a 500 ms worst case, and a page can still lie about itself | **Chosen** |
+
 - *Failure condition:* frame pixels appear outside the frame's box, a non-PNG answer is drawn, or a silent frame blocks capture.
 - *Test:* browser tests with a frame that answers correctly, one that answers with a JPEG data URL, one that answers with a picture larger than its box, and one that never answers.
 
@@ -142,7 +158,16 @@ The capture chord, with its default or a rebound binding, typed while a terminal
 
 ## Design
 
-The spike's demo (`docs/spikes/w-49-ambient-capture/demo.html`) is the working description of the freeze, draw and send flow. This spec changes it in these places.
+**Prototype.** The flow this spec builds is a clickable prototype on the canvas: object `w89-ambient-capture` in Codeman's own case workspace, with source in `docs/spikes/w-49-ambient-capture/prototype/`. It is a mock of the dashboard, so nothing is rasterised or filed. `index.html` is desktop: press Ctrl+Shift+X or Capture, drag to draw, then Send. `phone.html` is the phone flow. Fixed states for review open with a hash: `#frames`, `#drawn` and `#filed` on desktop, and `#sheet`, `#draw` and `#filed` on the phone. The spike's earlier `demo.html`, in the same folder, is the technical proof (real rasterising with html-to-image). It is not a UI design.
+
+The prototype shows these decisions:
+- the toast stays on screen during the freeze (I1);
+- the unbridged Mermaid frame becomes "Frame not captured" (I8);
+- the note panel names its status (Needs refinement) and its target workspace before Send;
+- the header button counts pending outbox captures;
+- the phone sheet puts Paste first and says "Where capture was opened" (I9).
+
+The design below changes the spike's demo in these places.
 
 **Freeze.**
 - The chord's handler, or the button's click handler, calls `capture.freeze()` synchronously first. `freeze()` pauses toast timers (`showToast` in `panels-ui.js` gains a hold count), records the page facts, then starts the rasterise. The overlay is created only after the clean blob exists (I1).
@@ -158,7 +183,7 @@ The spike's demo (`docs/spikes/w-49-ambient-capture/demo.html`) is the working d
 
 **What is under the outline.** `elementsFromPoint` sampled on a grid inside the path (at most 400 samples), deduplicated and capped like the bridge (`FRAME_LIMITS`: 24 elements, 2000 characters of text each). It records canvas object ids (`data-object-id`), a terminal (with its session id, never its buffer text), frames (by title and object id, plus the bridge's own `codeman:query-polygon` answer for elements inside a bridged frame), and other elements by selector and text.
 
-**The bundle.** `clean.png`, `marked-crop.png`, `marked-wide.png` and `capture.json`. If a PNG is over the Work file cap (`MAX_WORK_FILE_BYTES`, 8 MB), it is encoded as WebP at quality 0.92, then scaled down by 0.75 until it fits; the name changes to `.webp` and `capture.json` records the scale. `capture.json` has `version: 1`, `source` (`dom` or `image`), `path`, `dpr`, `scale`, `under`, `page` or `openedFrom`, `frames`, `workspaceRule`, `freezeMs` and `capturedAt`.
+**The bundle.** `clean.png`, `marked-crop.png`, `marked-wide.png` and `capture.json`. If a PNG is over the Work file cap (`MAX_WORK_FILE_BYTES`, 8 MB), it is encoded as WebP at quality 0.92, then scaled down by 0.75 until it fits; the name changes to `.webp` and `capture.json` records the scale. `capture.json` has `version: 1`, `source` (`dom` or `image`), `path`, `dpr`, `scale`, `under`, `page` or `openedFrom`, `frames` (each with `captured` and `selfReported`), `workspaceRule`, `freezeMs` and `capturedAt`.
 
 **Filing.**
 1. Resolve the workspace (I7). The `home` rule asks a new read-only route, `GET /api/capture/home-case`, for the case name, then gets its workspace with the existing `POST /api/canvas/workspaces { caseName }`, which returns the existing workspace or makes one.
@@ -210,6 +235,7 @@ All four were settled by the owner on 2026-11-19.
   - `app.js` builds `new WebglAddon.WebglAddon()` in `_initWebGL()`, and no other file creates a WebGL addon: tiles and Pane B do not use it. This corrects the spike, which said the change applies to them too.
   - No entry in `DEFAULT_SHORTCUTS` binds Ctrl+Shift+X.
   - The frame bridge is injected inline and allowed by its sha256 in a page's CSP (`allowFrameBridge()`), so a second hashed inline script can follow the same path. It forwards only Escape and bare Q today.
+- **Prototype** (2026-11-19). `canvas_prototype check` loaded version 1 with no console errors, page errors or failed requests. Seven states were screenshotted in headless Chromium at device pixel ratio 1, desktop at 1280 by 760 and phone at 390 by 760, and none raised a page error.
 - **Not run:** no consistency audit by a separate agent, and no new measurement. The freeze and WebGL numbers on a real dashboard are acceptance check 4, owned by ticket 1.
 
 <details><summary>Tickets (7)</summary>
