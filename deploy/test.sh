@@ -57,6 +57,7 @@ tests=(
   test/ui-events.test.ts
   test/build-reload.test.ts
   test/deploy-healthcheck.test.ts
+  test/session-survival.drt.test.ts
   test/deploy-role.test.ts
   test/routes/deploy-routes.test.ts
   test/deploy-control.test.ts

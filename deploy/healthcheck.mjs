@@ -12,7 +12,7 @@
  * (default admin) and CODEMAN_PASSWORD when the password is set. Zero dependencies.
  *
  * An expected session the new server does not list still passes when its tmux session
- * is gone (see `deadMuxSessions`). The live server keeps listing a session whose tmux
+ * is gone (`decideSessions` in session-survival.mjs, proved in model/SessionSurvival.dfy). The live server keeps listing a session whose tmux
  * session died, for example when the tmux server restarts, and a new server rightly
  * drops it, so such a session can never be "kept". Every other missing id fails.
  */
@@ -20,6 +20,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { classifyTmuxResult, decideSessions, MUX_NAME, parseMuxRecords } from './session-survival.mjs';
 
 const TIMEOUT_MS = 5000;
 
@@ -89,58 +90,32 @@ function readWsHealth() {
   });
 }
 
-const MUX_NAME = /^[A-Za-z0-9._-]+$/;
-
 /**
- * The ids, out of `ids`, whose tmux session is provably gone: the mux record the live
- * server wrote (`mux-sessions.json` in CODEMAN_DATA_DIR) names a tmux session, and that
- * session is not on the CODEMAN_TMUX_SOCKET server. Fails closed: an id with no record,
- * an unreadable record file, an unset variable or any tmux error other than "no server
- * running" proves nothing, so that id stays missing.
+ * What the check needs to tell a dead session from a lost one, read once and only when an expected
+ * session is missing: the live colour's mux records (`mux-sessions.json` in CODEMAN_DATA_DIR) and the
+ * tmux sessions on CODEMAN_TMUX_SOCKET. Any doubt (an unset variable, an unreadable file, a tmux error)
+ * leaves `decideSessions` exactly as strict as listing every expected id.
  */
-async function deadMuxSessions(ids) {
+async function survivalFacts() {
   const dataDir = process.env.CODEMAN_DATA_DIR;
   const socket = process.env.CODEMAN_TMUX_SOCKET;
-  if (!dataDir || !socket || !MUX_NAME.test(socket)) return new Set();
+  const envOk = Boolean(dataDir) && Boolean(socket) && MUX_NAME.test(socket);
+  if (!envOk) return { envOk, records: null, tmux: { kind: 'unknown' } };
   let records;
   try {
-    records = JSON.parse(await readFile(join(dataDir, 'mux-sessions.json'), 'utf8'));
+    records = parseMuxRecords(await readFile(join(dataDir, 'mux-sessions.json'), 'utf8'));
   } catch {
-    return new Set();
+    records = null;
   }
-  if (!Array.isArray(records)) return new Set();
-  const muxNameOf = new Map();
-  for (const r of records) {
-    if (typeof r?.sessionId === 'string' && typeof r.muxName === 'string' && MUX_NAME.test(r.muxName)) {
-      muxNameOf.set(r.sessionId, r.muxName);
-    }
-  }
-  const running = await tmuxSessionNames(socket);
-  if (!running) return new Set();
-  return new Set(ids.filter((id) => muxNameOf.has(id) && !running.has(muxNameOf.get(id))));
-}
-
-/** The session names on one tmux socket, an empty set when no server runs there, or null on any other error. */
-function tmuxSessionNames(socket) {
-  return new Promise((resolveNames) => {
+  const tmux = await new Promise((resolveTmux) => {
     execFile(
       'tmux',
       ['-L', socket, 'list-sessions', '-F', '#{session_name}'],
       { timeout: TIMEOUT_MS },
-      (err, stdout, stderr) => {
-        if (!err) return resolveNames(new Set(stdout.split('\n').filter(Boolean)));
-        // A missing socket or one nothing listens on means no tmux server; "Permission denied" and the rest do not.
-        if (
-          /no server running|error connecting to .*\((No such file or directory|Connection refused)\)/i.test(
-            String(stderr)
-          )
-        ) {
-          return resolveNames(new Set());
-        }
-        resolveNames(null);
-      }
+      (err, stdout, stderr) => resolveTmux(classifyTmuxResult(err, stdout, stderr))
     );
   });
+  return { envOk, records, tmux };
 }
 
 const checks = [
@@ -173,13 +148,11 @@ if (expectSessions.length > 0) {
     async () => {
       const list = await getData('/api/sessions');
       if (!Array.isArray(list)) throw new Error('session list is not an array');
-      const live = new Set(list.map((s) => s.id));
-      const missing = expectSessions.filter((id) => !live.has(id));
-      if (missing.length === 0) return `${expectSessions.length} expected, all present`;
-      const dead = await deadMuxSessions(missing);
-      const lost = missing.filter((id) => !dead.has(id));
+      const listed = new Set(list.map((s) => s.id));
+      if (expectSessions.every((id) => listed.has(id))) return `${expectSessions.length} expected, all present`;
+      const { excused, lost } = decideSessions({ expected: expectSessions, listed, ...(await survivalFacts()) });
       if (lost.length > 0) throw new Error(`missing ${lost.join(',')}`);
-      return `${expectSessions.length} expected, ${expectSessions.length - missing.length} present, ${missing.length} not listed because their tmux session is gone: ${missing.join(',')}`;
+      return `${expectSessions.length} expected, ${expectSessions.length - excused.length} present, ${excused.length} not listed because their tmux session is gone: ${excused.join(',')}`;
     },
   ]);
 }

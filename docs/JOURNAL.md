@@ -5,11 +5,11 @@ Newest entries first. After an entry is on the default branch, correct it with a
 ## 2026-11-19 — A dead session no longer blocks a deploy
 
 **Type:** propagated-discovery
-**Touches:** `deploy/healthcheck.mjs`, `test/deploy-healthcheck.test.ts`, `docs/self-building.md`
+**Touches:** `deploy/healthcheck.mjs`, `deploy/session-survival.mjs`, `deploy/model/`, `deploy/test.sh`, `test/deploy-healthcheck.test.ts`, `test/session-survival.drt.test.ts`, `docs/self-building.md`
 **Why:** The tmux server restarted at 06:41 on 2026-11-19 and took 22 sessions with it. The live colour kept listing them, every new colour dropped them, and the health check's session check refused every deploy after that (`ce40f9af`, `53c7448c`, `1351bae8`). This was the second time a dead tmux server blocked deploys.
 **Links:** [intent/2026-11-19-healthcheck-dead-sessions.md](../intent/2026-11-19-healthcheck-dead-sessions.md)
 
-A session the new colour does not list now passes only when the live colour's `mux-sessions.json` names its tmux session and that session is not on `CODEMAN_TMUX_SOCKET`. The check fails closed on any doubt. The live colour still shows the dead sessions as idle tabs until the next successful deploy drops them; that is a separate app fix.
+A session the new colour does not list now passes only when the live colour's `mux-sessions.json` names its tmux session and that session is not on `CODEMAN_TMUX_SOCKET`. The check fails closed on any doubt. The decision has a Dafny model with five proved properties, and a differential random test in the deploy gate holds the shipped code to it. The live colour still shows the dead sessions as idle tabs until the next successful deploy drops them; that is a separate app fix.
 
 ## 2026-11-18 — Deleted Work items on the server (W-22 ticket 1)
 
