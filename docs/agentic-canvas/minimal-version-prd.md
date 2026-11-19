@@ -128,6 +128,6 @@ The minimal version is done when each of these has happened once, started from a
 - [ ] What happens when two Codeman servers attach to the same tmux socket during a switch, and how short the overlap must be.
 - [ ] Which data files Codeman keeps in its data directory, and whether any change format between releases.
 - [ ] Codeman's stack and code size, and whether its build produces a self-contained release directory.
-- [ ] Defaults proposed here and not yet agreed: the health-check timeout.
-- [ ] Which reverse proxy to use for the colour switch: Caddy, nginx, or cloudflared ingress rules.
-- [ ] Where the nightly off-server copy goes.
+- [x] Defaults proposed here and not yet agreed: the health-check timeout. Answer: 90 seconds for a release to pass (`limits.healthTimeoutSeconds`), each attempt capped at 10 seconds (`limits.healthAttemptTimeoutSeconds`) and retried every 2 seconds (`limits.healthRetryIntervalSeconds`), all in the supervisor's `config.json`. The supervisor README calls 90 "a starting guess, not yet measured".
+- [x] Which reverse proxy to use for the colour switch: Caddy, nginx, or cloudflared ingress rules. Answer: Caddy. The supervisor writes the upstream to `proxy.upstreamFile` (`/etc/caddy/codeman-upstream.caddy`) and reloads it with `proxy.reloadCommand` (`systemctl reload caddy`).
+- [ ] Where the nightly off-server copy goes. Not built. Backups stay on the VM: `backupsDir` (`/var/backups/codeman-supervisor`) keeps the copies from the last 2 deploys (`limits.backupsKept`), and the push of each good deploy to `origin/master` carries code, not data. Proposed: a nightly root systemd timer in the VM that runs `restic backup` of the data directory and the Claude Code transcripts to a Backblaze B2 bucket, needs Harry.
