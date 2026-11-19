@@ -1,6 +1,6 @@
 # Intent: Chat Graph (spec)
 
-**Status:** Draft (revision 4, spec for the owner's Spec review. Revision 2 resolved the eight findings of the consistency audit, listed under Checks run. Revision 3 records the owner's answers to the three decisions, given on 2026-11-18, and names the UI design spec's Work item, W-78. Revision 4 answers the review note "Can we use Dropbox Witchcraft?" with measurements on this host, adds ticket 10, and asks Decision 4. The design is canvas text object `chat-graph-design-doc`, revised 2026-11-18.)
+**Status:** Draft (revision 5, spec for the owner's Spec review. Revision 2 resolved the eight findings of the consistency audit, listed under Checks run. Revision 3 records the owner's answers to the three decisions, given on 2026-11-18, and names the UI design spec's Work item, W-78. Revision 4 answered the review note "Can we use Dropbox Witchcraft?" with measurements on this host. Revision 5 records the owner's answer to Decision 4, given on 2026-11-19: not now. Ticket 10 is dropped, and the retrieval seam stays. The design is canvas text object `chat-graph-design-doc`, revised 2026-11-18.)
 
 ## Problem statement
 
@@ -27,10 +27,10 @@ Codeman has no way to do any of these for him. A canvas conversation is one sess
 ## Constraints
 
 - **Core in Go.** The owner decided on 2026-11-18 that the core is a Go sidecar that Codeman starts and stops. The sidecar owns the store, the index, scoring, the confidence bands and the lifecycle ops. Codeman's TypeScript owns the routes, the UI, sessions and every model call.
-- **Rule 10.** The only path to Claude is the Claude Code CLI. A local model that runs on this host, such as Witchcraft's embedder in ticket 10, is not a Claude request, so rule 10 does not forbid it. The sidecar never calls Claude and opens no outbound network connection. Codeman runs `claude -p` through the existing helper (`src/ai-checker-base.ts`, as `src/readmymind-predictor.ts` does) and passes the results to the sidecar.
+- **Rule 10.** The only path to Claude is the Claude Code CLI. A local model that runs on this host is not a Claude request, so rule 10 does not forbid one. Decision 4 keeps it out of this spec anyway. The sidecar never calls Claude and opens no outbound network connection. Codeman runs `claude -p` through the existing helper (`src/ai-checker-base.ts`, as `src/readmymind-predictor.ts` does) and passes the results to the sidecar.
 - **Rule 6, live colour only.** Only the live colour starts the sidecar, sweeps orphans or writes the store. Codeman checks `deployRole.allows('persist')` at each of those moments and before every `claude -p` spawn, because the helper creates a pane. Work that runs without a human message (summary folds, the bootstrap replay and the repair pass) also needs `deployRole.allows('automate')`. A colour may always stop its own child, matched by pid and process start time, whatever its role. A candidate or retired colour never opens the store for writing.
 - **Rule 5.** Every store schema change is additive and carries a version row. The previous release must still read the store.
-- **The 8 GiB host.** No hosted embedding model. A local one is allowed only through ticket 10, which has its own memory budget and gate. The sidecar's resident memory stays under 64 MB with 1,000 topics and 100,000 messages. The repair pass runs at most once an hour. Codeman, not the sidecar, triggers it, and only while the deploy role allows `automate`.
+- **The 8 GiB host.** No embedding model, local or hosted (Decision 4). The sidecar's resident memory stays under 64 MB with 1,000 topics and 100,000 messages. The repair pass runs at most once an hour. Codeman, not the sidecar, triggers it, and only while the deploy role allows `automate`.
 - **Instance isolation.** Codeman passes the sidecar its directory, `dataPath('chat-graph')`. The sidecar never derives a path. Every tmux call Chat Graph makes, including the `claude -p` helper's `tmux new-session` (today a bare call on tmux's default socket, `src/ai-checker-base.ts:415`), runs on the socket from `resolveTmuxSocketName()`. Ticket 4 fixes the helper.
 - **Chat text is private.** The store and the socket are mode 0600. Chat text never reaches `GET /api/search`, logs or SSE payloads beyond the chat's own events. This is a deliberate change from the canvas conversation rule that no message text is stored: Chat Graph needs that text to search, summarise and rebuild context.
 - **Naming.** "Thread" already means an object's comment thread on the canvas. The code and the UI say **topic**.
@@ -62,7 +62,7 @@ Neither `Decide` nor an explicit signal (a reply, a quote, a chip tap) ever atta
 
 ## I4: BandsUseRerankScoresOnly
 
-The routing decision depends only on the reranker's 0 to 1 scores and the topics' statuses. Activation and retrieval (BM25, plus Witchcraft after ticket 10) decide which topics become candidates, and nothing more.
+The routing decision depends only on the reranker's 0 to 1 scores and the topics' statuses. Activation and retrieval (BM25 in v1) decide which topics become candidates, and nothing more.
 
 - *Why:* activation is a log-scale number, unbounded below. Mixing it into the 0.5 and 0.8 bands made the original thresholds meaningless.
 - *Test:* the same scores and statuses with different activations and retrieval values give the same decision.
@@ -113,7 +113,7 @@ A capture is never written to an agent session. Its only response is the acknowl
 
 - Several users, shared topics, or multi-user mode. The routes refuse when multi-user mode is on.
 - Merge or split with no confirmation.
-- Embeddings in tickets 1 to 9. BM25 does retrieval there. Ticket 10 adds Witchcraft's hybrid search behind the same seam, if Decision 4 keeps it.
+- Embeddings, including Dropbox Witchcraft (Decision 4). BM25 does retrieval. A later spec can add a second retriever behind the seam.
 - A digest of captures, or late replies to them.
 - A graph editor. The graph is an index, not a view.
 - Replacing canvas conversations. They keep working as they do today.
@@ -139,7 +139,7 @@ A capture is never written to an agent session. Its only response is the acknowl
 The design doc on the canvas (`chat-graph-design-doc`) is the product description. This spec changes it in three places:
 
 - **Topic sessions are Claude Code sessions.** A warm topic appends to its live session, so Claude Code manages that context itself. The token-budget window and the summary fold apply only when a cold rebuild seeds a fresh session.
-- **Retrieval is BM25 in v1, behind one seam.** The sidecar asks one retriever for ranked candidates. Ticket 10 can add Witchcraft (Dropbox's local semantic search, Apache-2.0) as a second retriever without touching routing, `Decide` or the store.
+- **Retrieval is BM25 in v1, behind one seam.** The sidecar asks one retriever for ranked candidates. A later spec can add a second retriever, such as Witchcraft, without touching routing, `Decide` or the store.
 - **Routing is one `claude -p` call.** It resolves references and scores the candidates together.
 
 **The UI is not designed yet.** The doc's UX section is a rough idea. Ticket 6 has no design to build against. It waits in Backlog for a separate design spec with canvas prototypes, Work item W-78 (see Decisions for Harry).
@@ -214,19 +214,15 @@ Each route answers 503 `CHAT_GRAPH_UNAVAILABLE` when the sidecar is down, and re
 - *Similar topics get confused.* The chip and the correction log are the mitigation. Corrections become few-shot examples in the routing prompt.
 - *A bad summary hurts every cold rebuild.* Summaries are versioned, and Harry can read and edit them in the topic view.
 - *Routing adds about 5 s per turn.* Explicit signals skip the call. Acceptance check 4 sets the budget.
-- *Witchcraft holds about 650 MB while it is loaded* (ticket 10). That is ten times the sidecar's budget on a host where OOM has killed tmux twice. Ticket 10 runs it as its own process that exits when idle, and Decision 4 can drop it.
 
 ## Decisions for Harry
 
-Decisions 1 to 3 were settled by the owner on 2026-11-18. Decision 4 comes from the review note of 2026-11-19 and is open.
+Decisions 1 to 3 were settled by the owner on 2026-11-18, and Decision 4 on 2026-11-19.
 
 1. **The UI gets its own design spec.** Agreed. Tickets 1 to 5 and 7 to 9 are built and checked through the API. Ticket 6 stays in Backlog until a design spec with canvas prototypes is approved. That design spec is Work item W-78, filed in Needs refinement on 2026-11-18 at the owner's request so it gets done.
 2. **Chat Graph stores chat text.** Agreed. It departs from the canvas rule that no message text is stored, and it keeps the text 0600 and out of search, as `intents.json` does.
 3. **Routing uses Haiku, and about 5 s per routed message is accepted for the MVP.** Agreed. The owner noted that it seems slow. Haiku and Sonnet measured about the same (4.9 to 5.1 s against 5.0 to 5.6 s), because CLI start-up dominates. Settings can change the model. Cutting that start-up is a later spec, not part of this one.
-4. **Witchcraft: when, if at all?** Open. The owner asked on 2026-11-19 whether Chat Graph can use Dropbox Witchcraft. It can: it builds and runs on this host (measured under Checks run). It does not yet earn its memory. On 11 held-out messages it found the right topic in the top 5 exactly as often as BM25 did (9 of 11), and it holds about 650 MB while loaded against BM25's 11 MB. The options:
-   - **(a) Ticket 10, gated (recommended).** v1 ships BM25. Ticket 10 adds Witchcraft as a second retriever in its own process, and it is switched on only if Chat Graph's own correction log shows it finds the right topic more often than BM25. Reassignments are real labels, which the 11-message test lacked.
-   - **(b) Witchcraft in v1.** Ticket 10 moves ahead of ticket 3, and the host carries the 650 MB from day one without evidence that it helps.
-   - **(c) Not now.** Drop ticket 10. The retrieval seam stays, so it can come back later.
+4. **Witchcraft: not now.** Settled. The owner asked on 2026-11-19 whether Chat Graph can use Dropbox Witchcraft. It builds and runs on this host (measured under Checks run), but it held about 650 MB while loaded against BM25's 11 MB. On 11 held-out messages it found the right topic in the top 5 exactly as often as BM25 did (9 of 11). The owner chose option (c): ticket 10 is dropped, v1 retrieves with BM25 only, and the retrieval seam stays so a later spec can bring Witchcraft back. The other options were (a) a gated ticket 10 and (b) Witchcraft in v1.
 
 ## Checks run
 
@@ -249,7 +245,7 @@ Decisions 1 to 3 were settled by the owner on 2026-11-18. Decision 4 comes from 
 
   This audit is a search, not a proof. It cannot find conflicts that show up only at run time.
 
-<details><summary>Tickets (10)</summary>
+<details><summary>Tickets (9)</summary>
 
 **Ticket 1: Go sidecar that Codeman builds, starts and stops.** Order 1. No dependencies.
 - The `chat-graph/` module with vendored modules, the build step into `dist/chat-graph/`, and `src/chat-graph/supervisor.ts`.
@@ -289,12 +285,5 @@ Decisions 1 to 3 were settled by the owner on 2026-11-18. Decision 4 comes from 
 **Ticket 9: Repair pass and bootstrap.** Order 9. Depends on tickets 7 and 8.
 - The hourly re-cluster that writes proposals only, and the 7-day bootstrap from canvas conversation transcripts.
 - Acceptance check 6.
-
-**Ticket 10: Witchcraft as a second retriever.** Order 10. Depends on tickets 3 and 4. Filed in Backlog. It is dropped or moved forward by Decision 4.
-- A separate `witchcraft` process (Rust), not part of the Go sidecar and never loaded into Codeman's Node process. The supervisor runs it under I6's rules, starts it on the first search and stops it after 10 idle minutes. It reads message text that the sidecar hands it and keeps its own index file beside the store. That index is derived data. A rollback ignores it, and a rebuild recreates it, so rule 5 does not apply to it.
-- The build pins a Witchcraft commit, vendors its crates (including the git-pinned forks) and checks the model files against the release's `SHA256SUMS`, so the deploy build needs no network. If the deploy host has no Rust toolchain, stop and ask, as ticket 1 does for Go.
-- Embedding new messages and any backfill run under `nice`, one at a time, only while the role allows `automate`.
-- Hybrid results are fused with BM25 before `RetrievalScore`. I4 holds unchanged.
-- Gate: it is switched on only when, replayed over 100 or more reassigned messages from the correction log, hybrid puts the right topic in the top 5 more often than BM25. Its resident memory must also stay under 800 MB. Otherwise it stays off and the result is recorded here.
 
 </details>
