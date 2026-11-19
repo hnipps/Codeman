@@ -336,6 +336,60 @@ describe('approve routes', () => {
     expect(queue.decided).toHaveLength(1);
   });
 
+  describe('close', () => {
+    const close = (id: string, headers: Record<string, string> = {}) =>
+      harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/close`, headers, payload: {} });
+
+    it('ends a review without merging, for a person only, and only once', async () => {
+      const id = await start();
+      const mainBefore = repo.git('rev-parse', 'main');
+      expect((await close(id, AGENT)).statusCode).toBe(403);
+
+      const done = await close(id);
+      expect(done.statusCode).toBe(200);
+      expect(done.json().data.review).toMatchObject({ state: 'closed', decision: { kind: 'closed' } });
+      expect(done.json().data.review.decision.mergedSha).toBeUndefined();
+      // Nothing merged, and the branch is still there.
+      expect(repo.git('rev-parse', 'main')).toBe(mainBefore);
+      expect(repo.git('rev-parse', 'feat/x')).toMatch(/^[0-9a-f]{40}$/);
+
+      expect((await close(id)).json()).toMatchObject({ error: expect.stringContaining('DECIDED') });
+      expect((await approve(id, repo.git('rev-parse', 'feat/x'))).statusCode).toBe(409);
+      const note = await harness.app.inject({
+        method: 'POST',
+        url: `/api/reviews/${id}/notes`,
+        payload: { at: { kind: 'general' }, text: 'late' },
+      });
+      expect(note.statusCode).toBe(409);
+      const queue = (await harness.app.inject({ url: '/api/reviews' })).json().data;
+      expect(queue.waiting).toHaveLength(0);
+      expect(queue.decided.map((r: { id: string; state: string }) => [r.id, r.state])).toEqual([[id, 'closed']]);
+    });
+
+    it('leaves a merged review alone', async () => {
+      const id = await start();
+      expect((await approve(id, repo.git('rev-parse', 'feat/x'))).statusCode).toBe(200);
+      expect((await close(id)).statusCode).toBe(409);
+      const read = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+      expect(read.state).toBe('merged');
+    });
+
+    it('opens a new review when the same session submits again', async () => {
+      const id = await start();
+      await close(id);
+      const again = await harness.app.inject({
+        method: 'POST',
+        url: '/api/reviews',
+        headers: AGENT,
+        payload: { title: 'Work', walkthrough: 'Again' },
+      });
+      // 201: a new review, not a revision of the closed one.
+      expect(again.statusCode).toBe(201);
+      expect(again.json().data.id).not.toBe(id);
+      expect(again.json().data.state).toBe('ready');
+    });
+  });
+
   it('for the repository Codeman is built from, asks for a deploy of the merge and follows it to the end', async () => {
     const live = repo.git('rev-parse', 'main');
     const overview: DeployOverviewConfigured = {

@@ -79,6 +79,7 @@ import {
   SubmitSchema,
   addNote,
   cleanLine,
+  closeReview,
   decide,
   handOver,
   handoverPrompt,
@@ -650,6 +651,24 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         merge: { pushed: merged.pushed, localMoved: merged.localMoved, already: merged.already },
       },
     };
+  });
+
+  /**
+   * Close without merging, for a duplicate or work nobody wants any more. Only a person closes, and only a review
+   * nothing was decided on. The branch, the notes and a work item are left as they are; the review's live preview is
+   * destroyed, as on Approve. If the author submits again, `sameWork` finds no open review and a new one opens.
+   */
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/close', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const changed = changeReview(review.id, (r) => closeReview(r, Date.now()));
+    if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
+    changesCache.delete(review.id);
+    announce(changed.review);
+    // No commit is the review's any more, so its preview, if there is one, is the one that goes.
+    syncLive({ ...changed.review, headSha: '' }, review.headSha, false);
+    return { success: true, data: { review: toView(changed.review) } };
   });
 
   /** Asks again for the deploy of a merge whose deploy failed. The merge is not made again. */

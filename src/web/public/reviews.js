@@ -31,6 +31,7 @@
     deploying: 'Deploying',
     deployed: 'Deployed',
     'deploy-failed': 'Deploy failed',
+    closed: 'Closed',
   };
   const STATE_TONE = { ready: 'ok', updated: 'ok', deploying: 'warn', 'deploy-failed': 'bad' };
 
@@ -340,7 +341,11 @@
     pill.hidden = false;
     pill.textContent = STATE_LABEL[r.state] || r.state;
     pill.dataset.tone = STATE_TONE[r.state] || 'dim';
-    const open = !['merged', 'deployed', 'deploying'].includes(r.state);
+    const open = !['merged', 'deployed', 'deploying', 'closed'].includes(r.state);
+    const close = $('rvClose');
+    close.hidden = !!r.decision;
+    close.disabled = !!state.closing || !!state.approving;
+    close.title = 'Closes this review without merging. The branch stays on origin.';
     const request = $('rvRequest');
     request.hidden = !open;
     const notes = r.unsent ? ` · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}` : '';
@@ -429,9 +434,60 @@
     body.push(details);
     $('rvConfirmBody').replaceChildren(...body);
     $('rvConfirmGo').textContent = deploys ? 'Merge and deploy' : 'Merge';
+    state.confirming = 'approve';
     $('rvConfirm').showModal();
     $('rvConfirmCancel').focus();
     return undefined;
+  }
+
+  // ---------------------------------------------------------------- close
+
+  /** Close without merging: a duplicate, or work nobody wants. Asked first, like Approve, because it cannot be undone. */
+  function askClose() {
+    const r = state.review;
+    if (!r || r.decision) return;
+    const work = workOf();
+    $('rvConfirmTitle').textContent = 'Close this review?';
+    const body = [
+      el('p', '', 'It leaves the queue without merging. Nothing is deleted: the branch stays on origin.'),
+      el(
+        'p',
+        '',
+        work
+          ? `${work.key} stays where it is on the board.`
+          : 'If the agent submits this work again, a new review opens.'
+      ),
+    ];
+    if (r.unsent)
+      body.push(
+        el(
+          'p',
+          'rv-confirm-warn',
+          `${r.unsent} ${r.unsent === 1 ? 'note has' : 'notes have'} not been sent and will not be.`
+        )
+      );
+    $('rvConfirmBody').replaceChildren(...body);
+    $('rvConfirmGo').textContent = 'Close review';
+    state.confirming = 'close';
+    $('rvConfirm').showModal();
+    $('rvConfirmCancel').focus();
+  }
+
+  async function closeCall() {
+    state.closing = true;
+    renderHeader();
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(state.id)}/close`, { method: 'POST', body: {} });
+      state.review = data.review;
+      toast('Closed. Nothing was merged.', 'ok');
+      loadQueue();
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+    state.closing = false;
+    renderHeader();
+    renderNotes();
+    renderPreview();
   }
 
   async function approveCall(path, body) {
@@ -488,6 +544,7 @@
     else if (d && d.kind === 'deploying')
       lines.push(`Merged as ${shortSha(d.mergedSha)}. The deploy is running; this page follows it.`);
     else if (d && d.kind === 'deployed') lines.push(`Merged as ${shortSha(d.mergedSha)} and deployed.`);
+    else if (d && d.kind === 'closed') lines.push('Closed without merging. The branch is still on origin.');
     else if (d && d.kind === 'deploy-failed')
       lines.push(
         `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
@@ -738,7 +795,8 @@
 
   // ---------------------------------------------------------------- notes
 
-  const isOpenReview = () => state.review && !['merged', 'deployed', 'deploying'].includes(state.review.state);
+  const isOpenReview = () =>
+    state.review && !['merged', 'deployed', 'deploying', 'closed'].includes(state.review.state);
 
   function whereText(at) {
     if (at.kind === 'general') return 'General';
@@ -1618,9 +1676,12 @@
     $('rvRequest').addEventListener('click', requestChanges);
     $('rvApprove').addEventListener('click', askApprove);
     $('rvConfirmCancel').addEventListener('click', () => $('rvConfirm').close());
+    $('rvClose').addEventListener('click', askClose);
     $('rvConfirmGo').addEventListener('click', () => {
       $('rvConfirm').close();
-      approveCall('approve', { headSha: state.changes.headSha });
+      if (state.confirming === 'close') closeCall();
+      else approveCall('approve', { headSha: state.changes.headSha });
+      state.confirming = null;
     });
     $('rvGeneral').addEventListener('click', () => openComposer({ kind: 'general' }));
     $('rvComposerCancel').addEventListener('click', closeComposer);

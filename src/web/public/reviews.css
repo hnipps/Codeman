@@ -160,6 +160,11 @@ textarea {
 .rv-verdict:not(:has(.rv-btn:not([hidden]))) {
   display: none;
 }
+/* Close is the quiet one: it ends a review without merging, so it never looks like a verdict. */
+.rv-btn-close {
+  background: transparent;
+  color: var(--text-dim);
+}
 .rv-confirm {
   width: min(460px, calc(100vw - 32px));
   padding: 20px;
@@ -972,6 +977,9 @@ textarea {
   .rv-verdict .rv-btn:not(.rv-btn-go) {
     flex-grow: 1.6;
     background: var(--bg-card);
+  }
+  .rv-verdict .rv-btn.rv-btn-close {
+    flex: 0 0 auto;
   }
   .rv-main {
     padding-bottom: calc(112px + env(safe-area-inset-bottom));
