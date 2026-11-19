@@ -346,6 +346,10 @@
     close.hidden = !!r.decision;
     close.disabled = !!state.closing || !!state.approving;
     close.title = 'Closes this review without merging. The branch stays on origin.';
+    const reopen = $('rvReopen');
+    reopen.hidden = r.state !== 'closed';
+    reopen.disabled = !!state.closing;
+    reopen.title = 'Puts this review back in the queue, with its notes.';
     const request = $('rvRequest');
     request.hidden = !open;
     const notes = r.unsent ? ` · ${r.unsent} ${r.unsent === 1 ? 'note' : 'notes'}` : '';
@@ -490,6 +494,23 @@
     renderPreview();
   }
 
+  async function reopenCall() {
+    state.closing = true;
+    renderHeader();
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(state.id)}/reopen`, { method: 'POST', body: {} });
+      state.review = data.review;
+      toast('Reopened. It is waiting for you again.', 'ok');
+      loadQueue();
+    } catch (err) {
+      toast(err.message, 'bad');
+    }
+    state.closing = false;
+    renderHeader();
+    renderNotes();
+    renderPreview();
+  }
+
   async function approveCall(path, body) {
     state.approving = true;
     renderApprove();
@@ -506,6 +527,12 @@
             : `Merged into ${data.review.base}${where} as ${shortSha(d.mergedSha)}.`,
         d.kind === 'deploy-failed' ? 'bad' : 'ok'
       );
+      const others = (data.closedOthers || []).length;
+      if (others)
+        toast(
+          `Closed ${others} other ${others === 1 ? 'review' : 'reviews'} of ${data.review.branch}: the merge holds their commits.`,
+          'ok'
+        );
       loadQueue();
     } catch (err) {
       toast(err.message, 'bad');
@@ -544,7 +571,14 @@
     else if (d && d.kind === 'deploying')
       lines.push(`Merged as ${shortSha(d.mergedSha)}. The deploy is running; this page follows it.`);
     else if (d && d.kind === 'deployed') lines.push(`Merged as ${shortSha(d.mergedSha)} and deployed.`);
-    else if (d && d.kind === 'closed') lines.push('Closed without merging. The branch is still on origin.');
+    else if (d && d.kind === 'closed' && d.closedBy) {
+      // A link, built from an id the server checked: the review whose Approve made this one a duplicate.
+      const p = el('p', '', 'Closed when ');
+      const a = el('a', '', 'another review of this branch');
+      a.href = `reviews/${encodeURIComponent(d.closedBy)}`;
+      p.append(a, ' was approved. Its merge holds every commit here.');
+      lines.push(p);
+    } else if (d && d.kind === 'closed') lines.push('Closed without merging. The branch is still on origin.');
     else if (d && d.kind === 'deploy-failed')
       lines.push(
         `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
@@ -554,7 +588,7 @@
         'The work item no longer asks for this review: it is closed, or its pull request changed. You can still read it.'
       );
     box.hidden = !lines.length;
-    box.replaceChildren(...lines.map((line) => el('p', '', line)));
+    box.replaceChildren(...lines.map((line) => (typeof line === 'string' ? el('p', '', line) : line)));
   }
 
   function renderReview() {
@@ -1677,6 +1711,7 @@
     $('rvApprove').addEventListener('click', askApprove);
     $('rvConfirmCancel').addEventListener('click', () => $('rvConfirm').close());
     $('rvClose').addEventListener('click', askClose);
+    $('rvReopen').addEventListener('click', reopenCall);
     $('rvConfirmGo').addEventListener('click', () => {
       $('rvConfirm').close();
       if (state.confirming === 'close') closeCall();

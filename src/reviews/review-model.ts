@@ -147,6 +147,8 @@ export const DecisionSchema = z
     mergedSha: Sha.optional(),
     deployRequestId: z.string().max(100).optional(),
     error: z.string().max(500).optional(),
+    /** On `closed`: the review whose Approve closed this one, because the merge already holds this review's head. */
+    closedBy: ReviewIdSchema.optional(),
   })
   .strict();
 export type Decision = z.infer<typeof DecisionSchema>;
@@ -388,10 +390,26 @@ export function decide(r: Review, decision: Decision): Changed | Refusal {
  * Close without merging: a duplicate, or work nobody wants any more. Only a review nothing has been decided on: once a
  * merge exists, closing would hide it. Nothing else changes; the branch, the notes and the captures stay as they were.
  */
-export function closeReview(r: Review, at: number): Changed | Refusal {
+export function closeReview(r: Review, at: number, closedBy?: string): Changed | Refusal {
   if (r.decision) return refuse('DECIDED', 'DECIDED: this review has been decided');
-  return { ok: true, review: { ...r, decision: { kind: 'closed', at } } };
+  return { ok: true, review: { ...r, decision: { kind: 'closed', at, ...(closedBy ? { closedBy } : {}) } } };
 }
+
+/** Undo a close: the review waits again, with its notes as they were. Only a closed review; a merge stays decided. */
+export function reopenReview(r: Review): Changed | Refusal {
+  if (r.decision?.kind !== 'closed') return refuse('DECIDED', 'NOT_CLOSED: only a closed review can be reopened');
+  const { decision: _drop, ...rest } = r;
+  return { ok: true, review: rest };
+}
+
+/**
+ * The other reviews an Approve of `approved` may close: undecided, of the same branch into the same base. The caller
+ * closes only those whose head the merge contains (git decides that), so a review with commits the merge left out stays.
+ */
+export const supersededCandidates = (all: readonly Review[], approved: Review): Review[] =>
+  all.filter(
+    (r) => r.id !== approved.id && r.decision === undefined && r.branch === approved.branch && r.base === approved.base
+  );
 
 export type Refusal = { ok: false; code: 'DECIDED' | 'FULL' | 'NOT_FOUND' | 'SENT'; message: string };
 export type Changed = { ok: true; review: Review };

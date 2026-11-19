@@ -390,6 +390,85 @@ describe('approve routes', () => {
     });
   });
 
+  describe('Approve closes the other reviews of its branch', () => {
+    const AGENT2 = { 'x-codeman-parent-session': 'test-session-2' };
+    /** A second session on the same checkout, so a second review of `feat/x` can exist beside the first. */
+    const secondSession = () => {
+      const first = harness.ctx.sessions.get('test-session-1')!;
+      const twin = Object.assign(Object.create(Object.getPrototypeOf(first)), first, { id: 'test-session-2' });
+      harness.ctx.sessions.set('test-session-2', twin);
+    };
+    const commit = (name: string) => {
+      writeFileSync(join(repo.dir, name), `${name}\n`);
+      repo.git('add', name);
+      repo.git('commit', '-q', '-m', name);
+      return repo.git('rev-parse', 'HEAD');
+    };
+    const submit = async (headers: Record<string, string>) => {
+      const made = await harness.app.inject({
+        method: 'POST',
+        url: '/api/reviews',
+        headers,
+        payload: { title: 'Work', walkthrough: 'Done' },
+      });
+      expect(made.statusCode).toBe(201);
+      return made.json().data.id as string;
+    };
+    const read = async (id: string) => (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+
+    it('closes an older review whose commits the merge holds, and says which review closed it', async () => {
+      const older = await start();
+      secondSession();
+      const tip = commit('more.txt');
+      const newer = await submit(AGENT2);
+
+      const done = await approve(newer, tip);
+      expect(done.statusCode).toBe(200);
+      expect(done.json().data.closedOthers).toEqual([older]);
+      expect(await read(older)).toMatchObject({ state: 'closed', decision: { kind: 'closed', closedBy: newer } });
+      expect(await read(newer)).toMatchObject({ state: 'merged' });
+    });
+
+    it('leaves open a review with commits the merge does not hold', async () => {
+      const first = repo.git('rev-parse', 'feat/x');
+      const older = await start();
+      secondSession();
+      commit('more.txt');
+      const newer = await submit(AGENT2);
+      // The branch goes back, and the older review is approved: the newer one's commit is not in that merge.
+      repo.git('reset', '-q', '--hard', first);
+
+      const done = await approve(older, first);
+      expect(done.statusCode).toBe(200);
+      expect(done.json().data.closedOthers).toEqual([]);
+      expect(await read(newer)).toMatchObject({ state: 'ready' });
+    });
+
+    it('reopens a closed review, for a person only, unless another review of the branch is open', async () => {
+      const id = await start();
+      const reopen = (rid: string, headers: Record<string, string> = {}) =>
+        harness.app.inject({ method: 'POST', url: `/api/reviews/${rid}/reopen`, headers, payload: {} });
+      expect((await reopen(id)).json()).toMatchObject({ error: expect.stringContaining('NOT_CLOSED') });
+
+      await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/close`, payload: {} });
+      expect((await reopen(id, AGENT)).statusCode).toBe(403);
+
+      // While a newer review of the branch is open, reopening would make two.
+      const twin = await submit(AGENT);
+      const refused = await reopen(id);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toContain(twin);
+      await harness.app.inject({ method: 'POST', url: `/api/reviews/${twin}/close`, payload: {} });
+
+      const back = await reopen(id);
+      expect(back.statusCode).toBe(200);
+      expect(back.json().data.review.state).toBe('ready');
+      expect(back.json().data.review.decision).toBeUndefined();
+      // Open again, so Approve merges it.
+      expect((await approve(id, repo.git('rev-parse', 'feat/x'))).statusCode).toBe(200);
+    });
+  });
+
   it('for the repository Codeman is built from, asks for a deploy of the merge and follows it to the end', async () => {
     const live = repo.git('rev-parse', 'main');
     const overview: DeployOverviewConfigured = {
