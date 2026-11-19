@@ -141,7 +141,8 @@ export const DEPLOY_LOST_MS = 45 * 60_000;
 
 export const DecisionSchema = z
   .object({
-    kind: z.enum(['merged', 'deploying', 'deployed', 'deploy-failed']),
+    // `closed`: a person closed it without merging (`closeReview`); it carries no `mergedSha`.
+    kind: z.enum(['merged', 'deploying', 'deployed', 'deploy-failed', 'closed']),
     at: z.number().int().nonnegative(),
     mergedSha: Sha.optional(),
     deployRequestId: z.string().max(100).optional(),
@@ -241,7 +242,8 @@ export type ReviewState =
   | 'merged'
   | 'deploying'
   | 'deployed'
-  | 'deploy-failed';
+  | 'deploy-failed'
+  | 'closed';
 
 /** The one word the queue shows. A decision wins; otherwise it turns on whether the agent has answered the notes. */
 export function reviewState(r: Review): ReviewState {
@@ -380,6 +382,15 @@ export function decide(r: Review, decision: Decision): Changed | Refusal {
   if (r.decision && r.decision.mergedSha && decision.mergedSha !== r.decision.mergedSha)
     return refuse('DECIDED', 'DECIDED: this review has been merged');
   return { ok: true, review: { ...r, decision } };
+}
+
+/**
+ * Close without merging: a duplicate, or work nobody wants any more. Only a review nothing has been decided on: once a
+ * merge exists, closing would hide it. Nothing else changes; the branch, the notes and the captures stay as they were.
+ */
+export function closeReview(r: Review, at: number): Changed | Refusal {
+  if (r.decision) return refuse('DECIDED', 'DECIDED: this review has been decided');
+  return { ok: true, review: { ...r, decision: { kind: 'closed', at } } };
 }
 
 export type Refusal = { ok: false; code: 'DECIDED' | 'FULL' | 'NOT_FOUND' | 'SENT'; message: string };

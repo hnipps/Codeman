@@ -202,4 +202,50 @@ describe('a work item pull request on the Reviews page', () => {
     expect(item?.changes?.text).toContain('Number the sections.');
     expect(failures).toEqual([]);
   });
+
+  it('keeps Close in reach on a phone, beside the verdict', async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const boxes = await Promise.all(['#rvClose', '#rvRequest', '#rvApprove'].map((s) => page.locator(s).boundingBox()));
+    for (const box of boxes) {
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+    // In one row, left to right, none on top of another.
+    expect(boxes[0]!.x + boxes[0]!.width).toBeLessThanOrEqual(boxes[1]!.x);
+    expect(boxes[1]!.x + boxes[1]!.width).toBeLessThanOrEqual(boxes[2]!.x);
+    await shoot('close-phone');
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  it('closes the review without merging, after asking', async () => {
+    // Approve's dialog first, then Close's: the shared dialog must do what its own button says.
+    await page.click('#rvApprove');
+    await page.waitForSelector('#rvConfirm[open]');
+    await page.click('#rvConfirmCancel');
+    expect(await page.getAttribute('#rvClose', 'title')).toBe(
+      'Closes this review without merging. The branch stays on origin.'
+    );
+    await page.click('#rvClose');
+    await page.waitForSelector('#rvConfirm[open]');
+    expect(await page.textContent('#rvConfirmTitle')).toBe('Close this review?');
+    expect(await page.textContent('#rvConfirmBody')).toContain('W-1 stays where it is on the board.');
+    expect(await page.textContent('#rvConfirmGo')).toBe('Close review');
+    await shoot('close-confirm');
+    await page.click('#rvConfirmGo');
+    await page.waitForFunction(() => document.getElementById('rvState')?.textContent === 'Closed');
+    expect(await page.isHidden('#rvClose')).toBe(true);
+    expect(await page.isHidden('#rvApprove')).toBe(true);
+    expect(await page.isHidden('#rvRequest')).toBe(true);
+    expect(await page.textContent('#rvNotice')).toContain('Closed without merging. The branch is still on origin.');
+    // Nothing merged into origin's main.
+    const main = execFileSync('git', ['rev-parse', 'main'], { cwd: origin, encoding: 'utf8' }).trim();
+    const branch = execFileSync('git', ['rev-parse', 'build/w-1-outline'], { cwd: origin, encoding: 'utf8' }).trim();
+    expect(
+      execFileSync('git', ['rev-list', '--count', `${main}..${branch}`], { cwd: origin, encoding: 'utf8' }).trim()
+    ).toBe('1');
+    await shoot('closed');
+    expect(failures).toEqual([]);
+  });
 });
