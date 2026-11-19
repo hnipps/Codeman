@@ -1,6 +1,6 @@
 # Intent: W-70 In progress always has a live owner
 
-**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 1)
+**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 2)
 
 ## Problem statement
 
@@ -174,13 +174,35 @@ The routine's own `claim()` already sets status and assignee in one write.
 - *A run that ends just after reporting.* The report lands first, so the item is no longer In progress and is skipped. If the release lands first, the report applies on top (I5). Either way the item ends where the report put it.
 - *Existing items that break I1 on deploy.* W-22 is owned by its open tickets. Any unassigned In progress item with no tickets is released on the first tick back to where it came from, or to Needs refinement when it was created into In progress. This is the cleanup the board needs today.
 - *A deploy that cuts deliveries* now produces one released item per cut run, then a fresh run. That is the intended recovery. If it repeats, I4 stops it at two.
+- *A session whose tmux pane vanished reads as live.* On 2026-11-19 the tmux server restarted at 06:41 and every older session lost its pane, yet each still has no `paneExit` record, so `sessionState` above returns `live` for it and I2 would never release an item it holds. Detecting a vanished pane is W-79. Until it ships, this spec releases such items only once the session is gone from the map. The `sessionState` dependency is the one place W-79 needs to change for this spec to benefit.
 
 ## Decisions for Harry
 
-1. **Where a released item goes.** Recommended: back to the status it came from (usually Ready, at the top), or Human required when it already has a PR. Alternative: always Human required. That is safer, but it puts every deploy hiccup in your queue.
-2. **A parent with all tickets Done moves itself to Done (I7).** Recommended, because each ticket was already verified and reviewed. Alternative: always ask, as for a parent with a Not doing ticket.
-3. **Approve of a session review closes the In progress items that link its session (I8).** Recommended, since it is exactly W-56. The risk is a session linked to two In progress items that only one review covers. That is rare, and the history line names the review. Alternative: leave I8 out, and close such items by hand.
-4. **Two releases before asking (I4).** Recommended. One release covers a single deploy cut, and a second in a row means something is broken.
+Settled in review on 2026-11-19 (revision 1 notes).
+
+1. **Where a released item goes.** Accepted as recommended: back to the status it came from (usually Ready, at the top), or Human required when it already has a PR.
+2. **A parent with all tickets Done moves itself to Done (I7).** Accepted.
+3. **Approve of a session review closes the In progress items that link its session (I8).** Accepted.
+4. **Two releases before asking (I4).** Harry asked for an explanation. Still open.
+
+**What decision 4 means.** A *release* is the server taking an item back from a routine run that ended without reporting (I2). The item goes back to Ready, at the top, and R-2 starts a fresh run on it: a new session, worktree and prompt. The count is of releases *in a row*. A `report` from an agent, or any move by a person, resets it.
+
+Example with "two":
+
+- 10:00 R-2 claims W-n. A deploy cuts the run's prompt. The task fails.
+- 10:00:30 First release. W-n is back at the top of Ready. R-2 claims it again with a new run.
+- 10:20 That run also ends without reporting. Second release in a row, so W-n goes to Human required with "W-n was released twice: runs a and b ended without reporting." No third run starts.
+- If the second run had reported instead, the count would be back to zero.
+
+**Why two.** One failed run is often bad luck that a retry fixes. W-61 is the example: a deploy two seconds after the claim. Two in a row usually means the cause is in the item or the system, such as a prompt that breaks the agent, a worktree that won't build, or a host that is out of memory. A third run would most likely fail the same way, at the cost of another session, worktree and tokens.
+
+| Setting | You hear about it | Cost |
+| --- | --- | --- |
+| One (ask on the first release) | after the first failed run | every deploy hiccup lands in your queue |
+| **Two (recommended)** | after the second failed run in a row | at most one extra failed run per item |
+| Three | after the third | two extra failed runs, and a longer wait before you hear |
+
+The limit is one number in `releaseFor()`, so changing it later is a one-line spec.
 
 ## Checks run
 
