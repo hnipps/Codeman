@@ -1,6 +1,6 @@
 # Intent: W-70 In progress always has a live owner
 
-**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 4)
+**Status:** Draft (spec for W-70, under `intent/2026-11-18-spec-first-lifecycle.md`; revision 5)
 
 ## Problem statement
 
@@ -89,7 +89,7 @@ stateDiagram-v2
   Deleted
 ```
 
-**After W-70.** Only the edges W-70 adds or changes are drawn. Arrows labelled `W-70` are new. The others already exist and W-70 changes what they do. The diagram and the model include the fixes proposed for F1 and F2 (see "Verification findings").
+**After W-70.** Only the edges W-70 adds or changes are drawn. Arrows labelled `W-70` are new. The others already exist and W-70 changes what they do. The diagram and the model include the fixes for F1 and F2, which were accepted in revision 5 (see "Verification findings").
 
 ```mermaid
 stateDiagram-v2
@@ -162,39 +162,39 @@ stateDiagram-v2
 
 ## Verification findings
 
-The proofs found three gaps in the invariants as written. None changes a decision you made. Each proposed fix is a question for you, and no invariant has changed yet.
+The proofs found three gaps in the invariants as first written. Harry accepted all three fixes in review on 2026-11-19, and revision 5 folds them into I1, I2 and I4. Each finding below is kept as the reason for its rule.
 
 **F1. A release can re-delete or re-close an item.** I2 sends a released item back to whatever status it entered In progress from. That can be Deleted, Done or Not doing. A person restores a Deleted item straight into In progress for a session, and the session exits. The next tick moves the item back to Deleted, by the server, with no reason (`F1_ReleaseCanDelete`). A reopened Done item would go back to Done the same way.
-*Proposed fix:* when it came from a closed status, a release goes to Needs refinement instead, as an item created into In progress already does. With the fix, a release never closes an item. Only the parent rule makes Done (`F1_FixedReleaseNeverCloses`).
+*Fix, accepted and now in I2:* when it came from a closed status, a release goes to Needs refinement instead, as an item created into In progress already does. With the fix, a release never closes an item. Only the parent rule makes Done (`F1_FixedReleaseNeverCloses`).
 
 **F2. I4 stops a storm only when the routine fires on Ready.** The second release goes to Human required. A routine whose trigger is Human required with `claim` (allowed today: any status but Deleted) would claim it again. Then a third run fails and a third release follows, every tick (`F2_StormWithoutFix`).
-*Proposed fix:* `claim()` refuses an item released twice in a row. The count is the one I4 already reads from history. With it, the bound in I4 is proved for any routine.
+*Fix, accepted and now in I4:* `claim()` refuses an item released twice in a row. The count is the one I4 already reads from history. With it, the bound in I4 is proved for any routine.
 
 **F3. A ticket closing breaks I1's wording.** I1 says no write leaves an item In progress with no owner. A parent's last ticket closing is a write to the ticket, and it leaves the parent In progress with no assignee and no open tickets until the next tick (`F3_TicketCloseBreaksI1`). I7 then moves the parent on that tick (`F3_NextTickRestoresI1`).
-*Proposed fix:* reword I1 to "No write to an item leaves it In progress with no owner. A parent whose last ticket closes is moved by I7 on the next tick." The behaviour does not change.
+*Fix, accepted and now in I1:* I1 is reworded to say this. The behaviour does not change.
 
 ## Invariants
 
 ## I1: InProgressHasAnOwner
 
-No write leaves an item In progress with no assignee and no open tickets.
+No write to an item leaves it In progress with no assignee and no open tickets. A write to another item can: a parent's last ticket closing leaves the parent In progress with neither. I7 moves that parent on the next tick (F3).
 - A person who moves an unassigned item into In progress becomes its assignee (`{kind: 'person'}`).
 - An agent who does so becomes the assignee (its own session).
 - Unassigning an In progress item, or unlinking its assignee's session, is refused unless the same write moves it out of In progress.
 - `create` into In progress follows the same rule.
 
 - *Why:* W-56 was created into In progress with nobody assigned, so nothing could ever tell that its owner was gone.
-- *Test:* for each write path (`create`, `update` status, `update` assignee null, `unlinkSessions` of the assignee, `report continue`) and each author kind, assert the stored item is never In progress with `assignee: null` and no open tickets.
+- *Test:* for each write path (`create`, `update` status, `update` assignee null, `unlinkSessions` of the assignee, `report continue`) and each author kind, assert the stored item is never In progress with `assignee: null` and no open tickets. Close a parent's last ticket, and one tick later the parent has moved under I7.
 
 ## I2: EndedRunReleasesItsItem
 
 An In progress item whose assignee is the session of a routine run, and whose task is not active (`failed`, `cancelled`, or `completed`), is released on the next tick.
-- With no `pr`, or with `pr` and unaddressed `changes`, it returns to the status it entered In progress from (the newest `Moved from <A> to In progress` event). If that status is Ready for work, it goes to position 1.
+- With no `pr`, or with `pr` and unaddressed `changes`, it returns to the status it entered In progress from (the newest `Moved from <A> to In progress` event). If that status is Ready for work, it goes to position 1. If it is Done, Not doing or Deleted, or the item was created into In progress, it goes to Needs refinement instead, so a release never closes or deletes an item (F1).
 - With a `pr` and no pending `changes`, it goes to Human required. The question names the run and the PR.
 - The assignee is cleared and the run's session is unlinked. History reads `Released: run <runId> ended without a report`.
 
 - *Why:* W-61. Moving it back into Ready fires R-2's trigger again, which is what moved W-61 on 2026-11-18 when it was done by hand.
-- *Test:* an item claimed by a run whose task is each of `failed`, `cancelled`, `completed`. One tick later it is in Ready at position 1, unassigned, with the history line. Repeat with `pr` set, and it lands in Human required with `needs`.
+- *Test:* an item claimed by a run whose task is each of `failed`, `cancelled`, `completed`. One tick later it is in Ready at position 1, unassigned, with the history line. Repeat with `pr` set, and it lands in Human required with `needs`. An item a person moved from Deleted, Done or Not doing into In progress for a session that then exits lands in Needs refinement.
 
 ## I3: LiveOwnersAreNeverReleased
 
@@ -213,8 +213,10 @@ An interactive session is released only when it is `gone` or `exited`, never bec
 
 The second release of an item with no `report` and no person's move between them sends it to Human required, with the question "W-n was released twice: runs <a> and <b> ended without reporting. Send it back to Ready for work when the cause is fixed."
 
+`claim()` refuses an item released twice in a row, whatever status the routine fires on. It reads the same count from history. So a routine that fires on Human required cannot start a third run either (F2).
+
 - *Why:* if every run fails the same way (a broken prompt, a broken worktree), releasing it into Ready would start a new run, worktree and session every tick.
-- *Test:* two consecutive releases. The second lands in Human required with `needs`, and no third run is fired.
+- *Test:* two consecutive releases. The second lands in Human required with `needs`, and no third run is fired. A claiming routine that fires on Human required does not claim it. After a report, or a move by a person, it claims again.
 
 ## I5: ReleaseIsIdempotent
 
@@ -258,7 +260,7 @@ Approve that merges a session review moves to Done every In progress item whose 
 1. `npm test -- test/canvas-work.test.ts test/canvas-routines.test.ts test/work-reviews.test.ts` passes. Each of I1 to I8 has one or more cases marked `// Invariant I<N>: <Name>`. Add a release test file only if the cases do not fit those.
 2. On a throwaway instance (`CODEMAN_INSTANCE`, its own port), with `curl`:
    - Create a Ready item. Let a routine with `claim` pick it up, then cancel its task through `POST /api/canvas/<ws>/tasks/<id>/cancel`. Within 60 s the item is back in Ready, unassigned, with the `Released:` line, and a new run has claimed it.
-   - Cancel that second run too. The item lands in Human required with the I4 question, and no third run starts.
+   - Cancel that second run too. The item lands in Human required with the I4 question, and no third run starts. Add a claiming routine that fires on Human required: it does not claim the item.
    - `PATCH` an In progress item with `assignee: null` as an agent. It answers 400.
 3. Restart the throwaway server while an item is claimed by a live run. Nothing is released during the restore, and the item is still held afterwards.
 
@@ -274,7 +276,7 @@ For each item, `releaseFor()` decides, and the runner makes at most one `changeW
 - auto-assign when the author moved an unassigned item into In progress;
 - otherwise refuse with `INVALID_INPUT`: "W-n is In progress, so it needs an owner. Assign someone, or move it out of In progress in the same change."
 
-The routine's own `claim()` already sets status and assignee in one write.
+The routine's own `claim()` already sets status and assignee in one write. It also refuses an item released twice in a row (I4, F2).
 
 **Request changes.** `requestChangesOnWork()` sets `assignee = null` and logs `Unassigned`.
 
@@ -292,7 +294,7 @@ The routine's own `claim()` already sets status and assignee in one write.
 
 **Risks.**
 - *A run that ends just after reporting.* The report lands first, so the item is no longer In progress and is skipped. If the release lands first, the report applies on top (I5). Either way the item ends where the report put it.
-- *Existing items that break I1 on deploy.* W-22 is owned by its open tickets. Any unassigned In progress item with no tickets is released on the first tick back to where it came from, or to Needs refinement when it was created into In progress. This is the cleanup the board needs today.
+- *Existing items that break I1 on deploy.* W-22 is owned by its open tickets. Any unassigned In progress item with no tickets is released on the first tick back to where it came from, or to Needs refinement when it was created into In progress or came from a closed status. This is the cleanup the board needs today.
 - *A deploy that cuts deliveries* now produces one released item per cut run, then a fresh run. That is the intended recovery. If it repeats, I4 stops it at two.
 - *A session whose tmux pane vanished reads as live.* On 2026-11-19 the tmux server restarted at 06:41 and every older session lost its pane, yet each still has no `paneExit` record, so `sessionState` above returns `live` for it and I2 would never release an item it holds. Detecting a vanished pane is W-79. Until it ships, this spec releases such items only once the session is gone from the map. The `sessionState` dependency is the one place W-79 needs to change for this spec to benefit.
 
@@ -304,6 +306,8 @@ Settled in review on 2026-11-19 (notes on revisions 1 and 2). All four are settl
 2. **A parent with all tickets Done moves itself to Done (I7).** Accepted.
 3. **Approve of a session review closes the In progress items that link its session (I8).** Accepted.
 4. **Two releases before asking (I4).** Accepted as recommended, after the explanation below.
+
+The three verification findings were accepted in review on 2026-11-19 (notes on revision 4). F1: a release from a closed status goes to Needs refinement (I2). F2: `claim()` refuses an item released twice in a row (I4). F3: I1 is reworded.
 
 **What decision 4 means.** A *release* is the server taking an item back from a routine run that ended without reporting (I2). The item goes back to Ready, at the top, and R-2 starts a fresh run on it: a new session, worktree and prompt. The count is of releases *in a row*. A `report` from an agent, or any move by a person, resets it.
 
@@ -329,6 +333,7 @@ The limit is one number in `releaseFor()`, so changing it later is a one-line sp
 - I read the code paths named above on `origin/master` 3350db0a: `claim()`, `carryOut()` and `runViews()` in `routine-runner.ts`; `deriveTaskState()` in `tasks.ts`; `updateWork()`, `setStatus()`, `requestChangesOnWork()` and `approveWork()` in `work.ts`; `sendChanges()` in `work-reviews.ts`; and the delivery loop in `canvas-conversation-routes.ts`.
 - The W-61 timeline comes from `server.jsonl` (build ids and pids at 19:02:46.9 and 19:02:48.9) and the task's message record in `conversations.json`.
 - Revision 4 (2026-11-19) added "Lifecycle" and "Verification findings". It read `origin/master` ce40f9af. Dafny 4.9.1 (the official release binary; the crosscheck `dafny_verify` tool could not start, because it needs docker and this host has none) verifies `2026-11-18-w70-lifecycle.dfy` with 45 verified and 0 errors, the same on three runs, and `dafny audit` reports 0 findings. The edge-set script matches both diagrams. The correspondence search is described under "How this was checked".
+- Revision 5 (2026-11-19) folds the accepted F1 to F3 fixes into I1, I2 and I4, their tests, the technical design and acceptance check 2. The model and diagrams already assumed them, so they are unchanged.
 
 <details><summary>Tickets (2)</summary>
 
