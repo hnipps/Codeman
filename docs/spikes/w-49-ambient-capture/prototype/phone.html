@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ambient capture, phone</title>
+<link rel="stylesheet" href="proto.css">
+</head>
+<body class="phone">
+<!--
+  Prototype of the W-89 spec, phone flow (ticket 6). A mock, nothing is filed.
+  Capture opens a sheet: Paste first, Pick second. A pasted or picked screenshot fills the screen,
+  a finger draws the outline, Send "files". States: #home, #sheet, #draw, #filed.
+-->
+<div class="home" id="home">
+  <h1>Codeman</h1>
+  <div class="card"><b>w1 · api</b><br><small>Working · 3 min</small></div>
+  <div class="card"><b>w2 · web</b><br><small>Waiting for you</small></div>
+  <div class="card"><b>w3 · docs</b><br><small>Idle</small></div>
+  <a href="index.html" style="color:var(--dim);font-size:12px">Desktop prototype</a>
+</div>
+<button class="fab" id="fab">Capture</button>
+
+<div class="sheet" id="sheet" hidden>
+  <h2>Capture</h2>
+  <label class="big first"><b>Paste screenshot</b><small>Copy it from Photos or the screenshot editor, then tap here and Paste</small>
+    <input id="pasteField" aria-label="Paste here" style="opacity:0;position:absolute;width:1px;height:1px"></label>
+  <label class="big"><b>Pick from Photos</b><small>Photo Library, the photo, then Done</small>
+    <input type="file" accept="image/*" id="pick" hidden></label>
+  <button class="ghost" id="sheetCancel">Cancel</button>
+</div>
+
+<div class="shot" id="shot" hidden>
+  <div class="stage"><canvas id="img"></canvas><canvas id="ink"></canvas></div>
+  <div class="bar">
+    <textarea id="note" rows="2">Send button overlaps the tab bar on the Work view</textarea>
+    <small style="color:var(--dim)">Where capture was opened: /home · the picture is your screenshot</small>
+    <div class="row">
+      <button class="ghost" id="redraw">Redraw</button>
+      <button class="ghost" id="cancel">Cancel</button>
+      <button class="primary" id="send">Send</button>
+    </div>
+  </div>
+</div>
+<div class="toast filed" id="filedToast" hidden style="left:16px;right:16px;bottom:84px">Filed <a href="#">W-13</a> in Codeman · Needs refinement</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const sheet = $('sheet'), shot = $('shot'), img = $('img'), ink = $('ink');
+  let path = [], drawing = false;
+  const fit = (c) => { const r = c.getBoundingClientRect(), d = devicePixelRatio || 1; c.width = r.width * d; c.height = r.height * d; c.getContext('2d').setTransform(d, 0, 0, d, 0, 0); return r; };
+
+  // A stand-in for the person's screenshot: a drawn phone screen with an overlapping button.
+  const fakeShot = () => {
+    const r = fit(img), g = img.getContext('2d');
+    g.fillStyle = '#16161e'; g.fillRect(0, 0, r.width, r.height);
+    g.fillStyle = '#c0caf5'; g.font = '600 17px system-ui'; g.fillText('Work', 16, 34);
+    ['W-9 Delete an item', 'W-11 Ready lane order', 'W-12 Attachment count'].forEach((t, i) => {
+      g.fillStyle = '#1f2030'; g.fillRect(12, 52 + i * 62, r.width - 24, 52);
+      g.fillStyle = '#c0caf5'; g.font = '14px system-ui'; g.fillText(t, 24, 82 + i * 62);
+    });
+    g.fillStyle = '#1f2030'; g.fillRect(0, r.height - 56, r.width, 56);
+    g.fillStyle = '#ff9e64'; g.fillRect(r.width - 120, r.height - 76, 104, 40);
+    g.fillStyle = '#111'; g.font = '600 14px system-ui'; g.fillText('Send', r.width - 86, r.height - 51);
+    fit(ink);
+  };
+  const draw = () => {
+    const g = ink.getContext('2d'), r = ink.getBoundingClientRect();
+    g.clearRect(0, 0, r.width, r.height);
+    if (path.length < 2) return;
+    g.beginPath(); path.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+    if (!drawing) g.closePath();
+    g.lineWidth = 4; g.lineJoin = 'round'; g.strokeStyle = '#ff5370'; g.stroke();
+  };
+  const open = () => { sheet.hidden = true; shot.hidden = false; fakeShot(); path = []; };
+
+  $('fab').onclick = () => (sheet.hidden = false);
+  $('sheetCancel').onclick = () => (sheet.hidden = true);
+  $('pasteField').addEventListener('paste', (e) => { e.preventDefault(); open(); });
+  $('pick').addEventListener('change', open);
+  document.querySelectorAll('.sheet .big').forEach((b) => b.addEventListener('click', (e) => { if (e.target === b && b.classList.contains('first')) open(); }));
+  ink.addEventListener('pointerdown', (e) => { drawing = true; path = [[e.offsetX, e.offsetY]]; ink.setPointerCapture(e.pointerId); });
+  ink.addEventListener('pointermove', (e) => { if (drawing) { path.push([e.offsetX, e.offsetY]); draw(); } });
+  ink.addEventListener('pointerup', () => { drawing = false; draw(); });
+  $('redraw').onclick = () => { path = []; draw(); };
+  $('cancel').onclick = () => (shot.hidden = true);
+  $('send').onclick = () => { shot.hidden = true; $('filedToast').hidden = false; };
+
+  const state = location.hash.slice(1);
+  if (state === 'sheet') sheet.hidden = false;
+  if (state === 'draw') {
+    open();
+    const r = ink.getBoundingClientRect(), cx = r.width - 68, cy = r.height - 56;
+    path = Array.from({ length: 48 }, (_, i) => { const a = (i / 48) * Math.PI * 2; return [cx + Math.cos(a) * 82, cy + Math.sin(a) * 40]; });
+    draw();
+  }
+  if (state === 'filed') $('filedToast').hidden = false;
+})();
+</script>
+</body>
+</html>
