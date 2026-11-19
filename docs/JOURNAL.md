@@ -11,6 +11,15 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 A session the new colour does not list now passes only when the live colour's `mux-sessions.json` names its tmux session and that session is not on `CODEMAN_TMUX_SOCKET`. The check fails closed on any doubt. The decision has a Dafny model with five proved properties, and a differential random test in the deploy gate holds the shipped code to it. The app cause is fixed in the same change. The live colour now notices a vanished tmux session while it runs (two answering reads in a row) and offers it on the restore banner before it deletes the tab. A non-live colour can no longer kill a tmux session or respawn a pane. Decision: remove and offer, not keep a "lost" tab, because a kept tab would still make every deploy expect it.
 
+## 2026-11-19 — Minimal-version PRD: two open questions answered from the built supervisor
+
+**Type:** status-transition
+**Touches:** `docs/agentic-canvas/minimal-version-prd.md`
+**Why:** The owner asked for a review of the PRD's open questions. Two of them were already settled by what the supervisor runs, and one is not built.
+**Links:** Work item W-4
+
+The health-check timeout and the reverse proxy are ticked, each citing the key in `/etc/codeman-supervisor/config.json` that sets it: 90 seconds (`limits.healthTimeoutSeconds`) and Caddy (`proxy.upstreamFile`, `proxy.reloadCommand`). Recording what was built is taken as agreeing the default; the owner can overrule it in review. The nightly off-server copy stays open: backups stay on the VM, and the proposal under it needs the owner. The other three open questions are untouched.
+
 ## 2026-11-18 — Deleted Work items on the server (W-22 ticket 1)
 
 **Type:** propagated-discovery
