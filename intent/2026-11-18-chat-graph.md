@@ -1,6 +1,6 @@
 # Intent: Chat Graph (spec)
 
-**Status:** Draft (revision 2, spec for the owner's Spec review. Revision 2 resolves the eight findings of the consistency audit, listed under Checks run. The design is canvas text object `chat-graph-design-doc`, revised 2026-11-18.)
+**Status:** Draft (revision 3, spec for the owner's Spec review. Revision 2 resolved the eight findings of the consistency audit, listed under Checks run. Revision 3 records the owner's answers to the three decisions, given on 2026-11-18. The design is canvas text object `chat-graph-design-doc`, revised 2026-11-18.)
 
 ## Problem statement
 
@@ -217,9 +217,11 @@ Each route answers 503 `CHAT_GRAPH_UNAVAILABLE` when the sidecar is down, and re
 
 ## Decisions for Harry
 
-1. **The UI gets its own design spec.** Recommended. Tickets 1 to 5 and 7 to 9 can be built and checked through the API. Ticket 6 stays in Backlog until a design spec with canvas prototypes is approved. The alternative is to approve the doc's rough UX as the design now.
-2. **Chat Graph stores chat text.** Recommended, and needed for search and rebuilds. It departs from the canvas rule that no message text is stored, and it keeps the text 0600 and out of search, as `intents.json` does.
-3. **Routing uses Haiku.** Recommended. Haiku and Sonnet measured about the same (4.9 to 5.1 s against 5.0 to 5.6 s), because CLI start-up dominates. Both gave the same scores on the test message. Haiku costs less per call. Settings can change the model.
+All three were settled by the owner on 2026-11-18, before approval.
+
+1. **The UI gets its own design spec.** Agreed. Tickets 1 to 5 and 7 to 9 are built and checked through the API. Ticket 6 stays in Backlog until a design spec with canvas prototypes is approved.
+2. **Chat Graph stores chat text.** Agreed. It departs from the canvas rule that no message text is stored, and it keeps the text 0600 and out of search, as `intents.json` does.
+3. **Routing uses Haiku, and about 5 s per routed message is accepted for the MVP.** Agreed. The owner noted that it seems slow. Haiku and Sonnet measured about the same (4.9 to 5.1 s against 5.0 to 5.6 s), because CLI start-up dominates. Settings can change the model. Cutting that start-up is a later spec, not part of this one.
 
 ## Checks run
 
