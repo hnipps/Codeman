@@ -231,3 +231,36 @@ export async function reviewFileDiff(
   const cut = out.lastIndexOf('\n', MAX_REVIEW_DIFF_BYTES);
   return { diff: out.slice(0, cut > 0 ? cut : MAX_REVIEW_DIFF_BYTES), truncated: true, binary };
 }
+
+/** The changed files the page can show rendered, and how large one may be. Matched on the branch's own path. */
+export const REVIEW_DOC_PATH = /\.(md|markdown)$/i;
+export const MAX_REVIEW_DOC_BYTES = 400 * 1024;
+export const isReviewDoc = (path: string): boolean => REVIEW_DOC_PATH.test(path);
+
+export type ReviewFileText =
+  | { kind: 'text'; text: string; headSha: string }
+  | { kind: 'absent' }
+  | { kind: 'too-large'; bytes: number };
+
+/**
+ * One Markdown file as the branch tip has it, for the rendered view. `path` must be a path `reviewChanges` listed.
+ * The blob is read by sha (`cat-file`), so no filter, textconv or working tree is involved. A file the branch deletes
+ * is `absent`; null means the branch is gone.
+ */
+export async function reviewFileText(
+  repoRoot: string,
+  base: string,
+  head: HeadLocator,
+  file: { path: string },
+  git: GitRunner = runGit
+): Promise<ReviewFileText | null> {
+  if (!isSafeRepoRelativePath(file.path) || !isReviewDoc(file.path)) return null;
+  const range = await rangeOf(git, repoRoot, base, head);
+  if (!range) return null;
+  const spec = `${range.head}:${file.path}`;
+  if (line((await tryGit(git, repoRoot, ['cat-file', '-t', spec])) ?? '') !== 'blob') return { kind: 'absent' };
+  const bytes = Number(line((await tryGit(git, repoRoot, ['cat-file', '-s', spec])) ?? ''));
+  if (!Number.isInteger(bytes) || bytes < 0) return { kind: 'absent' };
+  if (bytes > MAX_REVIEW_DOC_BYTES) return { kind: 'too-large', bytes };
+  return { kind: 'text', text: await git(repoRoot, ['cat-file', 'blob', spec]), headSha: range.head };
+}

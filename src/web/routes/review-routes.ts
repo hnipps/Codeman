@@ -8,6 +8,7 @@
  *   GET    /api/reviews/:id                      one review, with whether its author session still runs
  *   GET    /api/reviews/:id/changes              the files the branch changes against its base
  *   GET    /api/reviews/:id/diff?path=           one of those files' diff
+ *   GET    /api/reviews/:id/file?path=           one changed Markdown file as the branch tip has it, to read rendered
  *   POST   /api/reviews/:id/notes                a PERSON adds a note { at, text }
  *   PATCH  /api/reviews/:id/notes/:noteId        a PERSON edits or resolves a note { text?, resolved? }
  *   DELETE /api/reviews/:id/notes/:noteId        a PERSON deletes an unsent note
@@ -55,6 +56,9 @@ import {
   repoFacts,
   reviewChanges,
   reviewFileDiff,
+  reviewFileText,
+  isReviewDoc,
+  MAX_REVIEW_DOC_BYTES,
   SHA,
   tryGit,
   headOf,
@@ -531,6 +535,32 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const diff = await reviewFileDiff(review.repoRoot, review.base, headOf(review), file);
     if (!diff) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'The branch is gone');
     return { success: true, data: { path: file.path, origPath: file.origPath, ...diff } };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/reviews/:id/file', async (req, reply) => {
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const { path } = parseBody(DiffQuerySchema, req.query);
+    // Markdown only: the page renders it through the one sanitizer. Any other file stays a diff.
+    if (!isReviewDoc(path))
+      return fail(reply, 400, ApiErrorCode.INVALID_INPUT, 'Only a Markdown file is shown rendered');
+    const refusal = await gitRefusal(authorSession(review), review.repoRoot);
+    if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
+    // The path is a key into the branch's own file list, never a path the browser chose.
+    const file = (await changesOf(review)).files.find((f) => f.path === path);
+    if (!file) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'That file is not part of this review');
+    const read = await reviewFileText(review.repoRoot, review.base, headOf(review), file);
+    if (!read) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'The branch is gone');
+    if (read.kind === 'absent')
+      return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'This branch deletes the file, so there is nothing to render');
+    if (read.kind === 'too-large')
+      return fail(
+        reply,
+        400,
+        ApiErrorCode.INVALID_INPUT,
+        `The file is too large to render (${Math.ceil(read.bytes / 1024)} KiB; the limit is ${MAX_REVIEW_DOC_BYTES / 1024} KiB)`
+      );
+    return { success: true, data: { path: file.path, text: read.text, headSha: read.headSha } };
   });
 
   const noteStatus = (code: string): [number, ApiErrorCode] =>

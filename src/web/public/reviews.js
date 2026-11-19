@@ -64,6 +64,12 @@
     file: null,
     diff: null,
     range: null,
+    /** A Markdown file in Changes is read rendered or as its diff; the reader's choice holds across files. */
+    docView: 'rendered',
+    /** The open Markdown file's text at the branch tip: `{ path, state, text?, error? }`. */
+    doc: null,
+    /** A doc note to bring into view once the rendered file is painted. */
+    docFocus: null,
     tab: 'changes',
     device: 'desktop',
     preview: null,
@@ -244,6 +250,8 @@
     state.file = null;
     state.diff = null;
     state.range = null;
+    state.doc = null;
+    state.docFocus = null;
     state.preview = null;
     state.previewPath = '/';
     state.capture = null;
@@ -787,8 +795,17 @@
     }
   }
 
-  function selectionAnchor() {
-    const root = walkText();
+  /** Where the reader's selection sits, as a note anchor: the walkthrough, or the Markdown file read rendered. */
+  function selectionTarget() {
+    const walk = walkText();
+    const anchor = walk && selectionAnchor(walk);
+    if (anchor) return { kind: 'text', anchor };
+    const doc = docText();
+    const inDoc = doc && state.file && selectionAnchor(doc);
+    return inDoc ? { kind: 'doc', path: state.file, anchor: inDoc } : null;
+  }
+
+  function selectionAnchor(root) {
     const selection = window.getSelection();
     if (!root || !selection || selection.isCollapsed || !selection.rangeCount) return null;
     const range = selection.getRangeAt(0);
@@ -811,8 +828,8 @@
 
   function offerSelectionNote() {
     const button = $('rvSelectNote');
-    const anchor = state.review && isOpenReview() ? selectionAnchor() : null;
-    if (!anchor) {
+    const at = state.review && isOpenReview() ? selectionTarget() : null;
+    if (!at) {
       button.hidden = true;
       return;
     }
@@ -822,7 +839,7 @@
     button.style.left = `${Math.min(window.innerWidth - 110, Math.max(8, rect.left))}px`;
     button.onclick = () => {
       button.hidden = true;
-      openComposer({ kind: 'text', anchor });
+      openComposer(at);
       window.getSelection().removeAllRanges();
     };
   }
@@ -837,6 +854,8 @@
     if (at.kind === 'text')
       return `“${at.anchor.quote.length > 90 ? `${at.anchor.quote.slice(0, 90)}…` : at.anchor.quote}”`;
     if (at.kind === 'code') return `${at.path}:${at.line}${at.side === 'old' ? ' (removed)' : ''}`;
+    if (at.kind === 'doc')
+      return `${at.path} · “${at.anchor.quote.length > 70 ? `${at.anchor.quote.slice(0, 70)}…` : at.anchor.quote}”`;
     if (at.kind === 'capture') {
       const still = captures().find((c) => c.name === at.name);
       return `Capture · ${(still && still.label) || at.name}`;
@@ -871,7 +890,8 @@
   }
 
   function goToNote(note) {
-    if (note.at.kind === 'code') showCode(note.at.path, note.at.side === 'new' ? note.at.line : null, null);
+    if (note.at.kind === 'code') showCode(note.at.path, note.at.side === 'new' ? note.at.line : null, null, 'diff');
+    else if (note.at.kind === 'doc') showDocNote(note);
     else if (note.at.kind === 'capture') {
       state.flashPin = note.id;
       if (note.at.x !== undefined && state.pinsHidden) setPinsHidden(false);
@@ -896,6 +916,7 @@
       renderHeader();
       renderWalkthrough();
       renderNotes();
+      renderFiles();
       renderDiff();
       renderPreview();
       locatePins();
@@ -918,8 +939,8 @@
           'li',
           'rv-dim',
           captures().length
-            ? 'No notes yet. Select words in the walkthrough, press a line in Changes, or press a capture, to anchor one.'
-            : 'No notes yet. Select words in the walkthrough, or press a line in Changes, to anchor one.'
+            ? 'No notes yet. Select words in the walkthrough or a rendered document, press a line in Changes, or press a capture, to anchor one.'
+            : 'No notes yet. Select words in the walkthrough or a rendered document, or press a line in Changes, to anchor one.'
         )
       );
       return;
@@ -1050,7 +1071,7 @@
       row.append(el('span', 'rv-file-path', file.origPath ? `${file.origPath} → ${file.path}` : file.path));
       row.append(el('span', 'rv-file-count', file.binary ? 'binary' : `+${file.added} −${file.deleted}`));
       const notes = state.review.notes.filter(
-        (n) => n.at.kind === 'code' && n.at.path === file.path && !n.resolvedAt
+        (n) => (n.at.kind === 'code' || n.at.kind === 'doc') && n.at.path === file.path && !n.resolvedAt
       ).length;
       if (notes) row.append(el('span', 'rv-file-notes', String(notes)));
       row.addEventListener('click', () => selectFile(file.path, null));
@@ -1064,6 +1085,8 @@
     state.file = path;
     state.range = range;
     state.diff = { state: 'loading' };
+    state.doc = isDocFile(path) ? { path, state: 'loading' } : null;
+    if (state.doc) loadDoc(seq, path);
     renderFiles();
     renderDiff();
     try {
@@ -1077,7 +1100,9 @@
     renderDiff();
   }
 
-  function showCode(path, from, to) {
+  /** `view` forces how a Markdown file is read; without it the reader's own choice stands. */
+  function showCode(path, from, to, view) {
+    if (view && isDocFile(path)) state.docView = view;
     setTab('changes');
     setPane('stage');
     if (!state.changes || !state.changes.files.some((f) => f.path === path)) {
@@ -1093,7 +1118,14 @@
 
   function renderDiff() {
     const box = $('rvDiff');
+    const keep = box.dataset.file === state.file && box.dataset.view === docViewOf(state.file) ? box.scrollTop : 0;
+    box.dataset.file = state.file || '';
+    box.dataset.view = docViewOf(state.file);
     box.replaceChildren();
+    box.scrollTop = 0;
+    requestAnimationFrame(() => {
+      if (keep && !state.range && !state.docFocus) box.scrollTop = keep;
+    });
     if (state.changesError) return void box.append(el('div', 'rv-dim rv-pad', state.changesError));
     const c = state.changes;
     if (!c) return void box.append(el('div', 'rv-dim rv-pad', 'Reading the changes…'));
@@ -1103,7 +1135,10 @@
       return void box.append(el('div', 'rv-dim rv-pad', 'This branch changes no files against its base.'));
     const d = state.diff;
     if (!d) return;
-    box.append(el('div', 'rv-diff-file', state.file));
+    if (isDocFile(state.file)) {
+      box.append(docHead());
+      if (state.docView === 'rendered') return void renderDoc(box);
+    } else box.append(el('div', 'rv-diff-file', state.file));
     if (d.state === 'loading') return void box.append(el('div', 'rv-dim rv-pad', 'Reading the diff…'));
     if (d.state === 'error') return void box.append(el('div', 'rv-dim rv-pad', d.error));
     if (d.binary) box.append(el('div', 'rv-dim rv-pad', 'This is a binary file; there is no text diff to show.'));
@@ -1171,6 +1206,212 @@
     if (d.truncated) box.append(el('div', 'rv-dim rv-pad', 'Diff cut short: it is larger than this view shows.'));
     if (target) target.scrollIntoView({ block: 'center' });
     else if (state.range) toast('Those lines are not in the diff any more. The branch may have moved.', 'warn');
+  }
+
+  // ---------------------------------------------------------------- rendered documents
+
+  const DOC_PATH = /\.(md|markdown)$/i;
+  const docText = () => $('rvDiff').querySelector('.rv-doc-md');
+  function isDocFile(path) {
+    if (!path || !DOC_PATH.test(path) || !state.changes) return false;
+    const file = state.changes.files.find((f) => f.path === path);
+    return !!file && !file.binary;
+  }
+  const docViewOf = (path) => (isDocFile(path) ? state.docView : 'diff');
+
+  async function loadDoc(seq, path) {
+    let next;
+    try {
+      const data = await api(`api/reviews/${encodeURIComponent(state.id)}/file?path=${encodeURIComponent(path)}`);
+      next = { path, state: 'ready', text: data.text };
+    } catch (err) {
+      next = { path, state: 'error', error: err.message };
+    }
+    if (seq !== state.loadSeq || state.file !== path) return;
+    state.doc = next;
+    if (state.docView === 'rendered') renderDiff();
+  }
+
+  /** The file's sticky header with the Rendered / Diff switch. */
+  function docHead() {
+    const head = el('div', 'rv-diff-file rv-doc-head');
+    head.append(el('span', 'rv-doc-path', state.file));
+    if (state.docView === 'rendered' && newLines() && !newLines().whole)
+      head.append(el('span', 'rv-doc-key', 'Changed on this branch'));
+    const seg = el('div', 'rv-seg rv-seg-sm');
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', 'Read the file as');
+    for (const [view, label] of [
+      ['rendered', 'Rendered'],
+      ['diff', 'Diff'],
+    ]) {
+      const b = el('button', '', label);
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(state.docView === view));
+      b.addEventListener('click', () => {
+        if (state.docView === view) return;
+        state.docView = view;
+        renderDiff();
+      });
+      seg.append(b);
+    }
+    head.append(seg);
+    return head;
+  }
+
+  /**
+   * The new-side lines this branch touched: added lines, and the line after a removal. `whole` when the branch adds
+   * the file, so the bar would only say "everything".
+   */
+  function newLines() {
+    const d = state.diff;
+    if (!d || d.state !== 'ready' || !d.diff) return null;
+    if (/^--- \/dev\/null$/m.test(d.diff)) return { whole: true, lines: new Set() };
+    const lines = new Set();
+    let newNo = 0;
+    let inHunk = false;
+    for (const line of d.diff.split('\n')) {
+      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) {
+        newNo = Number(hunk[1]);
+        inHunk = true;
+      } else if (!inHunk || line.startsWith('\\')) continue;
+      else if (line.startsWith('+')) lines.add(newNo++);
+      else if (line.startsWith('-')) lines.add(newNo);
+      else newNo++;
+    }
+    return { whole: false, lines };
+  }
+
+  /** Repository Markdown links point into the repository, not at this page: only web addresses stay live. */
+  function quietDocLinks(root) {
+    for (const a of root.querySelectorAll('a[href]')) {
+      const href = a.getAttribute('href') || '';
+      if (/^(https?:|mailto:)/i.test(href)) {
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+      } else {
+        a.removeAttribute('href');
+        a.classList.add('rv-doc-link');
+        a.title = href;
+      }
+    }
+    for (const img of root.querySelectorAll('img')) {
+      if (/^https:/i.test(img.getAttribute('src') || '')) continue;
+      const alt = img.getAttribute('alt') || '';
+      img.replaceWith(el('span', 'rv-doc-img', alt ? `[image: ${alt}]` : '[image]'));
+    }
+  }
+
+  /** The file as blocks, each knowing its source lines, so a changed block and a code link's range can be marked. */
+  function docBody(text) {
+    const root = el('div', 'rv-md rv-doc-md');
+    let tokens = null;
+    try {
+      if (window.marked && window.sanitizeMarkdownHtml) tokens = window.marked.lexer(text);
+    } catch (_err) {
+      tokens = null;
+    }
+    if (!tokens) {
+      root.append(el('pre', 'rv-doc-plain', text));
+      return root;
+    }
+    const touched = newLines();
+    let line = 1;
+    for (const token of tokens) {
+      const raw = typeof token.raw === 'string' ? token.raw : '';
+      const breaks = (raw.match(/\n/g) || []).length;
+      const from = line;
+      const to = line + Math.max(0, breaks - (raw.endsWith('\n') ? 1 : 0));
+      line += breaks;
+      if (token.type === 'space' || token.type === 'def') continue;
+      const block = el('div', 'rv-blk');
+      const one = [token];
+      one.links = tokens.links;
+      try {
+        block.innerHTML = window.sanitizeMarkdownHtml(window.marked.parser(one));
+      } catch (_err) {
+        block.textContent = raw;
+      }
+      block.dataset.from = String(from);
+      block.dataset.to = String(to);
+      if (touched && !touched.whole) {
+        for (let n = from; n <= to; n++)
+          if (touched.lines.has(n)) {
+            block.classList.add('rv-blk-changed');
+            break;
+          }
+      }
+      root.append(block);
+    }
+    quietDocLinks(root);
+    return root;
+  }
+
+  function renderDoc(box) {
+    const doc = state.doc;
+    if (!doc || doc.path !== state.file || doc.state === 'loading')
+      return void box.append(el('div', 'rv-dim rv-pad', 'Reading the file…'));
+    if (doc.state === 'error') {
+      const wrap = el('div', 'rv-pad');
+      wrap.append(el('p', 'rv-dim', doc.error));
+      const diff = el('button', 'rv-btn rv-btn-sm', 'Show the diff');
+      diff.type = 'button';
+      diff.addEventListener('click', () => {
+        state.docView = 'diff';
+        renderDiff();
+      });
+      wrap.append(diff);
+      return void box.append(wrap);
+    }
+    const page = el('div', 'rv-docview');
+    const body = docBody(doc.text);
+    page.append(body);
+    box.append(page);
+    paintDocNotes(body);
+    let target = null;
+    if (state.range) {
+      for (const block of body.querySelectorAll('.rv-blk')) {
+        if (Number(block.dataset.to) < state.range.from || Number(block.dataset.from) > state.range.to) continue;
+        block.classList.add('rv-blk-target');
+        if (!target) target = block;
+      }
+      if (!target) toast('Those lines are not in the file any more. The branch may have moved.', 'warn');
+    }
+    if (state.docFocus) {
+      const mark = body.querySelector(`mark[data-note="${CSS.escape(state.docFocus)}"]`);
+      if (mark) {
+        target = mark;
+        mark.classList.add('rv-mark-flash');
+        setTimeout(() => mark.classList.remove('rv-mark-flash'), 1400);
+      } else toast('Those words are no longer in the file. The branch may have changed them.', 'warn');
+      state.docFocus = null;
+    }
+    if (target) requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
+  }
+
+  function paintDocNotes(root) {
+    for (const note of state.review.notes) {
+      if (note.at.kind !== 'doc' || note.at.path !== state.file || note.resolvedAt) continue;
+      const found = locate(root.textContent, note.at.anchor);
+      if (found) wrapRange(root, found.start, found.end, note.id);
+    }
+  }
+
+  function showDocNote(note) {
+    state.docFocus = note.id;
+    state.docView = 'rendered';
+    setTab('changes');
+    setPane('stage');
+    if (!state.changes || !state.changes.files.some((f) => f.path === note.at.path)) {
+      state.docFocus = null;
+      toast(`${note.at.path} is not among the files this branch changes.`, 'warn');
+      return;
+    }
+    if (state.file === note.at.path && state.doc && state.doc.state === 'ready') {
+      state.range = null;
+      renderDiff();
+    } else selectFile(note.at.path, null);
   }
 
   // ---------------------------------------------------------------- preview
