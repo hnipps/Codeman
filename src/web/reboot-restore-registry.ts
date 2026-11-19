@@ -68,13 +68,36 @@ export class RebootRestoreRegistry {
    * Single-user mode has one key, `undefined`, so it behaves as one global flight.
    */
   private spending = new Set<string | undefined>();
+  /** Set by the newest {@link set} or {@link offer}. */
+  private cause: 'reboot' | 'tmux' = 'reboot';
 
   /** Replace the plan with what the boot pass found. An empty list clears it. */
   set(entries: readonly RebootRestoreEntry[]): void {
     this.entries = new Map(entries.map((entry) => [entry.sessionId, entry]));
     this.builtAt = entries.length > 0 ? Date.now() : 0;
+    this.cause = 'reboot';
     // A fresh boot plan supersedes anything an in-flight restore still holds.
     this.parked.clear();
+  }
+
+  /**
+   * Add sessions the running server just lost to the plan (their tmux sessions vanished, see
+   * `mux-vanish.ts`). Unlike {@link set} it keeps what is already on offer and anything a restore
+   * holds, and it restarts the plan's day, since these losses are new.
+   */
+  offer(entries: readonly RebootRestoreEntry[]): void {
+    if (entries.length === 0) return;
+    this.dropIfExpired();
+    for (const entry of entries) {
+      if (!this.parked.has(entry.sessionId)) this.entries.set(entry.sessionId, entry);
+    }
+    this.builtAt = Date.now();
+    this.cause = 'tmux';
+  }
+
+  /** What lost the sessions on offer: a host reboot found at boot, or a tmux server lost while running. */
+  get offerCause(): 'reboot' | 'tmux' {
+    return this.cause;
   }
 
   /**
@@ -178,6 +201,7 @@ export class RebootRestoreRegistry {
 
   /** Test hook: forget everything, including the single-flight claim. */
   reset(): void {
+    this.cause = 'reboot';
     this.entries.clear();
     this.parked.clear();
     this.builtAt = 0;

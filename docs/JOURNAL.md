@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-19 — A dead session no longer blocks a deploy
+
+**Type:** propagated-discovery
+**Touches:** `deploy/healthcheck.mjs`, `deploy/session-survival.mjs`, `deploy/model/`, `deploy/test.sh`, `test/deploy-healthcheck.test.ts`, `test/session-survival.drt.test.ts`, `docs/self-building.md`, `src/mux-vanish.ts`, `src/tmux-manager.ts`, `src/session.ts`, `src/web/server.ts`, `src/web/reboot-restore-registry.ts`, `src/web/routes/reboot-restore-routes.ts`, `src/web/public/reboot-restore-ui.js`, `src/web/public/app.js`
+**Why:** The tmux server restarted at 06:41 on 2026-11-19 and took 22 sessions with it. The live colour kept listing them, every new colour dropped them, and the health check's session check refused every deploy after that (`ce40f9af`, `53c7448c`, `1351bae8`). This was the second time a dead tmux server blocked deploys.
+**Links:** [intent/2026-11-19-healthcheck-dead-sessions.md](../intent/2026-11-19-healthcheck-dead-sessions.md)
+
+A session the new colour does not list now passes only when the live colour's `mux-sessions.json` names its tmux session and that session is not on `CODEMAN_TMUX_SOCKET`. The check fails closed on any doubt. The decision has a Dafny model with five proved properties, and a differential random test in the deploy gate holds the shipped code to it. The app cause is fixed in the same change. The live colour now notices a vanished tmux session while it runs (two answering reads in a row) and offers it on the restore banner before it deletes the tab. A non-live colour can no longer kill a tmux session or respawn a pane. Decision: remove and offer, not keep a "lost" tab, because a kept tab would still make every deploy expect it.
+
 ## 2026-11-18 — Deleted Work items on the server (W-22 ticket 1)
 
 **Type:** propagated-discovery

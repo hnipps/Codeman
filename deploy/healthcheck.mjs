@@ -10,8 +10,17 @@
  * `{ ok, checks: [{ name, ok, detail }] }` and exits 0 only when every check passed.
  * No retries: the caller owns those. Uses HTTP Basic auth from CODEMAN_USERNAME
  * (default admin) and CODEMAN_PASSWORD when the password is set. Zero dependencies.
+ *
+ * An expected session the new server does not list still passes when its tmux session
+ * is gone (`decideSessions` in session-survival.mjs, proved in model/SessionSurvival.dfy). The live server keeps listing a session whose tmux
+ * session died, for example when the tmux server restarts, and a new server rightly
+ * drops it, so such a session can never be "kept". Every other missing id fails.
  */
+import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { classifyTmuxResult, decideSessions, MUX_NAME, parseMuxRecords } from './session-survival.mjs';
 
 const TIMEOUT_MS = 5000;
 
@@ -81,6 +90,34 @@ function readWsHealth() {
   });
 }
 
+/**
+ * What the check needs to tell a dead session from a lost one, read once and only when an expected
+ * session is missing: the live colour's mux records (`mux-sessions.json` in CODEMAN_DATA_DIR) and the
+ * tmux sessions on CODEMAN_TMUX_SOCKET. Any doubt (an unset variable, an unreadable file, a tmux error)
+ * leaves `decideSessions` exactly as strict as listing every expected id.
+ */
+async function survivalFacts() {
+  const dataDir = process.env.CODEMAN_DATA_DIR;
+  const socket = process.env.CODEMAN_TMUX_SOCKET;
+  const envOk = Boolean(dataDir) && Boolean(socket) && MUX_NAME.test(socket);
+  if (!envOk) return { envOk, records: null, tmux: { kind: 'unknown' } };
+  let records;
+  try {
+    records = parseMuxRecords(await readFile(join(dataDir, 'mux-sessions.json'), 'utf8'));
+  } catch {
+    records = null;
+  }
+  const tmux = await new Promise((resolveTmux) => {
+    execFile(
+      'tmux',
+      ['-L', socket, 'list-sessions', '-F', '#{session_name}'],
+      { timeout: TIMEOUT_MS },
+      (err, stdout, stderr) => resolveTmux(classifyTmuxResult(err, stdout, stderr))
+    );
+  });
+  return { envOk, records, tmux };
+}
+
 const checks = [
   [
     'health',
@@ -111,10 +148,11 @@ if (expectSessions.length > 0) {
     async () => {
       const list = await getData('/api/sessions');
       if (!Array.isArray(list)) throw new Error('session list is not an array');
-      const live = new Set(list.map((s) => s.id));
-      const missing = expectSessions.filter((id) => !live.has(id));
-      if (missing.length > 0) throw new Error(`missing ${missing.join(',')}`);
-      return `${expectSessions.length} expected, all present`;
+      const listed = new Set(list.map((s) => s.id));
+      if (expectSessions.every((id) => listed.has(id))) return `${expectSessions.length} expected, all present`;
+      const { excused, lost } = decideSessions({ expected: expectSessions, listed, ...(await survivalFacts()) });
+      if (lost.length > 0) throw new Error(`missing ${lost.join(',')}`);
+      return `${expectSessions.length} expected, ${expectSessions.length - excused.length} present, ${excused.length} not listed because their tmux session is gone: ${excused.join(',')}`;
     },
   ]);
 }

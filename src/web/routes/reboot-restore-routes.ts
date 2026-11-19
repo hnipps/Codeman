@@ -78,6 +78,9 @@ export function registerRebootRestoreRoutes(app: FastifyInstance, ctx: RebootRes
     const edge = typeof ray === 'string' ? /-([A-Z]{3})$/.exec(ray)?.[1] : undefined;
     return {
       sessions: entries.map(toBannerItem),
+      // `tmux` when the running server lost them (its tmux server died), so the banner does not
+      // blame a reboot that never happened.
+      cause: rebootRestoreRegistry.offerCause,
       // Said plainly here so the banner never implies a full restore: the pane is
       // new, so the conversation continues and the terminal history does not.
       scrollbackRestored: false,

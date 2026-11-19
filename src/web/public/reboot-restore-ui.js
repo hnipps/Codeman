@@ -21,6 +21,11 @@
  * The banner says that terminal history did not survive, because a restored
  * session is a new pane: the conversation continues and the scrollback does not.
  * Saying so is what keeps an empty pane from reading as a broken restore.
+ *
+ * The same offer covers a tmux server that died under a RUNNING Codeman: the
+ * server notices the vanished sessions, offers them, then deletes them with
+ * `tmuxGone: true` on `session:deleted`, which re-reads this offer. The GET then
+ * carries `cause: 'tmux'` and the banner names the tmux server, not a reboot.
  * Backend: src/web/reboot-restore-registry.ts, src/web/routes/reboot-restore-routes.ts.
  *
  * @mixin Extends CodemanApp.prototype via Object.assign
@@ -54,6 +59,7 @@ Object.assign(CodemanApp.prototype, {
     const sessions = data?.sessions ?? [];
     if (sessions.length === 0) return;
     this._rebootRestoreSessions = sessions;
+    this._rebootRestoreCause = data?.cause;
     this.renderRebootRestoreBanner();
   },
 
@@ -69,7 +75,12 @@ Object.assign(CodemanApp.prototype, {
     const text = this.$('rebootRestoreBannerText');
     if (text) {
       const noun = count === 1 ? 'session' : 'sessions';
-      text.textContent = `Restore ${count} ${noun} from before the reboot`;
+      // 'tmux': the tmux server died under a running Codeman (an OOM kill, say),
+      // not the host, so "the reboot" would send the user looking for one.
+      text.textContent =
+        this._rebootRestoreCause === 'tmux'
+          ? `Restore ${count} ${noun} the tmux server lost`
+          : `Restore ${count} ${noun} from before the reboot`;
     }
     const detail = this.$('rebootRestoreBannerDetail');
     if (detail) {
@@ -115,7 +126,7 @@ Object.assign(CodemanApp.prototype, {
     if (button) button.disabled = false;
     if (restored > 0) {
       const noun = restored === 1 ? 'conversation' : 'conversations';
-      this.showToast?.(`Restored ${restored} ${noun}. Terminal history did not survive the reboot.`, 'success');
+      this.showToast?.(`Restored ${restored} ${noun}. Terminal history did not survive.`, 'success');
     }
     if (skipped > 0) {
       // Each reason means a different next step for the user, so they are not
@@ -130,7 +141,21 @@ Object.assign(CodemanApp.prototype, {
   async refreshRebootRestoreBanner() {
     const data = await this._apiJson('/api/reboot-restore');
     this._rebootRestoreSessions = data?.sessions ?? [];
+    this._rebootRestoreCause = data?.cause;
     this.renderRebootRestoreBanner();
+  },
+
+  /**
+   * A session was removed because its tmux session vanished (`tmuxGone` on
+   * session:deleted); the server offered it back first. Several go at once when
+   * the tmux server dies, so one re-read covers the burst.
+   */
+  _scheduleRebootRestoreRefresh() {
+    clearTimeout(this._rebootRestoreRefreshTimer);
+    this._rebootRestoreRefreshTimer = setTimeout(() => {
+      this._rebootRestoreRefreshTimer = null;
+      this.refreshRebootRestoreBanner();
+    }, 300);
   },
 
   /** Drop the offer. The Resume list still reaches every one of these conversations. */

@@ -148,10 +148,66 @@ The supervisor runs the four files in `deploy/` as the app user, from the root o
 | --- | --- | --- |
 | `deploy/build.sh` | After it exports the commit. The environment carries no secrets, no data directory and no tmux socket. | Runs `npm ci` unless `package-lock.json` matches the stamp in `node_modules`, then `npm run build`. |
 | `deploy/test.sh` | After the build, with the same environment. | Runs `npm run typecheck`, `npm run check:frontend-syntax` and a fixed list of test files. It fails if a listed file is missing. |
-| `deploy/healthcheck.mjs` | After the new colour starts, every `healthRetryIntervalSeconds` until it passes or `healthTimeoutSeconds` ends. | Checks `GET /api/health` and its build id, and the `/ws/health` WebSocket. When the live colour is running, it also checks that the new colour lists every session the live colour lists. Prints one JSON line. |
+| `deploy/healthcheck.mjs` | After the new colour starts, every `healthRetryIntervalSeconds` until it passes or `healthTimeoutSeconds` ends. | Checks `GET /api/health` and its build id, and the `/ws/health` WebSocket. When the live colour is running, it also checks that the new colour lists every session the live colour lists. A session it does not list still passes when its tmux session is provably gone: the live colour's mux record names a tmux session that is not on the socket. The live colour keeps listing such a session after the tmux server restarts, and the new colour rightly drops it. Any other missing session fails, and so does any doubt (no record, an unreadable record file, a tmux error). The decision is `deploy/session-survival.mjs`, proved in `deploy/model/SessionSurvival.dfy` and tested against that model in the gate. Prints one JSON line. |
 | `deploy/handoff.mjs` | After the health check passes. | Retires the old colour, then promotes the new one, through `POST /api/deploy/role`. On a failure it puts the old colour back to live and exits 1. |
 
 A release judges itself with its own health check, so a weakened check would pass the release that weakened it. Harry relies on rollback and Remote Control to catch that, which is why rule 7 exists.
+
+### How a deploy treats sessions
+
+Both colours run against the same data directory and the same tmux socket, so the live colour's sessions are the candidate's sessions too. The supervisor reads the live colour's session ids just before it starts the candidate and hands them to the health check.
+
+```mermaid
+sequenceDiagram
+    participant S as Supervisor
+    participant L as Live colour
+    participant C as Candidate colour
+    participant T as tmux socket (shared)
+    S->>L: GET /api/sessions (ids)
+    S->>C: start, CODEMAN_DEPLOY_ROLE=candidate
+    C->>T: list-sessions at boot
+    Note over C: Drops every session whose tmux session is gone.<br/>Never kills a session or respawns a pane.
+    loop until it passes or healthTimeoutSeconds ends
+        S->>C: healthcheck.mjs --expect-sessions ids
+        C-->>S: health, build id, /ws/health, sessions
+    end
+    S->>L: handoff: retire
+    S->>C: handoff: promote to live
+```
+
+The sessions check decides like this, per id the live colour listed. It is `decideSessions` in `deploy/session-survival.mjs`, and `deploy/model/README.md` lists what its model proves.
+
+```mermaid
+flowchart TD
+    A[Expected id] --> B{Candidate lists it?}
+    B -- yes --> OK[Pass]
+    B -- no --> C{Data dir and socket name set,<br/>mux-sessions.json readable,<br/>and it has a record for the id?}
+    C -- no --> LOST[Fail: missing]
+    C -- yes --> D{tmux list-sessions}
+    D -- no server on the socket --> DEAD[Excused: provably dead]
+    D -- any other error --> LOST
+    D -- answered --> E{Its tmux session listed?}
+    E -- yes --> LOST
+    E -- no --> DEAD
+```
+
+The live colour no longer keeps such sessions around. While it runs, it checks the socket on every pane-exit tick, and a session whose tmux session is gone is dropped and offered back.
+
+```mermaid
+flowchart TD
+    T[Pane-exit tick, live colour only] --> R[tmux list-sessions]
+    R --> K{Answer}
+    K -- error other than no server --> U[Unknown: counts unchanged]
+    K -- listed --> Z[Count reset]
+    K -- not listed, or no server --> M[Miss +1]
+    M --> Q{2 misses in a row?}
+    Q -- no --> W[Wait for the next tick]
+    Q -- yes --> O[Put on the restore offer, cause tmux]
+    O --> X[Delete the session, session:deleted with tmuxGone]
+    X --> BN[Banner: Restore N sessions the tmux server lost]
+```
+
+`src/mux-vanish.ts` holds the counting rules, and `docs/architecture-invariants.md` (Reboot restore, and the live lease) holds the rules for this path and for the role guards.
 
 ### Code that supports deploys
 

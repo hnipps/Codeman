@@ -2373,11 +2373,14 @@ export class Session extends EventEmitter {
     }
 
     // Check if session exists but pane is dead (remain-on-exit keeps it alive)
-    // Respawn the pane instead of creating a whole new session — preserves tmux scrollback
+    // Respawn the pane instead of creating a whole new session — preserves tmux scrollback.
+    // Only the live colour respawns: a candidate or retired colour shares the live colour's
+    // panes, so it attaches to the dead pane as it is (`paneExit` reports it) and leaves the
+    // decision to the live colour. `respawnPane()` refuses it anyway.
     let needsNewSession = false;
     let respawnedDeadPane = false;
     let respawnedResumeId: string | undefined;
-    if (this._muxSession && mux.isPaneDead(this._muxSession.muxName)) {
+    if (this._muxSession && deployRole.allows('persist') && mux.isPaneDead(this._muxSession.muxName)) {
       console.log('[Session] Dead pane detected, respawning:', this._muxSession.muxName);
       // Confirmed dead — safe to resolve/pin now (see `_pinOmpRespawnId()`).
       // `options.respawnPaneOptions` was built eagerly before this dead-pane
