@@ -246,6 +246,16 @@ describe('a work item pull request on the Reviews page', () => {
       execFileSync('git', ['rev-list', '--count', `${main}..${branch}`], { cwd: origin, encoding: 'utf8' }).trim()
     ).toBe('1');
     await shoot('closed');
+
+    // Reopen puts it back, with no dialog: nothing is lost either way.
+    expect(await page.isVisible('#rvReopen')).toBe(true);
+    await page.click('#rvReopen');
+    await page.waitForFunction(() => document.getElementById('rvState')?.textContent !== 'Closed');
+    expect(await page.isHidden('#rvReopen')).toBe(true);
+    expect(await page.isVisible('#rvApprove')).toBe(true);
+    expect(await page.isVisible('#rvClose')).toBe(true);
+    expect(await page.textContent('#rvNotice')).not.toContain('Closed without merging');
+    await shoot('reopened');
     expect(failures).toEqual([]);
   });
 });
