@@ -2,8 +2,8 @@
  * deploy/healthcheck.mjs end to end: the real script, run as a child process, against
  * a real WebServer on port 0 with a password and a build id.
  */
-import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -41,6 +41,15 @@ function runCheck(args: string[], env: Record<string, string | undefined> = { CO
 }
 
 const byName = (report: Report, name: string) => report.checks.find((c) => c.name === name);
+
+function hasTmux(): boolean {
+  try {
+    execFileSync('tmux', ['-V'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function closedPort(): Promise<number> {
   const probe = http.createServer();
@@ -125,5 +134,88 @@ describe('deploy/healthcheck.mjs', () => {
     const { code, report } = await runCheck([]);
     expect(code).toBe(2);
     expect(report).toMatchObject({ ok: false, checks: [{ name: 'args', ok: false }] });
+  });
+
+  // The live server keeps listing a session whose tmux session died (a tmux server restart kills
+  // them all); the new server drops it. Such a session cannot be kept, so it must not block a deploy,
+  // but only when the tmux session is provably gone. These run real tmux on a throwaway socket.
+  describe.skipIf(!hasTmux())('an expected session the new server does not list', () => {
+    const socket = `codeman-hc-test-${process.pid}`;
+    const deadSocket = `codeman-hc-test-none-${process.pid}`;
+    let dataDir: string;
+
+    beforeAll(() => {
+      dataDir = mkdtempSync(join(tmpdir(), 'codeman-healthcheck-data-'));
+      execFileSync('tmux', ['-L', socket, 'new-session', '-d', '-s', 'codeman-alive000', 'sleep 600']);
+      writeFileSync(
+        join(dataDir, 'mux-sessions.json'),
+        JSON.stringify([
+          { sessionId: 'alive-session', muxName: 'codeman-alive000' },
+          { sessionId: 'dead-session', muxName: 'codeman-dead0000' },
+        ])
+      );
+    });
+
+    afterAll(() => {
+      try {
+        execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' });
+      } catch {
+        /* already gone */
+      }
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    const check = (ids: string[], tmuxSocket = socket, env: Record<string, string> = {}) =>
+      runCheck(['--port', String(server.boundPort), '--expect-sessions', [sessionId, ...ids].join(',')], {
+        CODEMAN_PASSWORD: PASSWORD,
+        CODEMAN_DATA_DIR: dataDir,
+        CODEMAN_TMUX_SOCKET: tmuxSocket,
+        ...env,
+      });
+
+    it('passes when its tmux session is gone, and names it', async () => {
+      const { code, report } = await check(['dead-session']);
+      expect(code).toBe(0);
+      expect(byName(report, 'sessions')).toMatchObject({
+        ok: true,
+        detail: '2 expected, 1 present, 1 not listed because their tmux session is gone: dead-session',
+      });
+    });
+
+    it('passes when no tmux server runs on the socket at all', async () => {
+      const { code, report } = await check(['dead-session', 'alive-session'], deadSocket);
+      expect(code).toBe(0);
+      expect(byName(report, 'sessions')).toMatchObject({ ok: true });
+    });
+
+    it('fails when its tmux session is still running, and names only that one', async () => {
+      const { code, report } = await check(['dead-session', 'alive-session']);
+      expect(code).toBe(1);
+      expect(byName(report, 'sessions')).toMatchObject({ ok: false, detail: 'missing alive-session' });
+    });
+
+    it('fails when the live server wrote no mux record for it', async () => {
+      const { code, report } = await check(['dead-session', 'unrecorded-session']);
+      expect(code).toBe(1);
+      expect(byName(report, 'sessions')).toMatchObject({ ok: false, detail: 'missing unrecorded-session' });
+    });
+
+    it('fails closed when CODEMAN_DATA_DIR is not set', async () => {
+      const { code, report } = await check(['dead-session'], socket, { CODEMAN_DATA_DIR: '' });
+      expect(code).toBe(1);
+      expect(byName(report, 'sessions')).toMatchObject({ ok: false, detail: 'missing dead-session' });
+    });
+
+    it('fails closed when the mux record file does not parse', async () => {
+      const brokenDir = mkdtempSync(join(tmpdir(), 'codeman-healthcheck-broken-'));
+      writeFileSync(join(brokenDir, 'mux-sessions.json'), '{not json');
+      try {
+        const { code, report } = await check(['dead-session'], socket, { CODEMAN_DATA_DIR: brokenDir });
+        expect(code).toBe(1);
+        expect(byName(report, 'sessions')).toMatchObject({ ok: false, detail: 'missing dead-session' });
+      } finally {
+        rmSync(brokenDir, { recursive: true, force: true });
+      }
+    });
   });
 });
