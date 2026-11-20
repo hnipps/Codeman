@@ -1,12 +1,12 @@
 # Intent: Chat Graph chat UI (design spec)
 
-**Status:** Draft (revision 4, design spec for the owner's Spec review. Work item W-78. It designs ticket 6 of the Chat Graph spec, `intent/2026-11-18-chat-graph.md` on master at revision 5, filed as W-84.)
+**Status:** Draft (revision 5, design spec for the owner's Spec review. Work item W-78. It designs ticket 6 of the Chat Graph spec, `intent/2026-11-18-chat-graph.md` on master at revision 5, filed as W-84.)
 
 **Extends:** `intent/2026-11-18-chat-graph.md`. That spec is merged and stays unchanged. This spec adds the API pieces listed under "Additions to the Chat Graph API", which the screens need and the merged spec does not define. Approving this spec approves those additions.
 
 **Prototypes:** the canvas frame `chat-graph-ui-study`, one row per screen or state, desktop (1280 px) on the left and phone (414 px) on the right. Every embed carries a screenshot thumbnail, so a phone shows a picture instead of a Paused card. The source is `docs/design/chat-graph-ui/` in this change. All content in it is made up.
 
-**Revision 2** answers the owner's review notes of 2026-11-19, listed under "Review notes, revision 1". **Revision 3** answers the notes of 2026-11-20, listed under "Review notes, revision 2". The owner confirmed in this round that Inactive stays. **Revision 4** answers the owner's later notes of 2026-11-20, listed under "The owner's later notes of 2026-11-20 (revision 4)".
+**Revision 2** answers the owner's review notes of 2026-11-19, listed under "Review notes, revision 1". **Revision 3** answers the notes of 2026-11-20, listed under "Review notes, revision 2". The owner confirmed in this round that Inactive stays. **Revision 4** answers the owner's later notes of 2026-11-20, listed under "The owner's later notes of 2026-11-20 (revision 4)". **Revision 5** takes the owner's pick of the command palette (decision 1, "Review notes, revision 4"): the full view is 8D and the palette (8D, 8E) is in the build.
 
 ## Problem statement
 
@@ -29,7 +29,7 @@ The owner calls a topic a **thread**, and every word the UI shows says "thread".
 9. **Thread view.** Summary and To do sit at the top, each collapsing on its own to one shared row, and both close quietly once Harry starts writing. A new To do item puts a dot on its toggle. The whole history scrolls with no button, loaded in windows so the device stays fast. Messages moved, added or merged in since Harry last had the thread open are marked, with one press to reach them. Suggestions (merge, split, a note from another thread) are a third toggle on the same row, with their count, and open the same way; on a phone their cards sit in one row that scrolls sideways.
 10. **Chat keeps working when the sidecar is down.** A send that cannot be filed copies the message, keeps it in the field, and offers the most recent threads. In a thread the message goes straight to that thread's conversation and is filed when the sidecar is back.
 11. **Every other failure leaves Harry's text where it was** and says what happened in one line: a message landed in Unsorted, the import is still running, or nothing exists yet.
-12. **The full view is undecided on purpose.** Five layouts are prototyped (8A to 8E), two of them with a command palette. Harry picks one in this review (decision 1). Its ticket is written after the pick.
+12. **The main chat is one key away, in a command palette.** `Mod+K` opens a one-row palette in Chat, `Mod+U` in Capture and `Mod+P` in Commands, from anywhere in the canvas app except the classic Codeman views. The full view (`F`) shows threads only: the list, the focused thread and its details (8D). The rail chat stays the place to read the chat's history. Harry chose this in review (decision 1); 8A to 8C were explored and not chosen.
 
 ## Affected users and systems
 
@@ -40,13 +40,13 @@ The owner calls a topic a **thread**, and every word the UI shows says "thread".
 
 ## Constraints
 
-- **Canvas design language.** The tokens, type, spacing and controls come from `canvas.css` and `DESIGN.md`: system sans 14/1.45, 12 px supporting text, tabular monospace for times and counts, 4 px spacing steps, 4 px control and 6 px content corners, 32 px controls on a desktop and 44 px on a phone, 16 px fields on a phone. Amber means focus or "needs you", nothing else. The rail is never a modal and never a floating card (PRODUCT.md). A palette (8D, 8E) is a deliberate exception that PRODUCT.md does not yet allow, and it is listed as such under decision 1.
+- **Canvas design language.** The tokens, type, spacing and controls come from `canvas.css` and `DESIGN.md`: system sans 14/1.45, 12 px supporting text, tabular monospace for times and counts, 4 px spacing steps, 4 px control and 6 px content corners, 32 px controls on a desktop and 44 px on a phone, 16 px fields on a phone. Amber means focus or "needs you", nothing else. The rail is never a modal and never a floating card (PRODUCT.md). The command palette is the one floating surface, by the owner's decision 1, and this change adds that exception to PRODUCT.md: one row, opened by key, no transcript, no scrim, gone on Escape.
 - **Short copy.** Labels are one to three words. A line of explanation is one sentence, at most about ten words. A menu item never wraps or overflows; a long thread name is cut with an ellipsis and the full name goes in `title`.
 - **Thread in the UI, topic in the code** (see Vocabulary).
 - **Rich text only from the agent.** Message text, thread titles, summaries, to-do items and suggestion text from the store go in through `textContent`. Claude's replies and a captured Markdown quote render through `renderMarkdown()` (`packages/canvas/src/markdown.ts`), as the assistant's do.
 - **The merged spec's rules hold:** I2 (a chip per live membership), I3 (an archived topic is never a silent target), I8 (the context line lists exactly the sources), I9 (an agent never writes another topic), I10 (a capture gets no reply), the 503 `CHAT_GRAPH_UNAVAILABLE` answer and the multi-user refusal.
 - **SSE never moves anything.** A `chat-graph:*` event never moves the camera, selection, focus or rail view, and scrolls a conversation only when it was already at its end (the assistant's rule).
-- **Keys stay out of text fields**, except `Mod+U`, which acts in a chat field because toggling capture is what it is for. `T` and Shift+T act only on the board or a non-text control, never during IME composition, and a hardware key on a phone does nothing, as with `G` and `B`.
+- **Keys stay out of text fields**, except the palette's three: `Mod+U` toggles capture in a chat field (and opens the palette in Capture elsewhere), and `Mod+K` and `Mod+P` open the palette whatever has focus, as the owner asked. None of them acts during IME composition. `T` and Shift+T act only on the board or a non-text control, never during IME composition, and a hardware key on a phone does nothing, as with `G` and `B`.
 - **Single user.** In multi-user mode the dock button, the outline's Threads section and the rail view are absent, because the routes refuse.
 
 ## Invariants
@@ -113,6 +113,12 @@ The arrivals marker counts exactly the messages whose live membership in this th
 
 - *Test:* a model test over membership fixtures with each `how` and with times on both sides of last-seen. The count matches, routed and own messages never count, and the count clears only after the arrived turns are reported visible.
 
+### U11: PaletteOnlyInTheCanvasApp
+
+`Mod+K`, `Mod+U` and `Mod+P` open the palette only inside the canvas app (board, rail views, full view, Work, Reviews). In the classic Codeman views (the dashboard and its session terminals) they keep their existing meaning and no palette exists. The palette never shows a transcript, and every message sent from it also appears in the rail chat with its chip.
+
+- *Test:* a browser test presses each key on a canvas page and on the dashboard: the palette opens with the matching mode token on the first and is absent from the DOM on the second. A message sent from the palette in Chat mode is then found in the rail chat's history.
+
 ## Non-goals
 
 - A page outside the canvas, or a Chat entry in the classic dashboard.
@@ -120,7 +126,7 @@ The arrivals marker counts exactly the messages whose live membership in this th
 - A visual graph of threads.
 - Voice input for the chat. The assistant's voice controls are not copied in this round.
 - A digest of captures.
-- Building the full view before Harry picks a layout.
+- The full-view layouts not chosen (8A to 8C), and a palette on the phone, which has no `Mod` keys and keeps the rail chat and the Capture switch.
 - The split-point picker beyond what is described under Thread view. It gets its own frame in that ticket's review.
 
 ## Acceptance checks
@@ -153,10 +159,8 @@ Frame ids are canvas object ids inside `chat-graph-ui-study`. The "Reads" column
 | 5 | Thread list: Active, Inactive, Archived | `b49b6724` | `68eeed85` | `GET /topics` | none |
 | 6 | Thread list, Archived open | `22d5c190` | `12e7e06d` | `GET /topics` | `POST /ops` (reactivate) |
 | 7 | Thread view: summary, to do, latest messages | `b328f7e6` | `9e02d9a0` | `GET /topics/:id`, `GET /proposals` (count), *`GET /topics/:id/summaries`* | `POST /ops` (merge, split, archive, *edit-summary*, *edit-open-items*), `POST /ops/:id/undo`, `POST /messages` (*topicId*) |
-| 8A | Full view: three columns | `779c369b` | none (desktop only) | as 1, 5 and 7 | as 1, 5 and 7 |
-| 8B | Full view: tabs and a capture line | `1c7410b6` | none | as 8A | as 8A |
-| 8C | Full view: Chat and a thread side by side | `f4ff5d48` | none | as 8A | as 8A |
-| 8D | Full view of threads; Chat in a `Mod+K` palette | `aa3724ac` | none | as 8A | as 8A |
+| 8A to 8C | Not chosen (decision 1): three columns, tabs, side by side. Kept on the canvas as history | `779c369b`, `1c7410b6`, `f4ff5d48` | none | none | none |
+| 8D | **Chosen.** Full view of threads; Chat in the `Mod+K` palette | `aa3724ac` | none (desktop only) | as 1, 5 and 7 | as 1, 5 and 7 |
 | 8E | Capture palette, `Mod+U`, over the board | `18f1e9ad` | none | `chat-graph:routed` | `POST /messages` (*capture*) |
 | 9 | State: routed to Unsorted | `ebf1ef73` | `f2511cac` | `chat-graph:routed` | `POST /messages/:id/reassign` |
 | 10 | State: sidecar down, in Chat | `71d84c20` | `ab493379` | any route answering 503 `CHAT_GRAPH_UNAVAILABLE`, the cached thread list | none |
@@ -166,7 +170,7 @@ Frame ids are canvas object ids inside `chat-graph-ui-study`. The "Reads" column
 | 14 | Thread view, suggestions open | `b24fcf42` | `0c52e05d` | `GET /proposals` | `POST /proposals/:id/{accept,reject}` |
 | 15 | State: sidecar down, in a thread | `eecdfef0` | `2e4821a6` | the cached thread | *`POST /topics/:id/direct`* |
 
-Full object ids, in table order: `132e05d8-6aa4-4f9e-9791-33ee5be40a3c`, `b14e1324-6c1c-4c83-8992-e4dfed5d315b`, `7fa53207-abd7-47c0-8f08-3234eaa5e6f8`, `72ec1a0b-86dc-4e98-b12d-92098257778f`, `116fbe06-f6e6-4e37-a4d7-87b4b22beab8`, `fa2be192-d8a3-499f-a027-d6eaf31c6ee5`, `fabf1749-ba41-420c-845e-31700559e571`, `eee6fe51-b2a3-4ce7-a601-ed8b63da883b`, `b49b6724-562a-443d-a0f1-b9b1769eb952`, `68eeed85-80bf-4de6-8dd1-00c2127e92a9`, `22d5c190-f9cf-47ce-8bbc-a5c8ecfef4c1`, `12e7e06d-ad9a-41b0-9d10-a370a7ee3674`, `b328f7e6-be1c-4fe1-b783-c5abdb4c1a31`, `9e02d9a0-fe30-40c0-bcae-78b92bfdf8b7`, `779c369b-1b0e-4e77-8ea8-441ac736e2d3`, `1c7410b6-2934-44ec-8307-0e03485c0620`, `f4ff5d48-714d-45c8-9932-0be494d6b33a`, `aa3724ac-9770-4a68-be1d-681706b1ae78`, `18f1e9ad-ace4-4201-ab05-8f12751b0f14`, `ebf1ef73-3114-49af-82f7-fd6fd9a48fa5`, `f2511cac-bad1-431c-8be2-c2fa040e7d16`, `71d84c20-f26b-4327-bf17-f8c3efcadbce`, `ab493379-8f94-4b80-9b5e-9b06a0424918`, `3bb81c1e-a987-424a-b368-aa06b8c43489`, `f34d1eff-30eb-442d-bab5-92c8291226e2`, `7d1bc060-b812-4807-a974-ff0ac6009dcc`, `53da547a-b1d6-4e84-bb63-7c3a05595079`, `585c2f8f-0b23-4219-b4b6-60120440483d`, `b24fcf42-8585-4e7b-83eb-7ef81a7cf04f`, `0c52e05d-d492-4e70-a6cc-512383b59014`, `eecdfef0-e0c3-4af8-89b5-3188122cebf4`, `2e4821a6-f51f-458f-a233-e5e40374a42b`. Prototype ids are `cg-ui-<state>` and `cg-ui-<state>-phone`; the full-view explorations are `cg-ui-full` (8A) and `cg-ui-full-b` to `cg-ui-full-e`.
+Full object ids, in table order: `132e05d8-6aa4-4f9e-9791-33ee5be40a3c`, `b14e1324-6c1c-4c83-8992-e4dfed5d315b`, `7fa53207-abd7-47c0-8f08-3234eaa5e6f8`, `72ec1a0b-86dc-4e98-b12d-92098257778f`, `116fbe06-f6e6-4e37-a4d7-87b4b22beab8`, `fa2be192-d8a3-499f-a027-d6eaf31c6ee5`, `fabf1749-ba41-420c-845e-31700559e571`, `eee6fe51-b2a3-4ce7-a601-ed8b63da883b`, `b49b6724-562a-443d-a0f1-b9b1769eb952`, `68eeed85-80bf-4de6-8dd1-00c2127e92a9`, `22d5c190-f9cf-47ce-8bbc-a5c8ecfef4c1`, `12e7e06d-ad9a-41b0-9d10-a370a7ee3674`, `b328f7e6-be1c-4fe1-b783-c5abdb4c1a31`, `9e02d9a0-fe30-40c0-bcae-78b92bfdf8b7`, `779c369b-1b0e-4e77-8ea8-441ac736e2d3`, `1c7410b6-2934-44ec-8307-0e03485c0620`, `f4ff5d48-714d-45c8-9932-0be494d6b33a`, `aa3724ac-9770-4a68-be1d-681706b1ae78`, `18f1e9ad-ace4-4201-ab05-8f12751b0f14`, `ebf1ef73-3114-49af-82f7-fd6fd9a48fa5`, `f2511cac-bad1-431c-8be2-c2fa040e7d16`, `71d84c20-f26b-4327-bf17-f8c3efcadbce`, `ab493379-8f94-4b80-9b5e-9b06a0424918`, `3bb81c1e-a987-424a-b368-aa06b8c43489`, `f34d1eff-30eb-442d-bab5-92c8291226e2`, `7d1bc060-b812-4807-a974-ff0ac6009dcc`, `53da547a-b1d6-4e84-bb63-7c3a05595079`, `585c2f8f-0b23-4219-b4b6-60120440483d`, `b24fcf42-8585-4e7b-83eb-7ef81a7cf04f`, `0c52e05d-d492-4e70-a6cc-512383b59014`, `eecdfef0-e0c3-4af8-89b5-3188122cebf4`, `2e4821a6-f51f-458f-a233-e5e40374a42b`. Prototype ids are `cg-ui-<state>` and `cg-ui-<state>-phone`; the full-view explorations are `cg-ui-full` (8A) and `cg-ui-full-b` to `cg-ui-full-e`; the chosen ones are `cg-ui-full-d` and `cg-ui-full-e`.
 
 ### The chat (frame 1)
 
@@ -209,7 +213,7 @@ The message appears the moment the POST answers, with a Filing chip. The status 
 - **Several lines.** Shift+Enter adds a line, as in every canvas composer. The whole draft is one capture.
 - **Quotes.** Once the mode is on the text is taken as written, so `>>` at the start captures a Markdown quote (`> …`), and a quote on any later line stays a quote. The captured message renders through `renderMarkdown()`, so the quote shows as one.
 - **Leaving.** The switch or `Mod+U` again turns capture mode off and keeps the text. Backspace also leaves, but only with the caret at offset 0 and nothing selected; anywhere else it edits the text. The UI does not mention Backspace, because whether it leaves depends on where the caret is. To send an ordinary message that starts with a quote, leave capture mode first; the field then holds the `>` as text and sends it as a message (U8, addition 6).
-- **Outside a field.** `Mod+U` on the board opens capture where capture lives in the chosen full-view layout: the rail's composer in capture mode (8A to 8C) or the capture palette (8D, 8E). The person's focus returns where it was after Capture or Escape.
+- **Outside a field.** `Mod+U` anywhere else in the canvas app opens the palette in Capture mode (8E). The person's focus returns where it was after Capture or Escape.
 - **Sent.** The message shows a small `Capture` tag next to `You`, its chip (from `chat-graph:routed`) and one line, "Captured to Errands". In a thread view, to-do items that came from captures carry a `capture` tag.
 
 ### Outline (frame 13)
@@ -247,18 +251,18 @@ Opening a thread shows what it is about and where it got to:
 - **Split** (built in its ticket): Split opens a mode where each gap between messages has a "Split here" control. The first press marks the start and the second the end of a run, and a bar at the bottom names the new thread and Confirm. The repair pass's suggested split point is preselected.
 - **Composer:** "Message Kitchen budget". A message written here names this thread as its explicit signal, so it attaches at once with no model call and no wait. `Mod+U` captures into this thread.
 
-### Full view explorations (frames 8A to 8E)
+### Full view and the command palette (frames 8D, 8E)
 
-The goal, in the owner's words: focus on one chat or thread, keep every chat and thread within reach, and capture something that does not belong in the focused conversation without moving focus. `F` opens the full view on what the rail shows: the chat, or the open thread. Each layout is desktop only.
+The goal, in the owner's words: focus on one chat or thread, keep every chat and thread within reach, and capture something that does not belong in the focused conversation without moving focus. Harry chose the palette (decision 1, revision 5), so the full view is 8D and the palette is how the main chat and capture are reached from anywhere. `F` opens the full view on the thread the rail shows; from the rail chat it opens on the most recent thread with the palette open in Chat, so the next message has a place to go. Both are desktop only. The three layouts not chosen are listed for the record:
 
-- **8A Three columns.** Threads on the left with Chat pinned first (`Mod+0`), the focused conversation in the middle (680 px of text), Details on the right (summary, to do, suggestions). Capture is `Mod+U` in the composer.
-- **8B Tabs.** Chat and each opened thread as tabs, the conversation full width, Threads and Details as buttons that open drawers. `Mod+U` opens a one-line capture bar under the tabs, so the conversation does not move.
-- **8C Side by side.** Chat on the left is where Harry thinks aloud; the focused thread on the right, with a Switch menu. Capture is the left composer in capture mode.
-- **8D Threads plus a chat palette.** The full view is threads only (list, thread, details). The main chat lives in a palette over anything, built like Spotlight or Raycast: **one row, no buttons, just a text field.** A mode token at the start of the row names the mode (Chat, Capture or Commands), and `Mod+K`, `Mod+U` and `Mod+P` open the palette in that mode. Inside it, **Tab** cycles the modes (Shift+Tab backwards), and typing `>` or `/` as the first character switches to Capture or Commands, as in the composers. Backspace in an empty field returns to Chat. **Enter sends; `Mod+Enter` sends and opens the thread** the message was filed to. Escape closes the palette and focus returns where it was. The token is a label for the current mode and nothing else: an icon and the mode's name, never a key cap, so it cannot read as an instruction. The keys sit together in one faint hint at the end of the row, action first and key second as in Raycast: "Capture `Tab`" names the mode Tab switches to, and "Open thread `⌘↵`" follows it in Chat. Enter sending is what anyone expects, so it has no hint.
+- *Not chosen.* **8A Three columns.** Threads on the left with Chat pinned first (`Mod+0`), the focused conversation in the middle (680 px of text), Details on the right (summary, to do, suggestions). Capture is `Mod+U` in the composer.
+- *Not chosen.* **8B Tabs.** Chat and each opened thread as tabs, the conversation full width, Threads and Details as buttons that open drawers. `Mod+U` opens a one-line capture bar under the tabs, so the conversation does not move.
+- *Not chosen.* **8C Side by side.** Chat on the left is where Harry thinks aloud; the focused thread on the right, with a Switch menu. Capture is the left composer in capture mode.
+- **8D Threads plus a chat palette (chosen).** The full view is threads only (list, thread, details). The main chat lives in a palette over anything, built like Spotlight or Raycast: **one row, no buttons, just a text field.** A mode token at the start of the row names the mode (Chat, Capture or Commands), and `Mod+K`, `Mod+U` and `Mod+P` open the palette in that mode. Inside it, **Tab** cycles the modes (Shift+Tab backwards), and typing `>` or `/` as the first character switches to Capture or Commands, as in the composers. Backspace in an empty field returns to Chat. **Enter sends; `Mod+Enter` sends and opens the thread** the message was filed to. Escape closes the palette and focus returns where it was. The token is a label for the current mode and nothing else: an icon and the mode's name, never a key cap, so it cannot read as an instruction. The keys sit together in one faint hint at the end of the row, action first and key second as in Raycast: "Capture `Tab`" names the mode Tab switches to, and "Open thread `⌘↵`" follows it in Chat. Enter sending is what anyone expects, so it has no hint.
   - *Where it opens.* The palette is reachable from everywhere in the canvas app: the board, the rail and every rail view, the full view, Work and Reviews, whatever has focus. The one exception is the classic Codeman views (the dashboard and its session terminals), where `Mod+K`, `Mod+U` and `Mod+P` keep their existing meaning and the palette does not open. Shift+Enter adds a line, and the row grows with the text up to six lines. After a send in Chat, one result line appears under the row: the thread's chip and the reply's first line, with "⌘↵ open thread". It goes when Harry types again or presses Escape. The palette never shows the transcript; that is what the rail and the full view are for. There is no scrim, so the board stays visible behind it.
 - **8E Capture palette.** The same row in Capture mode, opened with `Mod+U` over the board while a thread is open in the rail. Enter captures, the row clears and stays open for the next thought, and a line under it says "Captured to Errands" with the thread's chip.
 
-8D and 8E are one idea, the palette, shown in its two main modes. They can combine with any of 8A to 8C, because the palette replaces only where the main chat lives.
+8D and 8E are one idea, the palette, shown in its two main modes; U11 pins where it opens. Commands mode lists the canvas's other commands, filtered as Harry types; its contents are the Keys list and are settled in UI-7's review.
 
 ### States (frames 9 to 12, 15)
 
@@ -326,7 +330,7 @@ The merged spec's routes cannot draw the chat timeline, announce a reply, edit a
   - `topics-view.ts`: the only DOM for the thread list, the thread view and the suggestions section.
   - `outline-threads.ts`: the outline's Threads section; the outline module calls it in place of Sessions.
   - `chat-client.ts`: the routes, the event handlers, the cached thread list and the down-mode flow.
-- **Rail and keys:** a new rail view `chat`, with sub-views `list` and `topic`. `T`, Shift+T and `Mod+U` in `shortcuts.ts`, listed in Keys. `Mod+K` and `Mod+P` only if 8D or 8E is chosen. `F` inside the rail opens the chosen full view.
+- **Rail and keys:** a new rail view `chat`, with sub-views `list` and `topic`. `T`, Shift+T and `Mod+U` in `shortcuts.ts`, listed in Keys. `Mod+K`, `Mod+U` and `Mod+P` open the palette (U11), bound in the canvas app only, never in the classic dashboard. `F` inside the rail opens the 8D full view. The palette is one module, `chat-palette.ts`, reusing `chat-view.ts`'s composer and capture-mode model.
 - **Browser keys:** `Ctrl+U` (view source in Chrome on Linux and Windows) and `Ctrl+P`/`⌘P` (print) can be taken with `preventDefault()` on a keydown in the page. The builder checks each on Chrome, Firefox and Safari; where a browser keeps the key, Keys shows the fallback `Mod+Shift+U`.
 - **Styles:** `canvas-chat.css`, linked after `canvas-work.css`, on the canvas tokens only.
 - **Phone:** the rail at full viewport, the chip menu as a bottom sheet (from the chevron or a long-press), Suggestions as a sideways row, the Capture switch in every composer (also on a desktop), a Chat icon in the phone dock, hardware keys ignored.
@@ -341,9 +345,9 @@ The merged spec's routes cannot draw the chat timeline, announce a reply, edit a
 
 ## Decisions for Harry
 
-Decisions 1 to 3 (revision 2) and 11 and 12 (revision 3) need an answer. The rest are assumptions this spec makes; each is easy to change.
+Decision 1 is settled (the palette, revision 5). Decisions 2 and 3 (revision 2) and 11 and 12 (revision 3) need an answer. The rest are assumptions this spec makes; each is easy to change.
 
-1. **Which full view (8A to 8E)?** My recommendation: **8A with the 8D palette.** 8A keeps every thread and the details in view, which suits long work in one thread; the palette gives the main chat and capture a home that is one key away from anywhere on the canvas, which is what makes capture cost no focus. It needs PRODUCT.md to allow a palette, since it is a floating surface; the palette never holds state the rail does not also show. If you prefer no palette, 8A alone, with `Mod+U` toggling capture in whichever composer has focus.
+1. **Which full view? Settled: the command palette.** The owner chose the palette idea (revision 5). The full view is 8D (threads, a thread, details) and the main chat and capture live in the palette (8D, 8E), opened with `Mod+K`, `Mod+U` and `Mod+P` anywhere in the canvas app except the classic views. PRODUCT.md gains the one exception it needed. 8A to 8C are not built.
 2. **What "inactive" means.** No message for 7 days. Alternatives: 3 days, or 14.
 3. **Sessions in the outline.** One collapsed group at the end. Alternative: drop them from the outline entirely; they stay reachable from the dashboard and from session objects on the board.
 4. **Where the chat lives: a canvas rail view on every workspace,** not its own page and not in the classic dashboard.
@@ -352,7 +356,7 @@ Decisions 1 to 3 (revision 2) and 11 and 12 (revision 3) need an answer. The res
 7. **The uncertain chip (0.5 to 0.8) is amber.** Alternative: a neutral border, keeping amber for Unsorted only.
 8. **Related's "File there too" adds a membership.** Alternative: a link with no membership.
 9. **During the bootstrap import, new messages are filed first**, ahead of the backlog.
-10. **Keys: `T` opens the chat, Shift+T the thread list, `Mod+U` captures.**
+10. **Keys: `T` opens the chat, Shift+T the thread list, `Mod+U` captures, `Mod+K` opens the palette in Chat, `Mod+P` in Commands.**
 11. **"Thread" in the API and the code too?** I recommend yes, now, before W-88 builds anything. See "Names in the code" for the conflicts and the plan. If yes, this spec carries a `Supersedes:` line for the names in `intent/2026-11-18-chat-graph.md` (merged specs are never edited), and W-80 to W-88 get one line each naming the new terms before they are built.
 12. **Which arrivals does the marker show?** I recommend: everything that arrived since you last had the thread open on this device, with no time limit (Thread view, Arrivals). Alternatives: a fixed window such as the last 24 hours, or only what arrives while the thread is open.
 13. **The new To do dot is amber**, because a new item may need you. Alternative: secondary grey, keeping amber for decisions only.
@@ -402,7 +406,13 @@ The owner's later notes of 2026-11-20 (revision 4), and what changed:
 9. *8E: "Same deal with my other comments on the command palette."* 8E uses the same row: the token says Capture, and the hint says "Commands `Tab`" (8E).
 10. *8E: "Command palette must be accessible from anywhere in the app except classic codeman views."* Written into 8D: the palette opens from the board, every rail view, the full view, Work and Reviews; in the dashboard and its terminals the three shortcuts keep their meaning (Full view explorations).
 
+## Review notes, revision 4
+
+1. *"Go with the command palette idea."* Decision 1 is settled on the palette: the full view is 8D, the main chat and capture are the palette (8D, 8E), and 8A to 8C are marked not chosen. Outcome 12, the screens table, Capture, the full-view section, the keys, UI-7 and a new invariant (U11, where the palette opens) follow. PRODUCT.md now allows the palette as its one floating surface. The prototypes were not changed: 8D and 8E already show the chosen design.
+
 ## Checks run
+
+- Revision 5: frames 8D and 8E rendered headless at 1280 x 800, dark theme, device scale 1, with no console or page errors and no "topic" in any visible text, label, title or placeholder.
 
 - Revision 4: the changed frames (1, 2, 4, 7, 14, 8A to 8E and every frame with a composer) were rendered headless at 1280 x 800 and 414 x 860, device scale 1, and checked by eye: the switch on and off, the phone sheet at full width, the toggle row with Suggestions open on both sizes, the sideways card row snapping inside its padding, and both palette rows.
 - Revision 3: the changed frames (1, 2, 3, 4, 6, 7, 9, 11, 14, 15, 8E) were loaded headless at 1280 x 800 and 414 x 860, dark theme, device scale 1, with no console or page errors, and a script again found no "topic" in any visible text, label, title or placeholder.
@@ -436,8 +446,9 @@ The owner's later notes of 2026-11-20 (revision 4), and what changed:
 - The outline's Threads section in place of Sessions, its groups and remembered open state, Sessions as the last group.
 - Frame 13 and every desktop frame's outline.
 
-**UI-7: Full view, phone pass and Keys.** Order 7. Depends on UI-5 and on decision 1.
-- The layout Harry picks from 8A to 8E (and the palette if chosen), the phone sheet and dock, the mobile suite and the Keys entries.
+**UI-7: Command palette, full view, phone pass and Keys.** Order 7. Depends on UI-5.
+- The palette (`Mod+K` Chat, `Mod+U` Capture, `Mod+P` Commands; one row, Tab cycles modes, Enter sends, `Mod+Enter` sends and opens the thread), the 8D full view, the PRODUCT.md exception, the phone sheet and dock, the mobile suite and the Keys entries.
+- U11. Frames 8D and 8E.
 - Acceptance checks 1, 4 and 5. Every phone frame.
 
 </details>

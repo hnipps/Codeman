@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-20 — The Chat Graph main chat lives in a command palette
+
+**Type:** intent-refinement
+**Touches:** `intent/2026-11-19-chat-graph-ui.md`, `PRODUCT.md`
+**Why:** The owner settled decision 1 of the W-78 Spec review: "Go with the command palette idea."
+**Links:** [intent/2026-11-19-chat-graph-ui.md](../intent/2026-11-19-chat-graph-ui.md), Work item W-78
+
+The Chat Graph full view is 8D, which shows threads only. The main chat and capture are a one-row palette (`Mod+K` Chat, `Mod+U` Capture, `Mod+P` Commands) that opens anywhere in the canvas app except the classic Codeman views (U11). PRODUCT.md, which rejected floating chat surfaces, now names this palette as its one exception: one row, opened by key, no transcript, no scrim. Layouts 8A to 8C are not built.
+
 ## 2026-11-19 — A dead session no longer blocks a deploy
 
 **Type:** propagated-discovery
