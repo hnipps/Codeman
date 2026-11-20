@@ -12,10 +12,12 @@ import { workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import {
   cleanLine,
   cleanText,
+  keepCaptures,
   MAX_TITLE_CHARS,
   MAX_WALKTHROUGH_CHARS,
   storedSource,
   type Review,
+  type Submit,
   type WorkRef,
 } from './review-model.js';
 
@@ -80,6 +82,32 @@ export function syncedReview(
     };
   const same = (Object.keys(fields) as (keyof typeof fields)[]).every((k) => open[k] === fields[k]);
   return same ? open : { ...open, ...fields };
+}
+
+/**
+ * The review after the agent linked to its item submits a walkthrough for `headSha`, the origin tip. It sets `authored`
+ * and keeps the stills `input` names, as a session review's resubmission does. `updatedAt` goes up, so a review whose
+ * notes were sent reads `updated`. The title, the item's walkthrough, the notes, the decision and the revision are
+ * the tracker's and the branch's, and stay.
+ */
+export function authorWorkReview(
+  review: Review,
+  input: Submit,
+  author: { sessionId: string; sessionName: string },
+  headSha: string,
+  now: number
+): Review {
+  return {
+    ...keepCaptures(review, input.captures),
+    authored: {
+      sessionId: author.sessionId,
+      sessionName: author.sessionName,
+      walkthrough: cleanText(input.walkthrough, MAX_WALKTHROUGH_CHARS),
+      headSha,
+      at: now,
+    },
+    updatedAt: Math.max(now, review.updatedAt + 1),
+  };
 }
 
 /**
