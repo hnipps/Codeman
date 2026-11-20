@@ -523,3 +523,49 @@ kbd { border: 1px solid var(--divider); border-radius: 2px; padding: 0 4px; colo
 .phint { flex: none; font-size: 11px; color: var(--muted); display: flex; gap: 4px; align-items: center; white-space: nowrap; }
 .phint kbd { font-size: 11px; }
 .ptok kbd { font-size: 10px; padding: 0 3px; margin-left: 2px; border-color: var(--divider); color: var(--muted); }
+
+/* ======================= Revision 4 ======================= */
+
+/* Capture is a switch beside Send, on every screen. Its state is the only capture signal. */
+.composer.capture .field textarea { padding-top: 8px; min-height: 96px; border-color: var(--accent); }
+.capsw { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 4px; font-size: 12px; color: var(--secondary); cursor: pointer; position: relative; user-select: none; }
+.capsw input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; min-height: 0; opacity: 0; cursor: pointer; }
+.capsw .track { position: relative; flex: none; width: 28px; height: 16px; border-radius: 8px; background: var(--raised); border: 1px solid var(--divider); }
+.capsw .track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 5px; background: var(--secondary); transition: transform 120ms cubic-bezier(.2, .8, .2, 1); }
+.capsw input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.capsw input:checked + .track::after { transform: translateX(12px); background: var(--action-ink); }
+.capsw input:checked ~ span:not(.track) { color: var(--text); }
+.capsw input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.capsw:hover .track { border-color: var(--secondary); }
+.capsw kbd { font-size: 11px; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .capsw .track::after { transition: none; } }
+
+/* Summary, To do and Suggestions: one toggle row, panel under it. */
+.ptog { flex-wrap: nowrap; }
+.tg .num.need { color: var(--accent); }
+.ppanel.sl { padding: 0 4px 8px 4px; }
+.ppanel.sl .proposal:first-child { margin-top: 4px; }
+
+.menu .sht { display: none; }
+
+/* Palette hint: action, then its key. */
+.phint span { color: var(--muted); }
+.phint .hsep { width: 1px; height: 12px; background: var(--divider); margin: 0 6px; }
+
+@media (max-width: 720px) {
+  .capsw { min-height: 44px; padding: 0 8px; font-size: 14px; }
+  .capsw .track { width: 36px; height: 22px; border-radius: 11px; }
+  .capsw .track::after { width: 16px; height: 16px; border-radius: 8px; }
+  .capsw input:checked + .track::after { transform: translateX(14px); }
+
+  /* Chip menu as a bottom sheet: grabber, thread name as title, full-width 48px rows. */
+  .menu { width: auto !important; right: 0 !important; padding-top: 6px; }
+  .menu::before { content: ''; display: block; width: 36px; height: 4px; border-radius: 2px; background: var(--divider); margin: 0 auto 6px; }
+  .menu .sht { display: block; padding: 6px 12px 8px; font-size: 13px; color: var(--secondary); }
+
+  /* Suggestions on a phone: one row of cards, scrolling sideways. */
+  .ppanel.sl { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; max-height: none; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; padding: 4px 16px 12px; margin: 0 -12px; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .ppanel.sl::-webkit-scrollbar { display: none; }
+  .ppanel.sl .proposal { flex: 0 0 78%; margin: 0; scroll-snap-align: start; display: flex; flex-direction: column; }
+  .ppanel.sl .proposal .acts { margin-top: auto; padding-top: 8px; }
+}

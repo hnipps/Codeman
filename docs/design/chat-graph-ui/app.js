@@ -1,4 +1,4 @@
-// Chat Graph UI prototype (W-78, revision 3). Static, illustrative content: every state of the chat is
+// Chat Graph UI prototype (W-78, revision 4). Static, illustrative content: every state of the chat is
 // one page that sets <body data-state>. Layout follows the canvas: on a desktop the chat is a rail view
 // beside the board; at 720px and under the rail is the whole viewport. UI copy says "thread"; the API
 // and the code keep "topic". The shipped UI builds DOM with textContent; this prototype uses template
@@ -99,22 +99,22 @@
       ${close ? `<button class="icon" aria-label="Close" title="Close · Esc">${I.close}</button>` : ''}
     </div>`;
 
-  // Capture mode: a leading > or Mod+U (keyboard), or the Capture toggle beside Send (always on a phone,
-  // where there is no Mod+U and typing > is awkward). The pill's × leaves the mode with the text kept.
+  // Capture mode is a switch beside Send, on desktop and phone alike, so the mode stays visible after
+  // typing starts. A leading > or Mod+U flips the same switch; the switch is the only signal and the
+  // only way out (click it, Mod+U again), so there is no pill in the field.
   const composer = ({ draft = '', status = '', err = '', capture = false, placeholder, send = 'Send', note = '' } = {}) => {
-    const ph = placeholder ?? (phone ? 'Message' : 'Message · > or Mod+U to capture');
+    const ph = capture ? 'Capture a thought' : placeholder ?? 'Message';
     return `
     <form class="composer${capture ? ' capture' : ''}" onsubmit="return false">
       <label class="sr" for="draft">${capture ? 'Capture' : 'Message'}</label>
       <div class="field">
-        ${capture ? `<span class="pill">${I.capture}Capture<button class="px" aria-label="Leave capture" title="Leave capture${phone ? '' : ` · ${mod}U`}">${I.close}</button></span>` : ''}
-        <textarea id="draft" rows="3" placeholder="${ph.replace('Mod+', mod)}">${draft}</textarea>
+        <textarea id="draft" rows="3" placeholder="${ph}">${draft}</textarea>
       </div>
       ${note ? `<p class="note">${note}</p>` : ''}
       ${err ? `<p class="err" role="alert">${err}</p>` : ''}
       <div class="row">
         <span class="status">${capture ? '' : status}</span><span class="gap"></span>
-        ${phone ? `<button class="captog" aria-pressed="${capture}" title="Capture">${I.capture}<span>Capture</span></button>` : ''}
+        <label class="capsw" title="${phone ? 'Capture' : `Capture · > or ${mod}U`}"><input type="checkbox" role="switch"${capture ? ' checked' : ''}><span class="track" aria-hidden="true"></span><span>Capture</span>${phone ? '' : `<kbd>${mod}U</kbd>`}</label>
         <button class="primary">${capture ? 'Capture' : send}</button>
       </div>
     </form>`;
@@ -141,7 +141,7 @@
   const chatMenu = `
     <div class="scrim"></div>
     <div class="menu" role="menu" aria-label="Thread for this message" style="top:34px;left:0">
-      <p class="mh">New thread. Also matched <b>Shed plans</b>, archived.</p>
+      <p class="sht" aria-hidden="true">Garden shed</p>
       <button role="menuitem"><span>Move…</span></button>
       <button role="menuitem"><span>Also file in…</span></button>
       <button role="menuitem"><span>Open Garden shed</span></button>
@@ -191,15 +191,10 @@
     </nav>`;
 
   // ---------- thread view ----------
-  const suggestions = `
-    <section class="sugg" aria-label="Suggestions">
-      <div class="sh"><b>Suggestions</b><span class="num">3</span><span class="gap"></span><button class="icon" aria-label="Collapse suggestions" aria-expanded="true">${I.down}</button></div>
-      <div class="sl">
+  const proposals = `
         <div class="proposal"><p class="pk">Merge</p><p><b>Kitchen tap</b> (4 messages) belongs here.</p><div class="acts"><button class="quiet">Review</button><button>Not now</button></div></div>
         <div class="proposal"><p class="pk">Note from Laptop upgrade</p><p><q>Laptop budget moved 300 into the kitchen fund.</q></p><div class="acts"><button class="quiet">Add</button><button>Reject</button></div></div>
-        <div class="proposal"><p class="pk">Split</p><p>Last 9 messages are about the <b>hob circuit</b>.</p><div class="acts"><button class="quiet">Review</button><button>Not now</button></div></div>
-      </div>
-    </section>`;
+        <div class="proposal"><p class="pk">Split</p><p>Last 9 messages are about the <b>hob circuit</b>.</p><div class="acts"><button class="quiet">Review</button><button>Not now</button></div></div>`;
   // Full view's Details column keeps the open To do list.
   const todo = (open) => `
     <details class="todo"${open ? ' open' : ''}>
@@ -214,17 +209,20 @@
         <li class="additem"><button>${I.plus}Add</button></li>
       </ul>`;
   const summaryText = 'Renovation capped at 18k. Cabinets ordered and paid. Worktop quote in at 2,350, leaving 1,120. The electrician needs a separate circuit for the hob.';
-  // Summary and To do: two toggles on one row, each opening its own panel under it. Collapsed, the
-  // pair costs one row. Both close quietly when the person starts writing in the thread. A new To do
-  // item puts a dot on the To do toggle until it is opened.
-  const pinned = ({ sum = true, todo: todoOpen = false, fresh = true, down = false } = {}) => `
+  // Summary, To do and Suggestions: three toggles on one row, always above the panel they open, so
+  // the row never moves. One panel at a time (an accordion), capped at 40% of the rail, scrolling on
+  // its own. Collapsed, all three cost one row. They close quietly when the person starts writing.
+  // A new To do item puts a dot on its toggle; Suggestions shows its count in amber.
+  const pinned = ({ open = 'sum', fresh = true, down = false, sugg = 3 } = {}) => `
     <div class="pinned">
       <div class="ptog">
-        <button class="tg" aria-expanded="${sum}" aria-controls="sumpanel">${I.down}<span>Summary</span></button>
-        <button class="tg" aria-expanded="${todoOpen}" aria-controls="todopanel">${I.down}<span>To do</span><span class="num">3</span>${fresh && !todoOpen ? `<span class="dot" title="1 new"></span><span class="sr">1 new</span>` : ''}</button>
+        <button class="tg" aria-expanded="${open === 'sum'}" aria-controls="ppanel">${I.down}<span>Summary</span></button>
+        <button class="tg" aria-expanded="${open === 'todo'}" aria-controls="ppanel">${I.down}<span>To do</span><span class="num">3</span>${fresh && open !== 'todo' ? `<span class="dot" title="1 new"></span><span class="sr">1 new</span>` : ''}</button>
+        ${sugg ? `<button class="tg" aria-expanded="${open === 'sugg'}" aria-controls="ppanel">${I.down}<span>Suggestions</span><span class="num need">${sugg}</span></button>` : ''}
       </div>
-      ${sum ? `<div id="sumpanel" class="ppanel"><p class="summary clamp">${summaryText}</p><p class="ver">${down ? 'Saved copy from 10:02' : 'v6 · 10:02 · <a href="#">Edit</a> · <a href="#">History</a>'}</p></div>` : ''}
-      ${todoOpen ? `<div id="todopanel" class="ppanel">${items}</div>` : ''}
+      ${open === 'sum' ? `<div id="ppanel" class="ppanel"><p class="summary clamp">${summaryText}</p><p class="ver">${down ? 'Saved copy from 10:02' : 'v6 · 10:02 · <a href="#">Edit</a> · <a href="#">History</a>'}</p></div>` : ''}
+      ${open === 'todo' ? `<div id="ppanel" class="ppanel">${items}</div>` : ''}
+      ${open === 'sugg' ? `<div id="ppanel" class="ppanel sl" role="region" aria-label="Suggestions">${proposals}</div>` : ''}
     </div>`;
   const moved = you('Ask the worktop firm for a second quote, the first felt high.', '', 'Tue', { tag: 'Capture', arrived: 'From Chat' });
   const threadTurns = [
@@ -238,16 +236,15 @@
   // Messages that arrived by a move, an add or a merge since the person last had the thread open
   // carry a "From …" line, and a marker over the list jumps to them.
   const threadView = ({ undo = false, sugg = false, sum = true, todoOpen = false, fresh = true, arrivals = false, down = false, inFull = false, draft = '' } = {}) => `
-    ${inFull ? '' : head('Kitchen budget', { back: 'Threads', list: false, sugg: down ? 0 : 3, more: !down, expanded: sugg })}
+    ${inFull ? '' : head('Kitchen budget', { back: 'Threads', list: false, more: !down })}
     ${down ? '<div class="strip warn" role="status">Chat is down. Messages here go straight to this thread and are filed when it is back.</div>' : ''}
-    ${sugg ? suggestions : ''}
-    ${pinned({ sum, todo: todoOpen, fresh, down })}
+    ${pinned({ open: sugg ? 'sugg' : todoOpen ? 'todo' : sum ? 'sum' : '', fresh, down, sugg: down ? 0 : 3 })}
     ${arrivals ? `<div class="arrbar" role="status"><span>1 added since you were here</span><button>Show</button></div>` : ''}
     <div class="body latest">
       <ol class="turns compact">${(arrivals || undo ? [threadTurns[0], threadTurns[1], moved, ...threadTurns.slice(2)] : threadTurns).join('')}</ol>
     </div>
     ${undo ? `<div class="notice" role="status"><span>Moved 1 message here</span><button>Show</button><button>Undo</button></div>` : ''}
-    ${composer({ placeholder: phone ? 'Message Kitchen budget' : 'Message Kitchen budget · Mod+U to capture', draft, note: down ? 'Pasted from Chat.' : '' })}`;
+    ${composer({ placeholder: 'Message Kitchen budget', draft, note: down ? 'Pasted from Chat.' : '' })}`;
 
   // ---------- states ----------
   const views = {
@@ -297,7 +294,7 @@
       `<div class="body"><div class="empty">
         <h2>One chat for everything</h2>
         <p>Write about anything. Each message is filed to a thread, shown under it. Tap that to move it.</p>
-        <p>${phone ? 'Tap Capture to save a thought with no reply.' : `Start with <code>&gt;</code> or press ${kbd('Mod+U')} to capture a thought with no reply.`}</p>
+        <p>${phone ? 'Switch on Capture to save a thought with no reply.' : `Start with <code>&gt;</code> or press ${kbd('Mod+U')} to capture a thought with no reply.`}</p>
       </div></div>` +
       composer(),
     bootstrap: () =>
@@ -340,19 +337,21 @@
       ${withChat ? `<a href="#" class="pin"${current === 'Chat' ? ' aria-current="true"' : ''}>${I.chat}<span>Chat</span>${kbd('Mod+0')}</a>` : ''}
       ${threadList({ unsorted: true, current, open: { active: 1, inactive: 0, archived: 0 } }).replace('class="body"', 'class="body tight"')}
     </section>`;
-  // Palette: one row, no buttons, like Spotlight or Raycast. The leading token names the mode; Tab cycles
-  // Chat → Capture → Commands, and typing > or / at the start switches to Capture or Commands. Enter sends;
-  // Mod+Enter sends and opens the thread. The keys show as one faint hint at the end of the row.
+  // Palette: one row, no buttons, like Spotlight or Raycast. The leading token is a label naming the
+  // current mode, never a key. The keys live together in the hint at the end, action first and key
+  // second as in Raycast: Tab is labelled with the mode it switches to (Chat → Capture → Commands), > and / at the start of an empty field jump straight to
+  // Capture or Commands, Enter sends and Mod+Enter sends and opens the thread. Reachable everywhere in
+  // the canvas app; the classic Codeman views keep their own shortcuts.
   const palette = (mode) => {
-    const tok = { chat: `${I.chat}Chat`, capture: `${I.capture}Capture` }[mode];
+    const modes = { chat: [I.chat, 'Chat', 'Capture'], capture: [I.capture, 'Capture', 'Commands'] };
+    const [icon, name, next] = modes[mode];
     const text = mode === 'chat' ? 'Book the shed base quotes for next week' : 'bring the tile offcuts to the garage';
-    // Enter sending is the expected default, so the hint names only Mod+Enter. Tab sits in the mode token.
-    const hint = mode === 'chat' ? `${kbd('Mod+Enter')} open thread` : '';
+    const hint = `<span>${next}</span>${kbd('Tab')}${mode === 'chat' ? `<span class="hsep"></span><span>Open thread</span>${kbd('Mod+Enter')}` : ''}`;
     return `
-    <div class="palette one" role="dialog" aria-label="${mode === 'chat' ? 'Chat' : 'Capture'}">
+    <div class="palette one" role="dialog" aria-label="${name}">
       <div class="prow">
-        <span class="ptok" data-mode="${mode}" title="Tab switches mode">${tok}<kbd>Tab</kbd></span>
-        <label class="sr" for="pq">${mode === 'chat' ? 'Message' : 'Capture'}</label>
+        <span class="ptok" data-mode="${mode}">${icon}${name}</span>
+        <label class="sr" for="pq">${name}</label>
         <input id="pq" value="${text}" autocomplete="off">
         <span class="phint">${hint}</span>
       </div>
@@ -360,7 +359,7 @@
   };
   const fullViews = {
     // A: three columns. The focused conversation in the middle; Chat is pinned first in the list.
-    full: () => `<div class="full a">${sideList('Kitchen budget')}${fullConvo('Kitchen budget', threadTurnsFull, `Message Kitchen budget · Mod+U to capture`, { tools: `<button class="quiet">${I.chat}Chat ${kbd('Mod+0')}</button>` })}${details}</div>`,
+    full: () => `<div class="full a">${sideList('Kitchen budget')}${fullConvo('Kitchen budget', threadTurnsFull, 'Message Kitchen budget', { tools: `<button class="quiet">${I.chat}Chat ${kbd('Mod+0')}</button>` })}${details}</div>`,
     // B: tabs. Open conversations as tabs; details in a drawer; Mod+U opens a capture line under the tabs.
     'full-b': () => `<div class="full b">
       <div class="tabs" role="tablist">
@@ -373,11 +372,11 @@
         <button class="quiet">${I.list}Threads</button><button class="quiet">Details</button>
       </div>
       <div class="capline"><span class="pill">${I.capture}Capture</span><input value="ask Sam about the tile offcuts" aria-label="Capture"><span class="small sec">Files on its own · ${kbd('Enter')} · ${kbd('Esc')}</span></div>
-      ${fullConvo('Kitchen budget', threadTurnsFull, 'Message Kitchen budget · Mod+U to capture')}
+      ${fullConvo('Kitchen budget', threadTurnsFull, 'Message Kitchen budget')}
     </div>`,
     // C: side by side. Chat on the left stays the place to think out loud; the focused thread on the right.
     'full-c': () => `<div class="full c">
-      ${fullConvo('Chat', [t1, r1, t2, r2, t3(), r3], 'Message · > or Mod+U to capture', { lead: '' })}
+      ${fullConvo('Chat', [t1, r1, t2, r2, t3(), r3], 'Message', { lead: '' })}
       ${fullConvo('Kitchen budget', threadTurnsFull, 'Message Kitchen budget', { lead: '', tools: `<button class="quiet switch">Switch ${I.down}</button><button class="icon badge" aria-label="3 suggestions" title="Suggestions">${I.cards}<span class="n">3</span></button>` })}
     </div>`,
     // D: threads only in the full view; the main chat is a palette on Mod+K.
