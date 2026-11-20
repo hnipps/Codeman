@@ -485,7 +485,7 @@ kbd { border: 1px solid var(--divider); border-radius: 2px; padding: 0 4px; colo
 .tg[aria-expanded='true'] svg { transform: none; }
 .tg .num { color: var(--muted); }
 .dot { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); display: inline-block; }
-.ppanel { padding: 2px 4px 8px 22px; }
+.ppanel { padding: 2px 4px 8px 22px; max-height: 40dvh; overflow-y: auto; overscroll-behavior: contain; }
 .ppanel .summary { font-size: 13px; }
 .ppanel .items { padding-left: 0; }
 .items li.fresh > span:first-of-type { font-weight: 500; }
