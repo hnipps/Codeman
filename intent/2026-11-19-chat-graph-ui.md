@@ -1,12 +1,12 @@
 # Intent: Chat Graph chat UI (design spec)
 
-**Status:** Draft (revision 2, design spec for the owner's Spec review. Work item W-78. It designs ticket 6 of the Chat Graph spec, `intent/2026-11-18-chat-graph.md` on master at revision 5, filed as W-84.)
+**Status:** Draft (revision 3, design spec for the owner's Spec review. Work item W-78. It designs ticket 6 of the Chat Graph spec, `intent/2026-11-18-chat-graph.md` on master at revision 5, filed as W-84.)
 
 **Extends:** `intent/2026-11-18-chat-graph.md`. That spec is merged and stays unchanged. This spec adds the API pieces listed under "Additions to the Chat Graph API", which the screens need and the merged spec does not define. Approving this spec approves those additions.
 
 **Prototypes:** the canvas frame `chat-graph-ui-study`, one row per screen or state, desktop (1280 px) on the left and phone (414 px) on the right. Every embed carries a screenshot thumbnail, so a phone shows a picture instead of a Paused card. The source is `docs/design/chat-graph-ui/` in this change. All content in it is made up.
 
-**Revision 2** answers the owner's review notes of 2026-11-19. They are listed, each with what changed, under "Review notes, revision 1".
+**Revision 2** answers the owner's review notes of 2026-11-19, listed under "Review notes, revision 1". **Revision 3** answers the notes of 2026-11-20, listed under "Review notes, revision 2". The owner confirmed in this round that Inactive stays.
 
 ## Problem statement
 
@@ -14,19 +14,19 @@ The Chat Graph back end (W-76, tickets 1 to 5 and 7 to 9) can file messages to t
 
 ## Vocabulary
 
-The owner calls a topic a **thread**. Every word the UI shows says "thread". The API, the store, the merged spec and the code keep "topic", because those are merged names and renaming them is no help to anyone. So `GET /topics` feeds the thread list, and `topics-view.ts` draws it. A canvas comment thread stays a "comment" in the UI wherever the two could meet (U7).
+The owner calls a topic a **thread**, and every word the UI shows says "thread". The owner also wants the API and the code to say "thread" (review note 6 of revision 2). No Chat Graph code exists yet: only the W-76 spec is merged, and ticket 1 (W-88) has not started. So the rename costs a spec change and nothing else, if it happens before W-88 is built. "Names in the code" below lists where "thread" already means something else in this codebase and proposes the names; decision 11 asks Harry to confirm. Until he does, this spec writes the merged names (`topic`, `GET /topics`) wherever it names the API. A canvas comment thread stays a "comment" in the UI wherever the two could meet (U7).
 
 ## Outcomes
 
 1. **One chat, and threads.** The chat is a rail view on every canvas workspace, opened with `T` or the dock's Chat button. Each thread opens in the same rail, with its summary and latest messages. On a phone the rail fills the screen.
 2. **The outline lists threads, not sessions.** The canvas outline's Sessions section gives way to Threads: Unsorted when it holds anything, then Active, Inactive and Archived, each collapsible. Sessions keep one collapsed row at the end of the outline.
-3. **A chip under every message** names its thread. Its look depends on the reranker's band: quiet above 0.8, amber from 0.5 to 0.8, and a "New" tag below 0.5. Unsorted and Filing have their own looks. The chip carries no extra words.
-4. **A tap on a chip opens one short menu:** Move…, Also file in…, Open the thread, and, when an archived thread matched, Move to it with an "Archived" tag. On a phone the menu is a bottom sheet.
+3. **A chip under every message** names its thread, and pressing the name opens that thread. Its look depends on the reranker's band: quiet above 0.8, amber from 0.5 to 0.8, and a "New" tag below 0.5. Unsorted and Filing have their own looks. The chip carries no extra words.
+4. **The chevron beside the name opens one short menu** (so does a right-click on a desktop or a long-press on a phone): Move…, Also file in…, Open the thread, and, when an archived thread matched, Move to it with an "Archived" tag. On a phone the menu is a bottom sheet.
 5. **A context line under each reply** names every thread the reply used. A thread used only through its card says "(card)".
-6. **Related shows only after a reply finishes**, as one quiet row with "File there too" and "Dismiss".
+6. **Related shows only after a reply finishes**, as one line in the context line's type: "Related", then the thread as a dashed chip with + (file there too) and × (dismiss).
 7. **The routing wait shows and does not block.** The message shows at once with a Filing chip, the status line counts the seconds, and Harry can keep typing.
-8. **Capture works from any chat field on the canvas.** Typing `>` at the start of a draft, or `Mod+U`, puts the field in capture mode, shown as a "Capture" pill. Captures can be several lines and can hold Markdown quotes. Backspace on an empty pill, or `Mod+U` again, leaves capture mode with the text kept.
-9. **Thread view.** Summary and to-do list pinned at the top, the latest messages below them, a composer that writes straight to the thread. Suggestions (merge, split, a note from another thread) wait behind one badge with their count, and open into one bounded, scrollable section.
+8. **Capture works from any chat field on the canvas.** Typing `>` at the start of a draft, `Mod+U`, or, on a phone, the **Capture** toggle beside Send puts the field in capture mode, shown as a "Capture" pill. Captures can be several lines and can hold Markdown quotes. The pill's ×, the toggle, or `Mod+U` again leaves capture mode with the text kept.
+9. **Thread view.** Summary and To do sit at the top, each collapsing on its own to one shared row, and both close quietly once Harry starts writing. A new To do item puts a dot on its toggle. The whole history scrolls with no button, loaded in windows so the device stays fast. Messages moved, added or merged in since Harry last had the thread open are marked, with one press to reach them. Suggestions (merge, split, a note from another thread) wait behind one badge with their count, and open into one bounded, scrollable section.
 10. **Chat keeps working when the sidecar is down.** A send that cannot be filed copies the message, keeps it in the field, and offers the most recent threads. In a thread the message goes straight to that thread's conversation and is filed when the sidecar is back.
 11. **Every other failure leaves Harry's text where it was** and says what happened in one line: a message landed in Unsorted, the import is still running, or nothing exists yet.
 12. **The full view is undecided on purpose.** Five layouts are prototyped (8A to 8E), two of them with a command palette. Harry picks one in this review (decision 1). Its ticket is written after the pick.
@@ -97,9 +97,21 @@ No string the chat UI shows or announces contains "topic". Where the chat UI and
 
 ### U8: CaptureModeIsVisibleAndReversible
 
-The composer is in capture mode exactly when its pill shows. Leaving capture mode (Backspace on the pill with the caret at the start, or `Mod+U`) never changes the text. A message is sent as a capture only from capture mode, so a draft whose text starts with `>` after the pill (a Markdown quote) is captured as a quote.
+The composer is in capture mode exactly when its pill shows, and on a phone exactly when the Capture toggle is pressed. Leaving capture mode (the pill's ×, the toggle, `Mod+U`, or Backspace with the caret at offset 0 and no selection) never changes the text. Backspace anywhere else edits the text as usual, which is why the UI never advertises it. A message is sent as a capture only from capture mode, so a draft whose text starts with `>` after the pill (a Markdown quote) is captured as a quote.
 
-- *Test:* a model test: `>` typed first enters the mode and is not kept in the text; `>>` enters the mode and keeps one `>`; Backspace on the pill leaves the mode with the text intact; the POST carries `capture: true` only in the mode.
+- *Test:* a model test: `>` typed first enters the mode and is not kept in the text; `>>` enters the mode and keeps one `>`; the toggle enters and leaves it; Backspace at offset 0 leaves the mode with the text intact, and Backspace at any other caret position or over a selection deletes text and stays in the mode; the POST carries `capture: true` only in the mode.
+
+### U9: HistoryStaysWindowed
+
+A thread's history scrolls from its newest message to its first with no button, and the DOM never holds more than 150 turns. Older pages load as the top comes within one screen of view, and the turn under the person's eyes does not move when a page is added above it or a far one is dropped.
+
+- *Test:* a browser test on a 2,000-message fixture scrolls to the first message and back. The turn count in the DOM stays at or under 150 throughout, and the anchor turn's top moves by less than 1 px on each page load.
+
+### U10: ArrivalsAreExact
+
+The arrivals marker counts exactly the messages whose live membership in this thread was created by a move, an add, a merge or a split after the thread's last-seen time on this device, excluding messages Harry wrote in this thread. Opening the thread does not clear it; reaching the arrivals (Show, or scrolling them into view) does.
+
+- *Test:* a model test over membership fixtures with each `how` and with times on both sides of last-seen. The count matches, routed and own messages never count, and the count clears only after the arrived turns are reported visible.
 
 ## Non-goals
 
@@ -135,7 +147,7 @@ Frame ids are canvas object ids inside `chat-graph-ui-study`. The "Reads" column
 | # | Screen or state | Desktop frame | Phone frame | Reads | Writes |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Chat: chips by band, context line, Related | `132e05d8` | `b14e1324` | *`GET /messages`*, `GET /topics`, `chat-graph:routed`, *`chat-graph:message`*, `chat-graph:related` | `POST /messages` |
-| 2 | Chip menu: move, also file, open, archived match | `7fa53207` | `72ec1a0b` | `GET /topics` (picker) | `POST /messages/:id/reassign` (*mode*), `POST /ops` (reactivate) |
+| 2 | Chip menu (the chevron): move, also file, open, archived match | `7fa53207` | `72ec1a0b` | `GET /topics` (picker) | `POST /messages/:id/reassign` (*mode*), `POST /ops` (reactivate) |
 | 3 | Routing wait, about 5 s | `116fbe06` | `fa2be192` | `chat-graph:routed` | `POST /messages` |
 | 4 | Capture: pill, several lines, a quote | `fabf1749` | `eee6fe51` | `chat-graph:routed` | `POST /messages` (*capture*) |
 | 5 | Thread list: Active, Inactive, Archived | `b49b6724` | `68eeed85` | `GET /topics` | none |
@@ -159,7 +171,7 @@ Full object ids, in table order: `132e05d8-6aa4-4f9e-9791-33ee5be40a3c`, `b14e13
 ### The chat (frame 1)
 
 - Turns follow the assistant's quiet style: a small `You` or `Claude` label with the time at the right, no bubbles, a 2 px divider rule beside the person's text. The chat opens at its end.
-- **Chips** sit under the person's message, 24 px tall with a 32 px hit area (32 px tall with a 44 px hit area on a phone), 12 px text. A chevron on the chip says it opens a menu.
+- **Chips** sit under the person's message, 24 px tall with a 32 px hit area (32 px tall with a 44 px hit area on a phone), 12 px text. A chip is a split button. Its **name opens the thread** in the rail, which is the default path. The **chevron** beside it, a separate button and tab stop with the label "<thread>: options", opens the chip menu. A right-click on a desktop, a long-press on a phone and the context-menu key or Shift+F10 on the name open the same menu. On the quiet band the chevron shows on hover or focus on a desktop and always on a touch screen. Unsorted has no thread to open, so its whole chip opens the move picker. Filing is not pressable.
 
   | Band (reranker score) | Look | Copy |
   | --- | --- | --- |
@@ -171,12 +183,12 @@ Full object ids, in table order: `132e05d8-6aa4-4f9e-9791-33ee5be40a3c`, `b14e13
 
   The amber band asks to be checked, which is what amber already means on the canvas. The design doc's risk table asks for low-confidence chips to look different, not only for high-confidence ones to be quiet.
 - **Context line** under each reply: `Used Kitchen budget · Laptop upgrade (card)`, 12 px. Each name opens that thread. It lists exactly the reply's source ids (I8).
-- **Related** is one row in a 1 px bordered box under a finished reply: "Related: **Laptop upgrade**", with **File there too** (adds a membership with mode `add`) and **Dismiss** (drops it for this message; nothing is written). The card's one-line reason is the row's `title`.
+- **Related** is one line under a finished reply, in the context line's 12 px muted type: "Related", then the thread as a chip with a dashed border (a suggestion, not a membership). The chip's **+ name** files the message there too (mode `add`, the button's `title` says "File there too"). Its **×** dismisses it for this message and writes nothing. The card's one-line reason is the line's `title`. Once filed, the dashed chip becomes an ordinary chip under the person's message and the line goes.
 - While a reply is in progress the status line says "Replying", from the thread conversation's session state, as the assistant's state line does.
 
 ### Chip menu (frame 2)
 
-A popover under the chip on a desktop (248 px, one 1 px border, the canvas menu style), a bottom sheet with a scrim on a phone (48 px rows). Each item is one line. The first line says what happened in one sentence: "New thread. Also matched **Shed plans**, archived."
+Opened from the chip's chevron, a right-click or a long-press (never from the name, which opens the thread). A popover under the chip on a desktop (248 px, one 1 px border, the canvas menu style), a bottom sheet with a scrim on a phone (48 px rows). Each item is one line. The first line says what happened in one sentence: "New thread. Also matched **Shed plans**, archived."
 
 - **Move…** opens a picker in place: a search field over the active and inactive threads, most recent first, and "New thread…" at the end. It sends `reassign` with mode `move`.
 - **Also file in…** opens the same picker and sends mode `add`. The message then shows two chips.
@@ -191,10 +203,11 @@ The message appears the moment the POST answers, with a Filing chip. The status 
 
 ### Capture (frames 4 and 8E)
 
-- **Entering capture mode.** In any chat field on the canvas (the chat, a thread's composer, the Assistant's composer, the palette in 8D and 8E): typing `>` as the first character, or pressing `Mod+U` (⌘U on a Mac, Ctrl+U elsewhere). The `>` is not kept in the text; it becomes a **Capture** pill at the start of the field, the field's border strengthens, and Send becomes **Capture**. The status line says "No reply. ⌘U or Backspace to leave capture."
+- **Entering capture mode.** In any chat field on the canvas (the chat, a thread's composer, the Assistant's composer, the palette in 8D and 8E): typing `>` as the first character, or pressing `Mod+U` (⌘U on a Mac, Ctrl+U elsewhere). The `>` is not kept in the text; it becomes a **Capture** pill at the start of the field, the field's border strengthens, and Send becomes **Capture**. The status line stays empty; the button and the pill already say it.
+- **On a phone** there is no `Mod+U`, and `>` sits on the keyboard's second page. The composer row therefore carries a **Capture** toggle beside Send (44 px, the capture glyph and the word, `aria-pressed`). Pressing it enters capture mode without touching the text, and it shows pressed (raised fill, amber glyph) while the mode is on. The placeholder on a phone is just "Message"; the empty first-run screen says "Tap Capture to save a thought with no reply." The toggle sits by the thumb, beside Send, so capture is one tap from any draft. A desktop keeps `>` and `Mod+U` and has no toggle, because the row there has room only for what is used most; the pill's × covers a pointer user who entered by mistake.
 - **Several lines.** Shift+Enter adds a line, as in every canvas composer. The whole draft is one capture.
 - **Quotes.** After the pill the text is taken as written, so `>>` at the start captures a Markdown quote (`> …`), and a quote on any later line stays a quote. The captured message renders through `renderMarkdown()`, so the quote shows as one.
-- **Leaving.** Backspace with the caret at the start of the field, or `Mod+U` again, removes the pill and keeps the text. To send an ordinary message that starts with a quote, leave capture mode first; the field then holds the `>` as text and sends it as a message (U8, addition 6).
+- **Leaving.** The pill's × (`title` "Leave capture · ⌘U"; 28 px on a phone), the phone toggle, or `Mod+U` again removes the pill and keeps the text. Backspace also leaves, but only with the caret at offset 0 and nothing selected; anywhere else it edits the text. The UI does not mention Backspace, because whether it leaves depends on where the caret is. To send an ordinary message that starts with a quote, leave capture mode first; the field then holds the `>` as text and sends it as a message (U8, addition 6).
 - **Outside a field.** `Mod+U` on the board opens capture where capture lives in the chosen full-view layout: the rail's composer in capture mode (8A to 8C) or the capture palette (8D, 8E). The person's focus returns where it was after Capture or Escape.
 - **Sent.** The message shows a small `Capture` tag next to `You`, its chip (from `chat-graph:routed`) and one line, "Captured to Errands". In a thread view, to-do items that came from captures carry a `capture` tag.
 
@@ -214,15 +227,20 @@ Active and Archived open by default, Inactive and Sessions closed; the outline r
 
 ### Thread list (frames 5, 6)
 
-On a phone, and from Shift+T or the rail's list icon on a desktop: back to Chat, a search field ("Find a thread", filters titles and summaries in the browser), Unsorted pinned at the top while it holds anything, then the same three collapsible groups as the outline. Rows show the title, the age, a two-line summary preview and "2 to do · 38 messages". The open Archived group ends with "Archived threads take no new messages by themselves. Open one to unarchive it."
+On a phone, and from Shift+T or the rail's list icon on a desktop: back to Chat, a search field ("Find a thread", filters titles and summaries in the browser), Unsorted pinned at the top while it holds anything, then the same three collapsible groups as the outline. Rows show the title, the age, a two-line summary preview and "2 to do · 38 messages". The open Archived group ends with "Open one to unarchive it."
 
 ### Thread view (frames 7, 14)
 
 Opening a thread shows what it is about and where it got to:
 
 - **Head:** back to Threads, the title, the suggestions badge, a … menu (Merge, Split, Archive), full view and close.
-- **Pinned at the top**, outside the scroll: the **summary**, cut to three lines (the whole text in the full view or by pressing it), with "Summary v6 · 10:02 · Edit · History". Editing saves a new version through `edit-summary`. Under it, **To do** with its count and the hint "Tasks and captures still open in this thread", collapsible. To-dos are what the merged spec calls open items: tasks and questions Claude keeps when it folds old messages into the summary, plus captures not yet dealt with. Checking, adding or rewording one goes through `edit-open-items`.
-- **Latest messages** fill the rest and open at the end. "Earlier messages 33" at the top loads more.
+- **Summary and To do**, outside the scroll, under the head. Collapsed, the two share one 28 px row (44 px on a phone): a **Summary** toggle and a **To do 3** toggle, each with a chevron. Each opens its own panel under that row, independently, so either, both or neither can be open. The Summary panel shows the text cut to three lines (pressing it shows the rest, and the full view shows it whole), then "v6 · 10:02 · Edit · History". Editing saves a new version through `edit-summary`. The To do panel lists the items with a checkbox each and "+ Add". To-dos are what the merged spec calls open items: tasks and questions Claude keeps when it folds old messages into the summary, plus captures not yet dealt with. Checking, adding or rewording one goes through `edit-open-items`.
+  - *Defaults.* A thread opens with Summary open and To do closed. The state of each toggle is then remembered per thread on this device.
+  - *Quiet collapse.* The first keystroke in the thread's composer closes both panels, with no animation and no message. They stay closed until Harry opens one; the remembered state is not overwritten by the automatic close, so the next visit opens as he left it.
+  - *A new item.* When a To do item is added while the panel is closed (by Claude's summary pass or a capture), a 6 px amber dot follows the count, and screen readers hear "1 new" in a polite live region. Opening the panel clears the dot and shows the new items in medium weight until the thread is left. Nothing else moves or appears.
+- **History** fills the rest and opens at the end. It scrolls back to the thread's first message with no button. The list is windowed: the first paint takes the latest 50 messages; when the top of the list comes within one screen of view, the next older 50 load above it (addition 8) behind a quiet "Loading…" row, and the turn under the person's eyes stays where it is. At most 150 turns live in the DOM; pages more than one page beyond either edge are replaced by a spacer of their measured height, kept by message id, and rebuilt when scrolled back. Each turn uses `content-visibility: auto` with its last measured height as `contain-intrinsic-size`. One `IntersectionObserver` per edge does the work; there is no scroll handler. When Harry is more than a screen from the end, a "Latest" button at the bottom right returns there. The first message is preceded by "Started 3 Oct" (U9).
+- **Arrivals.** Messages can join a thread out of order: moved from Chat, added from another thread, merged in. Each such turn carries a 12 px line above it, "From Chat" or "From Garden shed", and a faint amber wash until it has been seen. When any have arrived since the thread was last open on this device, a row under Summary and To do says "1 added since you were here" with **Show**. Show loads the window around the first arrival (addition 9), scrolls it into view, and steps to the next arrival on each further press; the row goes once every arrival has been on screen (U10). Messages routed in normally, at the end of the history, do not count: they are already where Harry reads. *Proposed rule, for Harry to confirm (decision 12):* the marker covers everything that arrived since Harry last had this thread open on this device, with no time limit. A thread he has never opened shows no marker. The alternatives are a fixed window (say 24 hours), or only what arrives while the thread is open.
+- **His own move.** When Harry moves or files a message into a thread himself, the undo notice reads "Moved 1 message here", with **Show** and **Undo**. Show opens the thread at that message, which takes the arrival wash. The notice lasts 8 s, or until the next action.
 - **Suggestions** (merge, split, a note from another thread) never sit in the view. The head shows one badge with their count, in amber because they need a decision. Pressing it opens one section under the head, "Suggestions 3", with the cards in a scroll area at most 232 px tall (40% of the screen on a phone), and a chevron to close it. Each card is a kind line and one sentence with two buttons: Review / Not now, or Add / Reject. Review opens the op with its effect listed before Confirm (U6). With no suggestions the badge is absent.
 - **Split** (built in its ticket): Split opens a mode where each gap between messages has a "Split here" control. The first press marks the start and the second the end of a run, and a bar at the bottom names the new thread and Confirm. The repair pass's suggested split point is preselected.
 - **Composer:** "Message Kitchen budget". A message written here names this thread as its explicit signal, so it attaches at once with no model call and no wait. `Mod+U` captures into this thread.
@@ -235,7 +253,7 @@ The goal, in the owner's words: focus on one chat or thread, keep every chat and
 - **8B Tabs.** Chat and each opened thread as tabs, the conversation full width, Threads and Details as buttons that open drawers. `Mod+U` opens a one-line capture bar under the tabs, so the conversation does not move.
 - **8C Side by side.** Chat on the left is where Harry thinks aloud; the focused thread on the right, with a Switch menu. Capture is the left composer in capture mode.
 - **8D Threads plus a chat palette.** The full view is threads only (list, thread, details). The main chat lives in a palette over anything: `Mod+K` opens it on Chat with the last few turns and the composer, `Mod+U` opens it on Capture, `Mod+P` on Commands (the canvas's other commands). `Mod+Enter` sends and opens the thread the message was filed to.
-- **8E Capture palette.** The same palette on its Capture tab, opened with `Mod+U` over the board while a thread is open in the rail: the pill, several lines, "No reply. Filed to a thread on its own. Your focus stays where it was.", and the recent captures with their chips.
+- **8E Capture palette.** The same palette on its Capture tab, opened with `Mod+U` over the board while a thread is open in the rail: the pill, several lines, "Files to a thread on its own. Focus stays put.", and the recent captures with their chips.
 
 8D and 8E are one idea, the palette, shown in its two main modes. They can combine with any of 8A to 8C, because the palette replaces only where the main chat lives.
 
@@ -251,9 +269,40 @@ The goal, in the owner's words: focus on one chat or thread, keep every chat and
 
 "Thread" in every visible word, "topic" in none (U7). Labels of one to three words. Explanations of one sentence, about ten words. No exclamation marks. Errors name the problem and what is kept. Buttons name their action ("File there too", "Add", "Review").
 
+## Names in the code
+
+The owner wants the API and code to say "thread" (review note 6 of revision 2). Nothing is built yet: the W-76 spec is merged, but no Chat Graph code is, and W-88 (ticket 1) waits for Go to be installed. A search of `src/` and `packages/` on master finds "thread" already used for five other things:
+
+| Where | What "thread" means there | Names in use |
+| --- | --- | --- |
+| Canvas comments, `packages/canvas/src/comments.ts`, `canvas.html`, `canvas.css` | An object's comment thread | `#threadView`, `#threadList`, `#threadPicker`, `.thread-target`, `.thread-empty`, `paintThread`, `ThreadDrafts`, storage keys `thread:ask`, `thread:draft`, `thread:draft-element` |
+| Canvas conversations, `src/canvas/conversation-schema.ts`, `canvas-conversation-routes.ts`, `ask.ts` | A request asked from a comment thread | `threadOrigin` with `kind: 'thread'`, `ThreadOriginSchema`, `ThreadReply`, `ThreadRequest` |
+| The canvas Assistant, `packages/canvas/src/assistant.ts` | The rail's conversation transcript | `#thread`, `.thread-activity`, `.thread-state`, `threadStatus`, `threadKey`, `openThread` |
+| Codex sessions, `src/codex-transcript.ts`, `session-routes.ts` | Codex's own conversation id | `threadId`, `codexThreadBySessionId`, `parent_thread_id` |
+| Node | OS threads | `worker_threads` (HEIC worker), libuv's `UV_THREADPOOL_SIZE` |
+
+None of them is a route under `/api/chat-graph`, an SSE event or a store table, so the API can use the bare word. Inside the browser and the TypeScript server the bare word would collide, so those names carry a `chat` prefix. The proposal:
+
+| Merged name (W-76) | New name |
+| --- | --- |
+| Sidecar tables `topics`; `topic_id` in `memberships` and `summaries` | `threads`; `thread_id` |
+| Go types `Topic`, `TopicID` | `Thread`, `ThreadID` |
+| Routes `/api/chat-graph/topics`, `/topics/:id`, and this spec's `/topics/:id/summaries`, `/messages`, `/arrivals`, `/direct` | `/api/chat-graph/threads/...` |
+| JSON fields `topicId`, `topicIds`, `sourceTopicIds`, `fromTopicId` | `threadId`, `threadIds`, `sourceThreadIds`, `fromThreadId` |
+| SSE `chat-graph:*` events | unchanged (no "topic" in their names) |
+| MCP tools `chat_graph_search`, `chat_graph_read`, `chat_graph_propose_note` | unchanged |
+| Invariant names in W-76 (`AgentsWriteOnlyTheirOwnTopic`, `CrossTopicContentIsCited`) | `…OwnThread`, `CrossThreadContentIsCited` |
+| TypeScript identifiers in `src/chat-graph/*` and `packages/canvas/src/chat-*` | `ChatThread`, `chatThreadId`, `chatThreads` |
+| DOM ids, CSS classes and storage keys | `chat-thread-` / `chatThread` prefix, never bare `thread` |
+| This spec's `topics-view.ts`, `outline-threads.ts` | `chat-threads-view.ts`, `outline-chat-threads.ts` |
+
+A gate test (with U7) refuses a bare `thread` id, class or storage key in the chat modules, so the chat can never pick up a comment thread's element.
+
+The plan, if decision 11 is yes: this spec gains `Supersedes: the names in intent/2026-11-18-chat-graph.md`, listing the table above; Approve covers both. W-80 to W-88 each get one line pointing at the table, and W-88 is built with the new names from its first commit. If W-88 has already merged by then, the rename becomes its own small ticket after it, and no merged code is renamed without that ticket. If the answer is no, the code keeps "topic", and only the UI says "thread", as revision 2 had it.
+
 ## Additions to the Chat Graph API
 
-The merged spec's routes cannot draw the chat timeline, announce a reply, edit a summary, report the import's progress, tell a capture from a quote, or reach a thread while the sidecar is down. These additions are additive (rule 5) and single-user. All but 7 refuse with 503 like the rest.
+The merged spec's routes cannot draw the chat timeline, announce a reply, edit a summary, report the import's progress, tell a capture from a quote, reach a thread while the sidecar is down, page a thread's whole history, or say what arrived in a thread since a time. These additions are additive (rule 5) and single-user. All but 7 refuse with 503 like the rest.
 
 1. **`GET /api/chat-graph/messages?before=<id>&limit=<n>`** (default 50, max 200). Recent messages across all topics, oldest first, each with its kind, author, live memberships (topic id, title, status, band) and, for an agent message, its source topic ids. It feeds the chat's history and its first paint.
 2. **SSE `chat-graph:message`.** Sent when an agent message is stored (ticket 5's reply capture), with the message id, its topic id and its source ids. The browser then reads the text with `GET /messages`. This keeps chat text out of the event, which the merged spec's privacy constraint prefers.
@@ -262,11 +311,14 @@ The merged spec's routes cannot draw the chat timeline, announce a reply, edit a
 5. **Named fields.** `POST /messages/:id/reassign` takes `{ topicId, mode: 'move' | 'add' }`. `POST /messages` takes an optional `topicId`, the explicit signal from a thread's composer or a picked Unsorted thread. `chat-graph:routed` carries, per membership, its band and, when one matched, the archived topic's id and title.
 6. **`capture: boolean` on `POST /messages`.** When present it decides the kind, and the text is stored as sent. When absent the merged spec's leading-`>` rule applies, so older clients keep working. This is what lets a message start with a Markdown quote.
 7. **`POST /api/chat-graph/topics/:id/direct`**, the one route that works while the sidecar is down. The TypeScript side keeps `dataPath('chat-graph', 'conversations.json')`, a map from topic id to its title and current conversation, updated on every `chat-graph:routed` and every new conversation. `direct` sends the message to that conversation through the canvas conversation route, and appends `{ topicId, text, at }` to an outbox file. When the sidecar answers again, Codeman posts each outbox entry to `POST /messages` with that `topicId` (an explicit signal, so no model call) and clears it. If the topic has no recorded conversation, `direct` answers 409 `CHAT_GRAPH_NO_CONVERSATION` and the UI says "This thread can't take messages until Chat is back."
+8. **`GET /api/chat-graph/topics/:id/messages?before=<id>&after=<id>&around=<id>&limit=<n>`** (default 50, max 100). One page of a thread's history, oldest first, with `hasOlder` and `hasNewer`. `around` centres the page on one message, for Show. Each message carries its live membership's `addedAt` (the op's time), `how` (`routed`, `reply`, `move`, `add`, `merge` or `split`) and, for a move or an add, `fromTopicId` and its title. `GET /topics/:id` keeps returning the summary and the latest page, as the merged spec says.
+9. **`GET /api/chat-graph/topics/:id/arrivals?since=<time>`**, the ids of messages whose live membership in the thread was created by a move, an add, a merge or a split after `since`, oldest first, with their `how` and source thread. The browser keeps `since` per thread in local storage (the time it last left the thread), so this is per device. It answers ids only, never text.
 
 ## Technical design
 
 - **Modules** in `packages/canvas/src/`, following Work's split (pure model, one DOM module):
-  - `chat-model.ts` (pure): band from score, chip list from memberships, picker filtering (U4), when a Related row may show (U3), capture-mode transitions (U8), Active/Inactive grouping, the status-line text.
+  - `chat-model.ts` (pure): band from score, chip list from memberships, picker filtering (U4), when a Related row may show (U3), capture-mode transitions (U8), Active/Inactive grouping, the status-line text, the arrivals count (U10) and the Summary and To do panel state with its quiet collapse.
+  - `history-window.ts` (pure): which pages to keep, the spacer heights and the scroll anchor after a page lands (U9). The DOM side is two `IntersectionObserver`s in `topics-view.ts`.
   - `chat-view.ts`: the only DOM for the chat, the chip menu and the composer, including capture mode, which the Assistant's composer reuses.
   - `topics-view.ts`: the only DOM for the thread list, the thread view and the suggestions section.
   - `outline-threads.ts`: the outline's Threads section; the outline module calls it in place of Sessions.
@@ -274,17 +326,19 @@ The merged spec's routes cannot draw the chat timeline, announce a reply, edit a
 - **Rail and keys:** a new rail view `chat`, with sub-views `list` and `topic`. `T`, Shift+T and `Mod+U` in `shortcuts.ts`, listed in Keys. `Mod+K` and `Mod+P` only if 8D or 8E is chosen. `F` inside the rail opens the chosen full view.
 - **Browser keys:** `Ctrl+U` (view source in Chrome on Linux and Windows) and `Ctrl+P`/`⌘P` (print) can be taken with `preventDefault()` on a keydown in the page. The builder checks each on Chrome, Firefox and Safari; where a browser keeps the key, Keys shows the fallback `Mod+Shift+U`.
 - **Styles:** `canvas-chat.css`, linked after `canvas-work.css`, on the canvas tokens only.
-- **Phone:** the rail at full viewport, the chip menu as a sheet, a Chat icon in the phone dock, hardware keys ignored.
+- **Phone:** the rail at full viewport, the chip menu as a sheet (from the chevron or a long-press), the Capture toggle in every composer, a Chat icon in the phone dock, hardware keys ignored.
+- **Storage keys** (per device, through `storage-keys.ts`): each thread's last-seen time and its Summary and To do panel state. They are prefixed `chat-thread:` so they never meet the comment-thread keys (`thread:draft` and the like).
 - **Telemetry:** `uiEvent('chat', <action>)` for send, capture, chip-move, chip-add, unarchive-move, open-thread, suggestion-accept, suggestion-reject and direct-send, with ids only, never text.
 - **Risks:**
-  - *The rail is narrow for the thread view.* The pinned summary is cut to three lines and To do can collapse, so the latest messages keep most of the height.
+  - *The rail is narrow for the thread view.* Summary and To do collapse to one shared row, and close themselves once Harry writes, so the history keeps most of the height.
+  - *Windowed history and Find in page.* A message outside the window is not in the DOM, so the browser's find does not reach it. The thread list's search covers titles and summaries; searching inside a thread is the outline's Search. Accepted for this round.
   - *Two chips per message can crowd a phone.* Chips wrap. A message with three or more memberships shows two and "+1".
   - *Polling status every 5 s during bootstrap* is the only polling. It stops when the state is `ready`.
   - *Down mode can send a message the graph never sees* if the outbox is lost. The outbox is written before the conversation send, through the same atomic write as the canvas's other side files.
 
 ## Decisions for Harry
 
-Decisions 1 to 3 are new in revision 2 and need an answer. The rest are assumptions this spec makes; each is easy to change.
+Decisions 1 to 3 (revision 2) and 11 and 12 (revision 3) need an answer. The rest are assumptions this spec makes; each is easy to change.
 
 1. **Which full view (8A to 8E)?** My recommendation: **8A with the 8D palette.** 8A keeps every thread and the details in view, which suits long work in one thread; the palette gives the main chat and capture a home that is one key away from anywhere on the canvas, which is what makes capture cost no focus. It needs PRODUCT.md to allow a palette, since it is a floating surface; the palette never holds state the rail does not also show. If you prefer no palette, 8A alone, with `Mod+U` toggling capture in whichever composer has focus.
 2. **What "inactive" means.** No message for 7 days. Alternatives: 3 days, or 14.
@@ -296,6 +350,9 @@ Decisions 1 to 3 are new in revision 2 and need an answer. The rest are assumpti
 8. **Related's "File there too" adds a membership.** Alternative: a link with no membership.
 9. **During the bootstrap import, new messages are filed first**, ahead of the backlog.
 10. **Keys: `T` opens the chat, Shift+T the thread list, `Mod+U` captures.**
+11. **"Thread" in the API and the code too?** I recommend yes, now, before W-88 builds anything. See "Names in the code" for the conflicts and the plan. If yes, this spec carries a `Supersedes:` line for the names in `intent/2026-11-18-chat-graph.md` (merged specs are never edited), and W-80 to W-88 get one line each naming the new terms before they are built.
+12. **Which arrivals does the marker show?** I recommend: everything that arrived since you last had the thread open on this device, with no time limit (Thread view, Arrivals). Alternatives: a fixed window such as the last 24 hours, or only what arrives while the thread is open.
+13. **The new To do dot is amber**, because a new item may need you. Alternative: secondary grey, keeping amber for decisions only.
 
 ## Review notes, revision 1
 
@@ -312,20 +369,36 @@ The owner's notes on the prototypes, 2026-11-19, and what changed:
 9. *Sidecar down: "I don't want chat to be blocked … prompt the user to go to threads and select a thread … automatically copy their unsent message to clipboard."* Done: the message is copied and kept, three recent threads are offered, and a picked thread opens with the draft pasted and sends straight to its conversation (frames 10 and 15, addition 7, U1).
 10. *Bootstrap: "'46 of 120' what?"* Now "46 of 120 filed", after "Filing your last 7 days of conversations" (frame 12).
 
+## Review notes, revision 2
+
+The owner's notes of 2026-11-20, and what changed:
+
+1. *Inactive: "I don't actually know what it means … I don't think we need it. Confirm against spec."* It is a grouping only (no message for 7 days), defined in this spec, not a status in W-76. After that answer the owner said to keep it. No change; decision 2 still asks for the threshold.
+2. *Phone composer: "mobile users can't press cmd+u … a mobile friendly way to access capture without typing '>'."* A **Capture** toggle beside Send in every phone composer, by the thumb; the phone placeholder no longer mentions `>` or ⌘U (Capture, frames 1 and 4 phone).
+3. *Related: "bulky … the visual language is different."* Now one line in the context line's type, the thread as a dashed chip with + and × (The chat, frame 1).
+4. *Chip: "go to the thread without opening this menu, that's the default path … keep 'open <thread>' in the menu."* The chip is a split button: the name opens the thread, the chevron (or right-click, long-press) opens the menu, which keeps "Open Garden shed" (frames 1 and 2).
+5. *Capture status line: "Remove 'no reply'. 'backspace to leave capture' might not be accurate."* The status line is empty in capture mode. The pill has a ×, and Backspace leaves only at offset 0 and is not advertised (U8, frame 4). The 8E palette's footer lost "No reply" too.
+6. *Thread list: "We must change the API and code to use 'thread' too … assuming we don't use 'thread' for anything else?"* It is used for five other things; none blocks the API, and the browser and server code take a `chat` prefix. The plan and the name table are under "Names in the code"; decision 11.
+7. *Archived: "too verbose."* Now "Open one to unarchive it." (frame 6).
+8. *Summary and To do: "independently collapsible … minimal space when collapsed … quietly collapse if user starts chatting … know, quietly, when a new item is added."* Two toggles on one shared row, each with its own panel; both close on the first keystroke; a new item adds an amber dot (Thread view, frames 7 and 14).
+9. *"Scroll the whole history without clicking a button and without impacting device performance."* A windowed history: pages of 50 load as you scroll, at most 150 turns in the DOM, `content-visibility`, observers instead of scroll handlers (Thread view, U9, addition 8).
+10. *"Moved 1 message here": "easy way to get to the added message(s) … how do we decide when this notification appears?"* Arrived messages carry a "From …" line and a wash; a row says "1 added since you were here" with Show, which jumps to each in turn. The proposed rule is "since you last had the thread open on this device"; decision 12 asks you to confirm. Your own move's undo notice gained Show (U10, additions 8 and 9, frame 7).
+
 ## Checks run
 
-- Every frame was loaded headless at 1280 x 800 and 414 x 860, dark theme, device scale 1, with no console or page errors. `canvas_prototype check` was run on 8D (`cg-ui-full-d`) inside the canvas sandbox, with no errors.
+- Revision 3: the changed frames (1, 2, 3, 4, 6, 7, 9, 11, 14, 15, 8E) were loaded headless at 1280 x 800 and 414 x 860, dark theme, device scale 1, with no console or page errors, and a script again found no "topic" in any visible text, label, title or placeholder.
+- Revision 2: every frame was loaded headless at 1280 x 800 and 414 x 860, dark theme, device scale 1, with no console or page errors. `canvas_prototype check` was run on 8D (`cg-ui-full-d`) inside the canvas sandbox, with no errors.
 - A script read every state's visible text, `aria-label`, `title` and placeholder at both widths. None contains "topic".
 - The routes and events in the table were checked against `intent/2026-11-18-chat-graph.md` revision 5 on master. Everything not in that file is listed under Additions.
 
 <details><summary>Tickets for the UI build (7), replacing W-84's single ticket</summary>
 
 **UI-1: API additions.** Order 1. Depends on Chat Graph tickets 4, 5 and 7.
-- Additions 1 to 7, including the conversation map and the outbox for `direct`.
+- Additions 1 to 9, including the conversation map and the outbox for `direct`, the history pages and the arrivals route.
 - Route tests with `app.inject()`, the SSE registry parity test, and an outbox replay test with the sidecar stubbed down then up.
 
 **UI-2: Chat rail view and capture mode.** Order 2. Depends on UI-1.
-- The rail view, `T`, the dock button, the chat, the composer with capture mode (also in the Assistant's composer), `Mod+U`, chips in every band, the routing wait, Unsorted, sidecar down in Chat, empty, and the bootstrap strip.
+- The rail view, `T`, the dock button, the chat, the composer with capture mode (also in the Assistant's composer), `Mod+U`, the phone Capture toggle, split chips in every band (the name opens the thread), the routing wait, Unsorted, sidecar down in Chat, empty, and the bootstrap strip.
 - U1, U2, U5, U7 and U8. Frames 1, 3, 4, 9, 10, 11 and 12.
 
 **UI-3: Chip menu and undo.** Order 3. Depends on UI-2 and Chat Graph ticket 7.
@@ -337,8 +410,8 @@ The owner's notes on the prototypes, 2026-11-19, and what changed:
 - U3. Frame 1.
 
 **UI-5: Thread list, thread view and down mode.** Order 5. Depends on UI-3 and Chat Graph tickets 7 and 8.
-- The list with search and its three groups; the thread view with the pinned summary, To do, latest messages, the suggestions badge and section, merge, split mode and archive; sidecar down in a thread.
-- U6. Frames 5, 6, 7, 14 and 15, plus a new frame for split mode in its review.
+- The list with search and its three groups; the thread view with the Summary and To do toggles, the windowed history, arrivals, the suggestions badge and section, merge, split mode and archive; sidecar down in a thread.
+- U6, U9 and U10. Frames 5, 6, 7, 14 and 15, plus a new frame for split mode in its review.
 
 **UI-6: Outline threads.** Order 6. Depends on UI-5.
 - The outline's Threads section in place of Sessions, its groups and remembered open state, Sessions as the last group.

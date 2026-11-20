@@ -1,4 +1,4 @@
-// Chat Graph UI prototype (W-78, revision 2). Static, illustrative content: every state of the chat is
+// Chat Graph UI prototype (W-78, revision 3). Static, illustrative content: every state of the chat is
 // one page that sets <body data-state>. Layout follows the canvas: on a desktop the chat is a rail view
 // beside the board; at 720px and under the rail is the whole viewport. UI copy says "thread"; the API
 // and the code keep "topic". The shipped UI builds DOM with textContent; this prototype uses template
@@ -27,6 +27,7 @@
     assist: '<svg viewBox="0 0 16 16"><path d="M8 2l1.4 3.6L13 7l-3.6 1.4L8 12l-1.4-3.6L3 7l3.6-1.4z"/></svg>',
     search: '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4"/><path d="M10 10l3.5 3.5"/></svg>',
     cards: '<svg viewBox="0 0 16 16"><rect x="2.5" y="5.5" width="11" height="8" rx="1.5"/><path d="M4.5 3.5h7"/></svg>',
+    dot: '<span class="dot" aria-hidden="true"></span>',
     copy: '<svg viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-7h7"/></svg>',
   };
   const kbd = (k) => `<kbd>${k.replace('Mod+', mod)}</kbd>`;
@@ -52,16 +53,20 @@
   ];
 
   // ---------- pieces ----------
-  // Chip: the thread's name. Bands differ by look, not by extra words; a chevron says it opens a menu.
+  // Chip: the thread's name. Pressing the name opens the thread (the default path); the chevron beside it
+  // opens the chip menu. Unsorted has no thread to open, so the whole chip opens the move picker. Filing
+  // is not pressable. Bands differ by look, not by extra words.
   const chip = (band, name, extra = '') => {
+    if (band === 'filing')
+      return `<span class="chip" data-band="filing" role="status"><span class="cn">${name}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></span>`;
+    if (band === 'unsorted')
+      return `<span class="chip" data-band="unsorted"><button class="cn" aria-haspopup="dialog" title="Pick a thread">${name}${I.down}</button></span>`;
     const lead = band === 'new' ? '<span class="new">New</span>' : '';
-    const tail = ['unsure', 'new', 'unsorted'].includes(band) ? I.down : '';
-    const dots = band === 'filing' ? '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>' : '';
-    const dis = band === 'filing' ? ' aria-disabled="true"' : ' aria-haspopup="menu"';
-    return `<button class="chip" data-band="${band}"${dis} ${extra}>${lead}<span>${name}</span>${dots}${tail}</button>`;
+    return `<span class="chip" data-band="${band}"><button class="cn" title="Open ${name}">${lead}<span>${name}</span></button><button class="cm" aria-label="${name}: options" aria-haspopup="menu" title="Move, also file" ${extra}>${I.down}</button></span>`;
   };
   const you = (text, chips, time, opts = {}) => `
-    <li class="turn" data-who="you">
+    <li class="turn${opts.arrived ? ' arrived-turn' : ''}" data-who="you">
+      ${opts.arrived ? `<p class="arrived">${opts.arrived}</p>` : ''}
       <div class="who">You${opts.tag ? ` <span class="tag">${opts.tag}</span>` : ''}<time>${time}</time></div>
       <div class="text${opts.md ? ' md' : ''}">${text}</div>
       ${chips || opts.menu ? `<div class="chips" style="position:relative">${chips}${opts.menu ?? ''}</div>` : ''}
@@ -76,11 +81,12 @@
     </li>`;
   const ctx = (...names) =>
     names.map((n) => (n.endsWith(' card') ? `<a href="#">${n.slice(0, -5)}</a><span class="card">(card)</span>` : `<a href="#">${n}</a>`)).join('<span>·</span>');
+  // Related: one line in the context line's type, the thread as a chip. + files there too; × dismisses.
   const related = `
-    <div class="related" role="group" aria-label="Related thread">
-      <p>Related: <b>Laptop upgrade</b></p>
-      <span class="acts"><button class="quiet">File there too</button><button>Dismiss</button></span>
-    </div>`;
+    <p class="related" role="group" aria-label="Related thread">
+      <span>Related</span>
+      <span class="chip" data-band="related"><button class="cn" title="File there too">${I.plus}<span>Laptop upgrade</span></button><button class="cm" aria-label="Dismiss" title="Dismiss">${I.close}</button></span>
+    </p>`;
 
   const head = (title, { back, list = true, full = true, close = true, sugg = 0, more = false, expanded = false } = {}) => `
     <div class="head">
@@ -93,20 +99,26 @@
       ${close ? `<button class="icon" aria-label="Close" title="Close · Esc">${I.close}</button>` : ''}
     </div>`;
 
-  const composer = ({ draft = '', status = '', err = '', capture = false, placeholder = 'Message · > or Mod+U to capture', send = 'Send', note = '' } = {}) => `
+  // Capture mode: a leading > or Mod+U (keyboard), or the Capture toggle beside Send (always on a phone,
+  // where there is no Mod+U and typing > is awkward). The pill's × leaves the mode with the text kept.
+  const composer = ({ draft = '', status = '', err = '', capture = false, placeholder, send = 'Send', note = '' } = {}) => {
+    const ph = placeholder ?? (phone ? 'Message' : 'Message · > or Mod+U to capture');
+    return `
     <form class="composer${capture ? ' capture' : ''}" onsubmit="return false">
       <label class="sr" for="draft">${capture ? 'Capture' : 'Message'}</label>
       <div class="field">
-        ${capture ? `<span class="pill">${I.capture}Capture</span>` : ''}
-        <textarea id="draft" rows="3" placeholder="${placeholder.replace('Mod+', mod)}">${draft}</textarea>
+        ${capture ? `<span class="pill">${I.capture}Capture<button class="px" aria-label="Leave capture" title="Leave capture${phone ? '' : ` · ${mod}U`}">${I.close}</button></span>` : ''}
+        <textarea id="draft" rows="3" placeholder="${ph.replace('Mod+', mod)}">${draft}</textarea>
       </div>
       ${note ? `<p class="note">${note}</p>` : ''}
       ${err ? `<p class="err" role="alert">${err}</p>` : ''}
       <div class="row">
-        <span class="status">${capture ? `No reply. ${kbd('Mod+U')} or Backspace to leave capture.` : status}</span><span class="gap"></span>
+        <span class="status">${capture ? '' : status}</span><span class="gap"></span>
+        ${phone ? `<button class="captog" aria-pressed="${capture}" title="Capture">${I.capture}<span>Capture</span></button>` : ''}
         <button class="primary">${capture ? 'Capture' : send}</button>
       </div>
     </form>`;
+  };
 
   // ---------- chat turns ----------
   const t1 = you('What is left on the kitchen? I think the worktop quote came back.', chip('sure', 'Kitchen budget'), '10:02');
@@ -123,7 +135,7 @@
     related,
   );
   const t3 = (menu = '') =>
-    you('Need a quote for a garden shed base, about 3 by 2 metres.', chip('new', 'Garden shed', menu ? 'aria-expanded="true"' : ''), '10:09', { menu });
+    you('Need a quote for a garden shed base, about 3 by 2 metres.', chip('new', 'Garden shed', `aria-expanded="${menu ? 'true' : 'false'}"`), '10:09', { menu });
   const r3 = claude('<p>A 3 by 2 metre concrete base is about 0.6 cubic metres at 100 mm deep. Want me to draft a request for quotes?</p>', ctx('Garden shed'), '10:09');
 
   const chatMenu = `
@@ -160,7 +172,7 @@
       ${group('Active', active, open.active, (r) => listRow(r, r[0] === current))}
       ${group('Inactive', inactive, open.inactive, (r) => listRow(r, r[0] === current))}
       ${group('Archived', archived, open.archived, (r) => listRow(r, r[0] === current), 'arch')}
-      ${open.archived ? '<p class="empty-list">Archived threads take no new messages by themselves. Open one to unarchive it.</p>' : ''}
+      ${open.archived ? '<p class="empty-list">Open one to unarchive it.</p>' : ''}
     </div>`;
 
   // The canvas outline: threads replace Sessions. Groups collapse; Sessions keeps a collapsed row at the end.
@@ -188,15 +200,33 @@
         <div class="proposal"><p class="pk">Split</p><p>Last 9 messages are about the <b>hob circuit</b>.</p><div class="acts"><button class="quiet">Review</button><button>Not now</button></div></div>
       </div>
     </section>`;
+  // Full view's Details column keeps the open To do list.
   const todo = (open) => `
     <details class="todo"${open ? ' open' : ''}>
-      <summary>${I.down}<span>To do</span><span class="num">2</span><span class="hint">Tasks and captures still open in this thread</span></summary>
-      <ul class="items">
-        <li><input type="checkbox" aria-label="Done"><span>Choose the tap</span></li>
-        <li><input type="checkbox" aria-label="Done"><span>Book the electrician for the hob circuit <span class="from">capture</span></span></li>
-        <li class="additem"><button>${I.plus}Add</button></li>
-      </ul>
+      <summary>${I.down}<span>To do</span><span class="num">3</span></summary>
+      ${items}
     </details>`;
+  const items = `
+      <ul class="items">
+        <li class="fresh"><input type="checkbox" aria-label="Done"><span>Ask for a second worktop quote <span class="from">capture</span></span></li>
+        <li><input type="checkbox" aria-label="Done"><span>Choose the tap</span></li>
+        <li><input type="checkbox" aria-label="Done"><span>Book the electrician for the hob circuit</span></li>
+        <li class="additem"><button>${I.plus}Add</button></li>
+      </ul>`;
+  const summaryText = 'Renovation capped at 18k. Cabinets ordered and paid. Worktop quote in at 2,350, leaving 1,120. The electrician needs a separate circuit for the hob.';
+  // Summary and To do: two toggles on one row, each opening its own panel under it. Collapsed, the
+  // pair costs one row. Both close quietly when the person starts writing in the thread. A new To do
+  // item puts a dot on the To do toggle until it is opened.
+  const pinned = ({ sum = true, todo: todoOpen = false, fresh = true, down = false } = {}) => `
+    <div class="pinned">
+      <div class="ptog">
+        <button class="tg" aria-expanded="${sum}" aria-controls="sumpanel">${I.down}<span>Summary</span></button>
+        <button class="tg" aria-expanded="${todoOpen}" aria-controls="todopanel">${I.down}<span>To do</span><span class="num">3</span>${fresh && !todoOpen ? `<span class="dot" title="1 new"></span><span class="sr">1 new</span>` : ''}</button>
+      </div>
+      ${sum ? `<div id="sumpanel" class="ppanel"><p class="summary clamp">${summaryText}</p><p class="ver">${down ? 'Saved copy from 10:02' : 'v6 · 10:02 · <a href="#">Edit</a> · <a href="#">History</a>'}</p></div>` : ''}
+      ${todoOpen ? `<div id="todopanel" class="ppanel">${items}</div>` : ''}
+    </div>`;
+  const moved = you('Ask the worktop firm for a second quote, the first felt high.', '', 'Tue', { tag: 'Capture', arrived: 'From Chat' });
   const threadTurns = [
     you('Did the cabinet delivery date move?', '', '09:40'),
     claude('<p>No, still Thursday. They confirmed by email on Monday.</p>', '', '09:40'),
@@ -204,21 +234,20 @@
     you('What is left on the kitchen? I think the worktop quote came back.', '', '10:02'),
     claude('<p>The worktop quote came in at 2,350, which leaves 1,120 under the 18k cap. Still open: the tap and the electrician.</p>', '', '10:02'),
   ];
-  const threadView = ({ undo = false, sugg = false, todoOpen = true, down = false, inFull = false, draft = '' } = {}) => `
+  // The history is one windowed list: older pages load as the person scrolls up, with no button.
+  // Messages that arrived by a move, an add or a merge since the person last had the thread open
+  // carry a "From …" line, and a marker over the list jumps to them.
+  const threadView = ({ undo = false, sugg = false, sum = true, todoOpen = false, fresh = true, arrivals = false, down = false, inFull = false, draft = '' } = {}) => `
     ${inFull ? '' : head('Kitchen budget', { back: 'Threads', list: false, sugg: down ? 0 : 3, more: !down, expanded: sugg })}
     ${down ? '<div class="strip warn" role="status">Chat is down. Messages here go straight to this thread and are filed when it is back.</div>' : ''}
     ${sugg ? suggestions : ''}
-    <div class="pinned">
-      <p class="summary clamp">Renovation capped at 18k. Cabinets ordered and paid. Worktop quote in at 2,350, leaving 1,120. The electrician needs a separate circuit for the hob.</p>
-      <p class="ver">${down ? 'Saved copy from 10:02' : 'Summary v6 · 10:02 · <a href="#">Edit</a> · <a href="#">History</a>'}</p>
-      ${todo(todoOpen)}
-    </div>
+    ${pinned({ sum, todo: todoOpen, fresh, down })}
+    ${arrivals ? `<div class="arrbar" role="status"><span>1 added since you were here</span><button>Show</button></div>` : ''}
     <div class="body latest">
-      <p class="earlier"><a href="#">Earlier messages</a> <span class="num">33</span></p>
-      <ol class="turns compact">${threadTurns.join('')}</ol>
+      <ol class="turns compact">${(arrivals || undo ? [threadTurns[0], threadTurns[1], moved, ...threadTurns.slice(2)] : threadTurns).join('')}</ol>
     </div>
-    ${undo ? `<div class="notice" role="status"><span>Moved 1 message here.</span><button>Undo</button></div>` : ''}
-    ${composer({ placeholder: 'Message Kitchen budget', draft, note: down ? 'Pasted from Chat.' : '' })}`;
+    ${undo ? `<div class="notice" role="status"><span>Moved 1 message here</span><button>Show</button><button>Undo</button></div>` : ''}
+    ${composer({ placeholder: phone ? 'Message Kitchen budget' : 'Message Kitchen budget · Mod+U to capture', draft, note: down ? 'Pasted from Chat.' : '' })}`;
 
   // ---------- states ----------
   const views = {
@@ -262,13 +291,13 @@
         <div class="picks"><button class="quiet">Kitchen budget</button><button class="quiet">Conference talk</button><button class="quiet">Garden shed</button><button>All threads</button></div>
       </div>` +
       composer({ draft: 'Remind me what the tap shortlist was.', send: 'Retry' }),
-    'unavailable-thread': () => threadView({ down: true, todoOpen: false, draft: 'Remind me what the tap shortlist was.' }),
+    'unavailable-thread': () => threadView({ down: true, sum: false, fresh: false, draft: 'Remind me what the tap shortlist was.' }),
     empty: () =>
       head('Chat') +
       `<div class="body"><div class="empty">
         <h2>One chat for everything</h2>
         <p>Write about anything. Each message is filed to a thread, shown under it. Tap that to move it.</p>
-        <p>Start with <code>&gt;</code> or press ${kbd('Mod+U')} to capture a thought with no reply.</p>
+        <p>${phone ? 'Tap Capture to save a thought with no reply.' : `Start with <code>&gt;</code> or press ${kbd('Mod+U')} to capture a thought with no reply.`}</p>
       </div></div>` +
       composer(),
     bootstrap: () =>
@@ -281,9 +310,9 @@
       composer(),
     topics: () => head('Threads', { back: 'Chat', list: false }) + threadList({ unsorted: true }),
     archived: () => head('Threads', { back: 'Chat', list: false }) + threadList({ open: { active: 0, inactive: 0, archived: 1 } }),
-    topic: () => threadView({ undo: true }),
-    'topic-suggestions': () => threadView({ sugg: true, todoOpen: false }),
-    outline: () => threadView({ todoOpen: false }),
+    topic: () => threadView({ arrivals: true }),
+    'topic-suggestions': () => threadView({ sugg: true, sum: false, fresh: false }),
+    outline: () => threadView({ sum: false, fresh: false }),
   };
 
   // ---------- full view explorations (desktop) ----------
@@ -325,7 +354,7 @@
              <div class="pin-input"><textarea rows="2" placeholder="Ask anything · > to capture">Book the shed base quotes for next week</textarea><button class="primary">Send</button></div>
              <p class="pfoot">Files to a thread on its own. ${kbd('Enter')} send · ${kbd('Mod+Enter')} send and open the thread · ${kbd('Esc')} close</p>`
           : `<div class="pin-input"><div class="field"><span class="pill">${I.capture}Capture</span><textarea rows="3">bring the tile offcuts to the garage\n> Sam said the grey ones are spare</textarea></div><button class="primary">Capture</button></div>
-             <p class="pfoot">No reply. Filed to a thread on its own. Your focus stays where it was.</p>
+             <p class="pfoot">Files to a thread on its own. Focus stays put.</p>
              <div class="recent"><p class="lbl">Recent captures</p>
                <p>buy stamps for the council letter ${chip('sure', 'Errands')}<time>10:14</time></p>
                <p>The base must sit 150 mm clear… ${chip('sure', 'Garden shed')}<time>10:13</time></p>
@@ -357,7 +386,7 @@
     // D: threads only in the full view; the main chat is a palette on Mod+K.
     'full-d': () => `<div class="full d">${sideList('Kitchen budget', false)}${fullConvo('Kitchen budget', threadTurnsFull, 'Message Kitchen budget')}${details}</div>${palette('chat')}`,
     // E: capture palette over whatever has focus (here the canvas board with a thread in the rail).
-    'full-e': () => `<div class="board">${outline()}<div class="ghost" style="left:300px;top:90px;width:300px;height:200px"></div><div class="ghost" style="left:640px;top:140px;width:180px;height:260px"></div></div><aside class="rail" aria-label="Chat">${threadView({ todoOpen: false })}</aside>${palette('capture')}`,
+    'full-e': () => `<div class="board">${outline()}<div class="ghost" style="left:300px;top:90px;width:300px;height:200px"></div><div class="ghost" style="left:640px;top:140px;width:180px;height:260px"></div></div><aside class="rail" aria-label="Chat">${threadView({ sum: false, fresh: false })}</aside>${palette('capture')}`,
   };
 
   const app = document.getElementById('app');

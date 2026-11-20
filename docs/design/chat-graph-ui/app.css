@@ -427,3 +427,87 @@ kbd { border: 1px solid var(--divider); border-radius: 2px; padding: 0 4px; colo
 .side .grp > summary { margin: 0; }
 .details .todo .hint { display: none; }
 .details .todo > summary span:nth-child(2) { white-space: nowrap; }
+
+/* ======================= Revision 3 ======================= */
+
+/* ---------- Chip as a split button: the name opens the thread, the chevron opens the menu ---------- */
+.chip { display: inline-flex; align-items: stretch; padding: 0; gap: 0; }
+.chip::after { content: none; }
+.chip > button {
+  min-height: 0; padding: 0 8px; border: 0; border-radius: 0; background: transparent; color: inherit;
+  font-size: 12px; gap: 5px; position: relative;
+}
+.chip > button:first-child { border-radius: 12px 0 0 12px; }
+.chip > button:last-child { border-radius: 0 12px 12px 0; }
+.chip > button:only-child { border-radius: 12px; }
+.chip > button::after { content: ''; position: absolute; inset: -4px 0; } /* 32px hit height */
+.chip > button:hover { background: var(--raised); }
+.chip .cm { padding: 0 6px 0 4px; border-left: 1px solid var(--divider); color: var(--secondary); }
+.chip .cm svg { width: 12px; height: 12px; }
+.chip .cm[aria-expanded='true'] { background: var(--raised); color: var(--text); outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip > span.cn { padding: 0 6px 0 8px; display: inline-flex; align-items: center; }
+.chip .dots { display: inline-flex; align-items: center; padding-right: 8px; }
+/* above 0.8: quiet; the chevron shows on hover or focus, and always on touch */
+.chip[data-band='sure'] { border-color: transparent; padding-left: 0; }
+.chip[data-band='sure'] .cn { padding-left: 2px; }
+.chip[data-band='sure'] .cm { border-left-color: transparent; opacity: 0; }
+.chip[data-band='sure']:hover, .chip[data-band='sure']:focus-within { border-color: var(--divider); }
+.chip[data-band='sure']:hover .cm, .chip[data-band='sure']:focus-within .cm { opacity: 1; border-left-color: var(--divider); }
+@media (hover: none) { .chip[data-band='sure'] .cm { opacity: 1; } }
+.chip[data-band='unsure'] .cm { border-left-color: color-mix(in srgb, var(--accent) 50%, var(--divider)); color: var(--accent); }
+.chip[data-band='new'] .cm { border-left-color: var(--divider); }
+.chip[data-band='unsorted'] .cn svg { width: 12px; height: 12px; color: var(--accent); }
+/* Related: the same chip, dashed (a suggestion, not a membership) */
+.chip[data-band='related'] { border-style: dashed; color: var(--secondary); }
+.chip[data-band='related'] .cn svg { width: 12px; height: 12px; }
+
+/* ---------- Related: one line in the context line's type ---------- */
+.related {
+  margin: 6px 0 0; padding: 0; border: 0; border-radius: 0; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted);
+}
+.related p { flex: none; }
+
+/* ---------- Composer: leave capture from the pill; a Capture toggle on phones ---------- */
+.pill .px { min-height: 0; width: 18px; height: 18px; padding: 0; margin: 0 -4px 0 2px; justify-content: center; border-radius: 9px; color: var(--secondary); pointer-events: auto; }
+.pill .px svg { width: 10px; height: 10px; }
+.captog { color: var(--secondary); border-color: var(--divider); }
+.captog svg { width: 14px; height: 14px; }
+.captog[aria-pressed='true'] { background: var(--raised); color: var(--text); border-color: var(--secondary); }
+.captog[aria-pressed='true'] svg { color: var(--accent); }
+
+/* ---------- Thread view: Summary and To do collapse independently ---------- */
+.pinned { padding: 4px 12px 4px; }
+.ptog { display: flex; gap: 2px; }
+.tg { min-height: 28px; padding: 0 8px 0 4px; font-size: 12px; color: var(--secondary); }
+.tg svg { width: 12px; height: 12px; transform: rotate(-90deg); }
+.tg[aria-expanded='true'] { color: var(--text); }
+.tg[aria-expanded='true'] svg { transform: none; }
+.tg .num { color: var(--muted); }
+.dot { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); display: inline-block; }
+.ppanel { padding: 2px 4px 8px 22px; }
+.ppanel .summary { font-size: 13px; }
+.ppanel .items { padding-left: 0; }
+.items li.fresh > span:first-of-type { font-weight: 500; }
+
+/* ---------- Arrivals: messages moved, added or merged in since the last visit ---------- */
+.arrbar { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 2px 12px 2px 16px; border-bottom: 1px solid var(--divider); font-size: 12px; color: var(--secondary); }
+.arrbar span { flex: 1; }
+.arrbar button { min-height: 28px; font-size: 12px; color: var(--accent); }
+.arrived { font-size: 12px; color: var(--secondary); margin-bottom: 2px; }
+.turn.arrived-turn { background: color-mix(in srgb, var(--accent) 6%, transparent); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: 6px; border-top-color: transparent; }
+.notice button { padding: 0 6px; }
+
+@media (max-width: 720px) {
+  .chip > button { min-height: 32px; }
+  .chip > button::after { inset: -6px 0; }
+  .chip .cm { padding: 0 10px 0 8px; }
+  .chip > button:first-child { border-radius: 16px 0 0 16px; }
+  .chip > button:last-child { border-radius: 0 16px 16px 0; }
+  .chip > button:only-child { border-radius: 16px; }
+  .pill .px { width: 28px; height: 28px; border-radius: 14px; margin-right: -6px; }
+  .pill { height: 30px; border-radius: 15px; }
+  .composer.capture .field textarea { padding-top: 42px; }
+  .tg { min-height: 44px; }
+  .arrbar button { min-height: 44px; }
+}
