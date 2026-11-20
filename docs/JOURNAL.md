@@ -11,6 +11,24 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 The Chat Graph full view is 8D, which shows threads only. The main chat and capture are a one-row palette (`Mod+K` Chat, `Mod+U` Capture, `Mod+P` Commands) that opens anywhere in the canvas app except the classic Codeman views (U11). PRODUCT.md, which rejected floating chat surfaces, now names this palette as its one exception: one row, opened by key, no transcript, no scrim. Layouts 8A to 8C are not built.
 
+## 2026-11-19 — In progress always has an owner, on the server (W-70 ticket 1)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/work.ts`, `src/canvas/routines.ts`, `src/web/routine-runner.ts`, `src/web/routes/canvas-task-routes.ts`, `src/web/server.ts`, `src/mcp-server.ts`, `CLAUDE.md`, `docs/subsystem-rules.md`, `docs/architecture-invariants.md`
+**Why:** Items sat In progress with nobody working on them (W-61, W-56, W-66, W-22). The spec makes the owner a rule the server keeps.
+**Links:** [intent/2026-11-18-w70-in-progress-owner.md](../intent/2026-11-18-w70-in-progress-owner.md)
+
+I1 to I7 are built as specified, with three choices the spec's wording left open. A report that leaves an unowned item In progress assigns the reporter instead of refusing the report, since only an item written before this release can be unowned and refusing would lose the agent's note. A claiming work-item trigger also skips an item released twice in a row before it starts a run (`dueWorkItem()`), because `claim()` runs after the start and its refusal alone would still spend a third run. A run's task state is ignored while its session reads `unknown`, because the task list reads every session as gone until the boot's restore finishes.
+
+## 2026-11-19 — Reviews read a changed Markdown file rendered, and notes anchor to its words
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/review-git.ts`, `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.{js,css}`, `docs/api-reference.md`, `test/review-markdown-doc.test.ts`, `test/review-markdown-doc.browser.test.ts`
+**Why:** Specs and plans arrive as Markdown, and the page showed them only as a line diff, so the owner could not read the document or annotate it Plannotator-style.
+**Links:** [intent/2026-11-19-review-markdown-notes.md](../intent/2026-11-19-review-markdown-notes.md)
+
+Changes opens a changed `.md` file rendered, with changed blocks marked in the margin and a Rendered / Diff switch. Selected words become a note of the new anchor kind `doc` (path + quote with context), which is an ordinary review note: listed, resolved by a person, sent with the others on Request changes. Decision (owner): one plain note kind rather than Comment / Replace / Delete, so a rendered-doc note reads and travels exactly like a walkthrough note. The file text comes from a new read-only route that reads the blob by sha and serves Markdown only. Rejected: rendering the diff itself (raw Markdown hunks do not render as a document), and anchoring to source line numbers (they move with every revision, while quote + context finds the words again).
+
 ## 2026-11-19 — A dead session no longer blocks a deploy
 
 **Type:** propagated-discovery
@@ -28,6 +46,15 @@ A session the new colour does not list now passes only when the live colour's `m
 **Links:** Work item W-4
 
 The health-check timeout and the reverse proxy are ticked, each citing the key in `/etc/codeman-supervisor/config.json` that sets it: 90 seconds (`limits.healthTimeoutSeconds`) and Caddy (`proxy.upstreamFile`, `proxy.reloadCommand`). Recording what was built is taken as agreeing the default; the owner can overrule it in review. The nightly off-server copy stays open: backups stay on the VM, and the proposal under it needs the owner. The other three open questions are untouched.
+
+## 2026-11-18 — Agents read Work item attachments through MCP, client-side
+
+**Type:** intent-refinement
+**Touches:** `src/mcp-server.ts`, `src/cli-agent.ts`
+**Why:** `canvas_work read` listed attachments, but an agent could not read their bytes.
+**Links:** Work item W-61, [intent/2026-11-18-w61-work-attachment-mcp.md](../intent/2026-11-18-w61-work-attachment-mcp.md)
+
+The read is a separate MCP tool, `canvas_work_attachment`, rather than a new `canvas_work` action. `canvas_work`'s schema is shared with the HTTP command route, which returns JSON only, so an action there would be handled on one side and refused on the other. The new tool calls the existing attachment route like `canvas_screenshot` calls its route, so the server is unchanged. Images up to 5 MiB of base64 and text come back inline. Every other type, and any larger image, is saved to a new absolute `path` the agent chooses, because a PDF or an Office file is only useful to the agent's own file tools.
 
 ## 2026-11-18 — Deleted Work items on the server (W-22 ticket 1)
 

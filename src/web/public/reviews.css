@@ -925,6 +925,153 @@ textarea {
   display: none;
 }
 
+/* ---------- a changed Markdown file, read rendered ---------- */
+.rv-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.rv-doc-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rv-doc-key {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  font:
+    500 11px system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+.rv-doc-key::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--green);
+}
+.rv-seg-sm button {
+  min-height: 26px;
+  padding: 2px 10px;
+  font:
+    600 12px system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+.rv-docview {
+  padding: 28px 40px 96px 48px;
+}
+.rv-doc-md {
+  max-width: 72ch;
+}
+.rv-doc-md ::selection {
+  background: rgba(56, 182, 240, 0.34);
+  color: var(--text);
+}
+.rv-blk {
+  position: relative;
+}
+/* The bar sits in the gutter, so the text keeps its own measure whether or not the block changed. */
+.rv-blk::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 13px;
+  left: -22px;
+  width: 3px;
+  border-radius: 2px;
+}
+.rv-blk-changed::before {
+  background: var(--green);
+}
+.rv-blk-target {
+  background: rgba(56, 182, 240, 0.08);
+  box-shadow:
+    -14px 0 0 rgba(56, 182, 240, 0.08),
+    14px 0 0 rgba(56, 182, 240, 0.08);
+  border-radius: 2px;
+}
+.rv-blk-target::before {
+  background: var(--accent);
+}
+.rv-doc-md .rv-blk + .rv-blk > h1:first-child,
+.rv-doc-md .rv-blk + .rv-blk > h2:first-child {
+  margin-top: 30px;
+}
+.rv-doc-md h3,
+.rv-doc-md h4 {
+  color: var(--text);
+  font-size: 15px;
+}
+.rv-doc-md h5,
+.rv-doc-md h6 {
+  margin: 18px 0 6px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.rv-doc-md blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--border-light);
+  color: var(--text-dim);
+}
+.rv-doc-md hr {
+  margin: 22px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.rv-doc-md table {
+  display: block;
+  max-width: 100%;
+  margin: 0 0 12px;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.rv-doc-md th,
+.rv-doc-md td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.rv-doc-md th {
+  background: var(--bg-card);
+  color: var(--text);
+}
+.rv-doc-md li > p {
+  margin: 0;
+}
+.rv-doc-md a.rv-doc-link {
+  color: var(--text-soft);
+  text-decoration: underline dotted var(--text-muted);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.rv-doc-img {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.rv-doc-plain {
+  white-space: pre-wrap;
+  font: 13px/1.6 var(--mono);
+}
+.rv-mark-flash {
+  background: rgba(240, 194, 90, 0.55);
+  transition: background-color 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 @media (max-width: 1180px) and (min-width: 601px) {
   .rv-queue {
     width: 220px;
@@ -1039,6 +1186,18 @@ textarea {
   }
   .rv-seg {
     display: none;
+  }
+  .rv-seg.rv-seg-sm {
+    display: flex;
+  }
+  .rv-doc-key {
+    display: none;
+  }
+  .rv-docview {
+    padding: 20px 16px 64px 26px;
+  }
+  .rv-blk::before {
+    left: -14px;
   }
   .rv-panes {
     position: fixed;

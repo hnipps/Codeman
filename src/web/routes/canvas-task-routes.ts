@@ -239,7 +239,7 @@ async function leftBehind(
 }
 
 /**
- * The task list. `brief` is what a closed list needs for its count: each task's id and state and nothing read from a
+ * The task list. `brief` is what a closed list needs for its count: each task's id, state and session and nothing read from a
  * transcript beyond what settling a state already needs, so it is cheap to ask on every session event.
  */
 export async function listTasks(
@@ -262,6 +262,7 @@ export async function listTasks(
         name: task.name,
         createdAt: c.createdAt,
         state: taskStateOf(ctx, c, !session || canAccessOwned(user, session.owner)) ?? 'failed',
+        sessionId: c.sessionId,
         ...(startedBy(c) ? { startedBy: startedBy(c) } : {}),
       };
     });

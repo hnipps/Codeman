@@ -8,6 +8,7 @@
  *   GET    /api/reviews/:id                      one review, with whether its author session still runs
  *   GET    /api/reviews/:id/changes              the files the branch changes against its base
  *   GET    /api/reviews/:id/diff?path=           one of those files' diff
+ *   GET    /api/reviews/:id/file?path=           one changed Markdown file as the branch tip has it, to read rendered
  *   POST   /api/reviews/:id/notes                a PERSON adds a note { at, text }
  *   PATCH  /api/reviews/:id/notes/:noteId        a PERSON edits or resolves a note { text?, resolved? }
  *   DELETE /api/reviews/:id/notes/:noteId        a PERSON deletes an unsent note
@@ -55,6 +56,9 @@ import {
   repoFacts,
   reviewChanges,
   reviewFileDiff,
+  reviewFileText,
+  isReviewDoc,
+  MAX_REVIEW_DOC_BYTES,
   SHA,
   tryGit,
   headOf,
@@ -81,6 +85,8 @@ import {
   cleanLine,
   closeReview,
   decide,
+  reopenReview,
+  supersededCandidates,
   handOver,
   handoverPrompt,
   isDecided,
@@ -531,6 +537,32 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     return { success: true, data: { path: file.path, origPath: file.origPath, ...diff } };
   });
 
+  app.get<{ Params: { id: string } }>('/api/reviews/:id/file', async (req, reply) => {
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const { path } = parseBody(DiffQuerySchema, req.query);
+    // Markdown only: the page renders it through the one sanitizer. Any other file stays a diff.
+    if (!isReviewDoc(path))
+      return fail(reply, 400, ApiErrorCode.INVALID_INPUT, 'Only a Markdown file is shown rendered');
+    const refusal = await gitRefusal(authorSession(review), review.repoRoot);
+    if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
+    // The path is a key into the branch's own file list, never a path the browser chose.
+    const file = (await changesOf(review)).files.find((f) => f.path === path);
+    if (!file) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'That file is not part of this review');
+    const read = await reviewFileText(review.repoRoot, review.base, headOf(review), file);
+    if (!read) return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'The branch is gone');
+    if (read.kind === 'absent')
+      return fail(reply, 404, ApiErrorCode.NOT_FOUND, 'This branch deletes the file, so there is nothing to render');
+    if (read.kind === 'too-large')
+      return fail(
+        reply,
+        400,
+        ApiErrorCode.INVALID_INPUT,
+        `The file is too large to render (${Math.ceil(read.bytes / 1024)} KiB; the limit is ${MAX_REVIEW_DOC_BYTES / 1024} KiB)`
+      );
+    return { success: true, data: { path: file.path, text: read.text, headSha: read.headSha } };
+  });
+
   const noteStatus = (code: string): [number, ApiErrorCode] =>
     code === 'NOT_FOUND' ? [404, ApiErrorCode.NOT_FOUND] : [409, ApiErrorCode.CONFLICT];
 
@@ -634,6 +666,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const mergedSha = merged.mergedSha;
     const first = changeReview(review.id, (r) => decide(r, { kind: 'merged', at: Date.now(), mergedSha }));
     let latest = first.ok ? first.review : review;
+    const closedOthers = await closeSuperseded(review, mergedSha);
     workReviews.accepted(latest, mergedSha, personAuthor(req));
     if (deploys) {
       const decision = await askForDeploy(mergedSha);
@@ -649,9 +682,32 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       data: {
         review: toView(latest),
         merge: { pushed: merged.pushed, localMoved: merged.localMoved, already: merged.already },
+        closedOthers,
       },
     };
   });
+
+  /**
+   * After a merge, closes the other open reviews of the same branch whose head the merge already holds: duplicates of
+   * the work just approved (two sessions, or a resubmission that opened a second review). One with commits the merge
+   * does not contain stays open. Each records the review that closed it. Returns the ids closed.
+   */
+  const closeSuperseded = async (approved: Review, mergedSha: string): Promise<string[]> => {
+    const closed: string[] = [];
+    for (const other of supersededCandidates(listReviews(), approved)) {
+      const contained =
+        SHA.test(other.headSha) &&
+        (await tryGit(runGit, approved.repoRoot, ['merge-base', '--is-ancestor', other.headSha, mergedSha])) !== null;
+      if (!contained) continue;
+      const changed = changeReview(other.id, (r) => closeReview(r, Date.now(), approved.id));
+      if (!changed.ok) continue;
+      closed.push(other.id);
+      changesCache.delete(other.id);
+      announce(changed.review);
+      syncLive({ ...changed.review, headSha: '' }, other.headSha, false);
+    }
+    return closed;
+  };
 
   /**
    * Close without merging, for a duplicate or work nobody wants any more. Only a person closes, and only a review
@@ -668,6 +724,29 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     announce(changed.review);
     // No commit is the review's any more, so its preview, if there is one, is the one that goes.
     syncLive({ ...changed.review, headSha: '' }, review.headSha, false);
+    return { success: true, data: { review: toView(changed.review) } };
+  });
+
+  /**
+   * Reopen a closed review: it waits again with its notes. Refused while another review of the same branch in the
+   * same repository is open, which would put the same work in the queue twice.
+   */
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/reopen', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const all = listReviews();
+    const twin = all.find(
+      (r) => r.id !== review.id && isOpen(r) && r.repoRoot === review.repoRoot && r.branch === review.branch
+    );
+    if (twin)
+      return fail(reply, 409, ApiErrorCode.CONFLICT, `OPEN: review ${twin.id} of ${review.branch} is already open`);
+    if (all.filter((r) => isOpen(r) && r.owner === review.owner).length >= MAX_OPEN_REVIEWS)
+      return fail(reply, 409, ApiErrorCode.CONFLICT, 'FULL: too many reviews are waiting; decide some first');
+    const changed = changeReview(review.id, (r) => reopenReview(r));
+    if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
+    changesCache.delete(review.id);
+    announce(changed.review);
     return { success: true, data: { review: toView(changed.review) } };
   });
 

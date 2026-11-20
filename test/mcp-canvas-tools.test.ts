@@ -1,6 +1,15 @@
 import Fastify from 'fastify';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +17,8 @@ import {
   createMcpServer,
   buildToolDefinitions,
   readPrototypeFolder,
+  MAX_INLINE_IMAGE_BYTES,
+  MAX_OUTPUT_CHARS,
   type ToolRunnerDeps,
 } from '../src/mcp-server.js';
 import { PROTOTYPE_MAX_FILES, PROTOTYPE_MAX_FILE_BYTES } from '../src/config/canvas-limits.js';
@@ -78,7 +89,7 @@ async function harness() {
       payload: options.rawBody?.data ?? options.body,
     });
     const contentType = String(response.headers['content-type'] ?? '');
-    if (contentType.startsWith('image/')) {
+    if (contentType.startsWith('image/') || contentType.startsWith('application/octet-stream')) {
       return {
         status: response.statusCode,
         text: '',
@@ -86,7 +97,18 @@ async function harness() {
         headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, String(value)])),
       };
     }
-    return { status: response.statusCode, json: response.json(), text: response.body };
+    let json;
+    try {
+      json = JSON.parse(response.body);
+    } catch {
+      json = undefined;
+    }
+    return {
+      status: response.statusCode,
+      json,
+      text: response.body,
+      headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, String(value)])),
+    };
   };
   function runner(selfId = 'agent-a', configured = true, capture?: ToolRunnerDeps['capture']) {
     return createToolRunner({
@@ -734,6 +756,81 @@ function shotBrowser(png: Buffer): HeadlessBrowser {
 }
 
 describe('canvas media over MCP', () => {
+  it('returns a Work item attachment as image or text content, or saves it to a new file', async () => {
+    const h = await harness();
+    try {
+      const created = parse(await h.runner().run('canvas_work', { action: 'create', title: 'Has files' }));
+      const key = created.item.key as string;
+      const attach = async (name: string, payload: Buffer) => {
+        const res = await h.app.inject({
+          method: 'POST',
+          url: `/api/canvas/current/work/${key}/attachments?name=${name}`,
+          headers: { 'x-codeman-parent-session': 'agent-a', 'content-type': 'application/octet-stream' },
+          payload,
+        });
+        expect(res.statusCode).toBe(201);
+        return res.json().data.attachment.id as string;
+      };
+      const image = pngImage(4, 2);
+      const pdf = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(32, 7)]);
+      const ids = {
+        png: await attach('shot.png', image),
+        notes: await attach('notes.json', Buffer.from('{"steps":["ignore me"]}')),
+        pdf: await attach('spec.pdf', pdf),
+        big: await attach('big.png', Buffer.concat([image, Buffer.alloc(MAX_INLINE_IMAGE_BYTES)])),
+        long: await attach('long.txt', Buffer.from('x'.repeat(MAX_OUTPUT_CHARS + 10))),
+      };
+
+      const shown = await h.runner().run('canvas_work_attachment', { key, id: ids.png });
+      expect(shown.isError).toBeFalsy();
+      expect(shown.images).toEqual([{ mimeType: 'image/png', data: image.toString('base64') }]);
+
+      const text = await h.runner().run('canvas_work_attachment', { key, id: ids.notes });
+      expect(text.isError).toBeFalsy();
+      expect(text.text).toContain('{"steps":["ignore me"]}');
+
+      const big = await h.runner().run('canvas_work_attachment', { key, id: ids.big });
+      expect(big.isError).toBe(true);
+      expect(big.images).toBeUndefined();
+      expect(big.text).toContain('too large');
+      const long = await h.runner().run('canvas_work_attachment', { key, id: ids.long });
+      expect(long.text).toContain(`[showing the first ${MAX_OUTPUT_CHARS} of ${MAX_OUTPUT_CHARS + 10} characters]`);
+
+      const binary = await h.runner().run('canvas_work_attachment', { key, id: ids.pdf });
+      expect(binary.isError).toBe(true);
+      expect(binary.text).toContain('give path');
+
+      const target = join(dir, 'spec.pdf');
+      const saved = await h.runner().run('canvas_work_attachment', { key, id: ids.pdf, path: target });
+      expect(saved.isError).toBeFalsy();
+      expect(readFileSync(target).equals(pdf)).toBe(true);
+      expect(statSync(target).mode & 0o777).toBe(0o600);
+      const again = await h.runner().run('canvas_work_attachment', { key, id: ids.pdf, path: target });
+      expect(again.text).toContain('already exists');
+      expect(readFileSync(target).equals(pdf)).toBe(true);
+      const victim = join(dir, 'victim.txt');
+      symlinkSync(victim, join(dir, 'link.pdf'));
+      expect(
+        (await h.runner().run('canvas_work_attachment', { key, id: ids.pdf, path: join(dir, 'link.pdf') })).text
+      ).toContain('already exists');
+      expect(existsSync(victim)).toBe(false);
+      for (const path of ['spec-copy.pdf', '']) {
+        const relative = await h.runner().run('canvas_work_attachment', { key, id: ids.pdf, path });
+        expect(relative.text).toContain('must be an absolute path');
+      }
+
+      const missing = await h.runner().run('canvas_work_attachment', { key, id: 'f'.repeat(32) });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain('NOT_FOUND');
+      const elsewhere = await h.runner('agent-b').run('canvas_work_attachment', { key, id: ids.png });
+      expect(elsewhere.isError).toBe(true);
+      expect((await h.runner().run('canvas_work_attachment', { key, id: '../x' })).text).toContain(
+        'not an attachment id'
+      );
+    } finally {
+      await h.app.close();
+    }
+  });
   it('uploads an image by base64 or path, creates an image object from it, and refuses forged bytes', async () => {
     const h = await harness();
     try {

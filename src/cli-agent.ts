@@ -267,7 +267,7 @@ export interface ApiResponse<T = unknown> {
   /** Parsed envelope, or `undefined` when the body was not JSON (auth guards answer in plain text). */
   json?: ApiEnvelope<T>;
   text: string;
-  /** Present when the response is an image. `text` is empty so a PNG is not decoded as UTF-8. */
+  /** Present when the response is an image or other binary bytes. `text` is empty so they are not decoded as UTF-8. */
   body?: Buffer;
   headers?: Record<string, string>;
 }
@@ -359,7 +359,7 @@ export const httpRequest: ApiRequest = (ctx, options) => {
             else if (Array.isArray(value)) headers[key] = value.join(', ');
           }
           const contentType = headers['content-type'] ?? '';
-          if (contentType.startsWith('image/')) {
+          if (contentType.startsWith('image/') || contentType.startsWith('application/octet-stream')) {
             resolve({ status: res.statusCode ?? 0, text: '', body: raw, headers });
             return;
           }
