@@ -65,6 +65,7 @@ async function harness() {
   });
   registerInternalPrincipal(app);
   const sessions = new Map<string, Record<string, unknown>>();
+  const restore = { done: true };
   const stores = new CanvasStores();
   const started: { headers: Record<string, unknown>; request: Record<string, unknown> }[] = [];
   let counter = 0;
@@ -100,6 +101,7 @@ async function harness() {
     ownerUser: async () => ({ username: 'admin', role: 'admin' }),
     mayAutomate: () => deployRole.allows('automate'),
     announce: (workspaceId, changed) => announceRoutines(port as never, workspaceId, changed),
+    sessionState: (id) => (!restore.done ? 'unknown' : sessions.has(id) ? 'live' : 'gone'),
   });
   port.runRoutine = (workspace: never, routine: never, requestId: string, ignoreGates?: boolean) =>
     runner.runNow(workspace, routine, requestId, ignoreGates);
@@ -160,6 +162,7 @@ async function harness() {
     tasks,
     enable,
     tick,
+    restore,
   };
 }
 
@@ -480,6 +483,65 @@ describe('the schedule', () => {
       await h.app.close();
     }
   });
+  // Invariant I2: EndedRunReleasesItsItem
+  // Invariant I4: RepeatedReleaseAsks
+  it('a run that ends without a report releases its item, a new run claims it, and the second release asks', async () => {
+    const h = await harness();
+    try {
+      expect((await h.call('POST', '/work', { title: 'Build it', status: 'ready-for-work' })).statusCode).toBe(201);
+      await h.create({
+        triggers: [{ kind: 'work-item', status: 'ready-for-work', unassignedOnly: true, claim: true }],
+      });
+      await h.create({
+        title: 'Asks',
+        triggers: [{ kind: 'work-item', status: 'human-required', unassignedOnly: true, claim: true }],
+      });
+      await h.enable('R-1');
+      await h.enable('R-2');
+      const item = async () => (await h.call('GET', '/work')).json().data.items[0] as WorkRow;
+      const cancelNewest = async () => {
+        const [task] = (await h.tasks()).sort((a, b) => b.createdAt - a.createdAt);
+        expect((await h.call('POST', `/tasks/${task!.id}/cancel`, {})).statusCode).toBe(200);
+        return task!;
+      };
+
+      await h.tick(Date.now());
+      const first = (await h.tasks())[0]!;
+      expect(await item()).toMatchObject({ status: 'in-progress', assignee: { sessionId: first.sessionId } });
+
+      // While the restore after a boot is unfinished, nothing is released.
+      await cancelNewest();
+      h.restore.done = false;
+      await h.tick(Date.now());
+      const held = await item();
+      expect(held).toMatchObject({ status: 'in-progress', assignee: { sessionId: first.sessionId } });
+      expect(held.history.some((e) => e.text.startsWith('Released: '))).toBe(false);
+      expect(await h.tasks()).toHaveLength(1);
+      h.restore.done = true;
+
+      await h.tick(Date.now());
+      const tasks = await h.tasks();
+      expect(tasks).toHaveLength(2);
+      const second = tasks.find((t) => t.id !== first.id)!;
+      const reclaimed = await item();
+      expect(reclaimed).toMatchObject({ status: 'in-progress', assignee: { sessionId: second.sessionId } });
+      expect(reclaimed.history.map((e) => e.text)).toContain(`Released: run ${first.requestId} ended without a report`);
+
+      await cancelNewest();
+      await h.tick(Date.now());
+      await h.tick(Date.now());
+      const asked = await item();
+      expect(asked).toMatchObject({
+        status: 'human-required',
+        assignee: null,
+        needs: { question: expect.stringMatching(/^W-1 was released twice: runs /) },
+      });
+      expect(await h.tasks()).toHaveLength(2);
+    } finally {
+      await h.app.close();
+    }
+  });
+
   it('Run now with ignoreGates starts a run the gates would hold', async () => {
     const h = await harness();
     try {

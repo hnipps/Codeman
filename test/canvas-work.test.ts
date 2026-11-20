@@ -12,8 +12,16 @@ import { WebServer } from '../src/web/server.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { resolveCasesDir } from '../src/web/route-helpers.js';
 import {
+  applyRelease,
   attachedBytes,
   attachWork,
+  findWork,
+  openTickets,
+  ownerOf,
+  releaseFor,
+  releasesInARow,
+  workKey,
+  type Owner,
   commentWork,
   CommentWorkSchema,
   createWork,
@@ -1157,5 +1165,247 @@ describe('work items: routes and side file', () => {
     } finally {
       sessions.delete(sessionId);
     }
+  });
+});
+
+describe('In progress has an owner (W-70)', () => {
+  const run = (sessionId: string, state: 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled') =>
+    ({ kind: 'run', sessionId, runId: `run-${sessionId}`, taskId: `task-${sessionId}`, state }) as const;
+  const ok = <T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> => {
+    if (!result.ok) throw new Error((result as unknown as { message: string }).message);
+    return result as Extract<T, { ok: true }>;
+  };
+  const update = (file: WorkFile, n: number, patch: Record<string, unknown>, who = ctx(person, 2000)) =>
+    updateWork(file, n, UpdateWorkSchema.parse(patch), who);
+  /** Claims item `n` as a routine run does: the run's session moves it in, assigned to itself. */
+  const claimAs = (file: WorkFile, n: number, sessionId: string, now: number) =>
+    ok(
+      update(
+        file,
+        n,
+        { status: 'in-progress', assignee: { kind: 'session', sessionId } },
+        { author: { kind: 'agent', sessionId }, now }
+      )
+    ).file;
+  const release = (file: WorkFile, n: number, owner: Owner, now: number) => {
+    const item = findWork(file, n)!;
+    const decided = releaseFor(item, file, owner);
+    if (!decided) return { file, decided };
+    const author =
+      owner.kind === 'run' || owner.kind === 'session'
+        ? { kind: 'agent' as const, sessionId: owner.sessionId }
+        : { kind: 'human' as const, userId: 'admin' };
+    return { file: ok(applyRelease(file, n, decided, owner, item.revision, { author, now })).file, decided };
+  };
+  const unowned = (item: WorkItem, file: WorkFile) =>
+    item.status === 'in-progress' && item.assignee === null && openTickets(file, item).length === 0;
+
+  // Invariant I1: InProgressHasAnOwner
+  it('every write path leaves an In progress item owned: movers are assigned, an unowning write is refused', () => {
+    const byPerson = ok(
+      createWork(emptyWorkFile(), CreateWorkSchema.parse({ title: 'P', status: 'in-progress' }), ctx())
+    );
+    expect(byPerson.item.assignee).toEqual({ kind: 'person' });
+    const byAgent = ok(
+      createWork(byPerson.file, CreateWorkSchema.parse({ title: 'A', status: 'in-progress' }), ctx(agent))
+    );
+    expect(byAgent.item).toMatchObject({
+      assignee: { kind: 'session', sessionId: agent.sessionId },
+      sessions: [agent.sessionId],
+    });
+
+    let file = made(byAgent.file, 'Ready', { status: 'ready-for-work' }).file;
+    const moved = ok(update(file, 3, { status: 'in-progress' }, ctx(agent, 2000)));
+    expect(moved.item.assignee).toEqual({ kind: 'session', sessionId: agent.sessionId });
+    file = moved.file;
+
+    for (const patch of [{ assignee: null }, { unlinkSessions: [agent.sessionId] }]) {
+      const refused = update(file, 3, patch, ctx(agent, 3000));
+      expect(refused, JSON.stringify(patch)).toMatchObject({ ok: false, code: 'INVALID_INPUT' });
+    }
+    expect(ok(update(file, 3, { assignee: null, status: 'ready-for-work' })).item).toMatchObject({
+      status: 'ready-for-work',
+      assignee: null,
+    });
+    expect(ok(update(file, 3, { assignee: { kind: 'person' } })).item.assignee).toEqual({ kind: 'person' });
+
+    // A report that leaves an unowned item In progress assigns the reporter (only a legacy item can be unowned).
+    const legacy = structuredClone(file);
+    findWork(legacy, 3)!.assignee = null;
+    const reported = ok(reportWork(legacy, 3, ReportWorkSchema.parse({ outcome: 'continue', note: 'n' }), ctx(agent)));
+    expect(reported.item.assignee).toEqual({ kind: 'session', sessionId: agent.sessionId });
+
+    for (const f of [byPerson.file, byAgent.file, moved.file, reported.file])
+      for (const item of f.items) expect(unowned(item, f), workKey(item.number)).toBe(false);
+  });
+
+  // Invariant I1: InProgressHasAnOwner
+  it('a parent is owned by its open tickets, and its last ticket closing is moved on by the next release pass', () => {
+    let file = made(emptyWorkFile(), 'Parent', { status: 'in-progress' }).file;
+    file = ok(update(file, 1, { assignee: { kind: 'person' } })).file;
+    file = made(file, 'T1', { createdFrom: 1, status: 'ready-for-work' }).file;
+    file = ok(update(file, 1, { assignee: null })).file;
+    expect(findWork(file, 1)!.assignee).toBeNull();
+    file = ok(update(file, 2, { status: 'done' })).file;
+    expect(unowned(findWork(file, 1)!, file)).toBe(true);
+    const owner = ownerOf(findWork(file, 1)!, file, { run: () => undefined, session: () => 'live' });
+    file = release(file, 1, owner, 5000).file;
+    expect(findWork(file, 1)!.status).toBe('done');
+  });
+
+  // Invariant I2: EndedRunReleasesItsItem
+  it('an ended run releases its item back where it came from, at the top of Ready, unassigned and unlinked', () => {
+    for (const state of ['failed', 'cancelled', 'completed'] as const) {
+      let file = made(emptyWorkFile(), 'Other', { status: 'ready-for-work' }).file;
+      file = made(file, 'Claimed', { status: 'ready-for-work' }).file;
+      file = claimAs(file, 2, 'run-s', 2000);
+      const { file: after, decided } = release(file, 2, run('run-s', state), 3000);
+      expect(decided, state).toMatchObject({ to: 'ready-for-work' });
+      const item = findWork(after, 2)!;
+      expect(item).toMatchObject({ status: 'ready-for-work', assignee: null, sessions: [] });
+      expect(workPosition(after, 2)).toBe(1);
+      expect(item.history[0]!.text).toBe('Released: run run-run-s ended without a report');
+    }
+  });
+
+  // Invariant I2: EndedRunReleasesItsItem
+  it('a release with a PR waiting asks; with changes pending it goes back; from a closed status it needs refinement', () => {
+    const pr = { url: 'https://github.com/o/r/pull/9', branch: 'build/w-1' };
+    let file = claimAs(made(emptyWorkFile(), 'PR', { status: 'ready-for-work', pr }).file, 1, 'run-s', 2000);
+    let { file: after } = release(file, 1, run('run-s', 'failed'), 3000);
+    expect(findWork(after, 1)).toMatchObject({
+      status: 'human-required',
+      needs: { question: expect.stringContaining(pr.url) },
+    });
+
+    file = structuredClone(file);
+    findWork(file, 1)!.changes = { text: 'fix it', reviewId: 'r', at: 1 };
+    ({ file: after } = release(file, 1, run('run-s', 'failed'), 3000));
+    expect(findWork(after, 1)!.status).toBe('ready-for-work');
+
+    for (const from of ['done', 'not-doing', 'deleted'] as const) {
+      file = made(emptyWorkFile(), 'Closed', { status: 'ready-for-work' }).file;
+      file = ok(update(file, 1, from === 'deleted' ? { status: from, reason: 'dup' } : { status: from })).file;
+      file = ok(update(file, 1, { status: 'in-progress', assignee: { kind: 'session', sessionId: 's-1' } })).file;
+      ({ file: after } = release(file, 1, { kind: 'session', sessionId: 's-1', state: 'exited' }, 3000));
+      expect(findWork(after, 1)!.status, from).toBe('needs-refinement');
+    }
+    file = made(emptyWorkFile(), 'Born in progress', { status: 'in-progress' }).file;
+    file = ok(update(file, 1, { assignee: { kind: 'session', sessionId: 's-1' } })).file;
+    ({ file: after } = release(file, 1, { kind: 'session', sessionId: 's-1', state: 'gone' }, 3000));
+    expect(findWork(after, 1)!.status).toBe('needs-refinement');
+  });
+
+  // Invariant I3: LiveOwnersAreNeverReleased
+  it('never releases a person, an active run, a live or unknown session, or open tickets', () => {
+    let file = claimAs(made(emptyWorkFile(), 'X', { status: 'ready-for-work' }).file, 1, 's', 2000);
+    file = made(file, 'Ticket', { createdFrom: 1 }).file;
+    const item = findWork(file, 1)!;
+    const live: Owner[] = [
+      { kind: 'person' },
+      run('s', 'queued'),
+      run('s', 'running'),
+      run('s', 'waiting'),
+      { kind: 'session', sessionId: 's', state: 'live' },
+      { kind: 'session', sessionId: 's', state: 'unknown' },
+      { kind: 'tickets', open: [2] },
+    ];
+    for (const owner of live) expect(releaseFor(item, file, owner), JSON.stringify(owner)).toBeNull();
+    // A run whose session the restore has not reached is unknown, never ended.
+    const before = ownerOf(item, file, {
+      run: () => ({ runId: 'r', taskId: 't', state: 'failed' }),
+      session: () => 'unknown',
+    });
+    expect(before).toEqual({ kind: 'session', sessionId: 's', state: 'unknown' });
+    expect(releaseFor(item, file, before)).toBeNull();
+  });
+
+  // Invariant I4: RepeatedReleaseAsks
+  it('the second release in a row asks; a report or a person resets the count', () => {
+    let file = claimAs(made(emptyWorkFile(), 'X', { status: 'ready-for-work' }).file, 1, 'a', 2000);
+    file = release(file, 1, run('a', 'failed'), 3000).file;
+    expect(releasesInARow(findWork(file, 1)!)).toBe(1);
+    file = claimAs(file, 1, 'b', 4000);
+    const second = release(file, 1, run('b', 'cancelled'), 5000);
+    expect(findWork(second.file, 1)).toMatchObject({
+      status: 'human-required',
+      needs: {
+        question:
+          'W-1 was released twice: runs run-a and run-b ended without reporting. Send it back to Ready for work when the cause is fixed.',
+      },
+    });
+    expect(releasesInARow(findWork(second.file, 1)!)).toBe(2);
+
+    const reported = ok(
+      reportWork(
+        file,
+        1,
+        ReportWorkSchema.parse({ outcome: 'continue', note: 'n' }),
+        ctx({ kind: 'agent', sessionId: 'b' }, 4500)
+      )
+    );
+    expect(releasesInARow(reported.item)).toBe(0);
+    const answered = ok(update(second.file, 1, { needs: null }, ctx(person, 6000)));
+    expect(releasesInARow(answered.item)).toBe(0);
+  });
+
+  // Invariant I5: ReleaseIsIdempotent
+  it('a release on its own output decides nothing, a stale one is refused, and a late report still applies', () => {
+    let file = claimAs(made(emptyWorkFile(), 'X', { status: 'ready-for-work' }).file, 1, 's', 2000);
+    const stale = findWork(file, 1)!.revision;
+    file = release(file, 1, run('s', 'failed'), 3000).file;
+    const item = findWork(file, 1)!;
+    expect(releaseFor(item, file, ownerOf(item, file, { run: () => undefined, session: () => 'gone' }))).toBeNull();
+    const again = applyRelease(
+      file,
+      1,
+      { to: 'ready-for-work', reason: 'Released: x' },
+      run('s', 'failed'),
+      stale,
+      ctx()
+    );
+    expect(again).toMatchObject({ ok: false, code: 'CONFLICT' });
+    const late = ok(
+      reportWork(
+        file,
+        1,
+        ReportWorkSchema.parse({ outcome: 'done', note: 'did it' }),
+        ctx({ kind: 'agent', sessionId: 's' }, 4000)
+      )
+    );
+    expect(late.item.status).toBe('done');
+    expect(late.item.history.map((e) => e.text).indexOf('Reported done and verified')).toBeLessThan(
+      late.item.history.findIndex((e) => e.text.startsWith('Released: '))
+    );
+  });
+
+  // Invariant I6: ChangesRequestedUnassigns
+  it('Request changes unassigns the item and keeps its session linked', () => {
+    const file = claimAs(made(emptyWorkFile(), 'X', { status: 'ready-for-work' }).file, 1, 's', 2000);
+    const sent = ok(requestChangesOnWork(file, 1, { text: 'fix', reviewId: 'r', at: 1 }, ctx()));
+    expect(sent.item).toMatchObject({ status: 'ready-for-work', assignee: null, sessions: ['s'] });
+    expect(workPosition(sent.file, 1)).toBe(1);
+  });
+
+  // Invariant I7: ParentFollowsItsTickets
+  it('a parent closes when its tickets are all Done, and asks when one was dropped', () => {
+    const parent = (ticketTo: 'done' | 'not-doing') => {
+      let file = made(emptyWorkFile(), 'Parent', { status: 'in-progress' }).file;
+      file = made(file, 'T1', { createdFrom: 1 }).file;
+      file = made(file, 'T2', { createdFrom: 1 }).file;
+      file = ok(update(file, 1, { assignee: null })).file;
+      const facts = { run: () => undefined, session: () => 'live' as const };
+      expect(releaseFor(findWork(file, 1)!, file, ownerOf(findWork(file, 1)!, file, facts))).toBeNull();
+      file = ok(update(file, 2, { status: 'done' })).file;
+      expect(releaseFor(findWork(file, 1)!, file, ownerOf(findWork(file, 1)!, file, facts))).toBeNull();
+      file = ok(update(file, 3, { status: ticketTo })).file;
+      return release(file, 1, ownerOf(findWork(file, 1)!, file, facts), 5000).file;
+    };
+    expect(findWork(parent('done'), 1)).toMatchObject({ status: 'done' });
+    expect(findWork(parent('done'), 1)!.history[0]!.text).toBe('Done: all tickets done (W-2, W-3)');
+    expect(findWork(parent('not-doing'), 1)).toMatchObject({
+      status: 'human-required',
+      needs: { question: expect.any(String) },
+    });
   });
 });

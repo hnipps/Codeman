@@ -15,6 +15,9 @@ import {
   WORK_STATUSES,
   type WorkFile,
   type WorkStatus,
+  applyRelease,
+  findWork,
+  releaseFor,
 } from '../src/canvas/work.js';
 import {
   CLAIM_STATUS,
@@ -387,6 +390,38 @@ describe('work-item triggers', () => {
     expect(dueWorkItem(picker(), empty, f)?.item.number).toBe(1);
     expect(dueWorkItem(picker({ unassignedOnly: true }), empty, f)?.item.number).toBe(3);
     expect(dueWorkItem(routine(), empty, f)).toBeNull();
+  });
+
+  // Invariant I4: RepeatedReleaseAsks
+  it('a claiming trigger skips an item released twice in a row; a person moving it resets that', () => {
+    let f = file({ status: 'ready-for-work', at: T0 });
+    for (const [i, sessionId] of ['a', 'b'].entries()) {
+      const now = T0 + (i + 1) * MIN;
+      const claimed = updateWork(
+        f,
+        1,
+        { status: CLAIM_STATUS, assignee: { kind: 'session', sessionId } },
+        { author: { kind: 'agent', sessionId }, now }
+      );
+      if (!claimed.ok) throw new Error(claimed.message);
+      const owner = { kind: 'run', sessionId, runId: sessionId, taskId: sessionId, state: 'failed' } as const;
+      const release = releaseFor(claimed.item, claimed.file, owner)!;
+      const released = applyRelease(claimed.file, 1, release, owner, claimed.item.revision, {
+        author: { kind: 'agent', sessionId },
+        now: now + 1,
+      });
+      if (!released.ok) throw new Error(released.message);
+      f = released.file;
+    }
+    expect(findWork(f, 1)!.status).toBe('human-required');
+    const onAsk = (fields: Record<string, unknown>) =>
+      routine({ triggers: [{ kind: 'work-item', status: 'human-required', ...fields } as never] });
+    expect(dueWorkItem(onAsk({ claim: true }), empty, f)).toBeNull();
+    expect(dueWorkItem(onAsk({}), empty, f)?.item.number).toBe(1);
+    const sentBack = updateWork(f, 1, { needs: null }, { author: human, now: T0 + 10 * MIN });
+    if (!sentBack.ok) throw new Error(sentBack.message);
+    const back = move(sentBack.file, 1, 'human-required', T0 + 11 * MIN);
+    expect(dueWorkItem(onAsk({ claim: true }), empty, back)?.item.number).toBe(1);
   });
 
   it('fires once per entry: a started fire marks the item, a re-entry makes it due again', () => {
