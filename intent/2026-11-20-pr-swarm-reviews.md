@@ -1,6 +1,6 @@
 # Intent: pr-swarm runs on every review
 
-**Status:** Draft (spec, revision 1; the owner's answers of 2026-11-20 are recorded under Constraints)
+**Status:** Draft (spec, revision 2; the owner's answers of 2026-11-20 are recorded under Constraints, and D1 to D3 were agreed in review)
 
 ## Problem statement
 
@@ -103,7 +103,7 @@ A tip change whose commits all carry `PR-Swarm-Automated: true` and come from th
 
 - GitHub comments, GitHub auto-merge, or any GitHub Actions workflow.
 - Changing pr-swarm's lenses, its router or its verdict scale.
-- Building R-3. See D4 for how a run relates to it.
+- Building R-3, the reviewer routine from the spec-first lifecycle. D4 says what it is and how a run relates to it.
 - Running on decided or closed reviews.
 - Multi-person review.
 
@@ -162,10 +162,14 @@ A tip change whose commits all carry `PR-Swarm-Automated: true` and come from th
 
 ## Decisions for Harry
 
-- **D1 Auto-merge is Codeman's Approve.** Since nothing is written to GitHub, an approve verdict on spec-attributed work runs Codeman's own merge and deploy. Recommended.
-- **D2 The plugin gets a local mode.** Both skills are written around GitHub reads and writes. A `--local` flag in the plugin is cleaner than a Codeman brief that tells the agent to skip half of each skill. Recommended: add the flag (ticket t2).
-- **D3 One run at a time server-wide.** Recommended for the 8 GiB host. Raise it later if measurements allow.
-- **D4 A run and R-3.** Recommended: a pr-swarm approve verdict is enough for an automatic merge until R-3 exists. R-3 then becomes a second required pass, not a replacement.
+- **D1 Auto-merge is Codeman's Approve.** Since nothing is written to GitHub, an approve verdict on spec-attributed work runs Codeman's own merge and deploy. Agreed in review, 2026-11-20.
+- **D2 The plugin gets a local mode.** Both skills are written around GitHub reads and writes. A `--local` flag in the plugin is cleaner than a Codeman brief that tells the agent to skip half of each skill. Agreed in review, 2026-11-20: add the flag (ticket t2).
+- **D3 One run at a time server-wide.** For the 8 GiB host. Raise it later if measurements allow. Agreed in review, 2026-11-20.
+- **D4 A run and R-3.** Still open.
+  - **What R-3 is.** The spec-first lifecycle (`intent/2026-11-18-spec-first-lifecycle.md`, merged 2026-11-18) names three routines: R-1 (Repo Assist), R-2 (Build) and R-3 (Review). R-3 is a separate reviewer session that checks each built ticket against its spec, in poteto-mode with the crosscheck skills. When it passes a ticket, that ticket merges and deploys. R-3 is not built yet. Until it is, R-2's work still comes to you as a finished review.
+  - **The overlap.** A pr-swarm approve on spec-attributed work also merges and deploys (I4). So once R-3 exists, two reviewers could each pass the same ticket.
+  - **Recommended:** until R-3 exists, a pr-swarm approve verdict is enough for an automatic merge. Once R-3 exists, an automatic merge needs both: pr-swarm's approve and R-3's pass. R-3 is a second required pass and does not replace pr-swarm.
+  - **The other choice:** no automatic merge until R-3 exists. pr-swarm approve verdicts are recorded and wait for your Approve, as they do for unattributed work today.
 
 ## Checks run
 
