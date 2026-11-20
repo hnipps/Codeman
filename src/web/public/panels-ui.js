@@ -6511,7 +6511,9 @@ Object.assign(CodemanApp.prototype, {
    * repeatedly failing path (a flapping SSE reconnect, a poll loop) stacked
    * sticky toasts off the bottom of the viewport where they could not be
    * read or dismissed. Every toast still gets an explicit close button
-   * regardless of duration.
+   * regardless of duration. While `holdToasts()` holds, a toast whose timer
+   * runs out stays up until the hold is released; the close and action
+   * buttons still dismiss at once.
    */
   showToast(message, type = 'info', opts = {}) {
     const { duration = this.notificationManager?.getToastDurationMs?.() ?? 3000, action } = opts;
@@ -6550,13 +6552,37 @@ Object.assign(CodemanApp.prototype, {
     requestAnimationFrame(() => toast.classList.add('show'));
 
     if (duration > 0) {
-      dismissTimer = setTimeout(dismiss, duration);
+      dismissTimer = setTimeout(() => {
+        dismissTimer = null;
+        if (this._toastHolds > 0) this._heldToastDismissals.add(dismiss);
+        else dismiss();
+      }, duration);
     }
 
     // Most callers ignore this — a handle exists for a long-running toast a caller needs
     // to update or dismiss itself once its own condition resolves (e.g. a "loading model"
     // toast a poll loop dismisses once the model reports ready).
     return { dismiss, setMessage: (text) => { msgSpan.textContent = text; } };
+  },
+
+  /**
+   * Keep timed-out toasts on screen until the returned release function runs
+   * (capture.js holds them through a freeze, so a toast up at the trigger is in
+   * the picture). Holds nest; release is idempotent.
+   */
+  holdToasts() {
+    this._toastHolds = (this._toastHolds || 0) + 1;
+    if (!this._heldToastDismissals) this._heldToastDismissals = new Set();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this._toastHolds -= 1;
+      if (this._toastHolds > 0) return;
+      const pending = [...this._heldToastDismissals];
+      this._heldToastDismissals.clear();
+      for (const dismiss of pending) dismiss();
+    };
   },
 
   /** The fixed toast stack (`.toast-container`), created on first use and cached. */

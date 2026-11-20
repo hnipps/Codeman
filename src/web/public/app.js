@@ -1391,7 +1391,8 @@ class CodemanApp {
   _initWebGL() {
     if (typeof WebglAddon === 'undefined') return;
     try {
-      this._webglAddon = new WebglAddon.WebglAddon();
+      // preserveDrawingBuffer, so capture.js can read the terminal's pixels after a frame is presented.
+      this._webglAddon = new WebglAddon.WebglAddon(true);
       this._webglAddon.onContextLoss(() => {
         console.error('[CRASH-DIAG] WebGL context LOST — falling back to canvas renderer');
         _crashDiag.log('WEBGL_LOST');
