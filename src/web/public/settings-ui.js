@@ -638,6 +638,9 @@ Object.assign(CodemanApp.prototype, {
     document.getElementById('appSettingsAutoCopySelection').checked = settings.autoCopySelection === true;
     // Default ON, so an absent key reads as enabled rather than as off.
     document.getElementById('appSettingsCopyStripMargin').checked = settings.copyStripMargin !== false;
+    const captureTabMode = document.getElementById('appSettingsCaptureTabMode');
+    captureTabMode.checked = settings.captureTabMode === true;
+    captureTabMode.disabled = !window.CodemanCapture?.tabModeSupported?.();
     document.getElementById('appSettingsTerminalFont').value = settings.terminalFontFamily || '';
     this.populateTerminalFontWeight(document.getElementById('appSettingsTerminalFontWeight'), settings.terminalFontWeight);
     this.populateTerminalFontWeight(
@@ -3048,6 +3051,7 @@ Object.assign(CodemanApp.prototype, {
       localEchoEnabled: document.getElementById('appSettingsLocalEcho').checked,
       keyboardHoldsRows: document.getElementById('appSettingsKeyboardHoldsRows').checked,
       autoCopySelection: document.getElementById('appSettingsAutoCopySelection').checked,
+      captureTabMode: document.getElementById('appSettingsCaptureTabMode').checked,
       copyStripMargin: document.getElementById('appSettingsCopyStripMargin').checked,
       terminalFontFamily: document.getElementById('appSettingsTerminalFont').value.trim(),
       terminalFontWeight: this.readTerminalFontWeight(document.getElementById('appSettingsTerminalFontWeight')),
@@ -3141,6 +3145,7 @@ Object.assign(CodemanApp.prototype, {
 
     // Save to localStorage
     this.saveAppSettingsToStorage(settings);
+    if (settings.captureTabMode !== true) window.CodemanCapture?.stopTabCapture?.();
     this._updateLocalEchoState();
     // Turning Keep Size Under Keyboard off while it holds releases it now.
     this._reconcileKeyboardHold?.();
@@ -3322,6 +3327,8 @@ Object.assign(CodemanApp.prototype, {
       // and absent from SettingsUpdateSchema (.strict()), so sending it would
       // 400 the whole settings PUT.
       autoCopySelection: _acs,
+      // Exact-pixel capture: per-device (desktop Chromium only) and absent from the .strict() schema.
+      captureTabMode: _ctm,
       // What the clipboard gets is a property of what this device is looking
       // at, and the key is absent from SettingsUpdateSchema (.strict()), so
       // sending it would 400 the whole settings PUT.
@@ -5177,7 +5184,7 @@ Object.assign(CodemanApp.prototype, {
       'terminalFontFamily', 'terminalFontWeight', 'terminalFontWeightBold',
       'language',
       'terminalWheelLocalScrollback',
-      'autoCopySelection', 'copyStripMargin',
+      'autoCopySelection', 'copyStripMargin', 'captureTabMode',
       'showSessionButton', 'showAwayDigestButton', 'showCronButton', 'showGitStatus', 'gitStatusTree', 'gitStatusMaxRepos', 'gitStatusTimeoutSeconds',
       'showTabDetachButton',
       'showTabNewButton',
