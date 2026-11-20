@@ -340,27 +340,24 @@
       ${withChat ? `<a href="#" class="pin"${current === 'Chat' ? ' aria-current="true"' : ''}>${I.chat}<span>Chat</span>${kbd('Mod+0')}</a>` : ''}
       ${threadList({ unsorted: true, current, open: { active: 1, inactive: 0, archived: 0 } }).replace('class="body"', 'class="body tight"')}
     </section>`;
-  const palette = (mode) => `
-    <div class="pscrim"></div>
-    <div class="palette${mode === 'capture' ? ' small' : ''}" role="dialog" aria-label="${mode === 'capture' ? 'Capture' : 'Chat'}">
-      <div class="ptabs" role="tablist">
-        <button role="tab" aria-selected="${mode === 'chat'}">${I.chat}Chat ${kbd('Mod+K')}</button>
-        <button role="tab" aria-selected="${mode === 'capture'}">${I.capture}Capture ${kbd('Mod+U')}</button>
-        <button role="tab" aria-selected="false">Commands ${kbd('Mod+P')}</button>
+  // Palette: one row, no buttons, like Spotlight or Raycast. The leading token names the mode; Tab cycles
+  // Chat → Capture → Commands, and typing > or / at the start switches to Capture or Commands. Enter sends;
+  // Mod+Enter sends and opens the thread. The keys show as one faint hint at the end of the row.
+  const palette = (mode) => {
+    const tok = { chat: `${I.chat}Chat`, capture: `${I.capture}Capture` }[mode];
+    const text = mode === 'chat' ? 'Book the shed base quotes for next week' : 'bring the tile offcuts to the garage';
+    // Enter sending is the expected default, so the hint names only Mod+Enter. Tab sits in the mode token.
+    const hint = mode === 'chat' ? `${kbd('Mod+Enter')} open thread` : '';
+    return `
+    <div class="palette one" role="dialog" aria-label="${mode === 'chat' ? 'Chat' : 'Capture'}">
+      <div class="prow">
+        <span class="ptok" data-mode="${mode}" title="Tab switches mode">${tok}<kbd>Tab</kbd></span>
+        <label class="sr" for="pq">${mode === 'chat' ? 'Message' : 'Capture'}</label>
+        <input id="pq" value="${text}" autocomplete="off">
+        <span class="phint">${hint}</span>
       </div>
-      ${
-        mode === 'chat'
-          ? `<div class="body pturns"><ol class="turns compact">${[t2, r2.replace(related, ''), t3(), r3].join('')}</ol></div>
-             <div class="pin-input"><textarea rows="2" placeholder="Ask anything · > to capture">Book the shed base quotes for next week</textarea><button class="primary">Send</button></div>
-             <p class="pfoot">Files to a thread on its own. ${kbd('Enter')} send · ${kbd('Mod+Enter')} send and open the thread · ${kbd('Esc')} close</p>`
-          : `<div class="pin-input"><div class="field"><span class="pill">${I.capture}Capture</span><textarea rows="3">bring the tile offcuts to the garage\n> Sam said the grey ones are spare</textarea></div><button class="primary">Capture</button></div>
-             <p class="pfoot">Files to a thread on its own. Focus stays put.</p>
-             <div class="recent"><p class="lbl">Recent captures</p>
-               <p>buy stamps for the council letter ${chip('sure', 'Errands')}<time>10:14</time></p>
-               <p>The base must sit 150 mm clear… ${chip('sure', 'Garden shed')}<time>10:13</time></p>
-             </div>`
-      }
     </div>`;
+  };
   const fullViews = {
     // A: three columns. The focused conversation in the middle; Chat is pinned first in the list.
     full: () => `<div class="full a">${sideList('Kitchen budget')}${fullConvo('Kitchen budget', threadTurnsFull, `Message Kitchen budget · Mod+U to capture`, { tools: `<button class="quiet">${I.chat}Chat ${kbd('Mod+0')}</button>` })}${details}</div>`,
