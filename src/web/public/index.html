@@ -2077,6 +2077,19 @@
               </div>
 
               <div class="set-group">
+                <div class="set-group-head"><h4>Screen capture</h4><span class="set-scope">device</span></div>
+                <div class="set-group-body">
+                  <div class="set-row" data-search="capture screenshot exact pixels tab share">
+                    <div class="set-row-text">
+                      <span class="set-row-label">Exact-pixel capture</span>
+                      <span class="set-row-desc">Capture uses the browser's own picture of this tab instead of redrawing the page: faster and exact, frames included. Desktop Chrome and Edge only. The browser asks once per page load and shows that this tab is being shared until you stop it.</span>
+                    </div>
+                    <label class="switch switch-sm"><input type="checkbox" id="appSettingsCaptureTabMode"><span class="slider"></span></label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="set-group">
                 <div class="set-group-head"><h4>Font</h4><span class="set-scope">device</span></div>
                 <div class="set-group-body">
                   <div class="set-row has-field" data-search="terminal font family nerd custom typeface">
@@ -4626,5 +4639,7 @@
   <script defer src="image-input.js"></script>
   <script defer src="doc-review.js"></script>
   <script defer src="spreadsheet-preview.js"></script>
+  <script defer src="vendor/html-to-image.js"></script>
+  <script defer src="capture.js"></script>
 </body>
 </html>

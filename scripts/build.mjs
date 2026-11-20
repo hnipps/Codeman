@@ -32,11 +32,12 @@ function run(label, cmd) {
 // predate them (a deploy that pulled but never ran `npm install`) used to fail mid-build
 // with dist/web/public already wiped, so the running server kept serving an index.html
 // whose hashed assets were gone. Keep the list in step with every require.resolve in
-// scripts/prepare-spreadsheet-assets.mjs (test/spreadsheet-assets.test.ts checks it).
+// scripts/prepare-spreadsheet-assets.mjs (test/spreadsheet-assets.test.ts checks it) and
+// scripts/prepare-capture-assets.mjs.
 // Only specifiers that resolve without an exports map in the way: a subpath of a package
 // that has one (@xterm/*) can throw ERR_PACKAGE_PATH_NOT_EXPORTED while installed.
 // A hand-run of the asset stage alone (past a blocked tsc) skips this check.
-const BUILD_TIME_MODULES = ['exceljs/dist/exceljs.min.js', 'fflate', 'mermaid'];
+const BUILD_TIME_MODULES = ['exceljs/dist/exceljs.min.js', 'fflate', 'mermaid', 'html-to-image/dist/html-to-image.js'];
 const requireFromBuild = createRequire(import.meta.url);
 const missingModules = BUILD_TIME_MODULES.filter((specifier) => {
   try {
@@ -82,6 +83,7 @@ run('xterm-zerolag-input', 'npx esbuild packages/xterm-zerolag-input/src/zerolag
 // never by the page (see scripts/prepare-spreadsheet-assets.mjs).
 run('spreadsheet preview vendors', 'node scripts/prepare-spreadsheet-assets.mjs dist/web/public/vendor');
 run('mermaid renderer', 'node scripts/prepare-mermaid-assets.mjs dist/web/public/vendor');
+run('capture rasteriser', 'node scripts/prepare-capture-assets.mjs dist/web/public/vendor');
 
 // Append global aliases so app.js can use `new LocalEchoOverlay(terminal)`
 appendFileSync(
@@ -168,6 +170,7 @@ console.log('\n[build] content-hash cache busting');
     'spreadsheet-preview.js',
     'vendor/xterm-zerolag-input.js',
     'vendor/xterm-predictive-echo.js',
+    'vendor/html-to-image.js',
   ];
   const manifest = {};
   for (const file of HASHABLE) {

@@ -357,6 +357,22 @@ if (!isGlobalInstall) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// 4b. Copy the capture rasteriser (html-to-image, password masking patched in)
+//     into src/web/public/vendor/ for dev mode. The build does the same into dist/.
+// ----------------------------------------------------------------------------
+
+if (!isGlobalInstall) {
+    try {
+        execSync(`node "${join(import.meta.dirname, 'prepare-capture-assets.mjs')}"`, { stdio: 'pipe' });
+        console.log(colors.green('✓ Capture rasteriser vendor file prepared'));
+    } catch (err) {
+        hasWarnings = true;
+        console.log(colors.yellow('⚠ Failed to prepare the capture rasteriser vendor file'));
+        console.log(colors.dim(`  ${err.message}`));
+    }
+}
+
 if (!isGlobalInstall) {
     try {
         execSync(`node "${join(import.meta.dirname, 'prepare-mermaid-assets.mjs')}"`, { stdio: 'pipe' });

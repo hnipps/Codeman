@@ -132,3 +132,38 @@ The workspace is the one on screen: a canvas page's own, or the canvas workspace
 - **Vendor a DOM rasteriser.** html-to-image 1.11.11 is MIT and about 20 KB minified. Writing an SVG `foreignObject` rasteriser in-house is the alternative.
 - **The default workspace** for a capture made where no workspace is on screen.
 - **The shortcut.** Ctrl+Shift+X is proposed.
+
+## Ticket 1 measurements (2026-11-20)
+
+Acceptance check 4 of `intent/2026-11-19-ambient-capture.md`, run on branch `build/w-93-capture-core` (W-93). A throwaway instance served the dev tree with 7 shell sessions: one in the main terminal, six printing a line a second in the tile grid. Playwright's headless Chromium shell 1223 ran with SwiftShader WebGL at a 1600 by 1000 viewport. The host is a 4-core VM. All numbers are measured.
+
+**Freeze time, call to PNG blob, 10 captures each. Budget: 95th percentile under 400 ms at ratio 1, under 800 ms at ratio 2. Missed.**
+
+| View | Ratio 1 p95 (median) | Ratio 2 p95 (median) |
+| --- | --- | --- |
+| Main terminal, single view | 2249 ms (1169) | 1712 ms (1294) |
+| Six-tile grid | 2185 ms (2106) | 2297 ms (2192) |
+
+Where the time goes, at ratio 1, three runs each:
+
+| Step | Single view | Six-tile grid |
+| --- | --- | --- |
+| html-to-image `toSvg` (clone, inline every computed style, serialise) | 690 to 850 ms, 6.4 MB SVG | 1310 to 1350 ms, 11.7 MB SVG |
+| Same with the font CSS computed once and reused | 690 to 720 ms | 1310 to 1350 ms |
+| Decoding the SVG image | 340 to 350 ms | 550 to 640 ms |
+| Drawing and PNG encoding | 140 to 1060 ms | 180 to 190 ms |
+
+The grid has 4857 elements, of which 1141 are rendered. The library copies each rendered element's whole computed style inline. That copy, and the decode of the large SVG it makes, is the cost. Font embedding is not, so caching the font CSS does not help. Before unrendered HTML was filtered out, the dashboard's SVG was 56 MB, and Chromium refused to load it.
+
+**WebGL frame cost. Budget: 95th percentile rises by no more than 2 ms, and the GPU-stall watchdog does not trip. Not resolvable on this host.** The main terminal streamed for 30 s with `WebglAddon()` and then with `WebglAddon(true)`. Both runs had the same requestAnimationFrame cadence: p95 216.7 ms, median 116.6 ms, about 260 frames. The watchdog did not trip, and the sticky disable marker stayed unset. Under SwiftShader the page draws about 9 frames a second, and the intervals fall on 16.7 ms steps. So a 2 ms difference cannot be seen in this setup. It needs a real GPU and a per-frame render timer.
+
+## Ticket 7 measurements: tab capture (2026-11-20)
+
+`CodemanCapture.freeze()` with `captureTabMode` on, after the one consent, on the dashboard of a throwaway instance with no live sessions. Full headless Chromium 1223 with `--auto-accept-this-tab-capture` on a 4-core VM, SwiftShader, 1280 by 800, 10 freezes each (`test/capture-tab-mode.browser.test.ts`, the `measures` case).
+
+| Ratio | freezeMs, sorted | p95 | Budget |
+| --- | --- | --- | --- |
+| 1 | 48, 49, 49, 51, 53, 54, 57, 57, 58, 66 | 66 ms | 400 ms |
+| 2 | 85, 85, 87, 92, 92, 95, 95, 96, 100, 104 | 104 ms | 800 ms |
+
+The time is one `grabFrame` (about 7 to 22 ms in the probe) plus the PNG encode, so it does not grow with the DOM the way the rasteriser's clone does. The tab picture goes through Chromium's video path: colours move by up to about 40 levels per channel (rgb(10, 200, 30) read back as rgb(0, 172, 29)). Not measured: a desktop with a real GPU and the real consent prompt and sharing bar.
