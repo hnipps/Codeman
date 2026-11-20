@@ -18,6 +18,19 @@
  * and stays blank. Frames that are not rendered, have no size or lie outside the viewport
  * of the document that holds them get no record.
  *
+ * Exact-pixel mode (ticket 7, intent/2026-11-20-ambient-capture-tab-mode.md): with the
+ * per-device setting `captureTabMode` on, on desktop Chromium, the picture is one video frame
+ * of the browser's own capture of this tab (`getDisplayMedia` + `preferCurrentTab`) and
+ * `source` is `'tab'`; otherwise `'raster'`. T1: only with the setting exactly true, not on a
+ * phone, and with every API present; no prompt otherwise. T2: a stream is used only when its
+ * track's capture handle equals the random handle this page load set; any other stream is
+ * stopped. T3: one stream per page load, reused while its track is live; a decline is not
+ * asked again; concurrent freezes share one prompt. T4: toasts stay held through the prompt,
+ * and rendered capture UI, a stream that will not open, a frame that times out or whose
+ * aspect ratio is off by more than 2 % all fall back to the rasteriser for that capture.
+ * T5: same result shape, and every frame record is `captured: true` in tab mode.
+ * `getDisplayMedia` needs transient user activation, so it is called before the first await.
+ *
  * Single-flight: a call while a freeze runs returns the same promise.
  *
  * @typedef {{ x: number, y: number, width: number, height: number }} CaptureBox
@@ -31,9 +44,11 @@
  * @property {CaptureFrame[]} frames box in CSS px of the top viewport, depth 1 or 2
  * @property {{ path: string, title: string, viewport: { width: number, height: number },
  *   devicePixelRatio: number, sessionId: string|null, capturedAt: string }} page
+ * @property {'tab'|'raster'} source which path drew the picture
  *
  * @dependency vendor/html-to-image.js (global `htmlToImage`)
  * @dependency panels-ui.js (app.holdToasts, optional)
+ * @dependency settings-ui.js (app.loadAppSettingsFromStorage, for captureTabMode)
  * @loadorder 16.7 (after spreadsheet-preview.js; only defines a global, used on demand)
  */
 
@@ -44,7 +59,21 @@
   const MAX_FRAME_DEPTH = 2;
   const XHTML = 'http://www.w3.org/1999/xhtml';
 
+  const TAB_GRAB_TIMEOUT_MS = 1000;
+  const TAB_ASPECT_TOLERANCE = 0.02;
+  const DISPLAY_MEDIA_OPTIONS = {
+    video: true,
+    audio: false,
+    preferCurrentTab: true,
+    selfBrowserSurface: 'include',
+    surfaceSwitching: 'exclude',
+    monitorTypeSurfaces: 'exclude',
+  };
+
   let inFlight = null;
+
+  /** One tab stream per page load. state: 'idle' | 'asking' | 'live' | 'declined'. */
+  const tab = { state: 'idle', stream: null, track: null, asking: null, handle: null };
 
   function backgroundOf(doc) {
     const view = doc.defaultView || global;
@@ -121,10 +150,137 @@
     });
   }
 
+  function tabModeSupported() {
+    const media = global.navigator?.mediaDevices;
+    return (
+      !global.MobileDetection?.isMobile?.() &&
+      typeof media?.getDisplayMedia === 'function' &&
+      typeof media.setCaptureHandleConfig === 'function' &&
+      typeof global.MediaStreamTrack?.prototype?.getCaptureHandle === 'function' &&
+      typeof global.ImageCapture === 'function'
+    );
+  }
+
+  function tabModeEligible() {
+    return global.app?.loadAppSettingsFromStorage?.()?.captureTabMode === true && tabModeSupported();
+  }
+
+  function captureUiShown() {
+    for (const el of document.querySelectorAll(CAPTURE_UI_SELECTOR)) {
+      if (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length) return true;
+    }
+    return false;
+  }
+
+  function resetTab(next) {
+    const stream = tab.stream;
+    tab.state = next;
+    tab.stream = null;
+    tab.track = null;
+    tab.asking = null;
+    stream?.getTracks().forEach((t) => t.stop());
+  }
+
+  function stopTabCapture() {
+    if (tab.state !== 'declined') resetTab('idle');
+  }
+
+  /**
+   * Synchronous up to the getDisplayMedia call, so the caller's user activation still holds.
+   * @returns {Promise<MediaStreamTrack|null>|null} null when no stream can be had for this capture
+   */
+  function tabTrack() {
+    // track.stop() fires no 'ended', so a live state is only trusted with a live track.
+    if (tab.state === 'live' && tab.track.readyState !== 'live') resetTab('idle');
+    if (tab.state === 'live') return Promise.resolve(tab.track);
+    if (tab.state === 'asking') return tab.asking;
+    if (tab.state === 'declined') return null;
+
+    const media = global.navigator.mediaDevices;
+    let pending;
+    try {
+      if (!tab.handle) {
+        const handle = global.crypto.randomUUID();
+        media.setCaptureHandleConfig({ handle, permittedOrigins: [global.location.origin] });
+        tab.handle = handle;
+      }
+      pending = media.getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
+    } catch {
+      return null;
+    }
+    const asking = pending.then(
+      (stream) => {
+        const stopAll = () => stream.getTracks().forEach((t) => t.stop());
+        if (tab.asking !== asking) {
+          stopAll();
+          return null;
+        }
+        const track = stream.getVideoTracks()[0];
+        if (!track || track.getCaptureHandle?.()?.handle !== tab.handle) {
+          stopAll();
+          resetTab('idle');
+          return null;
+        }
+        tab.state = 'live';
+        tab.stream = stream;
+        tab.track = track;
+        tab.asking = null;
+        track.addEventListener('ended', () => {
+          if (tab.track === track) resetTab('idle');
+        });
+        return track;
+      },
+      (err) => {
+        if (tab.asking === asking) resetTab(err?.name === 'NotAllowedError' ? 'declined' : 'idle');
+        return null;
+      }
+    );
+    tab.state = 'asking';
+    tab.asking = asking;
+    return asking;
+  }
+
+  function grabFrame(track) {
+    return new Promise((resolve, reject) => {
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error('capture: grabFrame timed out'));
+      }, TAB_GRAB_TIMEOUT_MS);
+      new global.ImageCapture(track).grabFrame().then(
+        (bitmap) => {
+          clearTimeout(timer);
+          if (timedOut) bitmap.close();
+          else resolve(bitmap);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        }
+      );
+    });
+  }
+
+  /** @returns {Promise<Blob|null>} null when the frame does not match the viewport's shape */
+  async function tabPicture(track, width, height, pixelRatio) {
+    const bitmap = await grabFrame(track);
+    try {
+      if (Math.abs(bitmap.width / bitmap.height / (width / height) - 1) > TAB_ASPECT_TOLERANCE) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      return await toPngBlob(canvas);
+    } finally {
+      bitmap.close();
+    }
+  }
+
   async function run() {
     const t0 = performance.now();
     const release = global.app?.holdToasts?.() ?? (() => {});
     try {
+      const pendingTrack = tabModeEligible() && tab.state !== 'declined' && !captureUiShown() ? tabTrack() : null;
       const width = global.innerWidth;
       const height = global.innerHeight;
       const pixelRatio = Math.min(global.devicePixelRatio || 1, 2);
@@ -137,6 +293,23 @@
         capturedAt: new Date().toISOString(),
       };
       const frames = collectFrames(document, { x: 0, y: 0, width, height }, 1, []);
+
+      if (pendingTrack) {
+        const track = await pendingTrack;
+        const blob = track ? await tabPicture(track, width, height, pixelRatio).catch(() => null) : null;
+        if (blob) {
+          return {
+            blob,
+            width,
+            height,
+            pixelRatio,
+            freezeMs: Math.round(performance.now() - t0),
+            frames: frames.map(({ title, box, depth }) => ({ title, box, depth, captured: true })),
+            page,
+            source: 'tab',
+          };
+        }
+      }
 
       const [canvas, frameCanvases] = await Promise.all([
         rasterise(document, width, height, pixelRatio),
@@ -170,6 +343,7 @@
         freezeMs: Math.round(performance.now() - t0),
         frames: frames.map(({ title, box, depth, captured }) => ({ title, box, depth, captured })),
         page,
+        source: 'raster',
       };
     } finally {
       release();
@@ -185,5 +359,5 @@
     return inFlight;
   }
 
-  global.CodemanCapture = Object.freeze({ freeze, CAPTURE_UI_SELECTOR });
+  global.CodemanCapture = Object.freeze({ freeze, CAPTURE_UI_SELECTOR, tabModeSupported, stopTabCapture });
 })(window);

@@ -156,3 +156,14 @@ Where the time goes, at ratio 1, three runs each:
 The grid has 4857 elements, of which 1141 are rendered. The library copies each rendered element's whole computed style inline. That copy, and the decode of the large SVG it makes, is the cost. Font embedding is not, so caching the font CSS does not help. Before unrendered HTML was filtered out, the dashboard's SVG was 56 MB, and Chromium refused to load it.
 
 **WebGL frame cost. Budget: 95th percentile rises by no more than 2 ms, and the GPU-stall watchdog does not trip. Not resolvable on this host.** The main terminal streamed for 30 s with `WebglAddon()` and then with `WebglAddon(true)`. Both runs had the same requestAnimationFrame cadence: p95 216.7 ms, median 116.6 ms, about 260 frames. The watchdog did not trip, and the sticky disable marker stayed unset. Under SwiftShader the page draws about 9 frames a second, and the intervals fall on 16.7 ms steps. So a 2 ms difference cannot be seen in this setup. It needs a real GPU and a per-frame render timer.
+
+## Ticket 7 measurements: tab capture (2026-11-20)
+
+`CodemanCapture.freeze()` with `captureTabMode` on, after the one consent, on the dashboard of a throwaway instance with no live sessions. Full headless Chromium 1223 with `--auto-accept-this-tab-capture` on a 4-core VM, SwiftShader, 1280 by 800, 10 freezes each (`test/capture-tab-mode.browser.test.ts`, the `measures` case).
+
+| Ratio | freezeMs, sorted | p95 | Budget |
+| --- | --- | --- | --- |
+| 1 | 48, 49, 49, 51, 53, 54, 57, 57, 58, 66 | 66 ms | 400 ms |
+| 2 | 85, 85, 87, 92, 92, 95, 95, 96, 100, 104 | 104 ms | 800 ms |
+
+The time is one `grabFrame` (about 7 to 22 ms in the probe) plus the PNG encode, so it does not grow with the DOM the way the rasteriser's clone does. The tab picture goes through Chromium's video path: colours move by up to about 40 levels per channel (rgb(10, 200, 30) read back as rgb(0, 172, 29)). Not measured: a desktop with a real GPU and the real consent prompt and sharing bar.
