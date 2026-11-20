@@ -18,7 +18,9 @@
  *
  * Who may do what:
  * - Submitting is the agent's act: the request must carry `X-Codeman-Parent-Session`, and the review is made for
- *   THAT session's checked-out branch. Nothing in the body names a repository or a session.
+ *   THAT session's checked-out branch. Nothing in the body names a repository or a session. When that branch is the
+ *   pull request of an open Work item linked to the session, the walkthrough goes onto the item's work review instead
+ *   (`WorkReviews.authorFor`).
  * - Notes, resolving and Request changes are a person's acts: a request that carries the agent header is refused.
  * - A review belongs to its author session's owner. Every read and write checks it, and a review another user
  *   owns answers 404, like a session does.
@@ -91,6 +93,7 @@ import {
   handoverPrompt,
   isDecided,
   isOpen,
+  mayAddCaptures,
   patchNote,
   putCapture,
   queueOf,
@@ -459,6 +462,29 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     // The repository's top level can sit above the session's folder, so the Docker rule is checked there too.
     const rootRefusal = await gitRefusal(session, facts.repoRoot);
     if (rootRefusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, rootRefusal);
+
+    const work = await workReviews.authorFor(
+      { sessionId: session.id, sessionName: session.name ?? '', owner: session.owner },
+      facts,
+      input
+    );
+    if (work.kind === 'unlinked') return fail(reply, 403, ApiErrorCode.FORBIDDEN, work.message);
+    if (work.kind === 'conflict') return fail(reply, 409, ApiErrorCode.CONFLICT, work.message);
+    if (work.kind === 'written') {
+      pruneCaptureFiles(work.review);
+      changesCache.delete(work.review.id);
+      announce(work.review);
+      syncLive(work.review, work.goneSha, true);
+      return reply.code(200).send({
+        success: true,
+        data: {
+          id: work.review.id,
+          revision: work.review.revision,
+          state: toView(work.review).state,
+          url: `reviews/${work.review.id}`,
+        },
+      });
+    }
 
     // Read, decide and write with no await between them, so two submissions cannot both make a new review.
     const all = listReviews();
@@ -848,8 +874,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         const session = callerSession(ctx, req);
         const review = reviewOf(req, reply);
         if (!review) return reply;
-        if (!session || session.id !== authorSessionId(review))
-          return fail(reply, 403, ApiErrorCode.FORBIDDEN, 'Only the session that wrote a review adds its captures');
+        if (!session || !mayAddCaptures(review, session.id))
+          return fail(
+            reply,
+            403,
+            ApiErrorCode.FORBIDDEN,
+            'Only the session that wrote a review, or the walkthrough of a work review, adds its captures'
+          );
         if (!deployRole.allows('persist')) return fail(reply, 409, ApiErrorCode.CONFLICT, NOT_LIVE);
         const name = CaptureNameSchema.safeParse(req.params.name);
         if (!name.success)

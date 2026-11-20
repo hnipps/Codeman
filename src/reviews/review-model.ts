@@ -158,7 +158,7 @@ export type Decision = z.infer<typeof DecisionSchema>;
 /**
  * A work review's walkthrough as the agent that built the item wrote it. Kept apart from `walkthrough`, which on a work
  * review is the item's text and is replaced at every sync, so neither ever overwrites the other. Absent until an agent
- * submits one (`docs/work-review-walkthroughs-spec.md`); this release reads it and nothing writes it yet.
+ * submits one (`docs/work-review-walkthroughs-spec.md`): only `authorWorkReview()` writes it, from `POST /api/reviews`.
  */
 export const AuthoredSchema = z
   .object({
@@ -292,12 +292,8 @@ export function submitReview(
   const title = cleanLine(input.title, MAX_TITLE_CHARS) || 'Untitled review';
   const walkthrough = cleanText(input.walkthrough, MAX_WALKTHROUGH_CHARS);
   if (open) {
-    const kept = input.captures ? new Set(input.captures) : null;
-    const captures = kept ? (open.captures ?? []).filter((c) => kept.has(c.name)) : open.captures;
-    const { captures: _old, ...rest } = open;
     return {
-      ...rest,
-      ...(captures?.length ? { captures } : {}),
+      ...keepCaptures(open, input.captures),
       title,
       walkthrough,
       base: facts.base,
@@ -321,6 +317,19 @@ export function submitReview(
     updatedAt: now,
   };
 }
+/** The stills a resubmission keeps: every one when it names none, otherwise only those it names. */
+export function keepCaptures(review: Review, names: readonly string[] | undefined): Review {
+  if (!names) return review;
+  const kept = new Set(names);
+  const { captures, ...rest } = review;
+  const left = (captures ?? []).filter((c) => kept.has(c.name));
+  return left.length ? { ...rest, captures: left } : rest;
+}
+
+/** Who may add a still: the session that submitted the review or, on a work review, the one that wrote `authored`. */
+export const mayAddCaptures = (review: Review, sessionId: string): boolean =>
+  sessionId === authorSessionId(review) || sessionId === review.authored?.sessionId;
+
 export const sameWork = (r: Review, sessionId: string, facts: RepoFacts): boolean =>
   r.sessionId === sessionId && r.repoRoot === facts.repoRoot && r.branch === facts.branch;
 

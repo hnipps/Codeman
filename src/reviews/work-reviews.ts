@@ -24,15 +24,37 @@ import { approveWork, findWork, requestChangesOnWork, workClosed, workKey, type 
 import { changeWork, readWork, subscribeWork } from '../canvas/work-store.js';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
 import { defaultBase, fetchHead, line, resolveHead, tryGit, validRef } from './review-git.js';
-import { isOpen, MAX_OPEN_REVIEWS, sourceOf, type Review, type WorkFacts, type WorkRef } from './review-model.js';
-import { listReviews, readReview, writeReview } from './review-store.js';
-import { syncedReview, walkthroughOf, wanted, workReviewId } from './work-review-model.js';
+import {
+  isOpen,
+  MAX_OPEN_REVIEWS,
+  sourceOf,
+  type RepoFacts,
+  type Review,
+  type Submit,
+  type WorkFacts,
+  type WorkRef,
+} from './review-model.js';
+import { changeReview, listReviews, readReview, writeReview } from './review-store.js';
+import { authorWorkReview, syncedReview, walkthroughOf, wanted, workReviewId } from './work-review-model.js';
 
 export type SyncProblem = 'NO_BRANCH' | 'NO_BASE' | 'NO_REPO' | 'REFUSED' | 'FETCH_FAILED' | 'FULL' | 'NOT_LIVE';
 export type SyncResult =
   | { review: Review; changed: boolean }
   | { problem: SyncProblem; message: string }
   | { unwanted: true };
+
+/** The agent session submitting a walkthrough, and the owner its workspaces must have. */
+export type Submitter = { sessionId: string; sessionName: string; owner: string | null | undefined };
+/**
+ * Where a submission goes. `none`: no open item claims the branch in this repository, so it makes a session review.
+ * `unlinked`: an item claims it but does not link the session. `conflict`: the submission cannot be written now.
+ * `written`: the item's work review now carries the walkthrough; `goneSha` is the head it showed before.
+ */
+export type AuthorResult =
+  | { kind: 'none' }
+  | { kind: 'unlinked'; message: string }
+  | { kind: 'conflict'; message: string }
+  | { kind: 'written'; review: Review; goneSha: string | undefined };
 
 export interface WorkReviewDeps {
   /** The case folder of a workspace, as the canvas resolves it for its owner. */
@@ -50,6 +72,8 @@ export interface WorkReviewDeps {
 export interface WorkReviews {
   /** Brings one item's review in step with the item and with origin. */
   sync(work: WorkRef, opts?: { fetch?: boolean }): Promise<SyncResult>;
+  /** Writes an agent's walkthrough onto the work review of the item it builds, when `facts` is that item's branch. */
+  authorFor(caller: Submitter, facts: RepoFacts, input: Submit): Promise<AuthorResult>;
   /** What the tracker says now about each work review in `reviews`, by review id. One read per workspace. */
   facts(reviews: Review[]): Map<string, WorkFacts>;
   /** Puts the reviewer's notes on the item and moves it to the top of Ready for work. */
@@ -241,5 +265,89 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
         if (item.pr) void sync({ workspaceId, number: item.number }).catch(() => undefined);
     });
 
-  return { sync, facts, sendChanges, accepted, catchUp, follow };
+  const commonDir = async (cwd: string): Promise<string> =>
+    line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
+
+  const authorFor: WorkReviews['authorFor'] = async (caller, repo, input) => {
+    const owner = caller.owner || null;
+    const claimed: { work: WorkRef; item: WorkItem; prUrl: string; workspace: Workspace }[] = [];
+    for (const workspace of readWorkspaces()) {
+      if ((workspace.owner || null) !== owner) continue;
+      const read = readWork(workspace.id);
+      if (!read.ok) continue;
+      for (const item of read.file.items)
+        if (item.pr?.branch === repo.branch && !workClosed(item.status))
+          claimed.push({
+            work: { workspaceId: workspace.id, number: item.number },
+            item,
+            prUrl: item.pr.url,
+            workspace,
+          });
+    }
+    if (!claimed.length) return { kind: 'none' };
+
+    const mine = await commonDir(repo.repoRoot);
+    const roots = new Map<string, string | null>();
+    const same: ((typeof claimed)[number] & { repoRoot: string })[] = [];
+    for (const c of claimed) {
+      if (!roots.has(c.workspace.id)) {
+        const found = await repoOf(c.workspace);
+        roots.set(c.workspace.id, 'repoRoot' in found ? found.repoRoot : null);
+      }
+      const repoRoot = roots.get(c.workspace.id);
+      if (repoRoot && mine && (await commonDir(repoRoot)) === mine) same.push({ ...c, repoRoot });
+    }
+    if (!same.length) return { kind: 'none' };
+    const names = (list: typeof same) => list.map((c) => workKey(c.item.number)).join(', ');
+    const linked = same.filter((c) => c.item.sessions.includes(caller.sessionId));
+    if (!linked.length)
+      return {
+        kind: 'unlinked',
+        message: `UNLINKED: ${repo.branch} is the pull request of ${names(same)}, which does not link this session; link it with canvas_work update first`,
+      };
+    if (linked.length > 1)
+      return {
+        kind: 'conflict',
+        message: `AMBIGUOUS: ${repo.branch} is the pull request of ${names(linked)}; unlink this session from all but one`,
+      };
+    const { work, item, prUrl, repoRoot } = linked[0]!;
+    const conflict = (message: string): AuthorResult => ({ kind: 'conflict', message });
+
+    // A walkthrough never describes commits the reviewer cannot see.
+    const fetched = await fetchOnce(repoRoot, repo.branch);
+    if (fetched === 'absent') return conflict(`UNPUSHED: push the branch, then submit; origin has no ${repo.branch}`);
+    if (fetched === 'failed') return conflict(`FETCH_FAILED: ${repo.branch} could not be fetched from origin`);
+    const tip = await resolveHead(git, repoRoot, { from: 'origin', branch: repo.branch });
+    if (tip !== repo.headSha)
+      return conflict(
+        `UNPUSHED: push the branch, then submit; origin/${repo.branch} is ${tip?.slice(0, 7) ?? 'missing'}, this session is at ${repo.headSha.slice(0, 7)}`
+      );
+
+    const before = readReview(workReviewId(work, prUrl));
+    const synced = await sync(work, { fetch: false });
+    if ('problem' in synced) return conflict(synced.message);
+    if ('unwanted' in synced) return conflict(`GONE: ${workKey(item.number)} no longer asks for a review`);
+    const decided = `DECIDED: the review of ${workKey(item.number)} is already decided`;
+    if (!isOpen(synced.review)) return conflict(decided);
+    if (!deployRole.allows('persist')) return conflict('NOT_LIVE: only the live colour writes reviews');
+
+    // No await from here: the item is read again and the review is changed in one tick.
+    const fresh = itemOf(work);
+    if (
+      !fresh ||
+      !wanted(fresh, synced.review, work) ||
+      fresh.pr?.branch !== repo.branch ||
+      !fresh.sessions.includes(caller.sessionId)
+    )
+      return conflict(`GONE: ${workKey(item.number)} changed while the walkthrough was submitted; submit again`);
+    const changed = changeReview<{ ok: false; message: string }>(synced.review.id, (r) =>
+      isOpen(r)
+        ? { ok: true, review: authorWorkReview(r, input, caller, repo.headSha, now()) }
+        : { ok: false, message: decided }
+    );
+    if (!changed.ok) return conflict(changed.message);
+    return { kind: 'written', review: changed.review, goneSha: before.ok ? before.review.headSha : undefined };
+  };
+
+  return { sync, authorFor, facts, sendChanges, accepted, catchUp, follow };
 }
