@@ -122,7 +122,7 @@ import {
   writeCaptureFile,
   writeReview,
 } from '../../reviews/review-store.js';
-import { handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
+import { closeSessionWork, handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
 import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
@@ -694,6 +694,10 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     let latest = first.ok ? first.review : review;
     const closedOthers = await closeSuperseded(review, mergedSha);
     workReviews.accepted(latest, mergedSha, personAuthor(req));
+    const authorId = authorSessionId(review);
+    if (authorId && deployRole.allows('persist'))
+      for (const workspaceId of closeSessionWork(review.owner, authorId, review.id, mergedSha, personAuthor(req)))
+        options.announceWork?.(workspaceId);
     if (deploys) {
       const decision = await askForDeploy(mergedSha);
       const second = changeReview(review.id, (r) => decide(r, decision));

@@ -3,12 +3,13 @@
  * review links its author session; so the items of a review are the open items, in its owner's canvas workspaces,
  * that link that session. Used when a review is handed to a new session (`POST /api/reviews/:id/new-session`): the
  * items go into the new session's prompt, and the new session is linked to them so the canvas follows the work.
+ * Also used on Approve of a session's review: its In progress items move to Done (W-70 I8).
  *
  * Reads tolerate a workspace whose work file cannot be read (it is skipped); a link that cannot be written is
  * reported, never thrown, since the hand-over itself has already happened by then.
  */
 import { changeWork, readWork } from '../canvas/work-store.js';
-import { WORK_STATUS_NAMES, updateWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
+import { WORK_STATUS_NAMES, closeLinkedWork, updateWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import { readWorkspaces } from '../canvas/workspace-registry.js';
 import type { Author } from '../canvas/model.js';
 import type { HandoverWork } from './review-model.js';
@@ -60,6 +61,31 @@ export function linkSessionToWork(items: ReviewWorkItem[], sessionId: string, au
       if (result.ok && !result.duplicate) changed.add(w.workspaceId);
     } catch {
       /* Not the live colour, or the file went away: the hand-over stands without the link. */
+    }
+  }
+  return [...changed];
+}
+
+/**
+ * Approve merged a review written by `sessionId`: each In progress item of the owner's workspaces that links the
+ * session moves to Done (W-70 I8). Returns the workspaces that changed; an item that cannot be written is skipped.
+ */
+export function closeSessionWork(
+  owner: string | null,
+  sessionId: string,
+  reviewId: string,
+  mergedSha: string,
+  author: Author
+): string[] {
+  const changed = new Set<string>();
+  for (const w of workItemsForSession(owner, sessionId)) {
+    try {
+      const result = changeWork(w.workspaceId, (file) =>
+        closeLinkedWork(file, w.number, sessionId, reviewId, mergedSha, { author, now: Date.now() })
+      );
+      if (result.ok && result.item.status === 'done') changed.add(w.workspaceId);
+    } catch {
+      /* The file went away: the merge stands without the move. */
     }
   }
   return [...changed];
