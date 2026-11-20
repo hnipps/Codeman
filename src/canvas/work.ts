@@ -11,13 +11,16 @@
  * agent quotes their `instruction`), an agent deletes only with a `reason`, an answered question goes back to Needs
  * refinement, and the order of Ready for work (`readyOrder`, `readyQueue()`) is the pickup order.
  *
- * Nothing changes an item by itself. `report` is the run-end rule an agent applies to its own work when a run ends
- * (done and verified, keep working, done plus new Backlog items, or ask the person); it is a request the agent makes,
- * and the server only records it.
+ * Nothing changes an item by itself, with two exceptions (W-70): an In progress item whose owner ended without a
+ * report is released (`releaseFor()`), and a parent whose tickets are all closed follows them. Every write keeps an In
+ * progress item owned (`ownerRefusal()`). `report` is the run-end rule an agent applies to its own work when a run
+ * ends (done and verified, keep working, done plus new Backlog items, or ask the person); it is a request the agent
+ * makes, and the server only records it.
  */
 import { z } from 'zod';
 import { RefSchema } from '../reviews/review-model.js';
 import { AuthorSchema, IdSchema, type Author } from './model.js';
+import { taskActive, type TaskState } from './tasks.js';
 
 export type WorkAssignee = { kind: 'person' } | { kind: 'session'; sessionId: string };
 
@@ -597,6 +600,8 @@ export function createWork(file: WorkFile, input: CreateWork, ctx: WorkContext):
       ? `Created from ${workKey(input.createdFrom)} in ${WORK_STATUS_NAMES[input.status]}`
       : `Created in ${WORK_STATUS_NAMES[input.status]}`
   );
+  const unowned = ownerRefusal(next, item, ctx, true);
+  if (unowned) return unowned;
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }
 
@@ -651,6 +656,7 @@ export function updateWork(
     return refuse('INVALID_INPUT', 'reason says why an item is deleted; send it with status deleted');
   if (deleting && ctx.author.kind === 'agent' && !patch.reason)
     return refuse('INVALID_INPUT', `Say why you are deleting ${workKey(number)} in reason`);
+  const enteringInProgress = to === 'in-progress' && item.status !== 'in-progress';
   if (to !== undefined && to !== item.status) {
     const refused = backlogRefusal(item, to, ctx, patch.instruction);
     if (refused) return refused;
@@ -716,6 +722,8 @@ export function updateWork(
     changed = true;
   }
   if (!changed) return { ok: true, file, item: findWork(file, number)!, filed: [], duplicate: false };
+  const unowned = ownerRefusal(next, item, ctx, enteringInProgress);
+  if (unowned) return unowned;
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }
@@ -804,13 +812,17 @@ export function reportWork(
       log(item, ctx, 'Asked the person a question');
       break;
   }
+  // A report says its author is on the item, so a report that leaves it In progress unowned assigns the reporter.
+  const unowned = ownerRefusal(next, item, ctx, true);
+  if (unowned) return unowned;
   touch(item, ctx);
   return { ok: true, file: next, item, filed, duplicate: false };
 }
 
 /**
  * The reviewer asked for changes on the item's pull request: the notes go on the item, an open question is closed by
- * them, and the item goes to the top of Ready for work, so the next run picks it up and reads the notes first.
+ * them, and the item goes to the top of Ready for work, unassigned, so the next run picks it up and reads the notes
+ * first.
  */
 export function requestChangesOnWork(
   file: WorkFile,
@@ -828,6 +840,11 @@ export function requestChangesOnWork(
   delete item.needs;
   if (item.status !== 'ready-for-work') setStatus(next, item, 'ready-for-work', ctx);
   place(next, item, 1, ctx);
+  // The pickup routine takes only unassigned items; the finished session stays linked (W-70 I6).
+  if (item.assignee) {
+    item.assignee = null;
+    log(item, ctx, describeAssignee(null));
+  }
   log(item, ctx, 'Changes requested in review');
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
@@ -912,6 +929,198 @@ export function detachWork(file: WorkFile, number: number, id: string, ctx: Work
   if (left.length) item.attachments = left;
   else delete item.attachments;
   log(item, ctx, `Removed attachment ${attachment.name}`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
+// ---- Owners (W-70) ---------------------------------------------------------
+
+/** What the server knows about a session at one moment: `unknown` before the restore after a boot has finished. */
+export type SessionState = 'live' | 'exited' | 'gone' | 'unknown';
+/** Who keeps an item In progress, derived every tick and never stored. */
+export type Owner =
+  | { kind: 'person' }
+  | { kind: 'run'; sessionId: string; runId: string; taskId: string; state: TaskState }
+  | { kind: 'session'; sessionId: string; state: SessionState }
+  | { kind: 'tickets'; open: number[] }
+  | { kind: 'none' };
+/** The one write a release makes: where the item goes, the history line, and the question when it asks. */
+export type Release = { to: WorkStatus; reason: string; question?: string };
+/** The facts the runner supplies: a routine run by its session, and any other session's state. */
+export type OwnerFacts = {
+  run: (sessionId: string) => { runId: string; taskId: string; state: TaskState } | undefined;
+  session: (sessionId: string) => SessionState;
+};
+/** Releases in a row after which the next release asks the person, and a claim is refused (I4, F2). */
+export const MAX_RELEASES_IN_A_ROW = 2;
+const RELEASED = 'Released: ';
+
+/** The items created from `item` that are not closed: they own it while nobody is assigned (I7). */
+export const openTickets = (file: WorkFile, item: WorkItem): WorkItem[] =>
+  file.items.filter((i) => i.createdFrom === item.number && !workClosed(i.status));
+
+export function ownerOf(item: WorkItem, file: WorkFile, facts: OwnerFacts): Owner {
+  const assignee = item.assignee;
+  if (assignee?.kind === 'person') return { kind: 'person' };
+  if (assignee?.kind === 'session') {
+    const { sessionId } = assignee;
+    const state = facts.session(sessionId);
+    // A run's task state is read from the session map, so it means nothing until the session itself is known.
+    const run = state === 'unknown' ? undefined : facts.run(sessionId);
+    return run ? { kind: 'run', sessionId, ...run } : { kind: 'session', sessionId, state };
+  }
+  const tickets = file.items.filter((i) => i.createdFrom === item.number);
+  if (tickets.length) return { kind: 'tickets', open: openTickets(file, item).map((i) => i.number) };
+  return { kind: 'none' };
+}
+
+/**
+ * I1: an In progress item has an assignee or open tickets. A write that moved an unassigned item in (or a report)
+ * assigns its author; any other write that would leave the item unowned is refused.
+ */
+function ownerRefusal(file: WorkFile, item: WorkItem, ctx: WorkContext, assignAuthor: boolean): WorkRefusal | null {
+  if (item.status !== 'in-progress' || item.assignee || openTickets(file, item).length) return null;
+  if (!assignAuthor)
+    return refuse(
+      'INVALID_INPUT',
+      `${workKey(item.number)} is In progress, so it needs an owner. Assign someone, or move it out of In progress in the same change`
+    );
+  const mover: WorkAssignee =
+    ctx.author.kind === 'agent' ? { kind: 'session', sessionId: ctx.author.sessionId } : { kind: 'person' };
+  if (mover.kind === 'session') {
+    const failed = link(item, [mover.sessionId]);
+    if (failed) return refuse('INVALID_INPUT', failed);
+  }
+  item.assignee = mover;
+  log(item, ctx, describeAssignee(mover));
+  return null;
+}
+
+/**
+ * The `Released:` lines since the last report or person's move, newest first. A release's own move shares its time
+ * and author, so it is not read as a person's move.
+ */
+function releasesInARowOf(item: Pick<WorkItem, 'history'>): WorkEvent[] {
+  const released: WorkEvent[] = [];
+  let last: WorkEvent | undefined;
+  for (const event of item.history) {
+    if (event.text.startsWith(RELEASED)) {
+      released.push(event);
+      last = event;
+      continue;
+    }
+    if (last && event.at === last.at && sameAuthor(event.author, last.author)) continue;
+    if (event.text.startsWith('Reported ') || event.text === 'Asked the person a question') break;
+    if (event.author.kind === 'human' && event.text.startsWith('Moved from ')) break;
+  }
+  return released;
+}
+export const releasesInARow = (item: Pick<WorkItem, 'history'>): number => releasesInARowOf(item).length;
+const sameAuthor = (a: Author, b: Author): boolean =>
+  a.kind === b.kind &&
+  (a.kind === 'human' ? a.userId === (b as typeof a).userId : a.sessionId === (b as typeof a).sessionId);
+
+/** The status the item entered In progress from, by its newest `Moved from <A> to In progress` line. */
+function cameFrom(item: WorkItem): WorkStatus | undefined {
+  const into = ` to ${WORK_STATUS_NAMES['in-progress']}`;
+  for (const event of item.history) {
+    if (!event.text.startsWith('Moved from ') || !event.text.endsWith(into)) continue;
+    const name = event.text.slice('Moved from '.length, -into.length);
+    return WORK_STATUSES.find((s) => WORK_STATUS_NAMES[s] === name);
+  }
+  return undefined;
+}
+
+const ownerName = (owner: Owner): string =>
+  owner.kind === 'run' ? `run ${owner.runId}` : owner.kind === 'session' ? `session ${owner.sessionId}` : 'nobody';
+
+/**
+ * The release decision (I2, I3, I4, I7), or null when the item keeps its owner. Pure: `owner` is the runner's facts.
+ * A live owner is never released: a person, a run still queued, running or waiting, a live or unknown session, or open
+ * tickets. Applied to its own result it returns null (I5).
+ */
+export function releaseFor(item: WorkItem, file: WorkFile, owner: Owner): Release | null {
+  if (item.status !== 'in-progress') return null;
+  switch (owner.kind) {
+    case 'person':
+      return null;
+    case 'run':
+      if (taskActive(owner.state)) return null;
+      break;
+    case 'session':
+      if (owner.state === 'live' || owner.state === 'unknown') return null;
+      break;
+    case 'tickets': {
+      if (owner.open.length) return null;
+      const tickets = file.items.filter((i) => i.createdFrom === item.number);
+      const keys = tickets.map((i) => workKey(i.number)).join(', ');
+      if (tickets.every((i) => i.status === 'done')) return { to: 'done', reason: `Done: all tickets done (${keys})` };
+      const dropped = tickets
+        .filter((i) => i.status !== 'done')
+        .map((i) => `${workKey(i.number)} ${WORK_STATUS_NAMES[i.status]}`);
+      return {
+        to: 'human-required',
+        reason: `Tickets closed: ${keys}`,
+        question: `Every ticket of ${workKey(item.number)} is closed, but not all are Done (${dropped.join(', ')}). Is ${workKey(item.number)} done?`,
+      };
+    }
+    case 'none':
+      break;
+  }
+  const who = ownerName(owner);
+  const reason =
+    owner.kind === 'run'
+      ? `${RELEASED}run ${owner.runId} ended without a report`
+      : owner.kind === 'session'
+        ? `${RELEASED}session ${owner.sessionId} ${owner.state === 'gone' ? 'ended' : 'exited'} without a report`
+        : `${RELEASED}it was In progress with no owner`;
+  const key = workKey(item.number);
+  const earlier = releasesInARowOf(item);
+  if (earlier.length + 1 >= MAX_RELEASES_IN_A_ROW) {
+    const before = /^Released: (run \S+|session \S+)/.exec(earlier[0]!.text)?.[1] ?? 'an earlier owner';
+    const both =
+      before.startsWith('run ') && owner.kind === 'run'
+        ? `runs ${before.slice(4)} and ${owner.runId}`
+        : `${before} and ${who}`;
+    return {
+      to: 'human-required',
+      reason,
+      question: `${key} was released twice: ${both} ended without reporting. Send it back to Ready for work when the cause is fixed.`,
+    };
+  }
+  if (item.pr && !item.changes)
+    return {
+      to: 'human-required',
+      reason,
+      question: `${key} has pull request ${item.pr.url} waiting, and ${who} ended without a report. Review it, or send it back to Ready for work.`,
+    };
+  const from = cameFrom(item);
+  return { to: !from || workClosed(from) || from === 'in-progress' ? 'needs-refinement' : from, reason };
+}
+
+/**
+ * Writes a release: the move (Ready for work at the top), the question, the history line. A released item loses its
+ * assignee, and a run's session is unlinked; a parent following its tickets keeps everything else. Refused with
+ * CONFLICT when the item changed since `expectedRevision`, so a release decided on stale facts waits a tick (I5).
+ */
+export function applyRelease(
+  file: WorkFile,
+  number: number,
+  release: Release,
+  owner: Owner,
+  expectedRevision: number,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, expectedRevision);
+  if (refused) return refused;
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  if (item.status !== release.to) setStatus(next, item, release.to, ctx);
+  if (release.to === 'ready-for-work') place(next, item, 1, ctx);
+  item.assignee = null;
+  if (owner.kind === 'run') item.sessions = item.sessions.filter((id) => id !== owner.sessionId);
+  if (release.question) item.needs = { question: release.question.slice(0, MAX_WORK_NOTE_CHARS), at: ctx.now };
+  log(item, ctx, release.reason);
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }

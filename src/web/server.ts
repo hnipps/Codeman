@@ -1491,6 +1491,11 @@ export class WebServer extends EventEmitter {
       },
       mayAutomate: () => deployRole.allows('automate'),
       announce: (workspaceId, changed) => announceRoutines(canvasPort, workspaceId, changed),
+      sessionState: (id) => {
+        if (!this.restoreSucceeded) return 'unknown';
+        const session = this.sessions.get(id);
+        return !session ? 'gone' : session.paneExit ? 'exited' : 'live';
+      },
     });
     registerPushRoutes(this.app, ctx);
     registerTeamRoutes(this.app, ctx);

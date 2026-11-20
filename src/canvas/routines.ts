@@ -15,7 +15,9 @@ import { AuthorSchema, type Author } from './model.js';
 import type { TaskState } from './tasks.js';
 import {
   laneOrder,
+  MAX_RELEASES_IN_A_ROW,
   NotDeletedStatusSchema,
+  releasesInARow,
   WORK_STATUS_NAMES,
   workKey,
   type WorkFile,
@@ -354,7 +356,7 @@ const firedFor = (state: RoutineState, number: number, status: WorkStatus, enter
 
 /**
  * The first item, in its lane's order (`laneOrder`), that a work-item trigger of the routine has not fired for since
- * it entered; the triggers are tried in their order.
+ * it entered; the triggers are tried in their order. A claiming trigger skips an item released twice in a row.
  */
 export function dueWorkItem(
   routine: Pick<Routine, 'triggers'>,
@@ -364,6 +366,8 @@ export function dueWorkItem(
   for (const trigger of workItemTriggers(routine))
     for (const item of laneOrder(file, trigger.status)) {
       if (trigger.unassignedOnly && item.assignee !== null) continue;
+      // A claiming trigger never starts a third run on an item released twice in a row (W-70 I4, F2).
+      if (trigger.claim && releasesInARow(item) >= MAX_RELEASES_IN_A_ROW) continue;
       const entered = enteredAt(item);
       if (!firedFor(state, item.number, trigger.status, entered))
         return { item, trigger, enteredAt: entered ?? item.createdAt };

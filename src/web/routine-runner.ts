@@ -8,12 +8,27 @@
  * A start is recorded as pending before the route is asked, so the due time is consumed even if the process dies
  * mid-start; the next tick finds the pending fire and settles or repeats it with the same run id, which the task route
  * answers as a duplicate. `mayAutomate` (the live deploy colour, rule 6) is checked before every write and every call.
+ *
+ * Each tick also releases In progress Work items whose owner ended without a report (W-70): `releaseFor()` in
+ * `work.ts` decides from the task list and the session map, and nothing is released before the boot's restore has
+ * finished, since every session reads as gone until then.
  */
 import type { FastifyInstance } from 'fastify';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
 import { changeRoutineState, readRoutines, readRoutineState } from '../canvas/routine-store.js';
 import { changeWork, readWork } from '../canvas/work-store.js';
-import { findWork, updateWork, type WorkFile, type WorkItem } from '../canvas/work.js';
+import {
+  applyRelease,
+  findWork,
+  MAX_RELEASES_IN_A_ROW,
+  ownerOf,
+  releaseFor,
+  releasesInARow,
+  updateWork,
+  type SessionState,
+  type WorkFile,
+  type WorkItem,
+} from '../canvas/work.js';
 import { readConversations } from '../canvas/conversations.js';
 import { startedBy } from '../canvas/agent-start.js';
 import {
@@ -48,9 +63,22 @@ export type RoutineRunnerDeps = {
   mayAutomate: () => boolean;
   /** Tells open canvases that routines or their fires changed, and with `work` that a Work item did too. */
   announce: (workspaceId: string, changed?: { work?: true }) => Promise<void>;
+  /** A session from the server's session map; `unknown` until the boot's restore has finished. */
+  sessionState: (sessionId: string) => SessionState;
 };
 
-type BriefTask = { id: string; requestId: string; createdAt: number; state: TaskState; startedBy?: unknown };
+type BriefTask = {
+  id: string;
+  requestId: string;
+  createdAt: number;
+  state: TaskState;
+  sessionId?: string;
+  startedBy?: unknown;
+};
+const routineOf = (task: BriefTask): string | undefined => {
+  const by = task.startedBy as { kind?: string; routineId?: string } | undefined;
+  return by?.kind === 'routine' ? by.routineId : undefined;
+};
 
 /** A refused start's code: the `CODE:` the task route puts at the head of its message. */
 const refusalCode = (message: string): string | undefined => /^([A-Z][A-Z_]{2,40}):/.exec(message)?.[1];
@@ -77,6 +105,7 @@ export class RoutineRunner {
   }
 
   private async tickWorkspace(workspace: Workspace, now: number): Promise<void> {
+    await this.release(workspace);
     const routines = readRoutines(workspace.id);
     const state = readRoutineState(workspace.id);
     if (!routines.ok || !state.ok) return;
@@ -120,8 +149,46 @@ export class RoutineRunner {
     return this.carryOut(workspace, routine, owner, plan);
   }
 
-  /** The runs of each routine of a canvas, read from its task list; undefined when the list could not be read. */
-  private async runViews(workspace: Workspace, owner: AuthUser): Promise<((id: string) => RunView) | undefined> {
+  /**
+   * Releases the canvas's In progress items whose owner ended without a report, one guarded write each. Fails
+   * closed: an unreadable `work.json` or task list, or a session the restore has not reached, releases nothing.
+   */
+  private async release(workspace: Workspace): Promise<void> {
+    const work = readWorkFile(workspace.id);
+    const held = work?.items.filter((i) => i.status === 'in-progress') ?? [];
+    if (!work || held.length === 0 || !this.deps.mayAutomate()) return;
+    const owner = await this.deps.ownerUser(workspace);
+    const tasks = owner && (await this.briefTasks(workspace, owner));
+    if (!owner || !tasks) return;
+    const runs = new Map<string, BriefTask>();
+    for (const task of [...tasks].sort((a, b) => a.createdAt - b.createdAt))
+      if (routineOf(task) && task.sessionId) runs.set(task.sessionId, task);
+    const facts = {
+      run: (sessionId: string) => {
+        const task = runs.get(sessionId);
+        return task && { runId: task.requestId, taskId: task.id, state: task.state };
+      },
+      session: this.deps.sessionState,
+    };
+    let released = false;
+    for (const item of held) {
+      const who = ownerOf(item, work, facts);
+      const release = releaseFor(item, work, who);
+      if (!release || !this.deps.mayAutomate()) continue;
+      const author =
+        who.kind === 'run' || who.kind === 'session'
+          ? { kind: 'agent' as const, sessionId: who.sessionId }
+          : { kind: 'human' as const, userId: owner.username };
+      const result = changeWork(workspace.id, (file) =>
+        applyRelease(file, item.number, release, who, item.revision, { author, now: Date.now() })
+      );
+      if (result.ok) released = true;
+    }
+    if (released) await this.deps.announce(workspace.id, { work: true });
+  }
+
+  /** The canvas's brief task list; undefined when it could not be read. */
+  private async briefTasks(workspace: Workspace, owner: AuthUser): Promise<BriefTask[] | undefined> {
     const response = await this.deps.app.inject({
       method: 'GET',
       url: `/api/canvas/${workspace.id}/tasks?brief=1`,
@@ -129,15 +196,21 @@ export class RoutineRunner {
     });
     if (response.statusCode !== 200) return undefined;
     const body = response.json() as { data?: { tasks?: BriefTask[]; unreadable?: string } };
-    if (!body.data?.tasks || body.data.unreadable) return undefined;
+    return body.data?.tasks && !body.data.unreadable ? body.data.tasks : undefined;
+  }
+
+  /** The runs of each routine of a canvas, read from its task list; undefined when the list could not be read. */
+  private async runViews(workspace: Workspace, owner: AuthUser): Promise<((id: string) => RunView) | undefined> {
+    const tasks = await this.briefTasks(workspace, owner);
+    if (!tasks) return undefined;
     const views = new Map<string, RunView>();
-    for (const task of [...body.data.tasks].sort((a, b) => b.createdAt - a.createdAt)) {
-      const by = task.startedBy as { kind?: string; routineId?: string } | undefined;
-      if (by?.kind !== 'routine' || !by.routineId) continue;
-      const view = views.get(by.routineId) ?? noRuns();
+    for (const task of [...tasks].sort((a, b) => b.createdAt - a.createdAt)) {
+      const routineId = routineOf(task);
+      if (!routineId) continue;
+      const view = views.get(routineId) ?? noRuns();
       if (taskActive(task.state)) view.active.push({ runId: task.requestId, taskId: task.id, state: task.state });
       else view.finished.push({ runId: task.requestId, taskId: task.id });
-      views.set(by.routineId, view);
+      views.set(routineId, view);
     }
     return (id) => views.get(id) ?? noRuns();
   }
@@ -226,7 +299,8 @@ function readWorkFile(workspaceId: string): WorkFile | undefined {
 /**
  * A claiming fire's item assigned to the run's session and moved to `CLAIM_STATUS`, attributed to that session.
  * Refused (false) when the item left the status it fired on, or someone holds it (a claim never takes an item from a
- * person or another session), or it changed under the write (`expectedRevision`). A repeated start whose item this session already holds counts as claimed.
+ * person or another session), or it was released twice in a row with no report or person's move since (W-70 I4), or it
+ * changed under the write (`expectedRevision`). A repeated start whose item this session already holds counts as claimed.
  */
 function claim(workspaceId: string, work: NonNullable<RoutineFire['work']>, sessionId: string): boolean {
   const result = changeWork(workspaceId, (file) => {
@@ -244,6 +318,8 @@ function claim(workspaceId: string, work: NonNullable<RoutineFire['work']>, sess
         code: 'CONFLICT',
         message: 'The item left its status or was taken before the run claimed it',
       };
+    if (releasesInARow(item) >= MAX_RELEASES_IN_A_ROW)
+      return { ok: false, code: 'CONFLICT', message: 'The item was released twice in a row; a person sends it back' };
     return updateWork(
       file,
       work.number,

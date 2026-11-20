@@ -1038,7 +1038,14 @@ describe('fix round 1: an agent that exits, and what a restart leaves', () => {
         expect(brief.json().data).toEqual({
           brief: true,
           tasks: [
-            { id: task.id, requestId: task.requestId, name: task.name, createdAt: task.createdAt, state: 'running' },
+            {
+              id: task.id,
+              requestId: task.requestId,
+              name: task.name,
+              createdAt: task.createdAt,
+              state: 'running',
+              sessionId: task.sessionId,
+            },
           ],
           active: 1,
           cap: MAX_ACTIVE_TASKS,

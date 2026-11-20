@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-19 — In progress always has an owner, on the server (W-70 ticket 1)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/work.ts`, `src/canvas/routines.ts`, `src/web/routine-runner.ts`, `src/web/routes/canvas-task-routes.ts`, `src/web/server.ts`, `src/mcp-server.ts`, `CLAUDE.md`, `docs/subsystem-rules.md`, `docs/architecture-invariants.md`
+**Why:** Items sat In progress with nobody working on them (W-61, W-56, W-66, W-22). The spec makes the owner a rule the server keeps.
+**Links:** [intent/2026-11-18-w70-in-progress-owner.md](../intent/2026-11-18-w70-in-progress-owner.md)
+
+I1 to I7 are built as specified, with three choices the spec's wording left open. A report that leaves an unowned item In progress assigns the reporter instead of refusing the report, since only an item written before this release can be unowned and refusing would lose the agent's note. A claiming work-item trigger also skips an item released twice in a row before it starts a run (`dueWorkItem()`), because `claim()` runs after the start and its refusal alone would still spend a third run. A run's task state is ignored while its session reads `unknown`, because the task list reads every session as gone until the boot's restore finishes.
+
 ## 2026-11-19 — Reviews read a changed Markdown file rendered, and notes anchor to its words
 
 **Type:** intent-refinement
