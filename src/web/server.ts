@@ -152,6 +152,7 @@ import { defaultDockerWorkspaces } from './routes/git-status-routes.js';
 import { composerIsEmpty, plainFrame } from '../session-submit-verifier.js';
 import { detectUsageLimitPause } from '../usage-limit-patterns.js';
 import { stopDeepSeekWeb } from '../deepseek-web-server.js';
+import { ChatGraphSupervisor } from '../chat-graph/supervisor.js';
 import {
   wireRespawnListeners,
   stopRespawnForSession,
@@ -451,6 +452,11 @@ export class WebServer extends EventEmitter {
     dataDir: getDataDir(),
     canPersist: () => deployRole.allows('persist'),
     mayAct: () => deployRole.allows('persist'),
+  });
+  private readonly chatGraph = new ChatGraphSupervisor({
+    dir: dataPath('chat-graph'),
+    owner: getDataDir(),
+    mayPersist: () => deployRole.allows('persist'),
   });
   private restoreSucceeded = false;
   private previewReconcileInFlight: Promise<void> | null = null;
@@ -3582,6 +3588,7 @@ export class WebServer extends EventEmitter {
     // version we actually booted). No-op on a normal boot. See web/self-update.ts.
     if (!this.testMode && deployRole.allows('persist')) {
       reconcileUpdateOnBoot();
+      this.runChatGraph();
     }
 
     // Restore mux sessions BEFORE accepting connections
@@ -4656,6 +4663,24 @@ export class WebServer extends EventEmitter {
 
   private roleChangeQueue: Promise<unknown> = Promise.resolve();
 
+  /** Sweep orphans, then start this colour's Chat Graph sidecar, without blocking the caller; failures are logged. */
+  private runChatGraph(): void {
+    if (this.testMode) return;
+    void this.chatGraph
+      .sweep()
+      .then(() => this.chatGraph.start())
+      .then((result) => {
+        if (result.ok) return;
+        if (result.reason === 'missing-binary') {
+          if (!this.chatGraphMissingLogged) console.log(`[ChatGraph] ${result.error}`);
+          this.chatGraphMissingLogged = true;
+        } else {
+          console.warn(`[ChatGraph] sidecar not started (${result.reason}): ${result.error}`);
+        }
+      });
+  }
+  private chatGraphMissingLogged = false;
+
   /**
    * Move this process to another deploy role (see deploy-role.ts), one change at a time:
    * a retire asked for while a promotion is still running waits for it.
@@ -4687,6 +4712,7 @@ export class WebServer extends EventEmitter {
           break;
         case 'reinstate':
           deployRole.enter('live');
+          this.runChatGraph();
           await this.writeSharedState();
           this.keepWarmService.rescheduleAll();
           break;
@@ -4718,6 +4744,7 @@ export class WebServer extends EventEmitter {
     if (!restored) throw new Error('the sessions on disk could not be restored');
     await this.finalizeRestoredState(restored);
     deployRole.enter('live');
+    this.runChatGraph();
     // finalizeRestoredState ran as the candidate, which may not act, so the full orphan
     // sweep the boot of a live colour runs happens here instead.
     void this.reconcilePreviews();
@@ -4734,6 +4761,7 @@ export class WebServer extends EventEmitter {
    * on top of them; the session list's write is the one awaited after.
    */
   private async retireFromLive(): Promise<void> {
+    await this.chatGraph.stop();
     await this.store.settle();
     const listWritten = this.writeSharedState();
     deployRole.enter('retired');
@@ -4916,6 +4944,7 @@ export class WebServer extends EventEmitter {
     // port against the next start — the exact EADDRINUSE this feature already
     // got wrong once.
     void stopDeepSeekWeb();
+    void this.chatGraph.stop();
 
     // The header's GPU / CPU clock sampler is a Windows child process under WSL, and its idle sweep a timer.
     stopHostSensors();

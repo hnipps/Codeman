@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-20 — The Chat Graph sidecar builds from the system go, and the deploy gate requires it (W-88)
+
+**Type:** intent-refinement
+**Touches:** `chat-graph/`, `src/chat-graph/supervisor.ts`, `src/web/server.ts`, `scripts/build.mjs`, `deploy/test.sh`, `CLAUDE.md`, `docs/subsystem-rules.md`, `docs/architecture-invariants.md`
+**Why:** The spec's first risk was that the deploy build could not see `go`. The owner chose option (a), go installed system-wide, over a `$HOME` fallback in `deploy/build.sh` and over a committed binary.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md), Work item W-88
+
+The deploy build's PATH (read from a running `deploy/build.sh`) includes the system directory where `go` is now installed. `scripts/build.mjs` skips the sidecar when `go` is missing, so installs without it, CI and the Docker image build as before. This fork's `deploy/test.sh` refuses a release without the binary instead, so a deploy cannot silently ship Chat Graph off. The Go build runs offline (`-mod=vendor`, `GOPROXY=off`, `GOTOOLCHAIN=local`). Ticket 1 needs only the standard library, so `chat-graph/vendor/` does not exist yet. Ticket 2 vendors `modernc.org/sqlite` there, and the offline flags make the build fail if it does not.
+
 ## 2026-11-20 — The Chat Graph main chat lives in a command palette
 
 **Type:** intent-refinement
