@@ -57,6 +57,27 @@ if (missingModules.length > 0) {
 run('tsc', 'tsc');
 run('chmod dist/index.js', 'chmod +x dist/index.js');
 
+// 1b. Chat Graph's Go sidecar, next to the supervisor tsc just emitted. Offline by
+// construction: vendored modules only, no proxy, no toolchain download. An install without
+// `go` builds without it and Chat Graph stays off; this fork's deploy gate (deploy/test.sh)
+// refuses a release that lacks the binary.
+let hasGo = true;
+try {
+  execSync('command -v go', { stdio: 'ignore', shell: true });
+} catch {
+  hasGo = false;
+}
+if (hasGo) {
+  console.log('\n[build] chat-graph sidecar');
+  execSync('go build -trimpath -ldflags=-s -o ../dist/chat-graph/chat-graph .', {
+    stdio: 'inherit',
+    cwd: join(ROOT, 'chat-graph'),
+    env: { ...process.env, GOFLAGS: '-mod=vendor', GOPROXY: 'off', GOTOOLCHAIN: 'local', CGO_ENABLED: '0' },
+  });
+} else {
+  console.warn('\n[build] chat-graph sidecar skipped: `go` is not on PATH');
+}
+
 // 2. Copy static assets (clean first to remove stale hashed files from previous builds)
 run('clean public', 'rm -rf dist/web/public');
 run('prepare dirs', 'mkdir -p dist/web dist/templates dist/web/public/vendor');

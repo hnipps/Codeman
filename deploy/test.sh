@@ -61,6 +61,7 @@ tests=(
   test/mux-vanish.test.ts
   test/vanished-sessions-server.test.ts
   test/deploy-role.test.ts
+  test/chat-graph-supervisor.test.ts
   test/routes/deploy-routes.test.ts
   test/deploy-control.test.ts
   test/routes/deploy-control-routes.test.ts
@@ -82,6 +83,9 @@ tests=(
   test/canvas-reviews-link.test.ts
 )
 
+# build.mjs skips the Chat Graph sidecar when `go` is missing; a release of this fork must carry it.
+[ -x dist/chat-graph/chat-graph ] || { echo "test.sh: dist/chat-graph/chat-graph was not built (is go on PATH?)" >&2; exit 1; }
+
 # A filter that matches no file makes vitest exit 0, so a renamed test must fail here instead.
 for f in "${tests[@]}"; do
   [ -f "$f" ] || { echo "test.sh: $f does not exist" >&2; exit 1; }
@@ -89,4 +93,5 @@ done
 
 npm run typecheck
 npm run check:frontend-syntax
+(cd chat-graph && GOFLAGS=-mod=vendor GOPROXY=off GOTOOLCHAIN=local CGO_ENABLED=0 go test ./...)
 npm test -- "${tests[@]}"

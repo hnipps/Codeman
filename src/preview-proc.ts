@@ -68,7 +68,16 @@ export function parseListenInodes(text: string, port: number): string[] {
   return inodes;
 }
 
-function ownPids(uid: number): number[] {
+/** The value of `name` in a NUL-separated `/proc/<pid>/environ` text, or undefined when it is absent. */
+export function readEnvVar(environ: string, name: string): string | undefined {
+  const prefix = `${name}=`;
+  for (const entry of environ.split('\0')) {
+    if (entry.startsWith(prefix)) return entry.slice(prefix.length);
+  }
+  return undefined;
+}
+
+export function ownPids(uid: number): number[] {
   const pids: number[] = [];
   for (const name of readdirSync('/proc')) {
     const pid = Number(name);
