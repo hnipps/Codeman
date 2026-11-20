@@ -691,6 +691,69 @@ html.mobile-init .file-browser-panel {
     }
   }
 
+  /* Previews button, just left of the settings gear. Shares the gear's box. */
+  .btn-previews-mobile {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    color: #9ca3af;
+    cursor: pointer;
+    flex-shrink: 0;
+    order: 6;
+  }
+
+  /* The count overlays the corner so the button costs no more room than the gear:
+     the case button beside it is the one that gives way. */
+  .btn-previews-mobile .preview-drawer-count {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 14px;
+    padding: 0 3px;
+    font-size: 0.55rem;
+    line-height: 14px;
+  }
+
+  .btn-previews-mobile:active {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+
+  /* The drawer is a bottom sheet over the toolbar on phones. */
+  .preview-drawer-backdrop {
+    background: var(--modal-backdrop);
+  }
+
+  .preview-drawer-sheet {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-width: none;
+    max-height: calc(var(--app-height, 100dvh) * 0.7);
+    border-radius: 14px 14px 0 0;
+    border-bottom: 0;
+    padding-bottom: var(--safe-area-bottom);
+    padding-left: var(--safe-area-left);
+    padding-right: var(--safe-area-right);
+  }
+
+  .preview-drawer-open {
+    padding: 8px 10px;
+  }
+
+  .preview-drawer-delete {
+    min-height: 40px;
+    padding: 0 14px;
+  }
+
   /* Mobile app settings gear in toolbar - far right */
   .btn-settings-mobile {
     display: inline-flex !important;
@@ -3392,13 +3455,13 @@ html:is([data-skin="paper-gray"], [data-skin="solarized-light"], [data-skin="cat
    both stylesheets and repainted the armed modifier back to a resting button on
    all four light skins. Excluding the state here fixes phone and tablet at once;
    adding a class to the armed rules would only have moved the tie. */
-html:is([data-skin="paper-gray"], [data-skin="solarized-light"], [data-skin="catppuccin-latte"], [data-skin="rose-pine-dawn"]) :is(.btn-voice-mobile, .btn-attach-mobile, .btn-settings-mobile, .btn-toolbar.btn-shell, .accessory-btn:not(.armed)) {
+html:is([data-skin="paper-gray"], [data-skin="solarized-light"], [data-skin="catppuccin-latte"], [data-skin="rose-pine-dawn"]) :is(.btn-voice-mobile, .btn-attach-mobile, .btn-settings-mobile, .btn-previews-mobile, .btn-toolbar.btn-shell, .accessory-btn:not(.armed)) {
   background: var(--control-bg);
   border-color: var(--control-border);
   color: var(--text-dim);
 }
 
-html:is([data-skin="paper-gray"], [data-skin="solarized-light"], [data-skin="catppuccin-latte"], [data-skin="rose-pine-dawn"]) :is(.btn-voice-mobile:active, .btn-attach-mobile:active, .btn-settings-mobile:active, .btn-toolbar.btn-shell:hover, .btn-toolbar.btn-shell:active, .accessory-btn:active) {
+html:is([data-skin="paper-gray"], [data-skin="solarized-light"], [data-skin="catppuccin-latte"], [data-skin="rose-pine-dawn"]) :is(.btn-voice-mobile:active, .btn-attach-mobile:active, .btn-settings-mobile:active, .btn-previews-mobile:active, .btn-toolbar.btn-shell:hover, .btn-toolbar.btn-shell:active, .accessory-btn:active) {
   background: var(--control-bg-hover);
   border-color: var(--control-border-hover);
   color: var(--text);

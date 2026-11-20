@@ -61,6 +61,11 @@ is left holding a port after the session is gone. A preview that cannot be shown
 was stopped, its server exited or it is not answering, shows a card with its command and a
 **Restart** instead of a blank frame.
 
+**Every preview in one list.** The **Previews** button in the bottom bar (an icon beside the
+settings gear on a phone) lists every running preview across your sessions, with its
+session, port, state and how long it has been up. Tap a row to open that session's preview,
+or **Delete** to stop its server. The button shows how many are running.
+
 A few limits:
 
 - Remote (SSH) and Docker sessions cannot have previews.
@@ -69,7 +74,6 @@ A few limits:
   than reporting it stopped.
 - `python3 -m http.server` and many dev servers listen on every network interface. Add
   `--bind 127.0.0.1` (or the server's equivalent) when that matters.
-- There is no list of every preview across sessions yet. Each one lives under its session.
 
 ## Why dashboards are proxied
 
