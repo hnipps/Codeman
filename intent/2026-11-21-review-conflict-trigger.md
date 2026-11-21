@@ -77,7 +77,7 @@ An R-4 merge of the base moves the branch tip. Under revision 4's T2, a clean re
 
 ## Interim
 
-Until this ships, R-4's interval goes from 30 to 60 minutes. That halves the empty wakes. Most of the remaining conflicts were JOURNAL.md, which W-129 now merges by itself. The extra latency costs little at the rate conflicts are arriving (1 run in 7 had work).
+Until this ships, the owner may move R-4's interval from 30 to 60 minutes. Changing an enabled routine's triggers switches it off, and only a person can switch it back on, so this is the owner's step and no agent's. That halves the empty wakes. Most of the remaining conflicts were JOURNAL.md, which W-129 now merges by itself. The extra latency costs little at the rate conflicts are arriving (1 run in 7 had work).
 
 ## How this was checked
 
