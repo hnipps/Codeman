@@ -3,9 +3,9 @@
  * The merges run against real temporary repositories. The supervisor is always a fake.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataPath } from '../src/config/instance.js';
 import type { DeployOverviewConfigured } from '../src/deploy-control.js';
@@ -14,6 +14,9 @@ import { mergeReviewedBranch } from '../src/reviews/review-merge.js';
 import { runGit } from '../src/git-workspace-status.js';
 import { settledDeploy, type Decision } from '../src/reviews/review-model.js';
 import { registerReviewPageRoutes, type ReviewRouteOptions } from '../src/web/routes/review-routes.js';
+import { changeWork, readWork, workPath } from '../src/canvas/work-store.js';
+import { closeLinkedWork, createWork, CreateWorkSchema, emptyWorkFile, findWork } from '../src/canvas/work.js';
+import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { createRouteTestHarness, type RouteTestHarness } from './routes/_route-test-utils.js';
 
 const dirs: string[] = [];
@@ -334,6 +337,162 @@ describe('approve routes', () => {
     const queue = (await harness.app.inject({ url: '/api/reviews' })).json().data;
     expect(queue.waiting).toHaveLength(0);
     expect(queue.decided).toHaveLength(1);
+  });
+
+  describe("Approve of a session review closes its session's In progress work", () => {
+    const ctx = { author: { kind: 'human' as const, userId: 'admin' }, now: 1000 };
+    /** Items in three statuses that link the review's session, and one In progress item of another session. */
+    const fileItems = () => {
+      const workspace = workspaceForCase('review-approve-i8').id;
+      const make = (status: string, sessions: string[]) => {
+        const made = changeWork(workspace, (f) =>
+          createWork(
+            f,
+            CreateWorkSchema.parse({
+              title: `${status} ${sessions[0]}`,
+              status,
+              sessions,
+              ...(status === 'in-progress' ? { assignee: { kind: 'session', sessionId: sessions[0] } } : {}),
+            }),
+            ctx
+          )
+        );
+        if (!made.ok) throw new Error(made.message);
+        return made.item.number;
+      };
+      return {
+        workspace,
+        inProgress: make('in-progress', ['test-session-1']),
+        humanRequired: make('human-required', ['test-session-1']),
+        ready: make('ready-for-work', ['test-session-1']),
+        otherSession: make('in-progress', ['test-session-9']),
+      };
+    };
+    const statusOf = (workspace: string, number: number) => {
+      const read = readWork(workspace);
+      if (!read.ok) throw new Error(read.reason);
+      return findWork(read.file, number)!;
+    };
+    afterEach(() => rmSync(dataPath('canvas'), { recursive: true, force: true }));
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('moves only the In progress items that link the session to Done, and tells canvas pages', async () => {
+      const items = fileItems();
+      const announceWork = vi.fn();
+      const id = await start({ announceWork });
+      const done = await approve(id, repo.git('rev-parse', 'feat/x'));
+      expect(done.statusCode).toBe(200);
+      const mergedSha = done.json().data.review.decision.mergedSha as string;
+
+      const closed = statusOf(items.workspace, items.inProgress);
+      expect(closed.status).toBe('done');
+      expect(closed.history[0]!.text).toBe(`Done: review ${id} merged ${mergedSha.slice(0, 7)}`);
+      expect(closed.history.map((e) => e.text)).toContain('Moved from In progress to Done');
+      expect(statusOf(items.workspace, items.humanRequired).status).toBe('human-required');
+      expect(statusOf(items.workspace, items.ready).status).toBe('ready-for-work');
+      expect(statusOf(items.workspace, items.otherSession).status).toBe('in-progress');
+      expect(announceWork).toHaveBeenCalledWith(items.workspace);
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('closes nothing when the merge fails', async () => {
+      const items = fileItems();
+      const id = await start();
+      const refused = await approve(id, 'f'.repeat(40));
+      expect(refused.statusCode).toBe(409);
+      expect(statusOf(items.workspace, items.inProgress).status).toBe('in-progress');
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('closeLinkedWork changes nothing the second time, nor on an item in another status', () => {
+      let file = emptyWorkFile();
+      const add = (status: string) => {
+        const made = createWork(
+          file,
+          CreateWorkSchema.parse({
+            title: status,
+            status,
+            sessions: ['s'],
+            assignee: { kind: 'session', sessionId: 's' },
+          }),
+          ctx
+        );
+        if (!made.ok) throw new Error(made.message);
+        file = made.file;
+        return made.item.number;
+      };
+      const open = add('in-progress');
+      const asked = add('human-required');
+
+      const first = closeLinkedWork(file, open, 's', 'r1', 'a'.repeat(40), ctx);
+      if (!first.ok) throw new Error(first.message);
+      expect(first.item.status).toBe('done');
+      const second = closeLinkedWork(first.file, open, 's', 'r1', 'a'.repeat(40), ctx);
+      if (!second.ok) throw new Error(second.message);
+      expect(second.file).toBe(first.file);
+      expect(second.item.history).toEqual(first.item.history);
+
+      const other = closeLinkedWork(file, asked, 's', 'r1', 'a'.repeat(40), ctx);
+      expect(other.ok && other.file).toBe(file);
+      const unlinked = closeLinkedWork(file, open, 'not-linked', 'r1', 'a'.repeat(40), ctx);
+      expect(unlinked.ok && unlinked.file).toBe(file);
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('answers which items it closed, and the ones it could not write, while the merge stands', async () => {
+      const items = fileItems();
+      const id = await start();
+      chmodSync(dirname(workPath(items.workspace)), 0o500);
+      let done;
+      try {
+        done = await approve(id, repo.git('rev-parse', 'feat/x'));
+      } finally {
+        chmodSync(dirname(workPath(items.workspace)), 0o700);
+      }
+      expect(done.statusCode).toBe(200);
+      expect(done.json().data.review.decision.kind).toBe('merged');
+      const linked = done.json().data.linkedWork;
+      expect(linked.authorSession).toBe('test-session-1');
+      expect(linked.closed).toEqual([]);
+      expect(linked.failed.map((f: { key: string }) => f.key)).toEqual([`W-${items.inProgress}`]);
+      expect(statusOf(items.workspace, items.inProgress).status).toBe('in-progress');
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('lists the keys it moved to Done in the response', async () => {
+      const items = fileItems();
+      const id = await start();
+      const done = await approve(id, repo.git('rev-parse', 'feat/x'));
+      expect(done.json().data.linkedWork).toEqual({
+        authorSession: 'test-session-1',
+        closed: [`W-${items.inProgress}`],
+        failed: [],
+      });
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('closeLinkedWork records the question and requested changes it clears', () => {
+      const made = createWork(
+        emptyWorkFile(),
+        CreateWorkSchema.parse({
+          title: 'open',
+          status: 'in-progress',
+          sessions: ['s'],
+          assignee: { kind: 'session', sessionId: 's' },
+        }),
+        ctx
+      );
+      if (!made.ok) throw new Error(made.message);
+      const item = findWork(made.file, made.item.number)!;
+      item.needs = { question: 'Ship it?', at: 1 };
+      const closed = closeLinkedWork(made.file, made.item.number, 's', 'r1', 'b'.repeat(40), ctx);
+      if (!closed.ok) throw new Error(closed.message);
+      expect(closed.item.needs).toBeUndefined();
+      expect(closed.item.history.slice(0, 2).map((e) => e.text)).toEqual([
+        'Done: review r1 merged bbbbbbb',
+        'Cleared its question',
+      ]);
+    });
   });
 
   describe('close', () => {
