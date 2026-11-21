@@ -527,9 +527,12 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     // Read, decide and write with no await between them, so two submissions cannot both make a new review.
     const all = listReviews();
     const owner = session.owner ?? null;
-    // Where two open reviews of the branch already exist (written before W-77), the caller's own one is the match.
+    // Where two open reviews of the branch already exist (written before W-77), the caller's own one is the match,
+    // else the most recently updated one, so the choice does not hang on directory order.
     const same = all.filter((r) => isOpen(r) && sameWork(r, owner, facts));
-    const open = same.find((r) => r.sessionId === session.id) ?? same[0];
+    const open =
+      same.find((r) => r.sessionId === session.id) ??
+      same.reduce<Review | undefined>((a, r) => (!a || r.updatedAt > a.updatedAt ? r : a), undefined);
     if (!open && all.filter((r) => isOpen(r) && r.owner === owner).length >= MAX_OPEN_REVIEWS)
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'FULL: too many reviews are waiting; decide some first');
     const review = submitReview(
