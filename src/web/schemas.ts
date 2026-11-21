@@ -2561,3 +2561,10 @@ export async function loadCanvasSchemas() {
   };
 }
 export const CanvasWorkspaceSchema = z.object({ caseName: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/) }).strict();
+
+/** A pr-swarm run's id on a review (`src/reviews/swarm-runner.ts`), as `swarm-model.ts` mints and checks it. */
+export const SwarmRunIdSchema = z.string().regex(/^[a-z0-9]{8,40}$/);
+/** `POST /api/reviews/:id/swarm`: a person starts a run; nothing in the body chooses the tip. */
+export const SwarmStartSchema = z.object({}).strict();
+/** `POST /api/reviews/swarm-runs/:runId/report`: what the run's session hands back, checked by the runner. */
+export const SwarmReportBodySchema = z.object({ report: z.record(z.string(), z.unknown()) }).strict();

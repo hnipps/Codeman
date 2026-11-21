@@ -2,6 +2,41 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — A full canvas evicts its oldest inactive record
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/conversation-eviction.ts`, `src/web/routes/canvas-task-routes.ts`, `src/web/routes/canvas-conversation-routes.ts`, `src/web/sse-events.ts`, `src/mcp-server.ts`, `CLAUDE.md`, `docs/architecture-invariants.md`, `docs/api-reference.md`
+**Why:** Dead and idle conversations filled the 50-record cap and refused routine fires.
+**Links:** [intent/2026-11-21-canvas-conversation-eviction.md](../intent/2026-11-21-canvas-conversation-eviction.md)
+
+The cap stays 50 stored records, because the previous release's schema refuses a longer list, but only active records hold a place: a start on a full canvas evicts inactive ones oldest first. Active is a live session working now or active in the last hour, read from the pane's last output and input and the record's message times. Eviction is Remove, and the record goes even when Remove kept something, so a kept record never blocks a start: a dirty worktree stays on disk for the left-behind list, and a session that would not close stays in the session list. Rejected: raising the stored bound for kept records (breaks rollback), and keeping kept records (they could fill the canvas for good).
+
+## 2026-11-21 — pr-swarm runs start on submit and on a moved tip (W-112, ticket t4)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-watcher.ts`, `src/reviews/swarm-git.ts`, `src/reviews/swarm-runner.ts`, `src/web/routes/review-routes.ts`, `CLAUDE.md`, `docs/architecture-invariants.md`, `docs/api-reference.md`
+**Why:** The spec's `swarm-watcher.ts` entry leaves three choices open: which tip a move is measured from, where the watcher's timer lives, and where a refusal is kept.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work item W-112
+
+A move is measured from what the watcher read last, else the newest tip the review's runs recorded, else the submitted head. So a restart notices a push made while Codeman was down, a review submitted before this release whose branch moved since gets one run, and the fix a run pushed and reviewed starts nothing after the run, even when the watcher never saw the push (I8). The watcher rides the runner's minute tick through one `CleanupManager` interval instead of a second timer. A refusal is kept in memory and published on `GET .../swarm`, since the run file is strict and already shipped (rule 5 in spirit). A watched move goes through a new runner method, `tipMoved()`, so the model's `tip` event and I8's classifier decide it in one write; `trigger(..., 'push')` would have queued a run for the run's own commits when the run ended between the read and the write. One case is left as a change on purpose: fix commits pushed by a run that then ended `failed`, before the watcher saw them, queue a new run, since no finished run has reviewed them.
+
+## 2026-11-21 — Agents design with impeccable, build in poteto-mode, and get an independent check before review
+
+**Type:** intent-refinement
+**Touches:** `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, routines R-1, R-2 and R-3
+**Why:** The owner asked (2026-11-21) that all UI and UX design work use the impeccable skill, that every non-trivial code change use poteto-mode and be verified by one or more independent agents before a review opens, and that implementers and reviewers consider the Crosscheck skills, especially for complex or invariant-heavy changes. Routines included.
+
+The Assurance rules in all three instruction files now say this. poteto-mode cannot be loaded through the Skill tool, so an agent reads its SKILL.md directly, as routine R-2 already did. The independent check is a fresh agent that gets the goal and the diff, not the author's conclusion. Its verdict goes in the PR body or walkthrough. The prompts of routines R-1, R-2 and R-3 repeat the rules, edited on the canvas the same day, because a routine run reads its prompt first and a branch only sees `CLAUDE.md` once this change is on master. The owner added the same day that any Claude agent may hand work to codex, antigravity or gemini agents to spread the cost.
+
+## 2026-11-21 — The pr-swarm runner blanks gh by a server-only env channel (W-111, ticket t3)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-runner.ts`, `src/reviews/swarm-git.ts`, `src/git-worktrees.ts`, `src/session.ts`, `src/tmux-manager.ts`, `src/web/routes/review-routes.ts`, `src/cli-agent.ts`, `CLAUDE.md`, `docs/architecture-invariants.md`, `docs/api-reference.md`
+**Why:** I3 asks for a run session with blank `GH_TOKEN` and `GITHUB_TOKEN`, and no existing path could set that.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work item W-111
+
+The per-session env allowlist refuses both keys, and tmux skipped an empty value, so a run session would have inherited the server's own token. `Session.setInternalEnv()` is a second channel the server sets between create and start: never from a request, never persisted, and the one path that sets an empty tmux value. On this host gh is signed in through its own config file, so blank tokens alone still let it write; the run also points `GH_CONFIG_DIR` at an empty folder. Three choices the spec left open: a local-only branch that a worktree has checked out gets a review-only run (git would refuse every fix push, and the run would never settle); the runner recovers lazily from its minute tick once the colour is live and restored, instead of hooks in boot, promote and reinstate; and a report is applied with `r3Required: false` until the R-3 ticket, so nothing auto-approves in t3.
+
 ## 2026-11-21 — The Chat Graph supervisor runs every operation through one queue (W-88)
 
 **Type:** propagated-discovery

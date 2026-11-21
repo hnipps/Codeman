@@ -1450,3 +1450,195 @@ describe('an agent starts tasks within bounds (owner instruction 2026-11-13)', (
     }
   });
 });
+
+describe('a full canvas', () => {
+  const HOUR = 60 * 60 * 1000;
+  type Seed = { quietMs: number; session?: 'live' | 'gone'; working?: boolean };
+  /** Fills the canvas with plain conversations, each with a stand-in session quiet for `quietMs`, unless it is gone. */
+  const fill = (h: Awaited<ReturnType<typeof harness>>, seeds: Seed[]) => {
+    const now = Date.now();
+    const rows = seeds.map((seed, i) => {
+      const sessionId = `seeded-${i}`;
+      if (seed.session !== 'gone')
+        h.sessions.set(sessionId, {
+          id: sessionId,
+          workingDir: h.casePath,
+          lastActivityAt: now - seed.quietMs,
+          isWorking: seed.working === true,
+          writeViaMux: vi.fn(async () => true),
+        });
+      return {
+        id: uuid(),
+        sessionId,
+        cliId: 'claude',
+        requestId: uuid(),
+        createdAt: now - seed.quietMs - HOUR,
+        createdBy: 'admin',
+        messages: [],
+      };
+    });
+    const read = readConversations(h.workspace.id);
+    const existing = read.ok ? read.conversations : [];
+    writeFileSync(
+      conversationsPath(h.workspace.id),
+      JSON.stringify({ version: 1, conversations: [...existing, ...rows] })
+    );
+    return rows;
+  };
+  const converse = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.app.inject({ method: 'POST', url: `${h.base}/conversations`, payload: { requestId: uuid() } });
+
+  it('evicts the oldest inactive conversation to start a 51st, and leaves the active ones alone', async () => {
+    const h = await harness({ repo: false });
+    try {
+      const seeds: Seed[] = Array.from({ length: 50 }, () => ({ quietMs: 5 * 60_000 }));
+      seeds[10] = { quietMs: 90 * 60_000 };
+      seeds[20] = { quietMs: 3 * HOUR };
+      seeds[30] = { quietMs: 9 * HOUR, working: true };
+      const rows = fill(h, seeds);
+      const response = await converse(h);
+      expect(response.statusCode).toBe(200);
+      const ids = h.file().map((c) => c.id);
+      expect(ids).toHaveLength(50);
+      expect(ids).not.toContain(rows[20].id);
+      expect(ids).toContain(rows[10].id);
+      expect(ids).toContain(rows[30].id);
+      expect(h.port.discardConversationSession).toHaveBeenCalledTimes(1);
+      expect(h.sessions.has('seeded-20')).toBe(false);
+      expect(h.port.broadcast).toHaveBeenCalledWith(
+        'canvas:conversation',
+        expect.objectContaining({ workspaceId: h.workspace.id, conversationId: rows[20].id, change: 'removed' })
+      );
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('judges each candidate again as it evicts it, skipping one that started working meanwhile', async () => {
+    const h = await harness({ repo: false });
+    try {
+      const seeds: Seed[] = Array.from({ length: 50 }, () => ({ quietMs: 60_000 }));
+      seeds[1] = { quietMs: 5 * HOUR };
+      seeds[2] = { quietMs: 4 * HOUR };
+      seeds[3] = { quietMs: 3 * HOUR };
+      const rows = fill(h, seeds);
+      h.port.discardConversationSession.mockImplementationOnce(async () => {
+        // While the oldest is being discarded, the next one starts a turn; the discard itself fails.
+        h.sessions.get('seeded-2')!.isWorking = true;
+        throw new Error('would not close');
+      });
+      expect((await converse(h)).statusCode).toBe(200);
+      const ids = h.file().map((c) => c.id);
+      expect(ids).toContain(rows[1].id);
+      expect(ids).toContain(rows[2].id);
+      expect(ids).not.toContain(rows[3].id);
+      expect(h.sessions.has('seeded-2')).toBe(true);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('evicts a conversation whose session has ended, however recently it was used', async () => {
+    const h = await harness({ repo: false });
+    try {
+      const seeds: Seed[] = Array.from({ length: 50 }, () => ({ quietMs: 60_000 }));
+      seeds[7] = { quietMs: 60_000, session: 'gone' };
+      const rows = fill(h, seeds);
+      expect((await converse(h)).statusCode).toBe(200);
+      expect(h.file().map((c) => c.id)).not.toContain(rows[7].id);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('refuses when all 50 are active, says so, and starts nothing', async () => {
+    const h = await harness({ repo: false });
+    try {
+      const seeds: Seed[] = Array.from({ length: 50 }, (_, i) => ({ quietMs: 59 * 60_000, working: i % 2 === 0 }));
+      fill(h, seeds);
+      const before = readFileSync(conversationsPath(h.workspace.id), 'utf8');
+      for (const response of [await converse(h), await h.run({ shared: true })]) {
+        expect(response.statusCode).toBe(409);
+        expect(response.json().error).toMatch(/^TOO_MANY: all 50 conversations and tasks on this canvas are active/);
+      }
+      expect(h.port.startConversationSession).not.toHaveBeenCalled();
+      expect(h.port.discardConversationSession).not.toHaveBeenCalled();
+      expect(readFileSync(conversationsPath(h.workspace.id), 'utf8')).toBe(before);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('evicts nothing for a start that is refused for another reason', async () => {
+    const h = await harness({ repo: false });
+    try {
+      fill(
+        h,
+        Array.from({ length: 50 }, () => ({ quietMs: 3 * HOUR }))
+      );
+      const refused = await h.run();
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatch(/^NOT_A_REPOSITORY:/);
+      expect(h.port.discardConversationSession).not.toHaveBeenCalled();
+      expect(h.file()).toHaveLength(50);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('does not evict on a colour that is not live', async () => {
+    const h = await harness({ repo: false });
+    try {
+      fill(
+        h,
+        Array.from({ length: 50 }, () => ({ quietMs: 3 * HOUR }))
+      );
+      deployRole.enter('retired');
+      expect((await converse(h)).statusCode).toBe(409);
+      expect(h.port.discardConversationSession).not.toHaveBeenCalled();
+      expect(h.file()).toHaveLength(50);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it('evicts an idle task without force: its worktree with changes stays on disk and is listed as left behind', async () => {
+    const h = await harness();
+    try {
+      const { task } = (await h.run()).json().data as { task: TaskRow };
+      const [name] = h.worktrees();
+      const tree = join(h.casePath, '.claude', 'worktrees', name);
+      writeFileSync(join(tree, 'notes.txt'), 'work in progress\n');
+      // The task last did anything three hours ago; its session is still open.
+      const old = Date.now() - 3 * HOUR;
+      const read = readConversations(h.workspace.id);
+      if (!read.ok) throw new Error('unreadable');
+      const [record] = read.conversations;
+      record.createdAt = old;
+      record.messages = record.messages.map((m) => ({ ...m, sentAt: old, submittedAt: old, deliveredAt: old }));
+      writeFileSync(conversationsPath(h.workspace.id), JSON.stringify({ version: 1, conversations: [record] }));
+      Object.assign(h.sessions.get(task.sessionId)!, { lastActivityAt: old, lastSubmitAt: old });
+      fill(
+        h,
+        Array.from({ length: 49 }, () => ({ quietMs: 60_000 }))
+      );
+      const started = await h.run({ text: 'Another request' });
+      expect(started.statusCode).toBe(200);
+      expect(h.file().map((c) => c.id)).not.toContain(task.id);
+      expect(h.file()).toHaveLength(50);
+      expect(h.sessions.has(task.sessionId)).toBe(false);
+      expect(existsSync(join(tree, 'notes.txt'))).toBe(true);
+      expect(git(h.casePath, 'worktree', 'list')).toContain(name);
+      expect(h.branches()).toContain(`worktree-${name}`);
+      forgetLeftBehind();
+      const listed = ((await h.list()) as unknown as { leftBehind?: { name: string }[] }).leftBehind ?? [];
+      expect(listed.map((r) => r.name)).toContain(name);
+      expect(h.port.broadcast).toHaveBeenCalledWith(
+        'canvas:conversation',
+        expect.objectContaining({ conversationId: task.id, change: 'task' })
+      );
+    } finally {
+      await h.app.close();
+    }
+  });
+});

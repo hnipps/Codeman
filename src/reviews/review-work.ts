@@ -3,12 +3,13 @@
  * review links its author session; so the items of a review are the open items, in its owner's canvas workspaces,
  * that link that session. Used when a review is handed to a new session (`POST /api/reviews/:id/new-session`): the
  * items go into the new session's prompt, and the new session is linked to them so the canvas follows the work.
+ * Also used on Approve of a session's review: the items that session left waiting move to Done (W-70 I8).
  *
  * Reads tolerate a workspace whose work file cannot be read (it is skipped); a link that cannot be written is
  * reported, never thrown, since the hand-over itself has already happened by then.
  */
 import { changeWork, readWork } from '../canvas/work-store.js';
-import { WORK_STATUS_NAMES, updateWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
+import { WORK_STATUS_NAMES, closeLinkedWork, updateWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import { readWorkspaces } from '../canvas/workspace-registry.js';
 import type { Author } from '../canvas/model.js';
 import type { HandoverWork } from './review-model.js';
@@ -63,4 +64,37 @@ export function linkSessionToWork(items: ReviewWorkItem[], sessionId: string, au
     }
   }
   return [...changed];
+}
+
+/** What Approve did to the author session's items: keys moved to Done, and keys it could not write with the reason. */
+export type ClosedSessionWork = {
+  closed: { workspaceId: string; key: string }[];
+  failed: { workspaceId: string; key: string; reason: string }[];
+};
+
+/**
+ * Approve merged a review written by `sessionId`: each item of the owner's workspaces that `closeLinkedWork` finds
+ * done moves to Done (W-70 I8). A refused or failed write is returned in `failed`, never thrown: the merge stands.
+ */
+export function closeSessionWork(
+  owner: string | null,
+  sessionId: string,
+  reviewId: string,
+  mergedSha: string,
+  author: Author
+): ClosedSessionWork {
+  const out: ClosedSessionWork = { closed: [], failed: [] };
+  for (const w of workItemsForSession(owner, sessionId)) {
+    const key = workKey(w.number);
+    try {
+      const result = changeWork(w.workspaceId, (file) =>
+        closeLinkedWork(file, w.number, sessionId, reviewId, mergedSha, { author, now: Date.now() })
+      );
+      if (!result.ok) out.failed.push({ workspaceId: w.workspaceId, key, reason: result.message });
+      else if (result.item.status === 'done') out.closed.push({ workspaceId: w.workspaceId, key });
+    } catch (err) {
+      out.failed.push({ workspaceId: w.workspaceId, key, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
 }

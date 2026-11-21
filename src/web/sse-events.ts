@@ -504,9 +504,11 @@ export const TabLayoutChanged = 'tab:layoutChanged' as const;
 export const CanvasChanged = 'canvas:changed' as const;
 /** A review was submitted, noted or decided. Payload `{ id, owner }`; the page reads the review again. Routed to its owner and admins. */
 export const ReviewChanged = 'review:changed' as const;
+/** A review's pr-swarm runs changed: one was queued, started, reported or ended. Payload `{ id, owner }`; the page reads `GET /api/reviews/:id/swarm` again. Routed to its owner and admins. */
+export const ReviewSwarm = 'review:swarm' as const;
 /** An agent asked one open canvas view to act. Payload `{ workspaceId, viewId, commandId, owner, command }`; routed to the view's owner and admins. */
 export const CanvasViewCommand = 'canvas:viewCommand' as const;
-/** A canvas conversation or background task was started, took a message or changed (`task`: cancelled, completed or removed). Payload `{ workspaceId, conversationId, change: 'created' | 'message' | 'task', owner }` (no `conversationId` when a left-behind task worktree was removed), no text; routed to the workspace owner and admins. The browser refetches the conversation. */
+/** A canvas conversation or background task was started, took a message or changed (`task`: cancelled, completed or removed; `removed`: a conversation evicted to make room on a full canvas). Payload `{ workspaceId, conversationId, change: 'created' | 'message' | 'task' | 'removed', owner }` (no `conversationId` when a left-behind task worktree was removed), no text; routed to the workspace owner and admins. The browser refetches the conversation. */
 export const CanvasConversation = 'canvas:conversation' as const;
 
 // ─── Namespace Re-export ─────────────────────────────────────────────────────
@@ -737,6 +739,7 @@ export const SseEvent = {
   TabLayoutChanged,
   CanvasChanged,
   ReviewChanged,
+  ReviewSwarm,
   CanvasViewCommand,
   CanvasConversation,
 } as const;

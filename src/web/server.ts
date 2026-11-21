@@ -116,7 +116,7 @@ import { SseStreamManager } from './sse-stream-manager.js';
 import { deriveTabLayoutSseHint } from './tab-layout-sse.js';
 import { registerCanvasRoutes } from './routes/canvas-routes.js';
 import { announceWorkChange } from './routes/canvas-work-routes.js';
-import { INTERNAL_PRINCIPAL_HEADER } from './internal-principal.js';
+import { INTERNAL_PRINCIPAL_HEADER, internalHeaders } from './internal-principal.js';
 import {
   canvasOn,
   decideLanding,
@@ -1562,6 +1562,16 @@ export class WebServer extends EventEmitter {
       startSession: (headers, request) => this.startConversationSession(headers, request),
       discardSession: (headers, sessionId) => this.discardConversationSession(headers, sessionId),
       announceWork: (workspaceId) => void announceWorkChange(canvasPort, workspaceId).catch(() => undefined),
+      // A pr-swarm run's session is the review owner's, started as a server-made request, like a routine's.
+      swarmHeaders: async (owner) => {
+        if (!isMultiUserMode()) return internalHeaders({ user: SYNTHETIC_ADMIN }, Date.now());
+        if (!owner) return null;
+        const user = await findUser(owner).catch(() => undefined);
+        return user && !user.disabled
+          ? internalHeaders({ user: { username: user.username, role: user.role } }, Date.now())
+          : null;
+      },
+      sessionsRestored: () => this.restoreSucceeded,
     });
     if (!this.testMode) {
       this.cleanup.setInterval(
@@ -2638,6 +2648,8 @@ export class WebServer extends EventEmitter {
       mode: string;
       launch: Record<string, unknown>;
       parentSessionId?: string;
+      /** Env the server sets on the session before its pane starts (`Session.setInternalEnv`). Never from a request. */
+      internalEnv?: Record<string, string>;
     }
   ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
     const forwarded: Record<string, string> = { 'content-type': 'application/json' };
@@ -2665,6 +2677,14 @@ export class WebServer extends EventEmitter {
     const sessionId = created.body.data?.session?.id;
     if (created.status >= 400 || created.body.success === false || typeof sessionId !== 'string')
       return { ok: false, message: created.body.error || 'The session could not be created' };
+    if (request.internalEnv) {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        await this.discardConversationSession(headers, sessionId);
+        return { ok: false, message: 'The session could not be prepared' };
+      }
+      session.setInternalEnv(request.internalEnv);
+    }
     const started = await call(`/api/sessions/${encodeURIComponent(sessionId)}/interactive`);
     if (started.status >= 400 || started.body.success === false) {
       // The tab this call just made would otherwise sit in the strip as a stopped session nobody asked for.

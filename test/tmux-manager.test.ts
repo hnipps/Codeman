@@ -1087,6 +1087,41 @@ describe('TmuxManager (unit)', () => {
       }
     });
 
+    it('sets the server-internal env with its empty values, where an empty user override sets nothing', async () => {
+      // A pr-swarm run session blanks the GitHub tokens (I3 of intent/2026-11-20-pr-swarm-reviews.md): an empty
+      // internal value must reach tmux as an empty setenv, so the pane does not inherit the server's own token.
+      const NonTestTmuxManager = await importWithTmuxCommandsEnabled();
+      const nonTestManager = new NonTestTmuxManager();
+      nonTestManager.registerSession({
+        sessionId: 'respawn9999',
+        muxName: 'codeman-abcd9999',
+        pid: 1000,
+        createdAt: Date.now(),
+        workingDir: '/tmp',
+        mode: 'shell',
+        attached: false,
+      });
+      try {
+        await nonTestManager.respawnPane({
+          sessionId: 'respawn9999',
+          workingDir: '/tmp',
+          mode: 'shell',
+          envOverrides: { CLAUDE_CODE_EMPTY: '' },
+          internalEnv: { GH_TOKEN: '', GITHUB_TOKEN: '', GH_CONFIG_DIR: '/data/swarm-gh', 'bad key': '' },
+        });
+        const setenvCalls = mockedExecSync.mock.calls
+          .map(([cmd]) => cmd)
+          .filter((cmd): cmd is string => typeof cmd === 'string' && cmd.includes(" setenv -t 'codeman-abcd9999'"));
+        expect(setenvCalls).toContain(`tmux -L 'codeman' setenv -t 'codeman-abcd9999' GH_TOKEN ''`);
+        expect(setenvCalls).toContain(`tmux -L 'codeman' setenv -t 'codeman-abcd9999' GITHUB_TOKEN ''`);
+        expect(setenvCalls.some((cmd) => cmd.includes(' GH_CONFIG_DIR ') && cmd.includes('/data/swarm-gh'))).toBe(true);
+        expect(setenvCalls.some((cmd) => cmd.includes('CLAUDE_CODE_EMPTY'))).toBe(false);
+        expect(setenvCalls.some((cmd) => cmd.includes('bad key'))).toBe(false);
+      } finally {
+        nonTestManager.destroy();
+      }
+    });
+
     it('gives a discovered session the directory tmux reports for its pane, not the server cwd', async () => {
       mockedExecSync.mockImplementation((cmd: string) => {
         if (typeof cmd === 'string' && cmd.includes(' list-panes ')) {
