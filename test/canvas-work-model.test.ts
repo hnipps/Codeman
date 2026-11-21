@@ -8,6 +8,8 @@ import {
   answeredDescription,
   askAgentDraft,
   assigneeLabel,
+  deletedBy,
+  deletedCount,
   fileSize,
   isImageAttachment,
   itemState,
@@ -17,7 +19,9 @@ import {
   outlineItems,
   parseWork,
   readyStep,
+  restoreStatus,
   stepStatus,
+  visibleStatuses,
   workCounts,
   WORK_FILE_ACCEPT,
   type WorkRow,
@@ -41,6 +45,7 @@ const row = (number: number, patch: Partial<WorkRow> = {}): WorkRow => ({
   comments: [],
   ...patch,
 });
+const person = { kind: 'human', userId: 'me' } as const;
 const session = (id: string, state: ShellSessionRow['state'], name = id): ShellSessionRow => ({
   id,
   name,
@@ -61,12 +66,65 @@ describe('work model', () => {
     expect(parseWork({ success: false, error: 'x' })).toBeNull();
   });
 
-  it('leaves Deleted rows out until the page learns to show them, so lanes, counts and steps are unchanged', () => {
-    const gone = { ...row(2), status: 'deleted', deleted: { at: 1, from: 'backlog', author: { kind: 'human' } } };
-    const parsed = parseWork({ success: true, data: { next: 'W-3', items: [row(1), gone] } });
-    expect(parsed?.items.map((i) => i.key)).toEqual(['W-1']);
-    expect(workCounts(parsed!.items).map((c) => c.status)).not.toContain('deleted');
+  it('reads Deleted rows with their record, and keeps one whose record it cannot read, restoring it to Backlog', () => {
+    const record = {
+      at: 5,
+      from: 'ready-for-work',
+      author: { kind: 'agent', sessionId: 'abcdef1234' },
+      reason: 'Dup',
+    } as const;
+    const gone = { ...row(2), status: 'deleted', deleted: record };
+    const bare = { ...row(3), status: 'deleted', deleted: { at: 'soon' } };
+    const parsed = parseWork({ success: true, data: { next: 'W-4', items: [row(1), gone, bare] } })!;
+    expect(parsed.items.map((i) => [i.key, i.status])).toEqual([
+      ['W-1', 'needs-refinement'],
+      ['W-2', 'deleted'],
+      ['W-3', 'deleted'],
+    ]);
+    expect(parsed.items[1]!.deleted).toEqual(record);
+    expect(parsed.items[2]!.deleted).toBeUndefined();
+    // Invariant I8: UndoIsAnOrdinaryMove
+    expect(restoreStatus(parsed.items[1]!)).toBe('ready-for-work');
+    expect(restoreStatus(parsed.items[2]!)).toBe('backlog');
+    const sessions = [session('abcdef1234', 'idle', 'w4-codeman')];
+    expect(deletedBy(parsed.items[1]!, sessions)).toBe('w4-codeman');
+    expect(deletedBy(row(4, { status: 'deleted', deleted: { ...record, author: person } }), sessions)).toBe('you');
+    expect(deletedBy(parsed.items[2]!, sessions)).toBeNull();
+  });
+
+  // Invariant I4: HiddenByDefault
+  it('leaves Deleted items out of the counts, the outline, the open count and Needs you, and never steps into them', () => {
+    const question = { question: 'Which?', at: 1 };
+    const deleted = (number: number, from: Exclude<WorkRow['status'], 'deleted'>) =>
+      row(number, { status: 'deleted', needs: question, deleted: { at: number, from, author: person } });
+    const items = [
+      row(1, { status: 'in-progress' }),
+      row(2, { status: 'human-required', needs: question }),
+      deleted(3, 'human-required'),
+      deleted(4, 'in-progress'),
+      row(5, { status: 'done' }),
+    ];
+    expect(workCounts(items).map((c) => c.status)).not.toContain('deleted');
+    expect(workCounts(items).reduce((n, c) => n + c.count, 0)).toBe(3);
+    expect(outlineItems(items, []).map((i) => i.number)).toEqual([2, 1]);
+    expect(openCount(items)).toBe(2);
+    expect(deletedCount(items)).toBe(2);
+    expect(itemState(items[1]!, [])).toBe('needs');
+    expect(itemState(items[2]!, [])).toBeNull();
+    expect(visibleStatuses(false)).not.toContain('deleted');
+    expect(visibleStatuses(true).at(-1)).toBe('deleted');
     expect(stepStatus('not-doing', 1)).toBeNull();
+    expect(stepStatus('deleted', -1)).toBeNull();
+    expect(stepStatus('deleted', 1)).toBeNull();
+  });
+
+  it('lists Deleted newest deletion first, whatever changed since', () => {
+    const items = [
+      row(1, { status: 'deleted', updatedAt: 90, deleted: { at: 10, from: 'backlog', author: person } }),
+      row(2, { status: 'deleted', updatedAt: 30, deleted: { at: 30, from: 'done', author: person } }),
+      row(3, { status: 'deleted', updatedAt: 20, deleted: { at: 20, from: 'backlog', author: person } }),
+    ];
+    expect(laneItems(items, 'deleted', []).map((i) => i.number)).toEqual([2, 3, 1]);
   });
 
   it('keeps the attachments it can read and drops one whose id could reach another URL', () => {

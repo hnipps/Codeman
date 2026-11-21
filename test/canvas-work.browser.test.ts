@@ -2,7 +2,8 @@
  * Work lanes in the browser after W-48: seven lanes in board order (Done and Not doing share the last column on a
  * desktop), a `work.json` from before the split migrated on read, Ready for work in pickup order with Shift+Up/Down
  * and a drag reordering it, the outline's Human required first, Ask an agent's unsent draft in a new conversation
- * (W-43), attachments in the detail from the Attach button and a drop (W-60), and the phone's wrapping lane tabs.
+ * (W-43), attachments in the detail from the Attach button and a drop (W-60), the phone's wrapping lane tabs, and
+ * Delete with Undo, Show deleted and Restore on a desktop and a phone (W-22).
  *
  * Port: 0 (WebServer binds an ephemeral port).
  */
@@ -433,6 +434,174 @@ describe('canvas work lanes (W-48)', () => {
     await closeAll();
   });
 
+  const openLanes = async (target: Page) => {
+    await target.locator('#board').focus();
+    await target.keyboard.press('Shift+W');
+    await target.waitForSelector('#workView:not([hidden]) .work-card');
+  };
+  const itemOf = (number: number) => stored().items.find((i: { number: number }) => i.number === number);
+  /** A person's delete through the route, as another tab would send it. */
+  const deleteByApi = async (key: string, reason?: string) => {
+    const number = Number(key.slice(2));
+    const answer = await page.request.patch(`${origin}/x/api/canvas/${workspace}/work/${key}`, {
+      data: { status: 'deleted', ...(reason ? { reason } : {}), expectedRevision: itemOf(number).revision },
+    });
+    expect(answer.status(), await answer.text()).toBe(200);
+  };
+
+  it('deletes from the detail at 1440px, moves the keyboard on, and Undo puts it back (W-22)', async () => {
+    const toggle = page.locator('.work-show-deleted');
+    await openLanes(page);
+    expect(await toggle.isHidden()).toBe(true);
+    await page.locator('.work-card[data-number="10"]').focus();
+    await page.keyboard.press('Enter');
+    const remove = page.locator('#workDetail [data-work-detail="delete"]');
+    await remove.waitFor();
+    // The last control of the detail, below History.
+    expect(await remove.evaluate((b) => b.closest('.work-sec')?.querySelector('h3')?.textContent)).toBe('History');
+    await remove.focus();
+    await page.keyboard.press('Enter');
+
+    await expect
+      .poll(() => itemOf(10))
+      .toMatchObject({
+        status: 'not-doing',
+        deleted: { from: 'backlog', author: { kind: 'human' } },
+      });
+    expect(await page.locator('#workDetail').isHidden()).toBe(true);
+    expect(await page.locator('[data-lane="backlog"] .work-card').count()).toBe(0);
+    expect(await page.locator('[data-lane="deleted"]').count()).toBe(0);
+    // Backlog is empty now, so its "+ Add item" takes the keyboard.
+    await expect
+      .poll(() => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.workAdd))
+      .toBe('backlog');
+    await expect.poll(() => page.locator('.work-toast').textContent()).toBe('W-10 deletedUndo');
+    expect(await page.locator('#announcement').textContent()).toBe('W-10 deleted');
+    await expect.poll(() => toggle.textContent()).toBe('Show deleted (1)');
+    expect(await toggle.getAttribute('aria-pressed')).toBe('false');
+    await page.screenshot({ path: resolve(MEDIA, `w22-${stamp}-deleted-notice.png`) });
+
+    await page.locator('.work-undo').click();
+    await expect.poll(() => itemOf(10).status).toBe('backlog');
+    expect(itemOf(10).deleted).toBeUndefined();
+    expect(itemOf(10).history.map((e: { text: string }) => e.text)).toContain('Moved from Deleted to Backlog');
+    await expect.poll(async () => (await lanesOf(page)).find(([lane]) => lane === 'backlog')?.[1]).toEqual([10]);
+    await expect.poll(() => toggle.isHidden()).toBe(true);
+    expect(await page.locator('#workDetail').isHidden()).toBe(true);
+  });
+
+  it('shows deleted items on request, reads who and why, restores one, and repaints a delete made elsewhere (W-22)', async () => {
+    const order = await ready();
+    const first = order[0]!;
+    await deleteByApi(`W-${first}`, 'Filed twice, see W-4');
+    const toggle = page.locator('.work-show-deleted');
+    await expect.poll(() => toggle.textContent()).toBe('Show deleted (1)');
+    expect(await ready()).toEqual(order.slice(1));
+    await toggle.click();
+    expect(await toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(await page.$$eval('.work-closed [data-lane]', (l) => l.map((n) => (n as HTMLElement).dataset.lane))).toEqual(
+      ['done', 'not-doing', 'deleted']
+    );
+    const card = page.locator(`[data-lane="deleted"] .work-card[data-number="${first}"]`);
+    expect(await card.getAttribute('class')).toContain('deleted');
+    expect(await card.locator('.work-card-when').textContent()).toMatch(/^Deleted \S/);
+    await page.screenshot({ path: resolve(MEDIA, `w22-${stamp}-show-deleted.png`) });
+
+    await card.focus();
+    await page.keyboard.press('Enter');
+    const restore = page.locator('#workDetail [data-work-detail="restore"]');
+    await restore.waitFor();
+    const banner = page.locator('#workDetail [aria-label="Deleted"]');
+    expect(await banner.locator('.work-box-head').textContent()).toMatch(/^Deleted by you on \S/);
+    expect(await banner.locator('.work-box-why').textContent()).toBe('Filed twice, see W-4');
+    expect(await restore.textContent()).toBe('Restore to Ready for work');
+    expect(await page.locator('#workDetail [data-work-detail="status"]').inputValue()).toBe('deleted');
+    expect(await page.locator('#workDetail [data-work-detail="delete"]').count()).toBe(0);
+    // Restore is the first control after the title.
+    await page.locator('#workDetail [data-work-detail="title"]').focus();
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.workDetail)).toBe(
+      'restore'
+    );
+    await page.screenshot({ path: resolve(MEDIA, `w22-${stamp}-deleted-detail.png`) });
+
+    await page.keyboard.press('Enter');
+    // Invariant I8: UndoIsAnOrdinaryMove. Restored to Ready for work, it goes to the bottom.
+    await expect.poll(() => itemOf(first)).toMatchObject({ status: 'todo', todoStatus: 'ready-for-work' });
+    expect(itemOf(first).deleted).toBeUndefined();
+    await expect.poll(ready).toEqual([...order.slice(1), first]);
+    expect(await page.locator('#workDetail').isVisible()).toBe(true);
+    await expect.poll(() => restore.count()).toBe(0);
+    await expect.poll(() => toggle.isHidden()).toBe(true);
+    expect(await page.locator('[data-lane="deleted"]').count()).toBe(0);
+
+    // Deleted by someone else while it is open here: the detail turns into the banner and stays open.
+    await page.locator('#workDetail [data-work-detail="status"]').focus();
+    await deleteByApi(`W-${first}`);
+    await restore.waitFor();
+    expect(await page.locator('#workDetail').isVisible()).toBe(true);
+    expect(await banner.locator('.work-box-why').count()).toBe(0);
+    await restore.click();
+    await expect.poll(() => itemOf(first).deleted).toBeUndefined();
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#workDetail', { state: 'hidden' });
+    await page.locator('#board').focus();
+    await page.keyboard.press('Shift+W');
+    await page.waitForSelector('#workView', { state: 'hidden' });
+  });
+
+  it('shows deleted items behind a tab and restores one on a 390px phone (W-22)', async () => {
+    await deleteByApi('W-9', 'Out of date');
+    const phone = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 1,
+      hasTouch: true,
+      isMobile: true,
+    });
+    await phone.addInitScript(() => {
+      (window as unknown as { __canvasTouch: boolean }).__canvasTouch = true;
+    });
+    const mobile = await phone.newPage();
+    await mobile.goto(`${origin}/x/canvas/${workspace}`, { waitUntil: 'domcontentloaded' });
+    await mobile.waitForSelector('[data-object-id="n1"]');
+    await mobile.locator('#sectionsTool').click();
+    await mobile.locator('.work-count[data-status="done"]').click();
+    await mobile.waitForSelector('#workView:not([hidden]) .work-lane.on .work-card');
+    const toggle = mobile.locator('.work-show-deleted');
+    expect(await toggle.textContent()).toBe('Show deleted (1)');
+    expect(await mobile.locator('[data-lane-tab="deleted"]').isHidden()).toBe(true);
+    await toggle.click();
+    const tab = mobile.locator('[data-lane-tab="deleted"]');
+    expect(await tab.isVisible()).toBe(true);
+    expect(await tab.getAttribute('aria-pressed')).toBe('true');
+    const shown = () =>
+      mobile.$$eval('#workView .work-lane', (l) =>
+        l.filter((n) => (n as HTMLElement).offsetParent).map((n) => (n as HTMLElement).dataset.lane)
+      );
+    expect(await shown()).toEqual(['deleted']);
+    for (const box of [await toggle.boundingBox(), await tab.boundingBox()]) {
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    }
+    expect(await mobile.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await mobile.screenshot({ path: resolve(MEDIA, `w22-${stamp}-phone-deleted.png`) });
+
+    await mobile.locator('[data-lane="deleted"] .work-card[data-number="9"]').click();
+    const restore = mobile.locator('#workDetail [data-work-detail="restore"]');
+    await restore.waitFor();
+    expect(await mobile.locator('#workDetail .work-box-why').textContent()).toBe('Out of date');
+    expect(await restore.textContent()).toBe('Restore to Not doing');
+    expect((await restore.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await mobile.screenshot({ path: resolve(MEDIA, `w22-${stamp}-phone-detail.png`) });
+    await restore.click();
+    await expect.poll(() => itemOf(9)).toMatchObject({ status: 'not-doing' });
+    expect(itemOf(9).deleted).toBeUndefined();
+    const remove = mobile.locator('#workDetail [data-work-detail="delete"]');
+    await remove.scrollIntoViewIfNeeded();
+    expect((await remove.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await phone.close();
+  });
+
   it('puts every lane one tap away behind wrapping tabs on a phone', async () => {
     const phone = await browser.newContext({
       viewport: { width: 375, height: 812 },
@@ -449,7 +618,7 @@ describe('canvas work lanes (W-48)', () => {
     await mobile.locator('#sectionsTool').click();
     await mobile.locator('.work-count[data-status="human-required"]').click();
     await mobile.waitForSelector('#workView:not([hidden]) .work-lane.on .work-card');
-    const tabs = await mobile.$$eval('.work-tabs [data-lane-tab]', (list) =>
+    const tabs = await mobile.$$eval('.work-tabs [data-lane-tab]:not([hidden])', (list) =>
       list.map((b) => {
         const box = b.getBoundingClientRect();
         return { lane: (b as HTMLElement).dataset.laneTab, right: box.right, height: box.height };
