@@ -4,8 +4,8 @@
  *
  * Rules this file keeps:
  * - Every string from an agent or from git is written with `textContent`. The walkthrough is the one exception:
- *   it goes through `marked` and then `window.sanitizeMarkdownHtml`, the dashboard's sanitizer, and is shown as
- *   plain text when either is missing.
+ *   it goes through `marked` and then `window.sanitizeWalkthroughHtml` (the dashboard's sanitizer plus
+ *   details/summary), and is shown as plain text when either is missing.
  * - A preview is a sandboxed frame without `allow-same-origin`, like a preview tab on the dashboard.
  * - Nothing is sent to a session without a press of Request changes (once the author session has ended, that press
  *   starts a new session and hands it the review).
@@ -527,20 +527,25 @@
       state.review = data.review;
       const d = data.review.decision || {};
       const where = data.merge && data.merge.pushed ? ' on origin' : '';
-      toast(
+      const parts = [
         d.kind === 'deploying'
           ? `Merged as ${shortSha(d.mergedSha)}. The deploy is queued.`
           : d.kind === 'deploy-failed'
             ? `Merged as ${shortSha(d.mergedSha)}, but the deploy could not be requested: ${d.error || 'no reason given'}`
             : `Merged into ${data.review.base}${where} as ${shortSha(d.mergedSha)}.`,
-        d.kind === 'deploy-failed' ? 'bad' : 'ok'
-      );
+      ];
       const others = (data.closedOthers || []).length;
       if (others)
-        toast(
-          `Closed ${others} other ${others === 1 ? 'review' : 'reviews'} of ${data.review.branch}: the merge holds their commits.`,
-          'ok'
+        parts.push(
+          `Closed ${others} other ${others === 1 ? 'review' : 'reviews'} of ${data.review.branch}: the merge holds their commits.`
         );
+      const linked = data.linkedWork || { closed: [], failed: [] };
+      if (linked.closed.length) parts.push(`Moved ${linked.closed.join(', ')} to Done.`);
+      if (linked.failed.length)
+        parts.push(
+          `${linked.failed.map((f) => f.key).join(', ')} could not move to Done: move ${linked.failed.length === 1 ? 'it' : 'them'} on the canvas.`
+        );
+      toast(parts.join(' '), d.kind === 'deploy-failed' || linked.failed.length ? 'bad' : 'ok');
       loadQueue();
     } catch (err) {
       toast(err.message, 'bad');
@@ -615,7 +620,8 @@
     const body = el('div', 'rv-md');
     let html = null;
     try {
-      if (window.marked && window.sanitizeMarkdownHtml) html = window.sanitizeMarkdownHtml(window.marked.parse(text));
+      const sanitize = window.sanitizeWalkthroughHtml || window.sanitizeMarkdownHtml;
+      if (window.marked && sanitize) html = sanitize(window.marked.parse(text));
     } catch (_err) {
       html = null;
     }

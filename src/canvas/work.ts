@@ -871,6 +871,35 @@ export function approveWork(
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }
 
+/**
+ * Approve merged a review written by `sessionId`: an In progress item that links that session is done (W-70 I8). Any
+ * other item, an item in any other status included, is returned as it is, so a second call changes nothing.
+ */
+export function closeLinkedWork(
+  file: WorkFile,
+  number: number,
+  sessionId: string,
+  reviewId: string,
+  mergedSha: string,
+  ctx: WorkContext
+): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  const current = findWork(file, number)!;
+  if (current.status !== 'in-progress' || !current.sessions.includes(sessionId))
+    return { ok: true, file, item: current, filed: [], duplicate: false };
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  const cleared = [item.needs && 'its question', item.changes && 'its requested changes'].filter(Boolean);
+  setStatus(next, item, 'done', ctx);
+  delete item.needs;
+  delete item.changes;
+  if (cleared.length) log(item, ctx, `Cleared ${cleared.join(' and ')}`);
+  log(item, ctx, `Done: review ${reviewId} merged ${mergedSha.slice(0, 7)}`);
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
 /** Adds a comment to the end of the item's thread. It changes no other field: status, `needs` and the rest stay. */
 export function commentWork(file: WorkFile, number: number, text: string, ctx: WorkContext): WorkChange | WorkRefusal {
   const refused = unchangeable(file, number, undefined);

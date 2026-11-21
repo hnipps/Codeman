@@ -18,13 +18,18 @@
  * tables, images with safe src) and to FORBID `style`/`svg`/`math` plus all event handlers and
  * dangerous URL schemes.
  *
+ * The Reviews page's walkthrough sanitizer (`sanitizeWalkthroughHtml`) additionally allows `details`/`summary`
+ * and the `open` attribute so extra detail can start folded. It adds no event handlers, so `ontoggle` and the
+ * rest are still stripped. No other surface uses it.
+ *
  * Cross-environment: in the browser this file runs as a classic <script> after
  * vendor/dompurify.min.js and wires `window.sanitizeMarkdownHtml`. The factory is also exported
  * (window/globalThis + CommonJS) so a jsdom unit test can build a sanitizer bound to a
  * jsdom-window DOMPurify instance and exercise the exact same config.
  *
  * @globals {function} sanitizeMarkdownHtml - (html:string) => string, sanitized HTML
- * @globals {function} createMarkdownSanitizer - (DOMPurify) => sanitizeMarkdownHtml (for tests)
+ * @globals {function} sanitizeWalkthroughHtml - (html:string) => string, the Reviews walkthrough variant
+ * @globals {function} createMarkdownSanitizer - (DOMPurify, extras?: {tags?: string[], attr?: string[]}) => sanitizer (for tests)
  * @dependency vendor/dompurify.min.js (provides the global DOMPurify)
  * @loadorder 5.6 of 15 — after input-cjk.js(5.5), before app.js(6) (app.js calls it)
  */
@@ -109,18 +114,24 @@
   ];
 
   /**
+   * What the Reviews walkthrough adds on top of the default lists so extra detail can start
+   * folded. Only the Reviews page uses it; every other surface keeps the default sanitizer.
+   */
+  var WALKTHROUGH_EXTRAS = { tags: ['details', 'summary'], attr: ['open'] };
+
+  /**
    * Build a sanitizer bound to a specific DOMPurify instance. The browser passes the global
    * DOMPurify; tests pass a jsdom-window-bound instance so the same config is exercised under
    * vitest without a real browser.
    */
-  function createMarkdownSanitizer(DOMPurify) {
+  function createMarkdownSanitizer(DOMPurify, extras) {
     if (!DOMPurify || typeof DOMPurify.sanitize !== 'function') {
       throw new Error('createMarkdownSanitizer: a DOMPurify instance is required');
     }
 
     var CONFIG = {
-      ALLOWED_TAGS: ALLOWED_TAGS,
-      ALLOWED_ATTR: ALLOWED_ATTR,
+      ALLOWED_TAGS: extras ? ALLOWED_TAGS.concat(extras.tags || []) : ALLOWED_TAGS,
+      ALLOWED_ATTR: extras ? ALLOWED_ATTR.concat(extras.attr || []) : ALLOWED_ATTR,
       // Defense in depth even though style/svg/math are not in ALLOWED_TAGS: also forbid the
       // foreign-namespace roots and style so config drift can't silently re-admit them.
       FORBID_TAGS: ['style', 'svg', 'math', 'script', 'iframe', 'object', 'embed', 'form'],
@@ -153,6 +164,7 @@
     // In the browser, vendor/dompurify.min.js has already defined the global DOMPurify.
     if (root.DOMPurify && typeof root.DOMPurify.sanitize === 'function') {
       root.sanitizeMarkdownHtml = createMarkdownSanitizer(root.DOMPurify);
+      root.sanitizeWalkthroughHtml = createMarkdownSanitizer(root.DOMPurify, WALKTHROUGH_EXTRAS);
     }
   }
 
@@ -162,6 +174,7 @@
       createMarkdownSanitizer: createMarkdownSanitizer,
       ALLOWED_TAGS: ALLOWED_TAGS,
       ALLOWED_ATTR: ALLOWED_ATTR,
+      WALKTHROUGH_EXTRAS: WALKTHROUGH_EXTRAS,
     };
   }
 })(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this);

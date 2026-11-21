@@ -71,20 +71,29 @@ export function listReviews(): Review[] {
     return [];
   }
   const out: Review[] = [];
-  for (const name of names.filter((n) => n.endsWith('.json')).slice(-MAX_FILES_READ)) {
-    const read = readReview(name.slice(0, -'.json'.length));
+  // Only `<id>.json`: a review's pr-swarm runs sit beside it as `<id>.swarm.json` and are not reviews.
+  const ids = names.flatMap((n) => {
+    const id = n.endsWith('.json') ? n.slice(0, -'.json'.length) : '';
+    return ReviewIdSchema.safeParse(id).success ? [id] : [];
+  });
+  for (const id of ids.slice(-MAX_FILES_READ)) {
+    const read = readReview(id);
     if (read.ok) out.push(read.review);
   }
   return out;
 }
 
 export function writeReview(review: Review): void {
+  writeReviewsFile(reviewPath(review.id), ReviewFileSchema.parse({ version: 1, review }));
+}
+
+/** Writes one file of the reviews folder: live colour only, tmp + fsync + rename, mode 0600. */
+export function writeReviewsFile(path: string, value: unknown): void {
   if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'may write reviews');
   mkdirSync(reviewsDir(), { recursive: true, mode: 0o700 });
-  const path = reviewPath(review.id);
   const tmp = `${path}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(ReviewFileSchema.parse({ version: 1, review })), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
     const fd = openSync(tmp, 'r');
     try {
       fsyncSync(fd);
