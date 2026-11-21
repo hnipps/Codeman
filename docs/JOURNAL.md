@@ -20,6 +20,15 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 Approve in Codeman's own repository deploys only a merge into the default branch (`main`, `master`, or what `origin/HEAD` names). A merge into any other base records `merged` and waits; the settle pass marks it `deployed` once the live release contains it. Rejected: deciding by whether the merge contains the live release, because a stacked base that is up to date with `master` would then deploy the base's own unreviewed commits.
 
+## 2026-11-21 — The Chat Graph sweep kills only orphans whose Codeman is gone (W-88)
+
+**Type:** intent-refinement
+**Touches:** `src/chat-graph/supervisor.ts`, `chat-graph/main.go`, `scripts/build.mjs`, `scripts/lib/go-toolchain.mjs`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** pr-swarm found that `sweep()` matched only the data-dir owner marker, which both deploy colours share, so a live colour's sweep could kill a sidecar the other colour still ran, against I6's test ("a child started by another colour, with the same owner marker but a different pid, is never signalled").
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md), Work item W-88, PR #92
+
+The child now also carries `CODEMAN_CHAT_GRAPH_PARENT=<pid>:<start ticks>` of the Codeman that spawned it, and a sweep kills a marked process only when that parent is no longer running. An orphan from a crash still dies at the next live boot; a sidecar whose colour is still up is left to that colour, which stops it itself when it retires. Rejected: reading the process's `ppid`, since a subreaper or a re-parent to pid 1 says nothing about which Codeman is gone. In the same round `GET /health` started naming its pid and readiness counts only its own child's answer, replacing a "still alive one poll later" check; `stop()` fails closed on an unreadable stat; and the build's skip on "module requires Go" was dropped, because the up-front version compare already covers a pre-1.21 go and that alternative could hide a compile error.
+
 ## 2026-11-21 — A full canvas evicts its oldest inactive record
 
 **Type:** intent-refinement
@@ -63,6 +72,33 @@ The Assurance rules in all three instruction files now say this. poteto-mode can
 **Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work item W-111
 
 The per-session env allowlist refuses both keys, and tmux skipped an empty value, so a run session would have inherited the server's own token. `Session.setInternalEnv()` is a second channel the server sets between create and start: never from a request, never persisted, and the one path that sets an empty tmux value. On this host gh is signed in through its own config file, so blank tokens alone still let it write; the run also points `GH_CONFIG_DIR` at an empty folder. Three choices the spec left open: a local-only branch that a worktree has checked out gets a review-only run (git would refuse every fix push, and the run would never settle); the runner recovers lazily from its minute tick once the colour is live and restored, instead of hooks in boot, promote and reinstate; and a report is applied with `r3Required: false` until the R-3 ticket, so nothing auto-approves in t3.
+
+## 2026-11-21 — The Chat Graph build fails on a real sidecar error, and a stop overtakes a start (W-88)
+
+**Type:** intent-refinement
+**Touches:** `scripts/build.mjs`, `chat-graph/main.go`, `src/chat-graph/supervisor.ts`, `src/web/server.ts`, `test/chat-graph-supervisor.test.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** pr-swarm review rounds on the W-88 branch. This supersedes the 2026-11-20 entry's "skips the sidecar when `go` is missing" as the whole build rule.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I6), Work item W-88
+
+`scripts/build.mjs` now skips the sidecar only when `go` is missing or older than go.mod's `go` line, compared up front with `go env GOVERSION` because a pre-1.21 go would otherwise compile against an older stdlib; any other `go build` error fails the build, and the previous binary is removed first. Whether that hard failure is right for the upstream release job (whose runner has a new enough `go`) is open for the owner. The sidecar takes an exclusive `flock` on `<dir>/lock` before touching its socket, so two sidecars started at once cannot delete each other's socket. A `stop()` makes a `start()` called before it give way (`reason: 'stopped'`), so shutdown can await the stop (bounded at 4 s) before its state flush; a retire that fails after its stop restarts the sidecar; the supervisor runs only on Linux, and refuses a socket path over 107 bytes. The `server.ts` wiring of these is not under test.
+
+## 2026-11-21 — The Chat Graph supervisor runs every operation through one queue (W-88)
+
+**Type:** propagated-discovery
+**Touches:** `src/chat-graph/supervisor.ts`, `src/web/server.ts`, `test/chat-graph-supervisor.test.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** Review asked for the state machines to be found and checked with Crosscheck. The check found that I6 did not hold when a retire came soon after a start.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I6), Work item W-88, PR #92
+
+Only `start()` was serialized. `stop()` and `sweep()` ran beside it. A retire right after a boot, promote or reinstate could stop nothing while the queued start was still before its spawn, and the start then spawned during the retire's remaining awaits, before the role flipped. A seeded interleaving test that drives the real supervisor the way `server.ts` does showed `sidecar <pid> alive when retire returned` on the old code. All three operations now share one FIFO queue, `runChatGraph()` queues both of its operations before it returns, a restart waits for the old child to exit, a retire refuses when its child outlives SIGKILL, and the fire-and-forget chain in `server.ts` catches its rejections. The interleaving test is a search over 8 seeds, not a proof.
+
+## 2026-11-20 — The Chat Graph sidecar builds from the system go, and the deploy gate requires it (W-88)
+
+**Type:** intent-refinement
+**Touches:** `chat-graph/`, `src/chat-graph/supervisor.ts`, `src/web/server.ts`, `scripts/build.mjs`, `deploy/test.sh`, `CLAUDE.md`, `docs/subsystem-rules.md`, `docs/architecture-invariants.md`
+**Why:** The spec's first risk was that the deploy build could not see `go`. The owner chose option (a), go installed system-wide, over a `$HOME` fallback in `deploy/build.sh` and over a committed binary.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md), Work item W-88
+
+The deploy build's PATH (read from a running `deploy/build.sh`) includes the system directory where `go` is now installed. `scripts/build.mjs` skips the sidecar when `go` is missing, so installs without it, CI and the Docker image build as before. This fork's `deploy/test.sh` refuses a release without the binary instead, so a deploy cannot silently ship Chat Graph off. The Go build runs offline (`-mod=vendor`, `GOPROXY=off`, `GOTOOLCHAIN=local`). Ticket 1 needs only the standard library, so `chat-graph/vendor/` does not exist yet. Ticket 2 vendors `modernc.org/sqlite` there, and the offline flags make the build fail if it does not.
 
 ## 2026-11-20 — The Chat Graph main chat lives in a command palette
 

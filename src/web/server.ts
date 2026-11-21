@@ -152,6 +152,7 @@ import { defaultDockerWorkspaces } from './routes/git-status-routes.js';
 import { composerIsEmpty, plainFrame } from '../session-submit-verifier.js';
 import { detectUsageLimitPause } from '../usage-limit-patterns.js';
 import { stopDeepSeekWeb } from '../deepseek-web-server.js';
+import { ChatGraphSupervisor } from '../chat-graph/supervisor.js';
 import {
   wireRespawnListeners,
   stopRespawnForSession,
@@ -313,6 +314,8 @@ const COPILOT_USAGE_POLL_INTERVAL_MS = 10 * 60_000;
 // Config backups: one cheap read-and-hash of a handful of small files; a snapshot is written only when
 // their content changed since the latest one, so this is one entry per real change, not per tick.
 const CONFIG_BACKUP_INTERVAL_MS = 5 * 60_000;
+/** How long shutdown waits for the Chat Graph sidecar to stop before flushing state anyway (the CLI force-exits at 10 s). */
+const CHAT_GRAPH_SHUTDOWN_WAIT_MS = 4_000;
 const CUSTOM_MODEL_REDISCOVER_INTERVAL_MS = 5 * 60_000;
 // Much shorter than the model-LIST refresh above on purpose: this catches an actual
 // eviction (a session's model no longer loaded, silently swapped out by another
@@ -451,6 +454,11 @@ export class WebServer extends EventEmitter {
     dataDir: getDataDir(),
     canPersist: () => deployRole.allows('persist'),
     mayAct: () => deployRole.allows('persist'),
+  });
+  private readonly chatGraph = new ChatGraphSupervisor({
+    dir: dataPath('chat-graph'),
+    owner: getDataDir(),
+    mayPersist: () => deployRole.allows('persist'),
   });
   private restoreSucceeded = false;
   private previewReconcileInFlight: Promise<void> | null = null;
@@ -3602,6 +3610,7 @@ export class WebServer extends EventEmitter {
     // version we actually booted). No-op on a normal boot. See web/self-update.ts.
     if (!this.testMode && deployRole.allows('persist')) {
       reconcileUpdateOnBoot();
+      this.runChatGraph();
     }
 
     // Restore mux sessions BEFORE accepting connections
@@ -4676,6 +4685,37 @@ export class WebServer extends EventEmitter {
 
   private roleChangeQueue: Promise<unknown> = Promise.resolve();
 
+  private chatGraphMissingLogged = false;
+  /**
+   * Sweep orphans, then start this colour's Chat Graph sidecar, without blocking the caller; failures are logged.
+   * Both are queued before this returns, so a retire's `stop()` called later runs after them.
+   */
+  private runChatGraph(): void {
+    if (this.testMode) return;
+    // The supervisor tells its child from a recycled pid through /proc, which only Linux has.
+    if (process.platform !== 'linux') {
+      if (!this.chatGraphMissingLogged) console.log('[ChatGraph] sidecar not started: it needs Linux /proc');
+      this.chatGraphMissingLogged = true;
+      return;
+    }
+    void this.chatGraph
+      .sweep()
+      .catch((err) => console.warn(`[ChatGraph] orphan sweep failed: ${getErrorMessage(err)}`));
+    void this.chatGraph
+      .start()
+      .then((result) => {
+        // A start that gave way to a stop (a retire or shutdown) is not a failure.
+        if (result.ok || result.reason === 'stopped') return;
+        if (result.reason === 'missing-binary') {
+          if (!this.chatGraphMissingLogged) console.log(`[ChatGraph] ${result.error}`);
+          this.chatGraphMissingLogged = true;
+        } else {
+          console.warn(`[ChatGraph] sidecar not started (${result.reason}): ${result.error}`);
+        }
+      })
+      .catch((err) => console.warn(`[ChatGraph] sidecar not started: ${getErrorMessage(err)}`));
+  }
+
   /**
    * Move this process to another deploy role (see deploy-role.ts), one change at a time:
    * a retire asked for while a promotion is still running waits for it.
@@ -4707,6 +4747,7 @@ export class WebServer extends EventEmitter {
           break;
         case 'reinstate':
           deployRole.enter('live');
+          this.runChatGraph();
           await this.writeSharedState();
           this.keepWarmService.rescheduleAll();
           break;
@@ -4738,6 +4779,7 @@ export class WebServer extends EventEmitter {
     if (!restored) throw new Error('the sessions on disk could not be restored');
     await this.finalizeRestoredState(restored);
     deployRole.enter('live');
+    this.runChatGraph();
     // finalizeRestoredState ran as the candidate, which may not act, so the full orphan
     // sweep the boot of a live colour runs happens here instead.
     void this.reconcilePreviews();
@@ -4754,8 +4796,17 @@ export class WebServer extends EventEmitter {
    * on top of them; the session list's write is the one awaited after.
    */
   private async retireFromLive(): Promise<void> {
-    await this.store.settle();
-    const listWritten = this.writeSharedState();
+    // Invariant I6: a child that outlived SIGKILL keeps this colour live rather than leave two writers.
+    if (!(await this.chatGraph.stop())) throw new Error('the Chat Graph sidecar did not exit');
+    let listWritten: Promise<void>;
+    try {
+      await this.store.settle();
+      listWritten = this.writeSharedState();
+    } catch (err) {
+      // The retire failed and this colour stays live, so it gets its sidecar back.
+      this.runChatGraph();
+      throw err;
+    }
     deployRole.enter('retired');
     releaseLiveLease();
     await listWritten;
@@ -4936,6 +4987,14 @@ export class WebServer extends EventEmitter {
     // port against the next start — the exact EADDRINUSE this feature already
     // got wrong once.
     void stopDeepSeekWeb();
+    // Awaited before the state flush below, since the Go child does not die with its parent, but
+    // bounded: the flush must run inside the CLI's force-exit budget even if the child will not die.
+    // A stop still running after the wait carries on in the background; if the process exits first,
+    // the next live boot's sweep() ends the child.
+    const chatGraphStopped = Promise.race([
+      this.chatGraph.stop().catch(() => false),
+      new Promise<void>((resolve) => setTimeout(resolve, CHAT_GRAPH_SHUTDOWN_WAIT_MS).unref()),
+    ]);
 
     // The header's GPU / CPU clock sampler is a Windows child process under WSL, and its idle sweep a timer.
     stopHostSensors();
@@ -5031,6 +5090,8 @@ export class WebServer extends EventEmitter {
       imageWatcher.unwatchSession(sessionId);
     }
     // Don't delete sessions from the map or state.json — recovery needs them
+
+    await chatGraphStopped;
 
     // Flush state store to prevent data loss from debounced saves
     this.store.flushAll();

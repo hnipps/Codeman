@@ -15,9 +15,10 @@
 
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
-import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
+import { isGoTooOld, isGoVersionRefusal } from './lib/go-toolchain.mjs';
 import { join, extname, basename, dirname } from 'path';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
@@ -56,6 +57,48 @@ if (missingModules.length > 0) {
 // 1. TypeScript compilation
 run('tsc', 'tsc');
 run('chmod dist/index.js', 'chmod +x dist/index.js');
+
+// 1b. Chat Graph's Go sidecar, next to the supervisor tsc just emitted. Offline by
+// construction: vendored modules only, no proxy, no toolchain download. An install without
+// `go`, or whose `go` is older than chat-graph/go.mod requires, builds without it and Chat
+// Graph stays off; any other `go build` failure fails the build. This fork's deploy gate
+// (deploy/test.sh) refuses a release that lacks the binary.
+// The old binary goes first, so a skipped build can never leave a stale one for the deploy gate.
+rmSync(join(ROOT, 'dist/chat-graph/chat-graph'), { force: true });
+let hasGo = true;
+try {
+  execSync('command -v go', { stdio: 'ignore', shell: true });
+} catch {
+  hasGo = false;
+}
+const goEnv = { ...process.env, GOFLAGS: '-mod=vendor', GOPROXY: 'off', GOTOOLCHAIN: 'local', CGO_ENABLED: '0' };
+const goTooOld = (() => {
+  try {
+    const goMod = readFileSync(join(ROOT, 'chat-graph/go.mod'), 'utf-8');
+    return isGoTooOld(goMod, execSync('go env GOVERSION', { env: goEnv, encoding: 'utf-8' })) === true;
+  } catch {
+    return false;
+  }
+})();
+if (hasGo && goTooOld) {
+  console.warn('\n[build] chat-graph sidecar skipped: the local `go` is older than chat-graph/go.mod requires');
+} else if (hasGo) {
+  console.log('\n[build] chat-graph sidecar');
+  try {
+    execSync('go build -trimpath -ldflags=-s -o ../dist/chat-graph/chat-graph .', {
+      stdio: ['ignore', 'inherit', 'pipe'],
+      cwd: join(ROOT, 'chat-graph'),
+      env: goEnv,
+    });
+  } catch (err) {
+    const stderr = err.stderr?.toString() ?? '';
+    process.stderr.write(stderr);
+    if (!isGoVersionRefusal(stderr)) throw err;
+    console.warn('\n[build] chat-graph sidecar skipped: the local `go` is older than chat-graph/go.mod requires');
+  }
+} else {
+  console.warn('\n[build] chat-graph sidecar skipped: `go` is not on PATH');
+}
 
 // 2. Copy static assets (clean first to remove stale hashed files from previous builds)
 run('clean public', 'rm -rf dist/web/public');
