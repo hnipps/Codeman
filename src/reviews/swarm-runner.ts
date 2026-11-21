@@ -16,7 +16,7 @@
  * alive is adopted, and any other running run ends `failed`.
  */
 import { SHA } from './review-git.js';
-import { isOpen, type Review } from './review-model.js';
+import { isOpen, MAX_NOTE_CHARS, type Review } from './review-model.js';
 import {
   activeRun,
   applySwarmEvent,
@@ -171,13 +171,14 @@ const R3_TRIGGER_ALIASES: Record<string, R3Trigger> = { 'undescribed-change': 'u
 
 /**
  * `/review-triage`'s `r3` block (pr-swarm 0.5.0, Step 5b) as the model reads it. Findings (`ref`, `location`, `body`,
- * `deferred`) and deviations (`ref`, `what`, `why`) become one line each, and a `null` tip or reason is left out. An
+ * `deferred`) and deviations (`ref`, `what`, `why`) become one line each (cut to the note cap, so a long one cannot refuse the whole report), and a `null` tip or reason is left
+ * out. An
  * escalation whose trigger the lifecycle's list does not hold becomes `unavailable` naming it, so the pr-swarm result
  * still lands and nothing it would gate merges. Anything else passes through for the model to judge.
  */
 export function r3Input(raw: unknown): unknown {
   if (!isRecord(raw)) return raw;
-  const line = (parts: string[]): string => parts.filter(Boolean).join(' ');
+  const line = (parts: string[]): string => parts.filter(Boolean).join(' ').slice(0, MAX_NOTE_CHARS);
   const finding = (f: unknown): unknown => {
     if (!isRecord(f)) return f;
     const where = text(f.location) && text(f.location) !== 'general' ? `(${text(f.location)})` : '';
@@ -198,9 +199,16 @@ export function r3Input(raw: unknown): unknown {
   if (raw.reason !== null && raw.reason !== undefined) out.reason = raw.reason;
   if (raw.verdict === 'escalate') {
     const id = text(raw.trigger);
-    const trigger = (R3_TRIGGERS as readonly string[]).includes(id) ? (id as R3Trigger) : R3_TRIGGER_ALIASES[id];
+    const trigger = (R3_TRIGGERS as readonly string[]).includes(id)
+      ? (id as R3Trigger)
+      : Object.hasOwn(R3_TRIGGER_ALIASES, id)
+        ? R3_TRIGGER_ALIASES[id]
+        : undefined;
     if (!trigger)
-      return { verdict: 'unavailable', reason: `R-3 escalated with a trigger Codeman does not know: ${id || 'none'}` };
+      return {
+        verdict: 'unavailable',
+        reason: `R-3 escalated with a trigger Codeman does not know: ${id.slice(0, 200) || 'none'}`,
+      };
     out.trigger = trigger;
   }
   return out;

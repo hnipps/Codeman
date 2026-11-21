@@ -714,6 +714,22 @@ describe('reportInput', () => {
       expect(parsed).toMatchObject({ ok: true, report: { r3: { verdict: 'unavailable', reason: 'ENOENT /p' } } });
     });
 
+    it('cuts a long finding or deviation to the note cap rather than refusing the report', () => {
+      const big = 'y'.repeat(20000);
+      const parsed = parseSwarmReport(
+        reportInput(
+          triage({
+            ...shaped,
+            verdict: 'changes',
+            findings: [{ ref: 'O1', location: 'general', body: big, deferred: false }],
+            deviations: [{ ref: 'I9', what: big, why: big }],
+          }),
+          1
+        )
+      );
+      expect(parsed).toMatchObject({ ok: true, report: { r3: { verdict: 'changes' } } });
+    });
+
     it("maps the skill's trigger ids onto the lifecycle's, and an unknown one to unavailable", () => {
       const escalate = (trigger: string) => ({ ...shaped, verdict: 'escalate', trigger });
       expect(r3Input(escalate('undescribed-change'))).toMatchObject({ trigger: 'unspecified-visible-change' });
@@ -722,6 +738,9 @@ describe('reportInput', () => {
         verdict: 'unavailable',
         reason: 'R-3 escalated with a trigger Codeman does not know: vibes',
       });
+      expect(r3Input(escalate('constructor'))).toMatchObject({ verdict: 'unavailable' });
+      const long = r3Input(escalate('x'.repeat(5000))) as { reason: string };
+      expect(long.reason.length).toBeLessThan(300);
       expect(parseSwarmReport(reportInput(triage(escalate('undescribed-change')), 1))).toMatchObject({
         ok: true,
         report: { r3: { verdict: 'escalate', trigger: 'unspecified-visible-change' } },
