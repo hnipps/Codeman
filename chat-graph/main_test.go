@@ -96,3 +96,26 @@ func TestReplacesStaleSocket(t *testing.T) {
 	}
 	ln.Close()
 }
+
+func TestLockRefusesSecondSidecarBeforeTheSocketExists(t *testing.T) {
+	dir := shortDir(t)
+	first, err := listen(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A racing sidecar that saw no answer would remove the socket; the lock must stop it first.
+	if err := os.Remove(filepath.Join(dir, socketName)); err != nil {
+		t.Fatal(err)
+	}
+	if second, err := listen(dir); err == nil {
+		second.Close()
+		first.Close()
+		t.Fatal("a second sidecar listened while the first held the lock")
+	}
+	first.Close()
+	again, err := listen(dir)
+	if err != nil {
+		t.Fatalf("the lock was not released on close: %v", err)
+	}
+	again.Close()
+}

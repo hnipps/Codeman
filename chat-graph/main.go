@@ -18,7 +18,10 @@ import (
 	"time"
 )
 
-const socketName = "sock"
+const (
+	socketName = "sock"
+	lockName   = "lock"
+)
 
 func main() {
 	dir := flag.String("dir", "", "directory Codeman gives the sidecar (absolute)")
@@ -48,14 +51,45 @@ func main() {
 	}
 }
 
-// listen opens <dir>/sock with mode 0600. A socket file nobody answers on is
-// left over from a crash and is replaced; one that answers belongs to a live
-// sidecar, and two writers on one store is what this refuses.
+// lockedListener holds <dir>/lock for as long as the listener is open.
+type lockedListener struct {
+	net.Listener
+	lock *os.File
+}
+
+func (l *lockedListener) Close() error {
+	err := l.Listener.Close()
+	l.lock.Close()
+	return err
+}
+
+// listen opens <dir>/sock with mode 0600. Two writers on one store is what
+// this refuses: the sidecar first takes an exclusive flock on <dir>/lock,
+// which the kernel drops when the process dies, so two sidecars started at
+// once cannot both judge the socket stale and delete each other's. A socket
+// file nobody answers on is left over from a crash and is replaced; one that
+// answers belongs to a live sidecar.
 func listen(dir string) (net.Listener, error) {
 	if dir == "" || !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("--dir must be an absolute path, got %q", dir)
 	}
-	path := filepath.Join(dir, socketName)
+	lock, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("another sidecar holds %s: %v", lock.Name(), err)
+	}
+	ln, err := listenSocket(filepath.Join(dir, socketName))
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return &lockedListener{Listener: ln, lock: lock}, nil
+}
+
+func listenSocket(path string) (net.Listener, error) {
 	if _, err := os.Lstat(path); err == nil {
 		if conn, err := net.DialTimeout("unix", path, time.Second); err == nil {
 			conn.Close()
