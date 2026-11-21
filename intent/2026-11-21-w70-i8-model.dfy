@@ -202,6 +202,12 @@ module W70I8 {
     assert StateOnly(it, 1) && !WaitsOn(it, 1);
   }
 
+  // The same item, released when S ended: I2 writes the release as S, so it is S's write and (c) closes it.
+  lemma AssignedThenReleasedCloses() {
+    var it := Run(Fresh(Ready), [Assign(PersonActs, Session(1)), Move(PersonActs, InProgress), SessionEnds(1, Ready)]);
+    assert WaitsOn(it, 1);
+  }
+
   // ---- Revision 1's gaps, as counterexamples ----
 
   // Gap 1: S's work came back for changes and session 7 picked it up; revision 1 closes 7's live item.
