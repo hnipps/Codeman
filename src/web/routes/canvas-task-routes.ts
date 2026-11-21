@@ -79,6 +79,8 @@ import {
   type TaskRow,
 } from '../../canvas/tasks.js';
 import type { Workspace } from '../../canvas/workspace-registry.js';
+import { conversationActive, evictionOrder } from '../../canvas/conversation-eviction.js';
+import { deployRole } from '../../deploy-role.js';
 import { AGENT_START_REFUSALS, startedBy, storedStartedBy, type StartedBy } from '../../canvas/agent-start.js';
 import {
   agentStartGate,
@@ -94,6 +96,7 @@ import {
   resolveLaunch,
   sendMessage,
   serialCreate,
+  activityEvidence,
   taskResult,
   taskStateOf,
   writeGuard,
@@ -447,8 +450,6 @@ async function start(
     const current = findConversation(workspace.id, prior.id) ?? prior;
     return ok({ task: await taskRow(ctx, req, current, task), duplicate: true, retried: true });
   }
-  if (file.conversations.length >= MAX_CONVERSATIONS_PER_WORKSPACE)
-    return conflict(`TOO_MANY: a canvas keeps at most ${MAX_CONVERSATIONS_PER_WORKSPACE} conversations and tasks`);
   const launch = await resolveLaunch(body.cliId, body.model);
   if (!('ok' in launch)) return launch;
   if (await caseRunsElsewhere(req, workspace.caseName))
@@ -487,6 +488,9 @@ async function start(
     )
   );
   if (agent && 'code' in agent) return agent;
+  // Last, so a start refused for any other reason evicts nothing.
+  const room = await makeRoom(ctx, req, workspace, file.conversations);
+  if (!Array.isArray(room)) return room;
 
   let isolation: TaskIsolation = { kind: 'shared' };
   let workingDir = located.casePath;
@@ -533,7 +537,7 @@ async function start(
       launch,
       startSession,
       agent,
-      parent: file.conversations.some((c) => c.id === body.parentConversationId && !taskPart(c)),
+      parent: room.some((c) => c.id === body.parentConversationId && !taskPart(c)),
     });
   } finally {
     if (marker) creating.delete(marker);
@@ -768,39 +772,10 @@ export async function removeTask(
   const { workspace, conversation, task } = found;
   if (taskActive(taskStateOf(ctx, conversation) ?? 'failed'))
     return conflict('TASK_ACTIVE: cancel the task before removing it');
-  if (ctx.sessions.has(conversation.sessionId)) {
-    findSessionOrFail({ sessions: ctx.sessions } as unknown as SessionPort, conversation.sessionId, req);
-    // The result is read from the session's transcript; once the session is gone a kept row would have none.
-    const result = await taskResult(ctx, req, conversation, taskStateOf(ctx, conversation)).catch(() => undefined);
-    if (result) setTaskHint(workspaceId, conversationId, { result });
-    await ctx.discardConversationSession?.(req.headers, conversation.sessionId);
-  }
-  let kept: TaskKept | undefined;
-  let branchKept: string | undefined;
-  // A session that would not close keeps the record, whatever the task ran in: it is the only thing that names the session.
-  if (ctx.sessions.has(conversation.sessionId)) kept = 'session';
-  else if (task.isolation.kind === 'worktree') {
-    const located = await locateCase(req, workspace.caseName);
-    if (!located.ok || !located.repo) kept = 'failed';
-    else {
-      const gone = await removeTaskWorktree(ctx, { ...located, repo: located.repo }, task.isolation.name).catch(
-        () => ({ removed: false, reason: 'failed' }) as const
-      );
-      if (gone.removed) branchKept = gone.branchKept;
-      else kept = gone.reason;
-    }
-  }
-  leftBehindCache.delete(workspaceId);
-  const announce = (): void =>
-    ctx.broadcast(SseEvent.CanvasConversation, {
-      workspaceId,
-      conversationId,
-      change: 'task',
-      owner: workspace.owner,
-    });
+  const { kept, branchKept } = await releaseTask(ctx, req, workspace, conversation, task);
   if (kept) {
     setTaskHint(workspaceId, conversationId, { removedAt: task.removedAt ?? Date.now(), kept });
-    announce();
+    announceTask(ctx, workspace, conversationId);
     const current = findConversation(workspaceId, conversationId) ?? conversation;
     return ok({
       removed: false,
@@ -809,8 +784,107 @@ export async function removeTask(
     });
   }
   removeConversation(workspaceId, conversationId);
-  announce();
+  announceTask(ctx, workspace, conversationId);
   return ok({ removed: true, ...(branchKept ? { branchKept } : {}) });
+}
+const announceTask = (ctx: CanvasPort, workspace: Workspace, conversationId: string): void =>
+  ctx.broadcast(SseEvent.CanvasConversation, {
+    workspaceId: workspace.id,
+    conversationId,
+    change: 'task',
+    owner: workspace.owner,
+  });
+
+/**
+ * What Remove does to a finished task before its record goes: the session is discarded (its result saved first) and
+ * its worktree removed without force. `kept` names what stayed: a session that would not close, or a worktree git
+ * refused to remove (changes, a session inside, a lock) or that could not be reached.
+ */
+async function releaseTask(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspace: Workspace,
+  conversation: Conversation,
+  task: TaskPart
+): Promise<{ kept?: TaskKept; branchKept?: string }> {
+  if (ctx.sessions.has(conversation.sessionId)) {
+    findSessionOrFail({ sessions: ctx.sessions } as unknown as SessionPort, conversation.sessionId, req);
+    // The result is read from the session's transcript; once the session is gone a kept row would have none.
+    const result = await taskResult(ctx, req, conversation, taskStateOf(ctx, conversation)).catch(() => undefined);
+    if (result) setTaskHint(workspace.id, conversation.id, { result });
+    await ctx.discardConversationSession?.(req.headers, conversation.sessionId);
+  }
+  try {
+    // A session that would not close keeps the record, whatever the task ran in: it is the only thing that names the session.
+    if (ctx.sessions.has(conversation.sessionId)) return { kept: 'session' };
+    if (task.isolation.kind !== 'worktree') return {};
+    const located = await locateCase(req, workspace.caseName);
+    if (!located.ok || !located.repo) return { kept: 'failed' };
+    const gone = await removeTaskWorktree(ctx, { ...located, repo: located.repo }, task.isolation.name).catch(
+      () => ({ removed: false, reason: 'failed' }) as const
+    );
+    return gone.removed ? (gone.branchKept ? { branchKept: gone.branchKept } : {}) : { kept: gone.reason };
+  } finally {
+    leftBehindCache.delete(workspace.id);
+  }
+}
+
+/**
+ * Makes room for one more conversation or task on a full canvas, inside `serialCreate`. Only active records
+ * (`conversationActive()`: a live session working now or active in the last hour) hold a place; inactive ones are
+ * evicted oldest first until the list is below the cap. Evicting runs Remove: a plain conversation's session is
+ * discarded, a task goes through `releaseTask()`, so a worktree with changes is never force-removed. The record goes
+ * even when something stayed, so a kept record never blocks a start: its worktree stays on disk, where the
+ * left-behind list offers it to the person, and a session that would not close stays in the session list.
+ * Answers the records left, or the refusal when every one is active or none could be evicted.
+ */
+export async function makeRoom(
+  ctx: CanvasPort,
+  req: FastifyRequest,
+  workspace: Workspace,
+  conversations: readonly Conversation[]
+): Promise<Outcome | Conversation[]> {
+  let left = [...conversations];
+  if (left.length < MAX_CONVERSATIONS_PER_WORKSPACE) return left;
+  const records = left.map((c) => ({ c, evidence: activityEvidence(ctx, c) }));
+  for (const { c } of evictionOrder(records, Date.now())) {
+    if (left.length < MAX_CONVERSATIONS_PER_WORKSPACE) break;
+    // Evicting discards sessions and removes worktrees: the live colour's work alone, checked as it acts.
+    if (!deployRole.allows('persist')) return conflict('Only the live colour may write canvas data');
+    // Judged again as it is evicted: a message or a turn may have started while earlier evictions ran.
+    const fresh = findConversation(workspace.id, c.id);
+    if (fresh && conversationActive(activityEvidence(ctx, fresh), Date.now())) continue;
+    if (!fresh || (await evict(ctx, req, workspace, fresh).catch(() => false)))
+      left = left.filter((other) => other.id !== c.id);
+  }
+  if (left.length < MAX_CONVERSATIONS_PER_WORKSPACE) return left;
+  const now = Date.now();
+  const active = left.filter((c) =>
+    conversationActive(activityEvidence(ctx, findConversation(workspace.id, c.id) ?? c), now)
+  ).length;
+  const activeWords = `${active} are active (working, or used in the last hour)`;
+  return conflict(
+    active >= MAX_CONVERSATIONS_PER_WORKSPACE
+      ? `TOO_MANY: all ${MAX_CONVERSATIONS_PER_WORKSPACE} conversations and tasks on this canvas are active (working, or used in the last hour); nothing was started`
+      : `TOO_MANY: this canvas holds ${MAX_CONVERSATIONS_PER_WORKSPACE} conversations and tasks; ${activeWords} and the rest could not be evicted; nothing was started`
+  );
+}
+/** Evicts one inactive record. Throws when its record could not be dropped. */
+async function evict(ctx: CanvasPort, req: FastifyRequest, workspace: Workspace, c: Conversation): Promise<boolean> {
+  const task = taskPart(c);
+  if (task) await releaseTask(ctx, req, workspace, c, task);
+  else if (ctx.sessions.has(c.sessionId)) await ctx.discardConversationSession?.(req.headers, c.sessionId);
+  // False only when something else removed it first: the place is free either way.
+  if (!removeConversation(workspace.id, c.id)) return true;
+  if (task) announceTask(ctx, workspace, c.id);
+  else
+    ctx.broadcast(SseEvent.CanvasConversation, {
+      workspaceId: workspace.id,
+      conversationId: c.id,
+      change: 'removed',
+      owner: workspace.owner,
+    });
+  return true;
 }
 
 /**
