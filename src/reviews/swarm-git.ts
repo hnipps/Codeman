@@ -6,6 +6,9 @@
  * case workspace (the caller refuses those first, and the worktree functions refuse a Docker workspace again). The
  * worktree is a managed one (`<repo>/.claude/worktrees/swarm-<runId>`), made and removed by the same functions the
  * worktree routes use, so it is never forced away and a name is always recognisable as a run's.
+ *
+ * The tip watcher's reads (`watchTipReader()`) go through the fetch runner, so every git process they start is
+ * non-interactive and is killed with its whole process tree when the read's deadline passes.
  */
 import {
   createDetachedWorktree,
@@ -13,10 +16,12 @@ import {
   resolveCaseRepository,
   type WorktreeGitRunner,
 } from '../git-worktrees.js';
+import { runFetch } from '../git-fetch.js';
 import { isSafeRepoRelativePath, runGit, type GitRunner } from '../git-workspace-status.js';
 import { fetchHead, forkPoint, line, MAX_REVIEW_DOC_BYTES, resolveHead, SHA, tryGit, validRef } from './review-git.js';
 import { sourceOf, type Review } from './review-model.js';
 import { isSpecReview } from './swarm-model.js';
+import type { TipReader } from './swarm-watcher.js';
 
 /** Where a run pushes the triage's fix commits: `origin`, or this repository (`.`) for a branch origin does not have. */
 export type PushRemote = 'origin' | '.';
@@ -172,4 +177,85 @@ async function branchCheckedOut(git: GitRunner, repoRoot: string, branch: string
   // Unreadable: assume it is, so the run stays review only rather than pushing into a refusal.
   if (out === null) return true;
   return out.split('\0').includes(`branch refs/heads/${branch}`);
+}
+
+/** How long one review's tip read may take, every git process in it together. */
+export const WATCH_READ_TIMEOUT_MS = 10_000;
+/** New commits listed per moved tip. Past this the list is unreadable, which counts as a change (I8). */
+export const MAX_WATCH_COMMITS = 100;
+
+/** A runner whose every call gets what is left of the read's deadline as its timeout. */
+const untilDeadline =
+  (net: GitRunner, deadline: number): GitRunner =>
+  (cwd, args) => {
+    const left = deadline - Date.now();
+    if (left <= 0)
+      return Promise.reject(
+        Object.assign(new Error('The tip read ran out of time'), { killed: true, code: 'ETIMEDOUT' })
+      );
+    return net(cwd, args, { timeoutMs: left });
+  };
+
+const hasOrigin = async (git: GitRunner, repoRoot: string): Promise<boolean> =>
+  (await tryGit(git, repoRoot, ['remote', 'get-url', 'origin'])) !== null;
+
+/**
+ * How the tip watcher reads a review's branch: `git ls-remote origin` when the repository has an origin that has the
+ * branch, else, for a session review only, the local branch (a work review lives on origin only). It never fetches to
+ * read a tip. Listing the commits of a move reads them locally, and fetches the one branch first only when the new tip
+ * is not here yet. Any failure or timeout reads as null.
+ */
+export function watchTipReader(net: GitRunner = runFetch): TipReader {
+  return {
+    async tip(review, deadline) {
+      const git = untilDeadline(net, deadline);
+      if (!(await validRef(git, review.repoRoot, review.branch))) return null;
+      const ref = `refs/heads/${review.branch}`;
+      if (await hasOrigin(git, review.repoRoot)) {
+        const out = await tryGit(git, review.repoRoot, ['ls-remote', 'origin', ref]);
+        if (out === null) return null;
+        const found = out
+          .split('\n')
+          .map((l) => l.split('\t'))
+          .find(([sha, name]) => name === ref && SHA.test(sha ?? ''));
+        if (found) return found[0]!;
+      }
+      if (sourceOf(review).kind === 'work') return null;
+      const sha = line(
+        (await tryGit(git, review.repoRoot, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) ?? ''
+      );
+      return SHA.test(sha) ? sha : null;
+    },
+
+    async commits(review, from, to, deadline) {
+      if (!SHA.test(from) || !SHA.test(to)) return null;
+      const git = untilDeadline(net, deadline);
+      const present = async () => (await tryGit(git, review.repoRoot, ['cat-file', '-e', `${to}^{commit}`])) !== null;
+      if (!(await present())) {
+        if (!(await validRef(git, review.repoRoot, review.branch)) || !(await hasOrigin(git, review.repoRoot)))
+          return null;
+        const branch = review.branch;
+        await tryGit(git, review.repoRoot, [
+          'fetch',
+          '--quiet',
+          '--no-tags',
+          'origin',
+          `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+        ]);
+        if (!(await present())) return null;
+      }
+      const out = await tryGit(git, review.repoRoot, [
+        'log',
+        '-z',
+        '--no-show-signature',
+        `--max-count=${MAX_WATCH_COMMITS + 1}`,
+        '--format=%B',
+        `${from}..${to}`,
+        '--',
+      ]);
+      if (out === null) return null;
+      const messages = out.endsWith('\0') ? out.slice(0, -1).split('\0') : out ? out.split('\0') : [];
+      return messages.length > MAX_WATCH_COMMITS ? null : messages.map((message) => ({ message }));
+    },
+  };
 }

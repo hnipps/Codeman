@@ -1,9 +1,12 @@
 /**
  * The pr-swarm routes on a review (`src/web/routes/review-routes.ts`): who may start a run, the 409 that carries the
- * run a start joined, the report route's session check, and rule 6. The runner itself is a stub here; its own rules
+ * run a start joined, the report route's session check, rule 6, and the run a submit or resubmit triggers. The runner itself is a stub here; its own rules
  * are in `swarm-runner.test.ts`.
  */
-import { rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataPath } from '../src/config/instance.js';
 import { deployRole } from '../src/deploy-role.js';
@@ -64,7 +67,7 @@ describe('pr-swarm review routes', () => {
   it('GET answers the review’s runs', async () => {
     const res = await harness.app.inject({ url: '/api/reviews/aaaaaaaa/swarm' });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data).toEqual({ swarm: emptySwarmFile('aaaaaaaa'), live: true });
+    expect(res.json().data).toEqual({ swarm: emptySwarmFile('aaaaaaaa'), live: true, refusal: null });
     expect((await harness.app.inject({ url: '/api/reviews/bbbbbbbb/swarm' })).statusCode).toBe(404);
   });
 
@@ -146,5 +149,84 @@ describe('pr-swarm review routes', () => {
     expect((await report(AGENT)).statusCode).toBe(400);
     runner.report.mockResolvedValueOnce({ ok: false, code: 'NOT_RUNNING', message: 'no' });
     expect((await report(AGENT)).statusCode).toBe(404);
+  });
+});
+
+describe('a submit triggers a pr-swarm run', () => {
+  let repo: string;
+  let harness: RouteTestHarness;
+  let trigger: ReturnType<typeof vi.fn>;
+  const AGENT = { 'x-codeman-parent-session': 'test-session-1' };
+
+  beforeEach(async () => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'review-swarm-submit-')));
+    const git = (...args: string[]) =>
+      execFileSync(
+        'git',
+        ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args],
+        {
+          cwd: repo,
+          stdio: 'ignore',
+        }
+      );
+    git('init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'a.txt'), 'one\n');
+    git('add', 'a.txt');
+    git('commit', '-q', '-m', 'base');
+    git('checkout', '-q', '-b', 'feat/x');
+    writeFileSync(join(repo, 'a.txt'), 'two\n');
+    git('commit', '-q', '-am', 'work');
+    trigger = vi.fn(async () => ({ ok: true, joined: false, run: queued }));
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        swarm: { trigger } as unknown as SwarmRunner,
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo;
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await harness.app.close();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(dataPath('reviews'), { recursive: true, force: true });
+  });
+
+  const submit = (walkthrough = 'W') =>
+    harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough },
+    });
+  const head = () => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+  it('a submit and a resubmit each trigger once, for the review at its head', async () => {
+    const first = await submit();
+    expect(first.statusCode).toBe(201);
+    const id = first.json().data.id as string;
+    await vi.waitFor(() => expect(trigger).toHaveBeenCalledTimes(1));
+    expect(trigger).toHaveBeenCalledWith(id, 'submit', head());
+    expect((await submit('Updated')).statusCode).toBe(200);
+    await vi.waitFor(() => expect(trigger).toHaveBeenCalledTimes(2));
+    expect(trigger).toHaveBeenLastCalledWith(id, 'submit', head());
+  });
+
+  it('a trigger that fails or throws never fails the submit', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    trigger.mockResolvedValueOnce({ ok: false, code: 'FILE', message: 'The run file is unreadable' });
+    expect((await submit()).statusCode).toBe(201);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('FILE')));
+    trigger.mockRejectedValueOnce(new Error('boom'));
+    expect((await submit('Again')).statusCode).toBe(200);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('boom')));
+    expect(trigger).toHaveBeenCalledTimes(2);
+  });
+
+  it('a submit that is refused triggers nothing', async () => {
+    vi.spyOn(deployRole, 'allows').mockReturnValue(false);
+    expect((await submit()).statusCode).toBe(409);
+    await new Promise((done) => setImmediate(done));
+    expect(trigger).not.toHaveBeenCalled();
   });
 });
