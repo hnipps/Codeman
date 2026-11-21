@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
@@ -188,6 +188,28 @@ describe('ChatGraphSupervisor', () => {
     expect(isAlive(pid)).toBe(true);
     expect(await sup.health()).toBe(true);
   });
+
+  it('keeps a child that outlived SIGKILL recorded, so a retried stop still reports it', async () => {
+    // Invariant I6: OnlyTheLiveColourRunsTheSidecar
+    const sup = supervisor(() => true);
+    expect((await sup.start()).ok).toBe(true);
+    const [pid] = markedPids(owner);
+
+    const realKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === pid) return true; // the child ignores every signal, as one stuck in the kernel would
+      return realKill(target, signal);
+    });
+    try {
+      expect(await sup.stop()).toBe(false);
+      expect(isAlive(pid)).toBe(true);
+      expect(await sup.stop()).toBe(false);
+    } finally {
+      kill.mockRestore();
+    }
+    expect(await sup.stop()).toBe(true);
+    expect(await until(() => !isAlive(pid))).toBe(true);
+  }, 30_000);
 
   it('a stop called after a start runs after it, so nothing outlives a retire', async () => {
     // Invariant I6: OnlyTheLiveColourRunsTheSidecar

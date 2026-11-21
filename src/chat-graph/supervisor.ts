@@ -203,7 +203,10 @@ export class ChatGraphSupervisor {
     return this.serialize(() => this.stopLocked());
   }
 
-  /** A recycled pid counts as gone: it is not ours. */
+  /**
+   * A recycled pid counts as gone: it is not ours. A child that outlives SIGKILL stays recorded as
+   * running, so the next `stop()` (a retried retire) tries again rather than report it gone.
+   */
   private async stopLocked(): Promise<boolean> {
     const running = this.state;
     this.state = { kind: 'stopped' };
@@ -211,7 +214,9 @@ export class ChatGraphSupervisor {
     if (!this.signalIfSame(running.identity, 'SIGTERM')) return true;
     if (await waitForExit(running.child, KILL_GRACE_MS)) return true;
     this.signalIfSame(running.identity, 'SIGKILL');
-    return waitForExit(running.child, KILL_GRACE_MS);
+    if (await waitForExit(running.child, KILL_GRACE_MS)) return true;
+    if (this.state.kind === 'stopped' && !hasExited(running.child)) this.state = running;
+    return false;
   }
 
   /**
