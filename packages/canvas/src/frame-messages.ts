@@ -27,6 +27,15 @@ export const locateHint = (element: { tag: string; text: string; rect: { x: numb
 export const MAX_POLYGON_POINTS = 1024;
 /** How long the canvas waits for a frame to answer before it acts as if the frame had nothing to say. */
 export const FRAME_REPLY_MS = 800;
+/**
+ * Ambient capture (I8 FramePicturesAreUntrusted): how long a capture waits for a frame's picture once the rest of
+ * the picture has settled (a frame shares the page's main thread, so the clock starts there), and the
+ * longest PNG data URL it takes. `src/web/public/capture.js` and the bridge's `FRAME_LIMITS.picture` hold the
+ * same numbers; a picture that is late, longer, not a PNG or larger than asked is painted "Frame not captured".
+ */
+export const FRAME_CAPTURE_MS = 500;
+export const MAX_FRAME_PICTURE_CHARS = 12 * 1024 * 1024;
+export const FRAME_PICTURE_PREFIX = 'data:image/png;base64,';
 
 const RequestId = z.string().min(1).max(64);
 const RectSchema = z
@@ -59,6 +68,13 @@ const WireSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ type: z.literal('codeman:frame-rects-changed') }).strict(),
+  z
+    .object({
+      type: z.literal('codeman:frame-capture'),
+      requestId: RequestId,
+      dataUrl: z.string().startsWith(FRAME_PICTURE_PREFIX).max(MAX_FRAME_PICTURE_CHARS),
+    })
+    .strict(),
 ]);
 
 export type FrameMessage =
@@ -69,7 +85,8 @@ export type FrameMessage =
   | { type: 'pick-cancelled' }
   | { type: 'elements'; requestId: string; elements: ElementRef[] }
   | { type: 'rects'; requestId: string; rects: (Rect | null)[] }
-  | { type: 'rects-changed' };
+  | { type: 'rects-changed' }
+  | { type: 'capture'; requestId: string; dataUrl: string };
 
 /**
  * One message from the frame that shows `objectId`, or null. The frame never names its own object: the
@@ -96,6 +113,8 @@ export function parseFrameMessage(data: unknown, objectId: string): FrameMessage
       return { type: 'rects-changed' };
     case 'codeman:frame-rects':
       return { type: 'rects', requestId: message.requestId, rects: message.rects };
+    case 'codeman:frame-capture':
+      return { type: 'capture', requestId: message.requestId, dataUrl: message.dataUrl };
     case 'codeman:frame-picked': {
       const element = ref(message.element);
       return element ? { type: 'picked', element } : null;

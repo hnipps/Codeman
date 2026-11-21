@@ -36,6 +36,8 @@ export const BROWSER_TEST_GLOBS = [
   'test/canvas-comments.browser.test.ts',
   'test/canvas-context.browser.test.ts',
   'test/capture-freeze.browser.test.ts',
+  'test/capture-frame-bridge.browser.test.ts',
+  'test/capture-surfaces.browser.test.ts',
   'test/capture-tab-mode.browser.test.ts',
   'test/canvas-assistant.browser.test.ts',
   'test/canvas-markdown.browser.test.ts',
