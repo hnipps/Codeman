@@ -2,6 +2,14 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — Agents design with impeccable, build in poteto-mode, and get an independent check before review
+
+**Type:** intent-refinement
+**Touches:** `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, routines R-1, R-2 and R-3
+**Why:** The owner asked (2026-11-21) that all UI and UX design work use the impeccable skill, that every non-trivial code change use poteto-mode and be verified by one or more independent agents before a review opens, and that implementers and reviewers consider the Crosscheck skills, especially for complex or invariant-heavy changes. Routines included.
+
+The Assurance rules in all three instruction files now say this. poteto-mode cannot be loaded through the Skill tool, so an agent reads its SKILL.md directly, as routine R-2 already did. The independent check is a fresh agent that gets the goal and the diff, not the author's conclusion. Its verdict goes in the PR body or walkthrough. The prompts of routines R-1, R-2 and R-3 repeat the rules, edited on the canvas the same day, because a routine run reads its prompt first and a branch only sees `CLAUDE.md` once this change is on master. The owner added the same day that any Claude agent may hand work to codex, antigravity or gemini agents to spread the cost.
+
 ## 2026-11-21 — The pr-swarm runner blanks gh by a server-only env channel (W-111, ticket t3)
 
 **Type:** intent-refinement
