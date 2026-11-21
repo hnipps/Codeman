@@ -378,6 +378,45 @@ describe('review routes', () => {
     }
   });
 
+  it('where two open reviews of the branch exist and neither is the caller’s, the newest is updated, a tie to the higher id', async () => {
+    const other = createMockSession('test-session-2');
+    other.workingDir = repo;
+    Object.assign(other, { owner: 'bob' });
+    harness.ctx.sessions.set(other.id, other as never);
+    const third = createMockSession('test-session-3');
+    third.workingDir = repo;
+    harness.ctx.sessions.set(third.id, third as never);
+    // Two open reviews of one owner's branch, as a release before W-77 could leave them.
+    const a = (await submit({ 'x-codeman-parent-session': 'test-session-2' })).json().data.id as string;
+    const b = (await submit()).json().data.id as string;
+    const stamp = (id: string, updatedAt: number, owner: string | null = null) => {
+      const read = readReview(id);
+      if (!read.ok) throw new Error('review not written');
+      writeReview({ ...read.review, owner, updatedAt });
+    };
+    const caller = { 'x-codeman-parent-session': 'test-session-3' };
+
+    stamp(a, 5000);
+    stamp(b, 4000);
+    const newest = await submit(caller, 'Newest');
+    expect(newest.statusCode).toBe(200);
+    expect(newest.json().data.id).toBe(a);
+
+    // The update moved `a` to the caller; put both back on other sessions with equal times.
+    const tie = 9_000_000_000_000;
+    for (const [id, sessionId] of [
+      [a, 'test-session-2'],
+      [b, 'test-session-1'],
+    ] as const) {
+      const read = readReview(id);
+      if (!read.ok) throw new Error('review not written');
+      writeReview({ ...read.review, owner: null, sessionId, updatedAt: tie });
+    }
+    const tied = await submit(caller, 'Tied');
+    expect(tied.statusCode).toBe(200);
+    expect(tied.json().data.id).toBe(a > b ? a : b);
+  });
+
   it('a submit of the branch by another owner, or after a decision, opens a new review', async () => {
     const other = createMockSession('test-session-2');
     other.workingDir = repo;
