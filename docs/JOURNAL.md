@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — Specs with state rules are modelled before review
+
+**Type:** intent-refinement
+**Touches:** `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, routine R-1
+**Why:** The W-70 I8 revision went to the owner as prose. An independent check of its code then found three design gaps (a rule closing another session's live item, a rule that contradicted the spec's own "not closed" list, and run-built work out of reach), which cost a second spec revision. A Dafny model of one item with the session behind each write, written afterwards (`intent/2026-11-21-w70-i8-model.dfy`), exhibits all three as counterexamples. The W-70 spec itself had been modelled first, and its model found F1 to F3 before any code.
+**Links:** `intent/2026-11-21-w70-i8-waiting-work-r2.md`, Work item W-91
+
+The owner agreed (2026-11-21) that a spec defining or changing a state machine, a lifecycle, or which items a write may touch is modelled and proved before it goes up for review, with a mutation to show the proof is not vacuous, and that other specs with invariants get at least `crosscheck:audit-invariant-consistency`. The Assurance rules in all three instruction files and the prompt of routine R-1 say so. A model covers design, not code: the independent check of the diff still runs.
+
 ## 2026-11-21 — Agents design with impeccable, build in poteto-mode, and get an independent check before review
 
 **Type:** intent-refinement
