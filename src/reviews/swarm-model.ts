@@ -351,7 +351,8 @@ export function applySwarmEvent(file: SwarmFile, event: SwarmEvent, now: number)
     case 'tip': {
       if (active) return unchanged(noteTip(file, active, event.tip));
       // The watcher measures a move from the newest tip the runs recorded, so a finished run's own reviewed push never
-      // arrives here. `own` with no run means the run ended after the watcher read it; its report read that tip.
+      // arrives here. `own` with no run means the run ended after the watcher read it, and its report read that tip
+      // or a newer one.
       if (event.change === 'own') return unchanged(file);
       return applySwarmEvent(file, { type: 'trigger', trigger: 'push', tip: event.tip, runId: event.newRunId }, now);
     }
