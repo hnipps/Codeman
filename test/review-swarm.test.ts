@@ -7,7 +7,14 @@ import { z } from 'zod';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { dataPath } from '../src/config/instance.js';
 import { deployRole } from '../src/deploy-role.js';
-import { addNote, requestChangesPrompt, storedSource, submitReview, type Review } from '../src/reviews/review-model.js';
+import {
+  addNote,
+  requestChangesPrompt,
+  ReviewFileSchema,
+  storedSource,
+  submitReview,
+  type Review,
+} from '../src/reviews/review-model.js';
 import { listReviews, readReview, writeReview } from '../src/reviews/review-store.js';
 import {
   activeRun,
@@ -18,6 +25,7 @@ import {
   emptySwarmFile,
   isSpecReview,
   MAX_ROUNDS,
+  MAX_RUNS_KEPT,
   parseSwarmReport,
   SwarmFileSchema,
   swarmVerdictPrompt,
@@ -83,16 +91,29 @@ const runOnce = (d: Driver, verdict: SwarmVerdict, tip = sha(1), r3?: object): S
   });
 };
 const kinds = (actions: SwarmAction[]): string[] => actions.map((a) => a.kind);
+/** A seeded `rand(n)` in [0, n), so a failing walk repeats. */
+const mulberry32 =
+  (seed: number) =>
+  (n: number): number => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return Math.floor((((t ^ (t >>> 14)) >>> 0) / 2 ** 32) * n);
+  };
 
 describe('I1 OneRunPerReview', () => {
   it('never holds more than one queued or running run, across random interleavings', () => {
-    let seed = 42;
-    const rand = (n: number): number => {
-      seed = (seed * 1103515245 + 12345) % 2 ** 31;
-      return seed % n;
-    };
+    const rand = mulberry32(42);
     const verdicts: SwarmVerdict[] = ['APPROVE', 'APPROVE_WITH_NITS', 'REQUEST_CHANGES', 'BLOCKED'];
-    for (let trial = 0; trial < 200; trial++) {
+    const r3s = (judged: string) => [
+      undefined,
+      { verdict: 'pass', tip: judged },
+      { verdict: 'changes', findings: ['x'], tip: judged },
+      { verdict: 'escalate', trigger: 'outcome-changed', tip: judged },
+    ];
+    const actionsSeen = new Set<string>();
+    const statesSeen = new Set<string>();
+    for (let trial = 0; trial < 400; trial++) {
       const d = driver();
       let tip = 1;
       for (let i = 0; i < 60; i++) {
@@ -107,16 +128,18 @@ describe('I1 OneRunPerReview', () => {
         } else if (pick === 2 && active) {
           d.step({ type: 'started', runId: active.id, sessionId: 's', tip: sha(tip) });
         } else if (pick === 3 && active?.state === 'running') {
-          const branch = rand(2) ? active.roundTip : sha(++tip);
+          const head = rand(4) ? active.roundTip : sha(tip);
+          const r3 = r3s(head)[rand(4)];
           d.step({
             type: 'report',
             runId: active.id,
-            report: report(active.round, active.roundTip, verdicts[rand(4)]!),
-            branchTip: branch,
+            report: report(active.round, head, verdicts[rand(4)]!, r3 ? { r3 } : {}),
+            branchTip: rand(2) ? head : sha(++tip),
             r3Required: rand(2) === 1,
             newRunId: newId(),
           });
-        } else if (pick === 4 && active) {
+        } else if (pick === 4 && active && rand(4) === 0) {
+          // Rarer than a report, or a run almost never survives the five moved rounds that end it incomplete.
           d.step({ type: 'failed', runId: active.id, reason: 'session died' });
         } else if (pick === 5) {
           d.step({ type: 'clear' });
@@ -126,8 +149,12 @@ describe('I1 OneRunPerReview', () => {
         }
         const live = d.file.runs.filter((r) => r.state === 'queued' || r.state === 'running');
         expect(live.length).toBeLessThanOrEqual(1);
+        for (const r of d.file.runs) statesSeen.add(r.state);
       }
+      for (const k of kinds(d.actions)) actionsSeen.add(k);
     }
+    expect([...actionsSeen]).toEqual(expect.arrayContaining(['consider-approve', 'escalate', 'round']));
+    expect([...statesSeen]).toEqual(expect.arrayContaining(['blocked', 'changes', 'failed', 'incomplete', 'passed']));
   });
 
   it('a manual request during a run joins it instead of creating one', () => {
@@ -136,6 +163,21 @@ describe('I1 OneRunPerReview', () => {
     const actions = d.step({ type: 'trigger', trigger: 'manual', tip: sha(1), runId: 'second001' });
     expect(actions).toEqual([]);
     expect(d.file.runs.map((r) => r.id)).toEqual(['first0001']);
+  });
+
+  it('a manual request during a running round joins it, records the new tip, and clears an escalation', () => {
+    const d = driver();
+    runOnce(d, 'REQUEST_CHANGES');
+    runOnce(d, 'REQUEST_CHANGES');
+    d.step({ type: 'trigger', trigger: 'push', tip: sha(1), runId: 'live00001' });
+    d.step({ type: 'started', runId: 'live00001', sessionId: 's1', tip: sha(1) });
+    expect(d.file.escalated).not.toBeNull();
+
+    expect(d.step({ type: 'trigger', trigger: 'manual', tip: sha(2), runId: 'press0001' })).toEqual([]);
+    expect(d.file).toMatchObject({ escalated: null, streak: 0 });
+    expect(d.file.runs.filter((r) => r.state === 'running' || r.state === 'queued')).toEqual([
+      expect.objectContaining({ id: 'live00001', state: 'running', roundTip: sha(1), pendingTip: sha(2) }),
+    ]);
   });
 });
 
@@ -169,6 +211,30 @@ describe('I2 PushesJoinTheRunningRun', () => {
     });
     expect(d.file.runs).toHaveLength(1);
     expect(d.file.runs[0]).toMatchObject({ state: 'passed', reviewedTip: sha(2), rounds: 2 });
+  });
+
+  it('a report is judged by the tip it names, not the tip its round was sent for', () => {
+    const started = (): Driver => {
+      const d = driver();
+      d.step({ type: 'trigger', trigger: 'submit', tip: sha(1), runId: 'run000001' });
+      d.step({ type: 'started', runId: 'run000001', sessionId: 's1', tip: sha(1) });
+      return d;
+    };
+    const event = (branchTip: string): SwarmEvent => ({
+      type: 'report',
+      runId: 'run000001',
+      report: report(1, sha(2), 'APPROVE'),
+      branchTip,
+      r3Required: false,
+      newRunId: 'never0001',
+    });
+
+    const caughtUp = started();
+    expect(caughtUp.step(event(sha(2)))).toEqual([{ kind: 'stop', runId: 'run000001' }]);
+    expect(caughtUp.file.runs[0]).toMatchObject({ state: 'passed', reviewedTip: sha(2) });
+
+    const behind = started();
+    expect(behind.step(event(sha(3)))).toEqual([{ kind: 'round', runId: 'run000001', round: 2, tip: sha(3) }]);
   });
 
   it('a branch that keeps moving ends the run incomplete at the cap and queues one new run', () => {
@@ -215,8 +281,17 @@ describe('I4 and I9: OnlySpecWorkMergesItself, R3FailsClosed', () => {
   });
   const r3Pass = { verdict: 'pass', findings: [], deviations: [], tip };
 
-  it('only the all-true row approves, and a spec review never does', () => {
+  it('only the all-true row approves, a spec review never does, and each row names the first failed check', () => {
     const columns = ['approved', 'notSpec', 'attributed', 'open', 'notEscalated', 'r3Passed', 'tipCurrent'] as const;
+    const checks = [
+      ['notSpec', 'SPEC_REVIEW'],
+      ['approved', 'NOT_APPROVED'],
+      ['attributed', 'NOT_ATTRIBUTED'],
+      ['open', 'NOT_OPEN'],
+      ['notEscalated', 'ESCALATED'],
+      ['r3Passed', 'R3_NOT_PASSED'],
+      ['tipCurrent', 'TIP_MOVED'],
+    ] as const;
     for (let mask = 0; mask < 2 ** columns.length; mask++) {
       const row = Object.fromEntries(columns.map((c, i) => [c, !!(mask & (1 << i))])) as Record<
         (typeof columns)[number],
@@ -234,9 +309,10 @@ describe('I4 and I9: OnlySpecWorkMergesItself, R3FailsClosed', () => {
         escalated: !row.notEscalated,
         branchTip: tip,
       });
-      const allTrue = Object.values(row).every(Boolean);
-      expect(decision.approve, JSON.stringify(row)).toBe(allTrue);
-      if (!row.notSpec) expect(decision).toEqual({ approve: false, refusal: 'SPEC_REVIEW' });
+      const failed = checks.find(([column]) => !row[column]);
+      expect(decision, JSON.stringify(row)).toEqual(
+        failed ? { approve: false, refusal: failed[1] } : { approve: true, tip }
+      );
     }
   });
 
@@ -249,8 +325,11 @@ describe('I4 and I9: OnlySpecWorkMergesItself, R3FailsClosed', () => {
       { ...r3Pass, tip: sha(6) },
       undefined,
     ])
-      expect(decideAutoApprove({ ...facts, run: passedRun(r3) }).approve, JSON.stringify(r3)).toBe(false);
-    expect(decideAutoApprove({ ...facts, run: passedRun(r3Pass) }).approve).toBe(true);
+      expect(decideAutoApprove({ ...facts, run: passedRun(r3) }), JSON.stringify(r3)).toEqual({
+        approve: false,
+        refusal: 'R3_NOT_PASSED',
+      });
+    expect(decideAutoApprove({ ...facts, run: passedRun(r3Pass) })).toEqual({ approve: true, tip });
   });
 
   it('a required R-3 that the run never reported is unavailable, and nothing is offered to merge', () => {
@@ -266,18 +345,24 @@ describe('I4 and I9: OnlySpecWorkMergesItself, R3FailsClosed', () => {
       newRunId: 'next00001',
     });
     expect(d.file.runs[0]).toMatchObject({ state: 'passed', r3: { verdict: 'unavailable' } });
-    expect(kinds(actions)).not.toContain('consider-approve');
+    expect(kinds(actions)).toEqual(['stop']);
   });
 
   it('a passed run with R-3 pass is offered to the approve check', () => {
     const d = driver();
-    expect(kinds(runOnce(d, 'APPROVE', tip, r3Pass))).toContain('consider-approve');
+    expect(kinds(runOnce(d, 'APPROVE', tip, r3Pass))).toEqual(['stop', 'consider-approve']);
   });
 
   it('refuses an R-3 escalate that names no trigger from the list', () => {
     const base = { head_sha: tip, round: 1, verdict: 'APPROVE' };
-    expect(parseSwarmReport({ ...base, r3: { verdict: 'escalate', findings: ['x'], tip } }).ok).toBe(false);
-    expect(parseSwarmReport({ ...base, r3: { verdict: 'escalate', trigger: 'vibes', tip } }).ok).toBe(false);
+    expect(parseSwarmReport({ ...base, r3: { verdict: 'escalate', findings: ['x'], tip } })).toEqual({
+      ok: false,
+      error: 'INVALID_REPORT: r3 escalate must name a trigger from the list',
+    });
+    expect(parseSwarmReport({ ...base, r3: { verdict: 'escalate', trigger: 'vibes', tip } })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/^INVALID_REPORT: /),
+    });
     expect(parseSwarmReport({ ...base, r3: { verdict: 'escalate', trigger: 'outgrew-ticket', tip } }).ok).toBe(true);
   });
 
@@ -333,7 +418,7 @@ describe('I5 OneSendPerVerdict', () => {
   it('an R-3 changes on an approve verdict is a non-approve verdict that sends R-3 findings', () => {
     const d = driver();
     const r3 = { verdict: 'changes', findings: ['Outcome 3 is not met.'], deviations: [], tip: sha(1) };
-    expect(kinds(runOnce(d, 'APPROVE', sha(1), r3))).toContain('send');
+    expect(kinds(runOnce(d, 'APPROVE', sha(1), r3))).toEqual(['stop', 'send']);
     const run = d.file.runs[0] as Extract<SwarmRun, { state: 'changes' }>;
     expect(run.state).toBe('changes');
     expect(swarmVerdictPrompt(fakeReview('session'), run)).toContain('Outcome 3 is not met.');
@@ -377,11 +462,10 @@ describe('I6 TwoInARowEscalates', () => {
 
   it('R, R escalates on the second without sending it, sends nothing while escalated, and a clear resets', () => {
     const d = driver();
-    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toContain('send');
+    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toEqual(['stop', 'send']);
     const first = d.file.runs[0]!.id;
     const second = runOnce(d, 'BLOCKED');
-    expect(kinds(second)).toContain('escalate');
-    expect(kinds(second)).not.toContain('send');
+    expect(kinds(second)).toEqual(['stop', 'escalate']);
     expect(d.file.escalated).toMatchObject({ kind: 'streak', runIds: [d.file.runs[0]!.id, first] });
 
     expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toEqual(['stop']);
@@ -391,8 +475,8 @@ describe('I6 TwoInARowEscalates', () => {
 
     d.step({ type: 'clear' });
     expect(d.file).toMatchObject({ escalated: null, streak: 0 });
-    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toContain('send');
-    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toContain('escalate');
+    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toEqual(['stop', 'send']);
+    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toEqual(['stop', 'escalate']);
   });
 
   it('a person pressing Run pr-swarm clears the escalation', () => {
@@ -410,7 +494,36 @@ describe('I6 TwoInARowEscalates', () => {
     d.step({ type: 'trigger', trigger: 'push', tip: sha(3), runId: 'fail00001' });
     d.step({ type: 'failed', runId: 'fail00001', reason: 'could not start' });
     expect(d.file.streak).toBe(1);
-    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toContain('escalate');
+    expect(kinds(runOnce(d, 'REQUEST_CHANGES'))).toEqual(['stop', 'escalate']);
+  });
+
+  it('an escalation names only the newest run once the earlier flagged run has aged out of the kept runs', () => {
+    const d = driver();
+    runOnce(d, 'REQUEST_CHANGES');
+    const aged = d.file.runs[0]!.id;
+    for (let i = 0; i < MAX_RUNS_KEPT; i++) {
+      const id = newId();
+      d.step({ type: 'trigger', trigger: 'push', tip: sha(1), runId: id });
+      d.step({ type: 'failed', runId: id, reason: 'could not start' });
+    }
+    expect(d.file.runs.some((r) => r.id === aged)).toBe(false);
+    expect(d.file.streak).toBe(1);
+
+    expect(kinds(runOnce(d, 'BLOCKED'))).toEqual(['stop', 'escalate']);
+    expect(d.file.escalated).toMatchObject({ kind: 'streak', runIds: [d.file.runs[0]!.id] });
+  });
+
+  it('a passed run while escalated resets the streak but keeps the escalation and offers nothing to merge', () => {
+    const d = driver();
+    runOnce(d, 'REQUEST_CHANGES');
+    runOnce(d, 'REQUEST_CHANGES');
+    const escalation = d.file.escalated;
+    expect(escalation).not.toBeNull();
+
+    const r3 = { verdict: 'pass', findings: [], deviations: [], tip: sha(1) };
+    expect(kinds(runOnce(d, 'APPROVE', sha(1), r3))).toEqual(['stop']);
+    expect(d.file.runs[0]).toMatchObject({ state: 'passed', r3: { verdict: 'pass' } });
+    expect(d.file).toMatchObject({ streak: 0, escalated: escalation });
   });
 
   it('an R-3 escalate escalates at once, naming its trigger', () => {
@@ -457,8 +570,14 @@ describe('the report contract', () => {
     expect(parsed.report.result.verdict).toBe('REQUEST_CHANGES');
     expect(parsed.report.result.findings).toHaveLength(100);
     expect(parsed.report.result.findings[0]).toMatchObject({ file: 'a.ts', line: 'general', body: 'x[31my' });
-    expect(parseSwarmReport({ head_sha: sha(1), round: 1, verdict: 'LGTM' }).ok).toBe(false);
-    expect(parseSwarmReport({ head_sha: 'nope', round: 1, verdict: 'APPROVE' }).ok).toBe(false);
+    expect(parseSwarmReport({ head_sha: sha(1), round: 1, verdict: 'LGTM' })).toEqual({
+      ok: false,
+      error: 'INVALID_REPORT: unknown verdict "LGTM"',
+    });
+    expect(parseSwarmReport({ head_sha: 'nope', round: 1, verdict: 'APPROVE' })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/^INVALID_REPORT: /),
+    });
   });
 });
 
@@ -466,6 +585,11 @@ describe('I7 ReviewFilesUnchanged', () => {
   beforeEach(() => {
     deployRole.enter('live');
     rmSync(dataPath('reviews'), { recursive: true, force: true });
+  });
+
+  it('the review file schema is still the frozen copy key for key, so the previous release reads every file', () => {
+    // The fixture is `JSON.stringify(z.toJSONSchema(ReviewFileSchema), null, 2)` plus a newline, written by W-109.
+    expect(z.toJSONSchema(ReviewFileSchema)).toEqual(frozenReviewFile);
   });
 
   it('a frozen copy of the review file schema parses every review file written while runs exist', () => {
@@ -497,7 +621,10 @@ describe('I7 ReviewFilesUnchanged', () => {
         .sort()
     ).toEqual(reviews.map((r) => r.id).sort());
     expect(readReview('bbbbbbbbbbbbbbbb')).toMatchObject({ ok: true });
-    expect(readSwarm('bbbbbbbbbbbbbbbb')).toMatchObject({ ok: true, file: { runs: [{ state: 'passed' }, {}] } });
+    expect(readSwarm('bbbbbbbbbbbbbbbb')).toMatchObject({
+      ok: true,
+      file: { runs: [{ state: 'passed' }, { state: 'changes', send: { state: 'pending' } }] },
+    });
   });
 
   it('writes nothing outside the live colour, and never overwrites a file a newer release wrote', () => {
