@@ -32,7 +32,6 @@ import {
   ConversationToolSchema,
   CreateConversationBodySchema,
   MAX_COMPOSED_BYTES,
-  MAX_CONVERSATIONS_PER_WORKSPACE,
   normalizePrompt,
   slashCommand,
   promptRefusal,
@@ -70,6 +69,7 @@ import {
   setTaskHint,
   sha256,
 } from '../../canvas/conversations.js';
+import type { ActivityEvidence } from '../../canvas/conversation-eviction.js';
 import { cutResult, deriveTaskState, isolationLabel, taskPart, type TaskState } from '../../canvas/tasks.js';
 import { joinRelease, type ReleaseRecord, type ReleaseView } from '../../canvas/release.js';
 import type { ToolRow } from '../../canvas/transcript-activity.js';
@@ -111,6 +111,24 @@ function sessionState(ctx: CanvasPort, req: FastifyRequest, sessionId: string): 
 }
 const sessionBusy = (session: { hookTurnRunning?: boolean; isWorking?: boolean } | undefined): boolean =>
   session?.hookTurnRunning === true || session?.isWorking === true;
+/** What `conversationActive()` reads of one record and its session. */
+export function activityEvidence(ctx: CanvasPort, c: Conversation): ActivityEvidence {
+  const session = ctx.sessions.get(c.sessionId);
+  return {
+    createdAt: c.createdAt,
+    messages: c.messages,
+    ...(session
+      ? {
+          session: {
+            exited: !!session.paneExit,
+            working: sessionBusy(session),
+            lastActivityAt: session.lastActivityAt,
+            lastSubmitAt: session.lastSubmitAt,
+          },
+        }
+      : {}),
+  };
+}
 /** A task's state from what the server holds now. `canSee` is false for a session the caller may not read, which is then as good as gone. */
 export function taskStateOf(ctx: CanvasPort, c: Conversation, canSee = true): TaskState | undefined {
   const task = taskPart(c);
@@ -869,8 +887,6 @@ async function start(
   if (!file.ok) return conflict('FILE_UNREADABLE: conversations cannot be saved right now; nothing was started');
   const prior = file.conversations.find((c) => c.requestId === requestId);
   if (prior) return ok({ conversation: summary(ctx, req, prior), duplicate: true });
-  if (file.conversations.length >= MAX_CONVERSATIONS_PER_WORKSPACE)
-    return conflict(`TOO_MANY: a canvas keeps at most ${MAX_CONVERSATIONS_PER_WORKSPACE} conversations`);
   const agent = await agentStartGate(
     ctx,
     req,
@@ -883,6 +899,9 @@ async function start(
   if (await caseRunsElsewhere(req, workspace.caseName))
     return conflict('CASE_UNSUPPORTED: conversations are not available for Docker or remote cases yet');
   if (!ctx.startConversationSession) return conflict('Conversations are not available on this server');
+  // Last, so a start refused for any other reason evicts nothing. Loaded on use: the task routes import this module.
+  const room = await (await import('./canvas-task-routes.js')).makeRoom(ctx, req, workspace, file.conversations);
+  if (!Array.isArray(room)) return room;
   const workingDir = await resolveCasePath(workspace.caseName, getAuthUser(req));
   const started = await ctx.startConversationSession(req.headers, {
     workingDir,
