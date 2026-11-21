@@ -37,6 +37,15 @@ The Assurance rules in all three instruction files now say this. poteto-mode can
 
 The per-session env allowlist refuses both keys, and tmux skipped an empty value, so a run session would have inherited the server's own token. `Session.setInternalEnv()` is a second channel the server sets between create and start: never from a request, never persisted, and the one path that sets an empty tmux value. On this host gh is signed in through its own config file, so blank tokens alone still let it write; the run also points `GH_CONFIG_DIR` at an empty folder. Three choices the spec left open: a local-only branch that a worktree has checked out gets a review-only run (git would refuse every fix push, and the run would never settle); the runner recovers lazily from its minute tick once the colour is live and restored, instead of hooks in boot, promote and reinstate; and a report is applied with `r3Required: false` until the R-3 ticket, so nothing auto-approves in t3.
 
+## 2026-11-21 — The Chat Graph build fails on a real sidecar error, and a stop overtakes a start (W-88)
+
+**Type:** intent-refinement
+**Touches:** `scripts/build.mjs`, `chat-graph/main.go`, `src/chat-graph/supervisor.ts`, `src/web/server.ts`, `test/chat-graph-supervisor.test.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** pr-swarm review rounds on the W-88 branch. This supersedes the 2026-11-20 entry's "skips the sidecar when `go` is missing" as the whole build rule.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I6), Work item W-88
+
+`scripts/build.mjs` now skips the sidecar only when `go` is missing or older than go.mod's `go` line, compared up front with `go env GOVERSION` because a pre-1.21 go would otherwise compile against an older stdlib; any other `go build` error fails the build, and the previous binary is removed first. Whether that hard failure is right for the upstream release job (whose runner has a new enough `go`) is open for the owner. The sidecar takes an exclusive `flock` on `<dir>/lock` before touching its socket, so two sidecars started at once cannot delete each other's socket. A `stop()` makes a `start()` called before it give way (`reason: 'stopped'`), so shutdown can await the stop (bounded at 4 s) before its state flush; a retire that fails after its stop restarts the sidecar; the supervisor runs only on Linux, and refuses a socket path over 107 bytes. The `server.ts` wiring of these is not under test.
+
 ## 2026-11-21 — The Chat Graph supervisor runs every operation through one queue (W-88)
 
 **Type:** propagated-discovery

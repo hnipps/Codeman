@@ -45,7 +45,7 @@ type SidecarState = { kind: 'stopped' } | { kind: 'running'; child: ChildProcess
 
 export type ChatGraphStartResult =
   | { ok: true; reused: boolean }
-  | { ok: false; reason: 'role' | 'missing-binary' | 'failed'; error: string };
+  | { ok: false; reason: 'role' | 'missing-binary' | 'stopped' | 'failed'; error: string };
 
 export interface ChatGraphSupervisorOptions {
   /** Defaults to the `chat-graph` binary the build places next to this module. */
@@ -140,7 +140,7 @@ export class ChatGraphSupervisor {
     });
     const stoppedWhileStarting = (): ChatGraphStartResult => ({
       ok: false,
-      reason: 'failed',
+      reason: 'stopped',
       error: 'a stop was requested while the Chat Graph sidecar was starting',
     });
     if (!this.options.mayPersist()) return refused();
@@ -211,7 +211,8 @@ export class ChatGraphSupervisor {
       if (hasExited(child)) {
         return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited: ${output.trim()}` };
       }
-      if (await this.health()) return { ok: true, reused: false };
+      // Re-checked after the answer: a child that lost the lock to another sidecar may not have exited yet.
+      if ((await this.health()) && !hasExited(child)) return { ok: true, reused: false };
       await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
     }
     await this.stopLocked();

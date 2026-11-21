@@ -79,7 +79,10 @@ func listen(dir string) (net.Listener, error) {
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lock.Close()
-		return nil, fmt.Errorf("another sidecar holds %s: %v", lock.Name(), err)
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("another sidecar holds %s", lock.Name())
+		}
+		return nil, fmt.Errorf("cannot lock %s: %v", lock.Name(), err)
 	}
 	ln, err := listenSocket(filepath.Join(dir, socketName))
 	if err != nil {

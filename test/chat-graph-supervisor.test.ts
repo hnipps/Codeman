@@ -211,7 +211,7 @@ describe('ChatGraphSupervisor', () => {
     expect(await until(() => !isAlive(pid))).toBe(true);
   }, 30_000);
 
-  it('a stop called after a start runs after it, so nothing outlives a retire', async () => {
+  it('a start gives way to a stop called after it, so nothing outlives a retire', async () => {
     // Invariant I6: OnlyTheLiveColourRunsTheSidecar
     let live = true;
     const sup = supervisor(() => live);
@@ -224,7 +224,7 @@ describe('ChatGraphSupervisor', () => {
     live = false;
 
     // The start gives way to the stop queued behind it rather than hold it for the readiness timeout.
-    expect(await started).toMatchObject({ ok: false, reason: 'failed' });
+    expect(await started).toMatchObject({ ok: false, reason: 'stopped' });
   });
 
   it('a stop is not held for the readiness timeout by a start whose sidecar never answers', async () => {
@@ -238,17 +238,27 @@ describe('ChatGraphSupervisor', () => {
     const t0 = Date.now();
     expect(await sup.stop()).toBe(true);
     expect(Date.now() - t0).toBeLessThan(5_000);
-    expect(await started).toMatchObject({ ok: false, reason: 'failed' });
+    expect(await started).toMatchObject({ ok: false, reason: 'stopped' });
     expect(markedPids(owner)).toEqual([]);
   }, 20_000);
 
   it('refuses a socket path too long for sun_path, with a message naming the limit', async () => {
-    const sup = supervisor(() => true, { dir: path.join(root, 'x'.repeat(120)) });
+    // `<dir>/sock` of exactly 108 bytes: one over the limit.
+    const long = path.join(root, 'x'.repeat(108 - Buffer.byteLength(root) - '//sock'.length));
+    expect(Buffer.byteLength(path.join(long, 'sock'))).toBe(108);
+    const sup = supervisor(() => true, { dir: long });
 
     const result = await sup.start();
     expect(result).toMatchObject({ ok: false, reason: 'failed' });
     expect(result.ok ? '' : result.error).toContain('107 bytes');
     expect(markedPids(owner)).toEqual([]);
+  });
+
+  it('starts on a socket path of exactly 107 bytes', async () => {
+    const edge = path.join(root, 'y'.repeat(107 - Buffer.byteLength(root) - '//sock'.length));
+    expect(Buffer.byteLength(path.join(edge, 'sock'))).toBe(107);
+
+    expect(await supervisor(() => true, { dir: edge }).start()).toEqual({ ok: true, reused: false });
   });
 
   it('sweeps an orphan whose owner marker is a non-ASCII data dir', async () => {
@@ -343,8 +353,7 @@ describe('ChatGraphSupervisor', () => {
       expect(markedPids(owner), `seed ${seed} (ended live: ${finallyLive})`).toEqual([]);
       for (const result of await Promise.all(starts)) {
         const r = result as { ok: boolean; reason?: string; error?: string };
-        const gaveWay = r.reason === 'failed' && r.error?.startsWith('a stop was requested');
-        expect(r.ok || r.reason === 'role' || gaveWay, `seed ${seed}: ${JSON.stringify(r)}`).toBe(true);
+        expect(r.ok || r.reason === 'role' || r.reason === 'stopped', `seed ${seed}: ${JSON.stringify(r)}`).toBe(true);
       }
     }
   }, 60_000);
