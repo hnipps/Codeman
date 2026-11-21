@@ -17,6 +17,7 @@ import { buildCodexCommand } from '../../src/tmux-manager.js';
 import { Session } from '../../src/session.js';
 import { safeRmHomeTree } from '../mocks/index.js';
 import { createUser, invalidateUsersCache } from '../../src/user-store.js';
+import { userCasesDir } from '../../src/config/multiuser.js';
 import type { AntigravityConfig, CodexConfig } from '../../src/types.js';
 
 vi.mock('../../src/utils/cli-launcher.js', async (importOriginal) => {
@@ -146,17 +147,26 @@ describe('agent-started workers through the routes', () => {
       safeRmHomeTree(join(homedir(), 'codeman-users'));
     });
 
-    for (const mode of ['codex', 'antigravity'] as const) {
-      it(`${mode} quick-start: the clamp still forces a filled bypass off for a non-granted owner`, async () => {
+    for (const [url, mode] of [
+      ['/api/quick-start', 'codex'],
+      ['/api/quick-start', 'antigravity'],
+      ['/api/sessions', 'codex'],
+      ['/api/sessions', 'antigravity'],
+    ] as const) {
+      it(`${mode} at ${url}: the clamp still forces a filled bypass off for a non-granted owner`, async () => {
         harness = await createRouteTestHarness(registerSessionRoutes, { authUser: { username: 'peon', role: 'user' } });
-        expect(bypassOf(await launch('/api/quick-start', mode), mode)).toBe(false);
+        // A non-admin's workingDir must sit inside their own space.
+        const ownDir = join(userCasesDir('peon'), 'agent-bypass-test');
+        await mkdir(ownDir, { recursive: true });
+        const extra = url === '/api/sessions' ? { workingDir: ownDir } : {};
+        expect(bypassOf(await launch(url, mode, extra), mode)).toBe(false);
       });
 
-      it(`${mode} quick-start: an admin owner keeps the filled bypass`, async () => {
+      it(`${mode} at ${url}: an admin owner keeps the filled bypass`, async () => {
         harness = await createRouteTestHarness(registerSessionRoutes, {
           authUser: { username: 'boss', role: 'admin' },
         });
-        expect(bypassOf(await launch('/api/quick-start', mode), mode)).toBe(true);
+        expect(bypassOf(await launch(url, mode), mode)).toBe(true);
       });
     }
 
