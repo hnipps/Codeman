@@ -16,11 +16,14 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"codeman/chat-graph/store"
 )
 
 const (
 	socketName = "sock"
 	lockName   = "lock"
+	storeName  = "graph.sqlite"
 )
 
 func main() {
@@ -31,7 +34,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("chat-graph: %v", err)
 	}
-	srv := &http.Server{Handler: newHandler(), ReadHeaderTimeout: 5 * time.Second}
+	st, err := store.Open(filepath.Join(*dir, storeName), func() int64 { return time.Now().UnixMilli() })
+	if err != nil {
+		ln.Close()
+		log.Fatalf("chat-graph: open store: %v", err)
+	}
+	defer st.Close()
+	srv := &http.Server{Handler: newHandler(st), ReadHeaderTimeout: 5 * time.Second}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
@@ -46,6 +55,7 @@ func main() {
 		_ = srv.Shutdown(ctx)
 	case err := <-served:
 		if !errors.Is(err, http.ErrServerClosed) {
+			st.Close()
 			log.Fatalf("chat-graph: %v", err)
 		}
 	}
@@ -113,16 +123,4 @@ func listenSocket(path string) (net.Listener, error) {
 		return nil, err
 	}
 	return ln, nil
-}
-
-// newHandler answers GET /health with this process's pid, which is how
-// Codeman tells its own child's answer from another sidecar's on the socket.
-func newHandler() http.Handler {
-	body := []byte(fmt.Sprintf(`{"ok":true,"pid":%d}`, os.Getpid()))
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-	})
-	return mux
 }

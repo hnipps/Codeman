@@ -198,9 +198,21 @@ describe('capture freeze on the dashboard', () => {
     const frames = await page.evaluate(async () => (await window.__frameShot).frames);
     const { outer, marker } = layout;
     expect(frames.filter((f) => ['outer', 'inner', 'sealed'].includes(f.title))).toEqual([
-      { title: 'outer', box: { x: outer.x + 3, y: outer.y + 3, width: 200, height: 100 }, depth: 1, captured: true },
-      { title: 'inner', box: { x: outer.x + 23, y: outer.y + 23, width: 60, height: 40 }, depth: 2, captured: true },
-      { title: 'sealed', box: expect.any(Object), depth: 1, captured: false },
+      {
+        title: 'outer',
+        box: { x: outer.x + 3, y: outer.y + 3, width: 200, height: 100 },
+        depth: 1,
+        captured: true,
+        selfReported: false,
+      },
+      {
+        title: 'inner',
+        box: { x: outer.x + 23, y: outer.y + 23, width: 60, height: 40 },
+        depth: 2,
+        captured: true,
+        selfReported: false,
+      },
+      { title: 'sealed', box: expect.any(Object), depth: 1, captured: false, selfReported: false },
     ]);
     expect(await pixel(outer.x + 150, outer.y + 80)).toSatisfy((p: Rgba) => near(p, [255, 255, 0, 255]));
     expect(await pixel(outer.x + 3 + 50, outer.y + 3 + 40)).toSatisfy((p: Rgba) => near(p, [0, 255, 255, 255]));

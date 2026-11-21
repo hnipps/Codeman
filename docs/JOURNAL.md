@@ -10,6 +10,14 @@ Newest entries first. After an entry is on the default branch, correct it with a
 **Links:** [intent/2026-11-21-w116-work-lifecycle.md](../intent/2026-11-21-w116-work-lifecycle.md), Work items W-116 and W-68
 
 Draft, for review. A new Blocked lane (stored as `todo` + `todoStatus: "blocked"`, so the previous release reads it as Needs refinement) holds items with a typed `dependsOn`; the tick moves one to Ready for work once every dependency is Done and merged, and asks a person if one is given up. Only `ticketOf` makes an item a ticket, never `createdFrom`. A person can no longer hold In progress: that work is Human required. A Ready item loses a session that ended, written as the server so W-70 I8 cannot close it. Rejected: inferring dependencies from prose; counting a Done dependency as enough without a merge; redirecting a person's move into In progress to Human required instead of refusing it; and unlinking ended sessions, which would break I8 revision 2. A parent follows its tickets once each time they all close, so a person's answer is not undone, and the cycle check covers ticket links, so a ticket cannot wait on its own parent; both came from the independent review. A multi-item Dafny model proves the new rules and W-70's kept ones; it also showed that W-70 I4 and I5 cannot hold as written once parents close from every open lane, and the spec supersedes both clauses.
+## 2026-11-21 — The Chat Graph store vendors SQLite for Linux only and keeps I1 in its schema (W-80)
+
+**Type:** intent-refinement
+**Touches:** `chat-graph/`, `scripts/vendor-chat-graph.mjs`, `scripts/lib/go-toolchain.mjs`, `scripts/build.mjs`, `test/chat-graph-build.test.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** Ticket 2 of the Chat Graph spec. The spec left the SQLite version, the vendor footprint and how undo records its effects open.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I1, I5, I7), Work item W-80
+
+`modernc.org/sqlite` is pinned at v1.38.2, the newest release that builds on go 1.23; v1.39 and later need go 1.24. A full `go mod vendor` is 229 MB of per-platform generated code, so `scripts/vendor-chat-graph.mjs` keeps linux/amd64 and linux/arm64 only (33 MB) and `build.mjs` skips the sidecar elsewhere, where the supervisor never runs it anyway. Rejected: committing the full 229 MB, and a committed binary. Membership rows gain `removed_by` beside the spec's `removed_at`, so undo knows which rows an op removed and adds fresh copies rather than clearing `removed_at`; triggers enforce append-only for every writer. Topics gain a `retracted` status for a topic whose creating op was undone. Undo writes no op row of its own: its rows carry `undo:<op>`. An undo that a later op has overtaken answers 409 instead of guessing.
 
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 

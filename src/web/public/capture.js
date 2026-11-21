@@ -13,10 +13,24 @@
  * Elements matching `[data-codeman-capture]` (the capture UI) and unrendered HTML elements are
  * left out of each document's raster. Every iframe rasterises as an empty box (the vendored
  * copy is patched so: stock 1.11.11 clones a same-origin frame's body without the caller's
- * options and appends its children twice), and frames are painted into those boxes here.
- * A frame whose document cannot be read (sandboxed, cross-origin) gets `captured: false`
- * and stays blank. Frames that are not rendered, have no size or lie outside the viewport
- * of the document that holds them get no record.
+ * options and appends its children twice), and frames are painted into those boxes here,
+ * clipped to the part of the box its ancestors show. Frames that are not rendered, have no
+ * size or lie outside the viewport of the document that holds them get no record.
+ *
+ * A frame whose document cannot be read (sandboxed, cross-origin) is asked for its own
+ * picture (ticket 2): `codeman:capture` with a random `requestId` and the box size in device
+ * pixels, answered by the frame bridge with `codeman:frame-capture` and a PNG data URL. I8
+ * (FramePicturesAreUntrusted): the answer is taken only from that frame's window, with the
+ * opaque origin, the same `requestId` and within FRAME_CAPTURE_MS of the rest of the picture
+ * settling (the top document and same-origin frames). The request goes out at once, but the
+ * clock starts there: a bridged frame shares the page's main thread and cannot rasterise
+ * while the top document does (measured: answers 15 ms after the frame starts, 583 ms after
+ * the request on the canvas page). So a frame never delays the freeze by more than
+ * FRAME_CAPTURE_MS, and a well-behaved one is never cut off by the top's own raster. It must be a PNG by its
+ * signature, under the length cap and no larger than asked; and it is drawn only into the
+ * frame's own box. Anything else, a frame without the bridge (Mermaid, html-view) included,
+ * is painted as a hatched "Frame not captured" placeholder with `captured: false`. A picture
+ * that passed is `selfReported: true`: the page drew it, so it can still lie inside its box.
  *
  * Exact-pixel mode (ticket 7, intent/2026-11-20-ambient-capture-tab-mode.md): with the
  * per-device setting `captureTabMode` on, on desktop Chromium, the picture is one video frame
@@ -34,7 +48,7 @@
  * Single-flight: a call while a freeze runs returns the same promise.
  *
  * @typedef {{ x: number, y: number, width: number, height: number }} CaptureBox
- * @typedef {{ title: string, box: CaptureBox, depth: number, captured: boolean }} CaptureFrame
+ * @typedef {{ title: string, box: CaptureBox, depth: number, captured: boolean, selfReported: boolean }} CaptureFrame
  * @typedef {Object} FreezeResult
  * @property {Blob} blob PNG of the viewport
  * @property {number} width viewport width in CSS px
@@ -58,6 +72,14 @@
   const CAPTURE_UI_SELECTOR = '[data-codeman-capture]';
   const MAX_FRAME_DEPTH = 2;
   const XHTML = 'http://www.w3.org/1999/xhtml';
+
+  // I8; packages/canvas/src/frame-messages.ts holds the same numbers.
+  const FRAME_CAPTURE_MS = 500;
+  const MAX_FRAME_PICTURE_CHARS = 12 * 1024 * 1024;
+  const FRAME_PICTURE_PREFIX = 'data:image/png;base64,';
+  const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+  // The approved prototype's placeholder (docs/spikes/w-49-ambient-capture/prototype/proto.css).
+  const PLACEHOLDER = { stripe: '#2a2b3a', gap: '#24253a', ink: '#7b81a6', label: 'Frame not captured' };
 
   const TAB_GRAB_TIMEOUT_MS = 1000;
   const TAB_ASPECT_TOLERANCE = 0.02;
@@ -113,32 +135,163 @@
     }
   }
 
-  /** Frames of `doc`, depth-first, each parent before its children. `clip` is `doc`'s viewport in top CSS px. */
-  function collectFrames(doc, clip, depth, out) {
+  function intersect(a, b) {
+    const x = Math.max(a.x, b.x);
+    const y = Math.max(a.y, b.y);
+    const right = Math.min(a.x + a.width, b.x + b.width);
+    const bottom = Math.min(a.y + a.height, b.y + b.height);
+    return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
+  }
+
+  /**
+   * Frames of `doc`, depth-first, each parent before its children. `view` is `doc`'s viewport in
+   * top CSS px, `scale` how many top px one of its px covers (a canvas embed is scaled with the
+   * board), `shown` the part of that viewport its ancestors leave visible.
+   */
+  function collectFrames(doc, view, scale, shown, depth, out) {
     for (const frame of doc.querySelectorAll('iframe')) {
       if (frame.closest(CAPTURE_UI_SELECTOR)) continue;
       if (frame.checkVisibility ? !frame.checkVisibility({ visibilityProperty: true }) : !frame.getClientRects().length)
         continue;
       const rect = frame.getBoundingClientRect();
+      if (!frame.clientWidth || !frame.clientHeight || !frame.offsetWidth || !frame.offsetHeight) continue;
+      const sx = rect.width / frame.offsetWidth;
+      const sy = rect.height / frame.offsetHeight;
       const box = {
-        x: clip.x + rect.left + frame.clientLeft,
-        y: clip.y + rect.top + frame.clientTop,
-        width: frame.clientWidth,
-        height: frame.clientHeight,
+        x: view.x + (rect.left + frame.clientLeft * sx) * scale,
+        y: view.y + (rect.top + frame.clientTop * sy) * scale,
+        width: frame.clientWidth * sx * scale,
+        height: frame.clientHeight * sy * scale,
       };
-      if (!box.width || !box.height) continue;
-      if (
-        box.x >= clip.x + clip.width ||
-        box.y >= clip.y + clip.height ||
-        box.x + box.width <= clip.x ||
-        box.y + box.height <= clip.y
-      )
-        continue;
+      const visible = intersect(box, shown);
+      if (!visible) continue;
       const inner = readableDocument(frame);
-      out.push({ title: frame.title || '', box, depth, captured: !!inner, doc: inner });
-      if (inner && depth < MAX_FRAME_DEPTH) collectFrames(inner, box, depth + 1, out);
+      const record = {
+        title: frame.title || '',
+        box,
+        depth,
+        captured: !!inner,
+        selfReported: false,
+        el: frame,
+        doc: inner,
+        layout: { width: frame.clientWidth, height: frame.clientHeight },
+        scale: scale * sx,
+        visible,
+      };
+      out.push(record);
+      if (inner && depth < MAX_FRAME_DEPTH) collectFrames(inner, box, record.scale, visible, depth + 1, out);
     }
     return out;
+  }
+
+  /**
+   * Ask a frame for its own picture. Resolves to the data URL it answered with, or null when no answer
+   * from that frame's window, with that `requestId`, came within FRAME_CAPTURE_MS of `clock` settling.
+   * The bridge answers whichever window asked, so the reply comes here even for a frame nested in a
+   * canvas page.
+   */
+  function askFrame(frame, width, height, clock) {
+    const target = frame.contentWindow;
+    if (!target || !global.crypto?.randomUUID) return Promise.resolve(null);
+    const requestId = global.crypto.randomUUID();
+    return new Promise((resolve) => {
+      let timer = 0;
+      const finish = (value) => {
+        clearTimeout(timer);
+        global.removeEventListener('message', heard);
+        resolve(value);
+      };
+      function heard(e) {
+        if (e.source !== target || e.origin !== 'null') return;
+        const data = e.data;
+        if (!data || data.type !== 'codeman:frame-capture' || data.requestId !== requestId) return;
+        finish(typeof data.dataUrl === 'string' ? data.dataUrl : null);
+      }
+      clock.then(() => {
+        timer = setTimeout(() => finish(null), FRAME_CAPTURE_MS);
+      });
+      global.addEventListener('message', heard);
+      try {
+        target.postMessage({ type: 'codeman:capture', requestId, width, height }, '*');
+      } catch {
+        finish(null);
+      }
+    });
+  }
+
+  /**
+   * A frame's answer as a bitmap, or null unless it is a PNG data URL under the length cap whose
+   * own header says it is no larger than the `width` by `height` device pixels asked for (one
+   * pixel of rounding allowed). The bytes are checked before anything decodes them.
+   */
+  async function framePicture(dataUrl, width, height) {
+    if (typeof dataUrl !== 'string' || dataUrl.length > MAX_FRAME_PICTURE_CHARS) return null;
+    if (!dataUrl.startsWith(FRAME_PICTURE_PREFIX)) return null;
+    let binary;
+    try {
+      binary = global.atob(dataUrl.slice(FRAME_PICTURE_PREFIX.length));
+    } catch {
+      return null;
+    }
+    if (binary.length < 24) return null;
+    if (PNG_SIGNATURE.some((byte, i) => binary.charCodeAt(i) !== byte)) return null;
+    if (binary.slice(12, 16) !== 'IHDR') return null;
+    const u32 = (at) =>
+      ((binary.charCodeAt(at) << 24) >>> 0) +
+      (binary.charCodeAt(at + 1) << 16) +
+      (binary.charCodeAt(at + 2) << 8) +
+      binary.charCodeAt(at + 3);
+    const w = u32(16);
+    const h = u32(20);
+    if (!w || !h || w > width + 1 || h > height + 1) return null;
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    try {
+      return await global.createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    } catch {
+      return null;
+    }
+  }
+
+  async function bridgedPicture(f, pixelRatio, clock) {
+    const width = Math.max(1, Math.round(f.box.width * pixelRatio));
+    const height = Math.max(1, Math.round(f.box.height * pixelRatio));
+    return framePicture(await askFrame(f.el, width, height, clock), width, height);
+  }
+
+  function withClip(ctx, area, r, draw) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(area.x * r, area.y * r, area.width * r, area.height * r);
+    ctx.clip();
+    try {
+      draw();
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  function paintPlaceholder(ctx, box, r) {
+    const x = box.x * r;
+    const y = box.y * r;
+    const w = box.width * r;
+    const h = box.height * r;
+    ctx.fillStyle = PLACEHOLDER.gap;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = PLACEHOLDER.stripe;
+    ctx.lineWidth = 8 * r;
+    const step = 16 * Math.SQRT2 * r;
+    ctx.beginPath();
+    for (let c = -h; c < w + h; c += step) {
+      ctx.moveTo(x + c, y + h);
+      ctx.lineTo(x + c + h, y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = PLACEHOLDER.ink;
+    ctx.font = `${12 * r}px system-ui, -apple-system, 'Segoe UI', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(PLACEHOLDER.label, x + w / 2, y + h / 2);
   }
 
   function toPngBlob(canvas) {
@@ -292,7 +445,8 @@
         sessionId: global.app?.activeSessionId ?? null,
         capturedAt: new Date().toISOString(),
       };
-      const frames = collectFrames(document, { x: 0, y: 0, width, height }, 1, []);
+      const viewport = { x: 0, y: 0, width, height };
+      const frames = collectFrames(document, viewport, 1, viewport, 1, []);
 
       if (pendingTrack) {
         const track = await pendingTrack;
@@ -304,34 +458,42 @@
             height,
             pixelRatio,
             freezeMs: Math.round(performance.now() - t0),
-            frames: frames.map(({ title, box, depth }) => ({ title, box, depth, captured: true })),
+            frames: frames.map(({ title, box, depth }) => ({ title, box, depth, captured: true, selfReported: false })),
             page,
             source: 'tab',
           };
         }
       }
 
-      const [canvas, frameCanvases] = await Promise.all([
-        rasterise(document, width, height, pixelRatio),
-        Promise.all(
-          frames.map((f) => (f.doc ? rasterise(f.doc, f.box.width, f.box.height, pixelRatio).catch(() => null) : null))
-        ),
+      const top = rasterise(document, width, height, pixelRatio);
+      const own = frames.map((f) =>
+        f.doc ? rasterise(f.doc, f.layout.width, f.layout.height, pixelRatio * f.scale).catch(() => null) : null
+      );
+      const settled = Promise.allSettled([top, ...own]);
+      const [canvas, frameShots] = await Promise.all([
+        top,
+        Promise.all(frames.map((f, i) => (f.doc ? own[i] : bridgedPicture(f, pixelRatio, settled).catch(() => null)))),
       ]);
 
       const ctx = canvas.getContext('2d');
       frames.forEach((f, i) => {
-        const shot = frameCanvases[i];
-        if (!shot) {
-          f.captured = false;
-          return;
-        }
-        ctx.drawImage(
-          shot,
-          f.box.x * pixelRatio,
-          f.box.y * pixelRatio,
-          f.box.width * pixelRatio,
-          f.box.height * pixelRatio
-        );
+        const shot = frameShots[i];
+        f.captured = !!shot;
+        f.selfReported = !!shot && !f.doc;
+        withClip(ctx, f.visible, pixelRatio, () => {
+          if (!shot) {
+            paintPlaceholder(ctx, f.box, pixelRatio);
+            return;
+          }
+          ctx.drawImage(
+            shot,
+            f.box.x * pixelRatio,
+            f.box.y * pixelRatio,
+            f.box.width * pixelRatio,
+            f.box.height * pixelRatio
+          );
+        });
+        shot?.close?.();
       });
 
       const blob = await toPngBlob(canvas);
@@ -341,7 +503,13 @@
         height,
         pixelRatio,
         freezeMs: Math.round(performance.now() - t0),
-        frames: frames.map(({ title, box, depth, captured }) => ({ title, box, depth, captured })),
+        frames: frames.map(({ title, box, depth, captured, selfReported }) => ({
+          title,
+          box,
+          depth,
+          captured,
+          selfReported,
+        })),
         page,
         source: 'raster',
       };
