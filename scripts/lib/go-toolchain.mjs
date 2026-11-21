@@ -30,3 +30,10 @@ export function isGoTooOld(goModText, goVersion) {
 export function isGoVersionRefusal(stderr) {
   return /go\.mod requires go >= /.test(stderr);
 }
+
+/**
+ * The `GOOS/GOARCH` pairs whose files `chat-graph/vendor/` keeps (`scripts/vendor-chat-graph.mjs`
+ * deletes every other platform's). The supervisor runs the sidecar on Linux only, and
+ * `scripts/build.mjs` skips the sidecar on any platform not listed here.
+ */
+export const CHAT_GRAPH_PLATFORMS = ['linux/amd64', 'linux/arm64'];
