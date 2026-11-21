@@ -69,11 +69,17 @@ try {
 }
 if (hasGo) {
   console.log('\n[build] chat-graph sidecar');
-  execSync('go build -trimpath -ldflags=-s -o ../dist/chat-graph/chat-graph .', {
-    stdio: 'inherit',
-    cwd: join(ROOT, 'chat-graph'),
-    env: { ...process.env, GOFLAGS: '-mod=vendor', GOPROXY: 'off', GOTOOLCHAIN: 'local', CGO_ENABLED: '0' },
-  });
+  try {
+    execSync('go build -trimpath -ldflags=-s -o ../dist/chat-graph/chat-graph .', {
+      stdio: 'inherit',
+      cwd: join(ROOT, 'chat-graph'),
+      env: { ...process.env, GOFLAGS: '-mod=vendor', GOPROXY: 'off', GOTOOLCHAIN: 'local', CGO_ENABLED: '0' },
+    });
+  } catch {
+    // An older `go` (go.mod needs 1.23 and GOTOOLCHAIN=local forbids a download) must not
+    // fail the whole build for an upstream install; the deploy gate still refuses the release.
+    console.warn('\n[build] chat-graph sidecar skipped: `go build` failed (see the output above)');
+  }
 } else {
   console.warn('\n[build] chat-graph sidecar skipped: `go` is not on PATH');
 }
