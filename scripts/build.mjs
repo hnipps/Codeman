@@ -81,8 +81,9 @@ if (hasGo) {
   } catch (err) {
     const stderr = err.stderr?.toString() ?? '';
     process.stderr.write(stderr);
-    // Go's own refusal under GOTOOLCHAIN=local, which forbids downloading the toolchain go.mod asks for.
-    if (!/go\.mod requires go >= /.test(stderr)) throw err;
+    // Go's own refusal: 1.21+ under GOTOOLCHAIN=local (no toolchain download), or the note an older go
+    // prints when it compiled against a newer go line and failed.
+    if (!/go\.mod requires go >= |module requires Go \d/.test(stderr)) throw err;
     console.warn('\n[build] chat-graph sidecar skipped: the local `go` is older than chat-graph/go.mod requires');
   }
 } else {
