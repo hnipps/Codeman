@@ -572,8 +572,15 @@ export class WorkView {
     const beside = (lane[at + 1] ?? lane[at - 1])?.number;
     // Shown at once; the server's answer replaces it, a refusal reloads.
     const shown = position !== undefined ? position - 0.5 : 1e9;
-    // The server writes the `deleted` record; a restore drops it.
-    this.replace({ ...item, status: to, deleted: undefined, ...(to === 'ready-for-work' ? { position: shown } : {}) });
+    // Until the server's record arrives, a delete keeps the status it left, so Restore names it; a restore drops it.
+    const deleted = deleting
+      ? (item.deleted ?? {
+          at: Date.now(),
+          from: from as NonNullable<WorkRow['deleted']>['from'],
+          author: { kind: 'human' as const, userId: '' },
+        })
+      : undefined;
+    this.replace({ ...item, status: to, deleted, ...(to === 'ready-for-work' ? { position: shown } : {}) });
     if (closing) this.host.rail(false);
     this.paint();
     if (closing) requestAnimationFrame(() => this.focusAfterDelete(from, beside));

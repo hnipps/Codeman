@@ -99,8 +99,8 @@ export function parseWork(body: unknown): { items: WorkRow[]; next: string } | n
 export type WorkState = ShellSessionState;
 /** Needs you while the item holds a question; else the most urgent linked session; none without a linked session. */
 export function itemState(item: WorkRow, sessions: readonly ShellSessionRow[]): WorkState | null {
-  // A closed lane is quiet: a question left on a Done, Not doing or Deleted item does not call for the person.
-  if (item.needs && !workClosed(item.status)) return 'needs';
+  // A deleted item is hidden, so a question left on it does not call for the person.
+  if (item.needs && item.status !== 'deleted') return 'needs';
   let best: WorkState | null = null;
   for (const id of item.sessions) {
     const state: WorkState = sessions.find((s) => s.id === id)?.state ?? 'done';
