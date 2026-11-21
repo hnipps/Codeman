@@ -83,8 +83,8 @@ tests=(
   test/canvas-reviews-link.test.ts
 )
 
-# build.mjs skips the Chat Graph sidecar when `go` is missing or `go build` fails; a release of this fork must carry it.
-[ -x dist/chat-graph/chat-graph ] || { echo "test.sh: dist/chat-graph/chat-graph was not built (is go on PATH?)" >&2; exit 1; }
+# build.mjs skips the Chat Graph sidecar when `go` is missing or older than go.mod's version; a release of this fork must carry it.
+[ -x dist/chat-graph/chat-graph ] || { echo "test.sh: dist/chat-graph/chat-graph was not built (is go on PATH and at least the version in chat-graph/go.mod? see the build output)" >&2; exit 1; }
 
 # A filter that matches no file makes vitest exit 0, so a renamed test must fail here instead.
 for f in "${tests[@]}"; do
