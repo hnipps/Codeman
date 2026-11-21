@@ -23,6 +23,7 @@ import {
   removeNote,
   requestChangesPrompt,
   reviewState,
+  sameWork,
   stampSent,
   submitReview,
   toView,
@@ -82,6 +83,28 @@ describe('review rules', () => {
     expect(again.walkthrough).toBe('Second');
     expect(again.notes).toHaveLength(1);
     expect(again.headSha).toBe('b'.repeat(40));
+  });
+
+  it('a resubmission from another session of the owner makes that session the author', () => {
+    const again = submitReview(
+      fresh(),
+      { title: 'T', walkthrough: 'Second' },
+      facts,
+      { owner: null, sessionId: 'sess-2', sessionName: 'w5' },
+      'cccccccc',
+      2000
+    );
+    expect(again).toMatchObject({ id: 'aaaaaaaa', revision: 2, sessionId: 'sess-2', sessionName: 'w5' });
+  });
+
+  it('the same work is the owner, repository and branch of a session review, whichever session sent it', () => {
+    const r = fresh();
+    expect(sameWork(r, null, facts)).toBe(true);
+    expect(sameWork({ ...r, sessionId: 'sess-2' }, null, facts)).toBe(true);
+    expect(sameWork(r, 'bob', facts)).toBe(false);
+    expect(sameWork(r, null, { ...facts, branch: 'feat/y' })).toBe(false);
+    expect(sameWork(r, null, { ...facts, repoRoot: '/other' })).toBe(false);
+    expect(sameWork({ ...r, sessionId: 'work:ws1:7', sessionName: 'W-7' }, null, facts)).toBe(false);
   });
 
   it('moves ready → changes requested → updated', () => {
@@ -299,6 +322,49 @@ describe('review routes', () => {
     expect(one.review).toMatchObject({ title: 'Work', branch: 'feat/x', base: 'main', state: 'ready' });
     expect(one.review.repoRoot).toBeUndefined();
     expect(JSON.stringify(one)).not.toContain(repo);
+  });
+
+  it('a submit of the branch from another session of the owner updates the open review and moves its author', async () => {
+    const other = createMockSession('test-session-2');
+    other.name = 'w9';
+    other.workingDir = repo;
+    harness.ctx.sessions.set(other.id, other as never);
+    const first = await submit();
+    expect(first.statusCode).toBe(201);
+    const id = first.json().data.id as string;
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id}/notes`,
+      payload: { at: { kind: 'general' }, text: 'Keep me' },
+    });
+    const second = await submit({ 'x-codeman-parent-session': 'test-session-2' }, 'From the second worker');
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data).toMatchObject({ id, revision: 2 });
+    const reviews = readdirSync(dataPath('reviews')).filter((n) => n.endsWith('.json') && !n.endsWith('.swarm.json'));
+    expect(reviews).toHaveLength(1);
+    const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+    expect(one).toMatchObject({
+      sessionId: 'test-session-2',
+      sessionName: 'w9',
+      walkthrough: 'From the second worker',
+    });
+    expect(one.notes).toHaveLength(1);
+  });
+
+  it('a submit of the branch by another owner, or after a decision, opens a new review', async () => {
+    const other = createMockSession('test-session-2');
+    other.workingDir = repo;
+    Object.assign(other, { owner: 'bob' });
+    harness.ctx.sessions.set(other.id, other as never);
+    const first = (await submit()).json().data.id as string;
+    const bobs = await submit({ 'x-codeman-parent-session': 'test-session-2' });
+    expect(bobs.statusCode).toBe(201);
+    expect(bobs.json().data.id).not.toBe(first);
+
+    expect((await harness.app.inject({ method: 'POST', url: `/api/reviews/${first}/close` })).statusCode).toBe(200);
+    const after = await submit();
+    expect(after.statusCode).toBe(201);
+    expect(after.json().data.id).not.toBe(first);
   });
 
   it('serves the changes, and a diff only for a file the branch changed', async () => {

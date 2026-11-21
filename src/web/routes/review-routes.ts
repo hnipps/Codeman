@@ -527,7 +527,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     // Read, decide and write with no await between them, so two submissions cannot both make a new review.
     const all = listReviews();
     const owner = session.owner ?? null;
-    const open = all.find((r) => isOpen(r) && sameWork(r, session.id, facts));
+    const open = all.find((r) => isOpen(r) && sameWork(r, owner, facts));
     if (!open && all.filter((r) => isOpen(r) && r.owner === owner).length >= MAX_OPEN_REVIEWS)
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'FULL: too many reviews are waiting; decide some first');
     const review = submitReview(
@@ -790,7 +790,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   /**
    * Close without merging, for a duplicate or work nobody wants any more. Only a person closes, and only a review
    * nothing was decided on. The branch, the notes and a work item are left as they are; the review's live preview is
-   * destroyed, as on Approve. If the author submits again, `sameWork` finds no open review and a new one opens.
+   * destroyed, as on Approve. If the branch is submitted again, `sameWork` finds no open review and a new one opens.
    */
   app.post<{ Params: { id: string } }>('/api/reviews/:id/close', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;
