@@ -70,6 +70,8 @@
     doc: null,
     /** A doc note to bring into view once the rendered file is painted. */
     docFocus: null,
+    /** The review and walkthrough text the column last rendered, so a rebuild knows whether its sections still match. */
+    walkShown: null,
     tab: 'changes',
     device: 'desktop',
     preview: null,
@@ -638,6 +640,9 @@
   function renderWalkthrough() {
     const r = state.review;
     const walk = $('rvWalk');
+    const shown = state.walkShown;
+    const opened = [...walk.querySelectorAll('details')].flatMap((d, i) => (d.open ? [i] : []));
+    state.walkShown = null;
     walk.replaceChildren();
     renderWorkItem();
     const authored = isWork() ? r.authored || null : null;
@@ -662,7 +667,14 @@
           : `Written by ${r.sessionName || 'a session'} · ${agoText(r.updatedAt)}${revision}`
       )
     );
-    walk.append(markdownBody(authored ? authored.walkthrough : r.walkthrough));
+    const text = authored ? authored.walkthrough : r.walkthrough;
+    walk.append(markdownBody(text));
+    // A note action rebuilds the column; the sections the reader opened stay open unless the text itself changed.
+    if (shown && shown.id === state.id && shown.text === text) {
+      const sections = walk.querySelectorAll('details');
+      for (const i of opened) if (sections[i]) sections[i].open = true;
+    }
+    state.walkShown = { id: state.id, text };
     markStaleLinks();
     paintTextNotes();
   }
@@ -910,7 +922,9 @@
     } else if (note.at.kind === 'text') {
       setPane('doc');
       const mark = $('rvWalk').querySelector(`mark[data-note="${CSS.escape(note.id)}"]`);
-      if (mark) mark.scrollIntoView({ block: 'center' });
+      if (!mark) return;
+      for (let d = mark.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
+      mark.scrollIntoView({ block: 'center' });
     }
   }
 
