@@ -11,6 +11,15 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 `modernc.org/sqlite` is pinned at v1.38.2, the newest release that builds on go 1.23; v1.39 and later need go 1.24. A full `go mod vendor` is 229 MB of per-platform generated code, so `scripts/vendor-chat-graph.mjs` keeps linux/amd64 and linux/arm64 only (33 MB) and `build.mjs` skips the sidecar elsewhere, where the supervisor never runs it anyway. Rejected: committing the full 229 MB, and a committed binary. Membership rows gain `removed_by` beside the spec's `removed_at`, so undo knows which rows an op removed and adds fresh copies rather than clearing `removed_at`; triggers enforce append-only for every writer. Topics gain a `retracted` status for a topic whose creating op was undone. Undo writes no op row of its own: its rows carry `undo:<op>`. An undo that a later op has overtaken answers 409 instead of guessing.
 
+## 2026-11-21 — pr-swarm passes the approved spec to R-3 (W-131)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-git.ts`, `src/reviews/swarm-runner.ts`, `src/reviews/swarm-model.ts`, `src/reviews/review-work.ts`, `src/web/routes/review-routes.ts`, `docs/architecture-invariants.md`
+**Why:** t7 part 2 of the pr-swarm spec: `/review-triage` (pr-swarm v0.5.0) takes `--spec` and `--poteto-skill`, and a report was still applied with `r3Required: false`.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work items W-131, W-115
+
+The spec R-3 reads is a copy of the parent spec review's one `intent/*.md` file at its merge commit, written to the data dir, not the file in the run's worktree: the spec says "read at the merged commit", and the worktree holds whatever master had when the work branched. A parent that changed two spec files gets no spec and an `unavailable` R-3 rather than a guess. Whether a run needs R-3 is kept in memory and read again on recovery, because a new field in the run file would make it unreadable to the previous release (rule 5). The spec's two history triggers ("builder and R-3 still disagree after 2 rounds", "a deploy fix fails") are not built here: R-3 `changes` already counts toward the two-verdict streak escalation, and fixing failed deploys is one of the spec's non-goals.
+
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 
 **Type:** intent-refinement

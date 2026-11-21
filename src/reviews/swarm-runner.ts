@@ -29,7 +29,7 @@ import {
   type TipChange,
 } from './swarm-model.js';
 import { changeSwarm, readSwarm, type SwarmRead } from './swarm-store.js';
-import type { PushRemote, RunPlan, RunTip } from './swarm-git.js';
+import type { PushRemote, R3Plan, ReviewOnlyReason, RunPlan, RunSpec, RunTip } from './swarm-git.js';
 
 /** A run whose session has written nothing and reported nothing for this long has failed. */
 export const SILENCE_LIMIT_MS = 30 * 60_000;
@@ -61,7 +61,29 @@ export type BriefInput = {
   plan: Pick<RunPlan, 'base' | 'reviewOnly'>;
   /** The plugin's skills folder, for a session where the slash command is missing or older than `--local`. */
   skillsDir: string;
+  /** For a run whose R-3 step can run: the spec file it reads and poteto-mode's SKILL.md. */
+  r3?: { spec: string; potetoSkill: string };
 };
+
+/** Whether a run's report must carry an R-3 result (I9), and why it cannot when the run was not given what R-3 needs. */
+export type R3Need = { required: false } | { required: true; unavailable?: string };
+
+/**
+ * What a run does about R-3, from the attribution read at start and the run's plan. R-3 runs only inside
+ * `/review-triage`, so a review-only run of attributed work cannot give it and its result is `unavailable`.
+ */
+export function planR3(plan: R3Plan, reviewOnly: ReviewOnlyReason | null): { need: R3Need; spec?: RunSpec } {
+  if (!plan.required || reviewOnly === 'spec') return { need: { required: false } };
+  if (reviewOnly === 'checked-out')
+    return {
+      need: {
+        required: true,
+        unavailable: 'The branch is checked out in another folder, so the run could only review it and R-3 did not run',
+      },
+    };
+  if (!plan.spec) return { need: { required: true, unavailable: plan.missing } };
+  return { need: { required: true }, spec: plan.spec };
+}
 
 const reportFile = (runId: string): string => `/tmp/pr-swarm-${runId}.json`;
 
@@ -74,6 +96,7 @@ export function swarmCommand(i: BriefInput): string {
     ...shared,
     `--push-ref HEAD:refs/heads/${i.branch}`,
     ...(i.remote === '.' ? ['--push-remote .'] : []),
+    ...(i.r3 ? [`--spec ${i.r3.spec}`, `--poteto-skill ${i.r3.potetoSkill}`] : []),
   ].join(' ');
 }
 
@@ -164,6 +187,10 @@ export interface SwarmRunnerDeps {
   /** Why git must not run for this review (a remote or Docker case), or null. */
   refusal(review: Review): Promise<string | null>;
   tip(review: Review): Promise<RunTip | null>;
+  /** Whether a run of this review at `tip` must give an R-3 result, and the spec it reads (I9). */
+  r3Plan(review: Review, tip: string): Promise<R3Plan>;
+  /** Writes the run's copy of its spec outside the worktree; its path, or null when it could not be written. */
+  stageSpec(review: Review, runId: string, spec: RunSpec): Promise<string | null>;
   prepare(
     review: Review,
     runId: string,
@@ -182,6 +209,8 @@ export interface SwarmRunnerDeps {
   log(line: string): void;
   later(ms: number, fn: () => void): void;
   skillsDir: string;
+  /** poteto-mode's SKILL.md, which R-3 reads. Passed even when it is missing: the step then reports `unavailable`. */
+  potetoSkill: string;
   ghConfigDir: string;
 }
 
@@ -190,7 +219,7 @@ type QueueEntry = { reviewId: string; runId: string };
 type Slot =
   | { kind: 'idle' }
   | ({ kind: 'starting'; since: number } & QueueEntry)
-  | ({ kind: 'running'; sessionId: string; heardAt: number; lastReport?: string } & QueueEntry)
+  | ({ kind: 'running'; sessionId: string; heardAt: number; r3: R3Need; lastReport?: string } & QueueEntry)
   | ({ kind: 'stopping'; since: number } & QueueEntry);
 
 export type SwarmTriggerResult =
@@ -328,6 +357,12 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
     });
   };
 
+  /** A plan that cannot be read fails closed: R-3 is required and `unavailable`, so nothing it would gate merges. */
+  const readR3Plan = (review: Review, tip: string): Promise<R3Plan> =>
+    deps
+      .r3Plan(review, tip)
+      .catch(() => ({ required: true, spec: null, missing: 'Whether this work answers to a spec could not be read' }));
+
   const start = async ({ reviewId, runId }: QueueEntry): Promise<void> => {
     const read = readSwarm(reviewId);
     const active = read.ok ? activeRun(read.file) : undefined;
@@ -343,6 +378,13 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
     await deps.removeWorktree(review, runId).catch(() => undefined);
     const prepared = await deps.prepare(review, runId, tip);
     if (!prepared.ok) return fail(prepared.reason);
+    const r3 = planR3(await readR3Plan(review, tip.sha), prepared.plan.reviewOnly);
+    let need = r3.need;
+    let specFile: string | null = null;
+    if (r3.spec) {
+      specFile = await deps.stageSpec(review, runId, r3.spec).catch(() => null);
+      if (!specFile) need = { required: true, unavailable: "The run's copy of the spec could not be written" };
+    }
     const started = await deps
       .startSession(review, {
         workingDir: prepared.plan.workingDir,
@@ -361,7 +403,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       await deps.removeWorktree(review, runId).catch(() => undefined);
       return;
     }
-    slot = { kind: 'running', reviewId, runId, sessionId: started.sessionId, heardAt: deps.now() };
+    slot = { kind: 'running', reviewId, runId, sessionId: started.sessionId, heardAt: deps.now(), r3: need };
     const brief = swarmBrief({
       runId,
       title: review.title,
@@ -370,6 +412,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       remote: tip.remote,
       plan: prepared.plan,
       skillsDir: deps.skillsDir,
+      ...(specFile ? { r3: { spec: specFile, potetoSkill: deps.potetoSkill } } : {}),
     });
     if (!(await deps.send(started.sessionId, brief)) && slot.kind === 'running' && slot.runId === runId)
       fail("The brief could not be sent to the run's session");
@@ -418,7 +461,26 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       }
       if (slot.kind !== 'idle' && slot.runId === run.id) continue;
       if (slot.kind === 'idle' && deps.session(run.sessionId).state === 'live') {
-        slot = { kind: 'running', reviewId: review.id, runId: run.id, sessionId: run.sessionId, heardAt: deps.now() };
+        const adopted: Extract<Slot, { kind: 'running' }> = {
+          kind: 'running',
+          reviewId: review.id,
+          runId: run.id,
+          sessionId: run.sessionId,
+          heardAt: deps.now(),
+          r3: { required: true, unavailable: 'Whether this work answers to a spec was not read again after a restart' },
+        };
+        slot = adopted;
+        // The plan is not stored, so it is read again, after the slot is taken so nothing else starts meanwhile.
+        // Whether the brief carried the flags is not known here; a run not given them reports no R-3 result, which
+        // reads as `unavailable`.
+        if (!(await deps.refusal(review).catch(() => 'refused'))) {
+          const plan = await readR3Plan(review, run.roundTip);
+          adopted.r3 = !plan.required
+            ? { required: false }
+            : plan.spec
+              ? { required: true }
+              : { required: true, unavailable: plan.missing };
+        }
         continue;
       }
       // The session goes first, so the worktree the failed run's stop removes is no longer in use.
@@ -496,7 +558,8 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
         runId,
         report: parsed.report,
         branchTip: tip.sha,
-        r3Required: false,
+        r3Required: run.r3.required,
+        ...(run.r3.required && run.r3.unavailable ? { r3Unavailable: run.r3.unavailable } : {}),
         newRunId: deps.newRunId(),
       });
       if (!done.ok) return { ok: false, code: 'FILE', message: done.message };

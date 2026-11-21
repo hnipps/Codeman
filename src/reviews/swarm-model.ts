@@ -295,9 +295,18 @@ export type SwarmEvent =
   | { type: 'started'; runId: string; sessionId: string; tip: string }
   /**
    * The session reported a round. `branchTip` is the branch's tip read just after; `r3Required` is whether the review
-   * is non-spec work attributed to an approved spec. `newRunId` names the run queued when the round cap ends this one.
+   * is non-spec work attributed to an approved spec, and `r3Unavailable` why the run could not give R-3 what it needs.
+   * `newRunId` names the run queued when the round cap ends this one.
    */
-  | { type: 'report'; runId: string; report: SwarmReport; branchTip: string; r3Required: boolean; newRunId: string }
+  | {
+      type: 'report';
+      runId: string;
+      report: SwarmReport;
+      branchTip: string;
+      r3Required: boolean;
+      r3Unavailable?: string;
+      newRunId: string;
+    }
   /** The session died, went silent, or the run could not start. */
   | { type: 'failed'; runId: string; reason: string }
   /** The outcome of delivering a run's verdict. */
@@ -461,7 +470,10 @@ function applyReport(
 
   // I9: R-3 counts only where it must run. Required but missing is `unavailable`, which never merges.
   const r3: R3Result | undefined = event.r3Required
-    ? (report.r3 ?? { verdict: 'unavailable', reason: 'The run reported no R-3 result' })
+    ? (report.r3 ?? {
+        verdict: 'unavailable',
+        reason: cleanLine(event.r3Unavailable ?? 'The run reported no R-3 result', 500),
+      })
     : undefined;
   const verdicted = { ...ran, reviewedTip: report.headSha, result: report.result, ...(r3 ? { r3 } : {}) };
   const stop: SwarmAction = { kind: 'stop', runId: run.id };
