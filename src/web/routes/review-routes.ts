@@ -450,9 +450,14 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!cli) return;
     // A `merged` review waits too: a stacked one (`shipsWithBase`) is deployed once the live release contains its merge.
     // Its folder is often removed by then, so it is not asked whether it deploys itself; `liveContains` asks every
-    // repository, and a merge of another repository is never an ancestor of the live commit.
+    // repository, and a merge of another repository is never an ancestor of the live commit. A review into `main` or
+    // `master` is never stacked, so it is not read here: merged reviews are kept forever, and reading each of them on
+    // every settle would ask the supervisor and git again every few seconds for reviews that can never settle.
     const waiting = all.filter(
-      (r) => r.decision?.kind && ['deploying', 'deploy-failed', 'merged'].includes(r.decision.kind)
+      (r) =>
+        r.decision?.kind === 'deploying' ||
+        r.decision?.kind === 'deploy-failed' ||
+        (r.decision?.kind === 'merged' && r.base !== 'main' && r.base !== 'master')
     );
     if (!waiting.length) return;
     let overview: DeployOverviewConfigured;

@@ -986,6 +986,38 @@ describe('approve routes', () => {
     }
   });
 
+  it('does not read a merged review into main on every settle, since it is never stacked', async () => {
+    const overview: DeployOverviewConfigured = { configured: true, live: null, releases: [], recent: [], busy: false };
+    const readOverview = vi.fn(async () => overview);
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'main' },
+    });
+    const id = made.json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    expect(done.review.decision.kind).toBe('merged');
+    expect(requestDeploy).not.toHaveBeenCalled();
+    readOverview.mockClear();
+
+    vi.useFakeTimers({ now: Date.now() + 50_000, toFake: ['Date'] });
+    try {
+      expect((await harness.app.inject({ url: '/api/reviews' })).statusCode).toBe(200);
+      expect(readOverview).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('leaves the queue when a later deploy ships a merge whose own deploy failed', async () => {
     const overview: DeployOverviewConfigured = {
       configured: true,
