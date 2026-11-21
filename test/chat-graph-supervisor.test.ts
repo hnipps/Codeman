@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { CHAT_GRAPH_OWNER_ENV, ChatGraphSupervisor } from '../src/chat-graph/supervisor.js';
+import { CHAT_GRAPH_OWNER_ENV, CHAT_GRAPH_PARENT_ENV, ChatGraphSupervisor } from '../src/chat-graph/supervisor.js';
 import { ownPids, readEnvVar, readProcStat } from '../src/preview-proc.js';
 
 const FAKE_SIDECAR = `#!${process.execPath}
@@ -16,7 +16,7 @@ if (!path.isAbsolute(dir)) process.exit(2);
 const sock = path.join(dir, 'sock');
 try { fs.unlinkSync(sock); } catch {}
 const server = http.createServer((req, res) => {
-  if (req.url === '/health') { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); }
+  if (req.url === '/health') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, pid: process.pid })); }
   else { res.statusCode = 404; res.end(); }
 });
 server.listen(sock, () => fs.chmodSync(sock, 0o600));
@@ -59,11 +59,29 @@ async function until(check: () => boolean, ms = 5_000): Promise<boolean> {
   return check();
 }
 
-/** A process carrying the owner marker, as a crashed Codeman's sidecar would. */
-async function spawnMarked(markerOwner: string): Promise<number> {
+/** A long-lived process standing in for a sidecar or for the Codeman that spawned one. */
+function spawnIdle(env: Record<string, string> = {}): number {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e3)'], {
     stdio: 'ignore',
-    env: { PATH: process.env.PATH ?? '', [CHAT_GRAPH_OWNER_ENV]: markerOwner },
+    env: { PATH: process.env.PATH ?? '', ...env },
+  });
+  spawned.push(child.pid!);
+  return child.pid!;
+}
+
+/** `<pid>:<start ticks>` of a running process, as a parent marker names it. */
+function identityOf(pid: number): string {
+  return `${pid}:${readProcStat(pid)!.startTicks}`;
+}
+
+/**
+ * A process carrying the owner marker. Its parent marker defaults to a process that is gone, as a
+ * crashed Codeman's sidecar would carry; pass a live identity for another colour's running sidecar.
+ */
+async function spawnMarked(markerOwner: string, parent = '0:0'): Promise<number> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e3)'], {
+    stdio: 'ignore',
+    env: { PATH: process.env.PATH ?? '', [CHAT_GRAPH_OWNER_ENV]: markerOwner, [CHAT_GRAPH_PARENT_ENV]: parent },
   });
   const pid = child.pid!;
   spawned.push(pid);
@@ -99,7 +117,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   for (const sup of supervisors.splice(0)) await sup.stop();
-  for (const pid of [...spawned.splice(0), ...markedPids(owner), ...markedPids(`${owner}-other`)]) {
+  for (const pid of [...spawned.splice(0), ...markedPids(owner)]) {
     try {
       process.kill(pid, 'SIGKILL');
     } catch {
@@ -125,7 +143,7 @@ describe('ChatGraphSupervisor', () => {
     expect(isAlive(orphan)).toBe(true);
   });
 
-  it('starts a healthy sidecar with only the owner marker in its environment, and reuses it', async () => {
+  it('starts a healthy sidecar with only the owner and parent markers in its environment, and reuses it', async () => {
     const previous = process.env.CODEMAN_PASSWORD;
     process.env.CODEMAN_PASSWORD = 'not-for-the-sidecar';
     try {
@@ -137,6 +155,7 @@ describe('ChatGraphSupervisor', () => {
       expect(pid).toBeDefined();
       const environ = environOf(pid);
       expect(readEnvVar(environ, CHAT_GRAPH_OWNER_ENV)).toBe(owner);
+      expect(readEnvVar(environ, CHAT_GRAPH_PARENT_ENV)).toBe(identityOf(process.pid));
       expect(readEnvVar(environ, 'CODEMAN_PASSWORD')).toBeUndefined();
       expect((await fs.stat(dir)).mode & 0o777).toBe(0o700);
 
@@ -162,18 +181,23 @@ describe('ChatGraphSupervisor', () => {
     expect(await sup.health()).toBe(false);
   });
 
-  it('sweeps orphans with this owner marker only, and spares its own child', async () => {
+  it("sweeps orphans of this data dir only, never another colour's running sidecar or its own child", async () => {
     // Invariant I6: OnlyTheLiveColourRunsTheSidecar
     const sup = supervisor(() => true);
     expect((await sup.start()).ok).toBe(true);
     const [own] = markedPids(owner);
     const orphan = await spawnMarked(owner);
-    const otherColour = await spawnMarked(`${owner}-other`);
+    const otherCodeman = spawnIdle();
+    expect(await until(() => isAlive(otherCodeman))).toBe(true);
+    const otherColour = await spawnMarked(owner, identityOf(otherCodeman));
+    const otherDataDir = await spawnMarked(`${owner}-elsewhere`);
+    const recycledParent = await spawnMarked(owner, `${otherCodeman}:${readProcStat(otherCodeman)!.startTicks + 1}`);
 
-    expect(await sup.sweep()).toBe(1);
+    expect(await sup.sweep()).toBe(2);
 
-    expect(await until(() => !isAlive(orphan))).toBe(true);
+    expect(await until(() => !isAlive(orphan) && !isAlive(recycledParent))).toBe(true);
     expect(isAlive(otherColour)).toBe(true);
+    expect(isAlive(otherDataDir)).toBe(true);
     expect(isAlive(own)).toBe(true);
     expect(await sup.health()).toBe(true);
   });
@@ -191,11 +215,42 @@ describe('ChatGraphSupervisor', () => {
     const [pid] = markedPids(owner);
 
     recycled = true;
-    await sup.stop();
+    expect(await sup.stop()).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(isAlive(pid)).toBe(true);
+  });
+
+  it("fails closed when it cannot read its child's start time: the child stays recorded and the stop refuses", async () => {
+    // Invariant I6: OnlyTheLiveColourRunsTheSidecar
+    let unreadable = false;
+    const sup = supervisor(() => true, { readStat: (pid) => (unreadable ? null : readProcStat(pid)) });
+    expect((await sup.start()).ok).toBe(true);
+    const [pid] = markedPids(owner);
+
+    unreadable = true;
+    expect(await sup.stop()).toBe(false);
+    expect(isAlive(pid)).toBe(true);
     expect(await sup.health()).toBe(true);
+
+    unreadable = false;
+    expect(await sup.stop()).toBe(true);
+    expect(await until(() => !isAlive(pid))).toBe(true);
+  });
+
+  it("counts only its own child's health answer, not another sidecar on the socket", async () => {
+    const impostor = path.join(root, 'impostor');
+    // Answers /health for whatever pid started it, but never lets the supervisor's child bind:
+    // it is the "another sidecar answers" case a stale lock loser would see.
+    await fs.writeFile(
+      impostor,
+      FAKE_SIDECAR.replace('JSON.stringify({ ok: true, pid: process.pid })', 'JSON.stringify({ ok: true, pid: 1 })')
+    );
+    await fs.chmod(impostor, 0o755);
+    const sup = supervisor(() => true, { binary: impostor, readyTimeoutMs: 1_500 });
+
+    expect(await sup.start()).toMatchObject({ ok: false, reason: 'failed' });
+    expect(markedPids(owner)).toEqual([]);
   });
 
   it('keeps a child that outlived SIGKILL recorded, so a retried stop still reports it', async () => {

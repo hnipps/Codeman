@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — The Chat Graph sweep kills only orphans whose Codeman is gone (W-88)
+
+**Type:** intent-refinement
+**Touches:** `src/chat-graph/supervisor.ts`, `chat-graph/main.go`, `scripts/build.mjs`, `scripts/lib/go-toolchain.mjs`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** pr-swarm found that `sweep()` matched only the data-dir owner marker, which both deploy colours share, so a live colour's sweep could kill a sidecar the other colour still ran, against I6's test ("a child started by another colour, with the same owner marker but a different pid, is never signalled").
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md), Work item W-88, PR #92
+
+The child now also carries `CODEMAN_CHAT_GRAPH_PARENT=<pid>:<start ticks>` of the Codeman that spawned it, and a sweep kills a marked process only when that parent is no longer running. An orphan from a crash still dies at the next live boot; a sidecar whose colour is still up is left to that colour, which stops it itself when it retires. Rejected: reading the process's `ppid`, since a subreaper or a re-parent to pid 1 says nothing about which Codeman is gone. In the same round `GET /health` started naming its pid and readiness counts only its own child's answer, replacing a "still alive one poll later" check; `stop()` fails closed on an unreadable stat; and the build's skip on "module requires Go" was dropped, because the up-front version compare already covers a pre-1.21 go and that alternative could hide a compile error.
+
 ## 2026-11-21 — A full canvas evicts its oldest inactive record
 
 **Type:** intent-refinement

@@ -7,8 +7,10 @@
  *
  * A pid alone is reused by the kernel, so every signal is sent only while `/proc/<pid>/stat`
  * still shows the start time recorded for it. The child is marked with
- * `CODEMAN_CHAT_GRAPH_OWNER=<data dir>`, which is how a later sweep finds an orphan left by a
- * crashed Codeman. The child gets a minimal environment, so Codeman's password never reaches it.
+ * `CODEMAN_CHAT_GRAPH_OWNER=<data dir>` and `CODEMAN_CHAT_GRAPH_PARENT=<pid>:<start ticks>` of the
+ * Codeman that spawned it. A sweep kills only a marked process whose parent is gone, so it ends an
+ * orphan left by a crashed Codeman and never the sidecar of another colour that is still running.
+ * The child gets a minimal environment, so Codeman's password never reaches it.
  *
  * The lifecycle copies `src/deepseek-web-server.ts`: one instance, killed on shutdown, failures
  * reported with the child's captured output. `sweep`, `start` and `stop` run one at a time, in the
@@ -26,12 +28,14 @@ import { getErrorMessage } from '../types.js';
 import { ownPids, readEnvVar, readProcStat, type ProcStat } from '../preview-proc.js';
 
 export const CHAT_GRAPH_OWNER_ENV = 'CODEMAN_CHAT_GRAPH_OWNER';
+export const CHAT_GRAPH_PARENT_ENV = 'CODEMAN_CHAT_GRAPH_PARENT';
 
 const READY_TIMEOUT_MS = 10_000;
 const READY_POLL_MS = 100;
 const HEALTH_TIMEOUT_MS = 1_000;
 const KILL_GRACE_MS = 3_000;
 const OUTPUT_CAP = 16_384;
+const HEALTH_BODY_CAP = 1_024;
 /** `sun_path` holds 108 bytes on Linux, its terminating NUL included. */
 const MAX_SOCKET_PATH_BYTES = 107;
 
@@ -60,6 +64,16 @@ export interface ChatGraphSupervisorOptions {
   readStat?: (pid: number) => ProcStat | null;
 }
 
+/** `<pid>:<start ticks>`, the form `CHAT_GRAPH_PARENT_ENV` carries. */
+function formatIdentity(identity: ProcIdentity): string {
+  return `${identity.pid}:${identity.startTicks}`;
+}
+
+function parseIdentity(text: string | undefined): ProcIdentity | null {
+  const match = /^(\d+):(\d+)$/.exec(text ?? '');
+  return match ? { pid: Number(match[1]), startTicks: Number(match[2]) } : null;
+}
+
 function hasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
@@ -82,10 +96,20 @@ export class ChatGraphSupervisor {
   private stopsRequested = 0;
   private readonly binary: string;
   private readonly readStat: (pid: number) => ProcStat | null;
+  private selfIdentity: ProcIdentity | null = null;
 
   constructor(private readonly options: ChatGraphSupervisorOptions) {
     this.binary = options.binary ?? join(dirname(fileURLToPath(import.meta.url)), 'chat-graph');
     this.readStat = options.readStat ?? readProcStat;
+  }
+
+  /** This Codeman process, as a child's parent marker names it. Read on first use: only Linux has `/proc`. */
+  private get self(): ProcIdentity {
+    if (!this.selfIdentity) {
+      const stat = readProcStat(process.pid);
+      this.selfIdentity = { pid: process.pid, startTicks: stat?.startTicks ?? 0 };
+    }
+    return this.selfIdentity;
   }
 
   private get socketPath(): string {
@@ -108,11 +132,29 @@ export class ChatGraphSupervisor {
     }
   }
 
+  /**
+   * Whether this supervisor's child answers `GET /health`. The answer must name the child's pid:
+   * another sidecar answering on the same socket is not ours.
+   */
   health(): Promise<boolean> {
+    if (this.state.kind !== 'running') return Promise.resolve(false);
+    const pid = this.state.identity.pid;
     return new Promise((resolve) => {
       const req = request({ socketPath: this.socketPath, path: '/health', timeout: HEALTH_TIMEOUT_MS }, (res) => {
-        res.resume();
-        resolve(res.statusCode === 200);
+        let body = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+          if (body.length > HEALTH_BODY_CAP) req.destroy();
+        });
+        res.on('end', () => {
+          try {
+            resolve(res.statusCode === 200 && (JSON.parse(body) as { pid?: unknown }).pid === pid);
+          } catch {
+            resolve(false);
+          }
+        });
+        res.on('error', () => resolve(false));
       });
       req.on('timeout', () => req.destroy());
       req.on('error', () => resolve(false));
@@ -176,7 +218,11 @@ export class ChatGraphSupervisor {
     try {
       child = spawn(this.binary, ['--dir', this.options.dir], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { PATH: process.env.PATH ?? '', [CHAT_GRAPH_OWNER_ENV]: this.options.owner },
+        env: {
+          PATH: process.env.PATH ?? '',
+          [CHAT_GRAPH_OWNER_ENV]: this.options.owner,
+          [CHAT_GRAPH_PARENT_ENV]: formatIdentity(this.self),
+        },
       });
     } catch (err) {
       return { ok: false, reason: 'failed', error: `Failed to start the Chat Graph sidecar: ${getErrorMessage(err)}` };
@@ -211,12 +257,7 @@ export class ChatGraphSupervisor {
       if (hasExited(child)) {
         return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited: ${output.trim()}` };
       }
-      // A child that lost the lock to another sidecar can still be alive when that sidecar answers,
-      // so an answer counts only if our child is still running one poll later.
-      if (await this.health()) {
-        if (!(await waitForExit(child, READY_POLL_MS))) return { ok: true, reused: false };
-        continue;
-      }
+      if (await this.health()) return { ok: true, reused: false };
       await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
     }
     await this.stopLocked();
@@ -234,23 +275,31 @@ export class ChatGraphSupervisor {
   }
 
   /**
-   * A recycled pid counts as gone: it is not ours. A child that outlives SIGKILL stays recorded as
-   * running, so the next `stop()` (a retried retire) tries again rather than report it gone.
+   * A recycled pid counts as gone: it is not ours. A child that outlives SIGKILL, or whose
+   * `/proc/<pid>/stat` cannot be read so nothing can be verified, stays recorded as running and
+   * answers false, so a retire refuses and the next `stop()` tries again rather than report it gone.
    */
   private async stopLocked(): Promise<boolean> {
     const running = this.state;
     this.state = { kind: 'stopped' };
     if (running.kind === 'stopped' || hasExited(running.child)) return true;
+    const keep = (): false => {
+      if (this.state.kind === 'stopped' && !hasExited(running.child)) this.state = running;
+      return false;
+    };
+    const stat = this.readStat(running.identity.pid);
+    if (stat === null) return keep();
+    if (stat.zombie || stat.startTicks !== running.identity.startTicks) return true;
     if (!this.signalIfSame(running.identity, 'SIGTERM')) return true;
     if (await waitForExit(running.child, KILL_GRACE_MS)) return true;
     this.signalIfSame(running.identity, 'SIGKILL');
     if (await waitForExit(running.child, KILL_GRACE_MS)) return true;
-    if (this.state.kind === 'stopped' && !hasExited(running.child)) this.state = running;
-    return false;
+    return keep();
   }
 
   /**
-   * Kill sidecars a previous Codeman on this data dir left behind, and wait until they are gone,
+   * Kill sidecars a previous Codeman on this data dir left behind, meaning marked with this data
+   * dir and with a parent that is no longer running, and wait until they are gone,
    * so a `start()` after it never finds one still answering on the socket. Returns how many were
    * signalled.
    *
@@ -267,6 +316,9 @@ export class ChatGraphSupervisor {
     const orphans: ProcIdentity[] = [];
     for (const pid of ownPids(process.getuid?.() ?? 0)) {
       if (pid === own) continue;
+      // Stat first, so the environ read below and the signal's start-ticks check name the same process.
+      const stat = this.readStat(pid);
+      if (!stat || stat.zombie) continue;
       let environ: string;
       try {
         // UTF-8, as the owner string was encoded into the child's environment: a non-ASCII data dir must still match.
@@ -275,8 +327,10 @@ export class ChatGraphSupervisor {
         continue;
       }
       if (readEnvVar(environ, CHAT_GRAPH_OWNER_ENV) !== this.options.owner) continue;
-      const stat = this.readStat(pid);
-      if (stat && !stat.zombie) orphans.push({ pid, startTicks: stat.startTicks });
+      // Invariant I6: a sidecar whose Codeman still runs belongs to that colour, which stops it itself.
+      const parent = parseIdentity(readEnvVar(environ, CHAT_GRAPH_PARENT_ENV));
+      if (parent && this.isSame(parent)) continue;
+      orphans.push({ pid, startTicks: stat.startTicks });
     }
     const killed = orphans.filter((identity) => this.signalIfSame(identity, 'SIGKILL'));
     const deadline = Date.now() + KILL_GRACE_MS;

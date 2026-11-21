@@ -115,11 +115,14 @@ func listenSocket(path string) (net.Listener, error) {
 	return ln, nil
 }
 
+// newHandler answers GET /health with this process's pid, which is how
+// Codeman tells its own child's answer from another sidecar's on the socket.
 func newHandler() http.Handler {
+	body := []byte(fmt.Sprintf(`{"ok":true,"pid":%d}`, os.Getpid()))
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write(body)
 	})
 	return mux
 }

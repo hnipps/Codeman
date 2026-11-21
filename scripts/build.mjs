@@ -18,6 +18,7 @@ import { createRequire } from 'module';
 import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
+import { isGoTooOld, isGoVersionRefusal } from './lib/go-toolchain.mjs';
 import { join, extname, basename, dirname } from 'path';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
@@ -71,20 +72,13 @@ try {
   hasGo = false;
 }
 const goEnv = { ...process.env, GOFLAGS: '-mod=vendor', GOPROXY: 'off', GOTOOLCHAIN: 'local', CGO_ENABLED: '0' };
-// A go older than 1.21 accepts go.mod's newer `go` line and compiles against its own stdlib, which
-// can build a binary that misbehaves at run time (the 1.22 ServeMux method patterns 404). So compare
-// the versions up front rather than rely on go refusing; an unparsable version is left to go itself.
 const goTooOld = (() => {
-  const wanted = /^go (\d+)\.(\d+)/m.exec(readFileSync(join(ROOT, 'chat-graph/go.mod'), 'utf-8'));
-  let have = null;
   try {
-    have = /^go(\d+)\.(\d+)/.exec(execSync('go env GOVERSION', { env: goEnv, encoding: 'utf-8' }).trim());
+    const goMod = readFileSync(join(ROOT, 'chat-graph/go.mod'), 'utf-8');
+    return isGoTooOld(goMod, execSync('go env GOVERSION', { env: goEnv, encoding: 'utf-8' })) === true;
   } catch {
     return false;
   }
-  if (!wanted || !have) return false;
-  const [wMajor, wMinor, hMajor, hMinor] = [wanted[1], wanted[2], have[1], have[2]].map(Number);
-  return hMajor < wMajor || (hMajor === wMajor && hMinor < wMinor);
 })();
 if (hasGo && goTooOld) {
   console.warn('\n[build] chat-graph sidecar skipped: the local `go` is older than chat-graph/go.mod requires');
@@ -99,9 +93,7 @@ if (hasGo && goTooOld) {
   } catch (err) {
     const stderr = err.stderr?.toString() ?? '';
     process.stderr.write(stderr);
-    // Go's own refusal, if the version check above could not decide: 1.21+ under GOTOOLCHAIN=local
-    // (no toolchain download), or the note an older go prints when it compiled against a newer go line and failed.
-    if (!/go\.mod requires go >= |module requires Go \d/.test(stderr)) throw err;
+    if (!isGoVersionRefusal(stderr)) throw err;
     console.warn('\n[build] chat-graph sidecar skipped: the local `go` is older than chat-graph/go.mod requires');
   }
 } else {

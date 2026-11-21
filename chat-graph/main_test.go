@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -53,7 +54,7 @@ func TestHealthOnPrivateSocket(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if res.StatusCode != 200 || string(body) != `{"ok":true}` {
+	if res.StatusCode != 200 || string(body) != fmt.Sprintf(`{"ok":true,"pid":%d}`, os.Getpid()) {
 		t.Fatalf("health answered %d %s", res.StatusCode, body)
 	}
 }
