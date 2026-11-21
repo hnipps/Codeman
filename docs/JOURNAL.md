@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — The journal merges by union on Approve (W-129)
+
+**Type:** intent-refinement
+**Touches:** `docs/.gitattributes`, `src/reviews/review-merge.ts`, `docs/architecture-invariants.md`
+**Why:** Every review conflict on 2026-11-21 was in this file, because every change adds its entry at the top.
+**Links:** [intent/2026-11-21-journal-union-merge.md](../intent/2026-11-21-journal-union-merge.md)
+
+`docs/JOURNAL.md` merges with git's built-in union driver (`docs/.gitattributes`, kept out of the short repo root), and Approve reads that rule from the base branch tip with `--attr-source`. Rejected: reading attributes from the shared checkout's working tree, which may be on any branch, and from the reviewed branch, which would let a branch choose how it merges. Union drops the blank line between two new entries; a heading still starts a new block, so the file still renders. Entries that edit the same older entry still conflict.
+
 ## 2026-11-21 — A stacked review's merge never deploys (W-118)
 
 **Type:** intent-refinement
