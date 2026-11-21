@@ -15,6 +15,12 @@
  *   POST   /api/reviews/:id/request-changes      a PERSON sends every unsent note as ONE prompt
  *   POST   /api/reviews/:id/new-session          a PERSON hands the review, with its notes, to a NEW session once the
  *                                                author session has ended
+ *   GET    /api/reviews/:id/swarm                the review's pr-swarm runs, and the run this server is driving
+ *   POST   /api/reviews/:id/swarm                a PERSON starts a pr-swarm run at the branch tip (409 RUNNING: one
+ *                                                is queued or running, and the answer carries it)
+ *   POST   /api/reviews/:id/swarm/resend         a PERSON sends a finished run's findings again (not built yet: 501)
+ *   POST   /api/reviews/swarm-runs/:runId/report the run's OWN session hands back its result (`codeman agent swarm
+ *                                                report`)
  *
  * Who may do what:
  * - Submitting is the agent's act: the request must carry `X-Codeman-Parent-Session`, and the review is made for
@@ -37,6 +43,9 @@
  * stamps nothing; one that was written is stamped even when Enter was not confirmed, since sending again would
  * paste it twice.
  */
+import { randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { imageSize } from '../../canvas/canvas-assets.js';
@@ -52,6 +61,7 @@ import {
 } from '../../deploy-control.js';
 import { deployRole } from '../../deploy-role.js';
 import { isInsideAny, runGit } from '../../git-workspace-status.js';
+import { isPathWithin } from '../../git-worktrees.js';
 import {
   line,
   ReviewGitRefusal,
@@ -123,6 +133,8 @@ import {
   writeReview,
 } from '../../reviews/review-store.js';
 import { handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
+import { prepareRun, readRunTip, removeRunWorktree } from '../../reviews/swarm-git.js';
+import { createSwarmRunner, SWARM_TICK_MS, type SwarmRunner } from '../../reviews/swarm-runner.js';
 import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
@@ -131,12 +143,14 @@ import { readWebviews } from '../../webview-store.js';
 import { approvalInbox } from '../approval-inbox.js';
 import type { EventPort, SessionPort } from '../ports/index.js';
 import { canAccessOwned, getAuthUser, isAdmin, parseBody } from '../route-helpers.js';
+import { SwarmReportBodySchema, SwarmRunIdSchema, SwarmStartSchema } from '../schemas.js';
 import { SseEvent } from '../sse-events.js';
 import { proxyPrefixFor } from '../webview-proxy.js';
 import { deliveryDeps } from './canvas-conversation-routes.js';
 import { localFileSource, sendFileBody } from './file-routes.js';
 import { resolveCasePath } from './case-routes.js';
 import { defaultDockerWorkspaces } from './git-status-routes.js';
+import { registryAgentSkillDirs } from './worktree-routes.js';
 import { imageMagicMatchesExt } from './session-routes.js';
 
 type Ctx = SessionPort & EventPort;
@@ -172,6 +186,15 @@ export interface ReviewRouteOptions {
   workReviews?: WorkReviews;
   /** Tells canvas pages that a workspace's items changed (Request changes and Approve of a work review write them). */
   announceWork?: (workspaceId: string) => void;
+  /** The pr-swarm runner. Injected by tests; by default made here, over `startSession` and `swarmHeaders`. */
+  swarm?: SwarmRunner;
+  /**
+   * The credentials a pr-swarm run's session is started and deleted with: the review owner's, as a server-made
+   * request (`internalHeaders`). Null when the owner cannot be acted for; absent, no run can start a session.
+   */
+  swarmHeaders?: (owner: string | null) => Promise<Readonly<Record<string, string>> | null>;
+  /** Whether the server's sessions are restored, so a run's session can be judged alive. Absent: always. */
+  sessionsRestored?: () => boolean;
 }
 
 const LiveActionSchema = z.object({ action: z.enum(['build', 'open', 'close']) }).strict();
@@ -1152,4 +1175,168 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       sending.delete(review.id);
     }
   });
+
+  // ─── pr-swarm runs ───────────────────────────────────────────────────────
+
+  const swarmHeaders = options.swarmHeaders ?? (async () => null);
+  const announceSwarm = (review: Review) =>
+    ctx.broadcast(SseEvent.ReviewSwarm, { id: review.id, owner: review.owner ?? '@single' });
+  const swarmDocker = async (): Promise<string[] | null> => {
+    try {
+      return await dockerWorkspaces();
+    } catch {
+      return null;
+    }
+  };
+  const swarm =
+    options.swarm ??
+    createSwarmRunner({
+      mayAct: () => deployRole.allows('persist'),
+      restored: options.sessionsRestored ?? (() => true),
+      now: Date.now,
+      newRunId: () => randomBytes(8).toString('hex'),
+      reviews: listReviews,
+      review: (id) => {
+        const read = readReview(id);
+        return read.ok ? read.review : null;
+      },
+      refusal: (review) => gitRefusal(authorSession(review), review.repoRoot),
+      tip: (review) => readRunTip(review),
+      prepare: async (review, runId, tip) => {
+        const roots = await swarmDocker();
+        if (!roots) return { ok: false, reason: 'The Docker case list could not be read, so no worktree is made' };
+        return prepareRun(review, runId, tip, { dockerWorkspaces: roots, agentSkillDirs: registryAgentSkillDirs() });
+      },
+      removeWorktree: async (review, runId) => {
+        const roots = await swarmDocker();
+        if (!roots) return;
+        const removed = await removeRunWorktree(review, runId, {
+          dockerWorkspaces: roots,
+          isInUse: (path) =>
+            [...ctx.sessions.values()].some((s) => !s.remote && !!s.workingDir && isPathWithin(s.workingDir, path)),
+        });
+        if (!removed.ok) console.warn(`[pr-swarm] the worktree of run ${runId} was kept: ${removed.reason}`);
+      },
+      startSession: async (review, request) => {
+        const headers = await swarmHeaders(review.owner ?? null);
+        if (!headers || !options.startSession)
+          return { ok: false, message: 'this server cannot start a session for the review owner' };
+        return options.startSession(headers, { ...request, mode: 'claude', launch: {} });
+      },
+      send: async (sessionId, text) => {
+        const session = ctx.sessions.get(sessionId);
+        if (!session) return false;
+        const result = await deliver(deliveryDeps(session, text), 'paste', Date.now());
+        // Written but unconfirmed counts as sent: sending again would paste it twice.
+        return result !== 'not-written' && result !== 'not-ready';
+      },
+      session: (sessionId) => {
+        const session = ctx.sessions.get(sessionId);
+        return !session || session.paneExit
+          ? { state: 'gone' }
+          : { state: 'live', lastActivityAt: session.lastActivityAt };
+      },
+      stopSession: async (review, sessionId) => {
+        const headers = await swarmHeaders(review.owner ?? null);
+        if (headers) await options.discardSession?.(headers, sessionId);
+        else console.warn(`[pr-swarm] session ${sessionId} was left running: its owner cannot be acted for`);
+      },
+      announce: announceSwarm,
+      log: (text) => console.log(text),
+      later: (ms, fn) => {
+        const timer = setTimeout(fn, ms);
+        timer.unref?.();
+      },
+      skillsDir: join(homedir(), '.claude', 'plugins', 'marketplaces', 'nicholls', 'pr-swarm', 'skills'),
+      ghConfigDir: join(getDataDir(), 'reviews', 'swarm-gh'),
+    });
+  if (!options.swarm) {
+    const timer = setInterval(() => void swarm.tick().catch(() => undefined), SWARM_TICK_MS);
+    timer.unref?.();
+    app.addHook('onClose', async () => clearInterval(timer));
+  }
+
+  app.get('/api/reviews/:id/swarm', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    const read = swarm.view(review.id);
+    if (!read.ok)
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        read.reason === 'newer' ? 'The run file was saved by a newer release' : 'The run file could not be read'
+      );
+    return { success: true, data: { swarm: read.file, live: deployRole.allows('persist') } };
+  });
+
+  app.post('/api/reviews/:id/swarm', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    parseBody(SwarmStartSchema, req.body ?? {});
+    if (!isOpen(review)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been decided');
+    // Before any git: reading the tip fetches, and git never runs for a remote or Docker case.
+    const refused = await gitRefusal(authorSession(review), review.repoRoot);
+    if (refused) return fail(reply, 409, ApiErrorCode.CONFLICT, `REFUSED: ${refused}`);
+    const tip = await swarm.tipOf(review);
+    if (!tip) return fail(reply, 409, ApiErrorCode.CONFLICT, 'TIP_UNREADABLE: the branch tip could not be read');
+    const started = await swarm.trigger(review.id, 'manual', tip.sha);
+    if (!started.ok)
+      return fail(
+        reply,
+        started.code === 'NOT_FOUND' ? 404 : 409,
+        started.code === 'NOT_FOUND' ? ApiErrorCode.NOT_FOUND : ApiErrorCode.CONFLICT,
+        `${started.code}: ${started.message}`
+      );
+    if (started.joined)
+      return reply.code(409).send({
+        ...createErrorResponse(ApiErrorCode.CONFLICT, 'RUNNING: a pr-swarm run is already queued or running'),
+        data: { run: started.run },
+      });
+    return { success: true, data: { run: started.run } };
+  });
+
+  app.post('/api/reviews/:id/swarm/resend', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const review = reviewOf(req, reply);
+    if (!review) return reply;
+    return fail(reply, 501, ApiErrorCode.OPERATION_FAILED, 'NOT_BUILT: resending findings is not available yet');
+  });
+
+  app.post(
+    '/api/reviews/swarm-runs/:runId/report',
+    async (req: FastifyRequest<{ Params: { runId: string } }>, reply) => {
+      const runId = SwarmRunIdSchema.safeParse(req.params.runId);
+      if (!runId.success) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, 'That is not a pr-swarm run id');
+      const caller = callerSession(ctx, req);
+      if (!caller)
+        return fail(
+          reply,
+          403,
+          ApiErrorCode.FORBIDDEN,
+          "Only the run's own session may report it (X-Codeman-Parent-Session)"
+        );
+      const body = parseBody(SwarmReportBodySchema, req.body);
+      const reported = await swarm.report(runId.data, caller.id, body.report);
+      if (reported.ok) return { success: true, data: reported };
+      const status =
+        reported.code === 'FORBIDDEN'
+          ? 403
+          : reported.code === 'INVALID'
+            ? 400
+            : reported.code === 'NOT_RUNNING'
+              ? 404
+              : 409;
+      const code =
+        reported.code === 'FORBIDDEN'
+          ? ApiErrorCode.FORBIDDEN
+          : reported.code === 'INVALID'
+            ? ApiErrorCode.INVALID_INPUT
+            : reported.code === 'NOT_RUNNING'
+              ? ApiErrorCode.NOT_FOUND
+              : ApiErrorCode.CONFLICT;
+      return fail(reply, status, code, `${reported.code}: ${reported.message}`);
+    }
+  );
 }

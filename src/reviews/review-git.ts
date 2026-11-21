@@ -162,9 +162,16 @@ async function rangeOf(git: GitRunner, repoRoot: string, base: string, at: HeadL
   if (!(await validRef(git, repoRoot, base)) || !(await validRef(git, repoRoot, at.branch))) return null;
   const head = await resolveHead(git, repoRoot, at);
   if (!head) return null;
-  // The base branch here and the one fetched from `origin` can differ: merges land on the remote, so the local
-  // branch is often behind. Comparing with the older one shows everything merged since as this branch's work, so the
-  // fork point nearest the branch tip wins.
+  const mergeBase = await forkPoint(git, repoRoot, base, head);
+  return mergeBase ? { head, mergeBase } : null;
+}
+
+/**
+ * Where `head` (a commit id) left `base` (a checked branch name), or null. The base branch here and the one fetched
+ * from `origin` can differ: merges land on the remote, so the local branch is often behind. Comparing with the older
+ * one shows everything merged since as this branch's work, so the fork point nearest the branch tip wins.
+ */
+export async function forkPoint(git: GitRunner, repoRoot: string, base: string, head: string): Promise<string | null> {
   let mergeBase = '';
   for (const ref of [`refs/heads/${base}`, `refs/remotes/origin/${base}`]) {
     const found = line((await tryGit(git, repoRoot, ['merge-base', ref, head])) ?? '');
@@ -172,7 +179,7 @@ async function rangeOf(git: GitRunner, repoRoot: string, base: string, at: HeadL
     if (!mergeBase || (await tryGit(git, repoRoot, ['merge-base', '--is-ancestor', mergeBase, found])) !== null)
       mergeBase = found;
   }
-  return mergeBase ? { head, mergeBase } : null;
+  return mergeBase || null;
 }
 
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M'];

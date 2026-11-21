@@ -2271,7 +2271,12 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
    * Key validation is strict (`/^[A-Z_][A-Z0-9_]*$/`) as defense-in-depth against
    * shell-metachar injection even if upstream schema check is bypassed.
    */
-  private applyEnvOverrides(muxName: string, envOverrides?: Record<string, string>, unsetKeys?: string[]): void {
+  private applyEnvOverrides(
+    muxName: string,
+    envOverrides?: Record<string, string>,
+    unsetKeys?: string[],
+    internalEnv?: Record<string, string>
+  ): void {
     const VALID_KEY = /^[A-Z_][A-Z0-9_]*$/;
     // Legacy cleanup: pre-0.7.2 set CLAUDE_CODE_EFFORT_LEVEL via setenv, which persists
     // on the tmux session and hard-locks /effort switching in every respawned pane.
@@ -2298,9 +2303,14 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
         /* Non-critical — var may not exist */
       }
     }
-    if (!envOverrides) return;
-    for (const [key, value] of Object.entries(envOverrides)) {
-      if (!value) continue; // Skip empty — nothing to set
+    // The server's own env goes last and keeps an empty value: there `''` means "blank this variable" (the run
+    // sessions of a review's pr-swarm blank the GitHub tokens), where a user's empty override means nothing.
+    const entries: [string, string, boolean][] = [
+      ...Object.entries(envOverrides ?? {}).map(([k, v]): [string, string, boolean] => [k, v, false]),
+      ...Object.entries(internalEnv ?? {}).map(([k, v]): [string, string, boolean] => [k, v, true]),
+    ];
+    for (const [key, value, keepEmpty] of entries) {
+      if (!value && !keepEmpty) continue; // Skip empty — nothing to set
       if (!VALID_KEY.test(key)) {
         console.warn(`[TmuxManager] Skipping invalid env override key: ${JSON.stringify(key)}`);
         continue;
@@ -2496,6 +2506,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       ompConfig,
       resumeSessionId,
       envOverrides,
+      internalEnv,
       effort,
       advisorModel,
       keepWarm,
@@ -2664,7 +2675,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
 
       // Apply user-supplied env overrides (e.g., CLAUDE_CODE_EFFORT_LEVEL) via tmux setenv
       // so secret values stay off the bash command line. Must run before respawn-pane.
-      this.applyEnvOverrides(muxName, envOverrides);
+      this.applyEnvOverrides(muxName, envOverrides, undefined, internalEnv);
 
       // Replace the shell with the actual command (no echo in terminal). Keep
       // pane launch in /tmp, then cd inside bash against the current mount table.
@@ -2847,6 +2858,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
       ompConfig,
       resumeSessionId,
       envOverrides,
+      internalEnv,
       unsetEnvKeys,
       effort,
       advisorModel,
@@ -2923,7 +2935,7 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
 
       // Re-apply user env overrides before respawn so the new shell inherits them,
       // dropping the ones the caller retired first (see applyEnvOverrides).
-      this.applyEnvOverrides(muxName, envOverrides, unsetEnvKeys);
+      this.applyEnvOverrides(muxName, envOverrides, unsetEnvKeys, internalEnv);
 
       // -c /tmp + cd bounce — see createSession() for rationale (stale FUSE state).
       const launchCmd = remote || docker ? fullCmd : `cd ${JSON.stringify(workingDir)} && ${fullCmd}`;

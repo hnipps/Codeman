@@ -125,6 +125,8 @@ export interface CreateSessionOptions {
   resumeSessionId?: string;
   /** Extra env vars exported before launching the CLI (e.g., CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS). Ephemeral — not written to disk. */
   envOverrides?: Record<string, string>;
+  /** Env the server sets for its own sessions (`Session.setInternalEnv`), applied after `envOverrides`; `''` blanks a variable. */
+  internalEnv?: Record<string, string>;
   /** Claude CLI effort level, injected as a `--settings` soft default (overridable via /effort in-session) */
   effort?: EffortLevel;
   /** Claude advisor model, merged into the same `--settings` JSON (overridable via /advisor in-session) */
@@ -175,6 +177,8 @@ export interface RespawnPaneOptions {
   resumeSessionId?: string;
   /** Extra env vars exported before launching the CLI (preserved across respawns). */
   envOverrides?: Record<string, string>;
+  /** Env the server sets for its own sessions, applied after `envOverrides`; `''` blanks a variable. */
+  internalEnv?: Record<string, string>;
   /**
    * Env vars to REMOVE from the tmux session (`setenv -u`) before `envOverrides` is
    * applied. `setenv` persists at the tmux-session level and is inherited by
