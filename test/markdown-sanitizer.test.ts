@@ -43,7 +43,7 @@ const jsdomDocument = jsdomWindow.document;
 /** Build the SHIPPING sanitizer the way the browser does: vendored DOMPurify (bound to our jsdom
  *  window) + the EXACT CONFIG from sanitize-html.js — so the same allow/forbid lists are exercised
  *  under vitest without a real browser. */
-function loadShippingSanitizer(): (html: string) => string {
+function loadShippingSanitizer(walkthrough = false): (html: string) => string {
   const dompurifySrc = readFileSync(join(publicDir, 'vendor/dompurify.min.js'), 'utf8');
   const sanitizeSrc = readFileSync(join(publicDir, 'sanitize-html.js'), 'utf8');
 
@@ -56,14 +56,19 @@ function loadShippingSanitizer(): (html: string) => string {
   const DOMPurify = factory(jsdomWindow);
 
   // sanitize-html.js exposes createMarkdownSanitizer via its CommonJS export.
-  const sanModule: { exports: { createMarkdownSanitizer?: (dp: unknown) => (html: string) => string } } = {
+  const sanModule: {
+    exports: {
+      createMarkdownSanitizer?: (dp: unknown, extras?: unknown) => (html: string) => string;
+      WALKTHROUGH_EXTRAS?: unknown;
+    };
+  } = {
     exports: {},
   };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
   new Function('module', 'exports', sanitizeSrc)(sanModule, sanModule.exports);
   const create = sanModule.exports.createMarkdownSanitizer;
   if (typeof create !== 'function') throw new Error('createMarkdownSanitizer not exported');
-  const fn = create(DOMPurify);
+  const fn = walkthrough ? create(DOMPurify, sanModule.exports.WALKTHROUGH_EXTRAS) : create(DOMPurify);
   if (typeof fn !== 'function') throw new Error('sanitizeMarkdownHtml not wired');
   return fn;
 }
@@ -232,5 +237,58 @@ describe('COD-56 markdown sanitizer (DOMPurify allowlist)', () => {
       expect(out).not.toMatch(/\sstyle\s*=/);
       expect(out).not.toContain('javascript:');
     });
+  });
+});
+
+describe('W-69 review walkthrough sanitizer (details/summary)', () => {
+  let sanitize: (html: string) => string;
+  let sanitizeWalkthrough: (html: string) => string;
+
+  beforeAll(() => {
+    sanitize = loadShippingSanitizer();
+    sanitizeWalkthrough = loadShippingSanitizer(true);
+  });
+
+  function parse(html: string): HTMLElement {
+    const host = jsdomDocument.createElement('div');
+    host.innerHTML = html;
+    return host;
+  }
+
+  it('the default sanitizer still drops details/summary but keeps their text', () => {
+    const out = sanitize('<details open><summary>more</summary>body</details>');
+    expect(out).not.toContain('<details');
+    expect(out).not.toContain('<summary');
+    expect(out).toContain('more');
+    expect(out).toContain('body');
+  });
+
+  it('the walkthrough sanitizer keeps details with open, and summary', () => {
+    const host = parse(sanitizeWalkthrough('<details open><summary>x</summary>y</details>'));
+    const details = host.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details?.hasAttribute('open')).toBe(true);
+    expect(host.querySelector('details > summary')?.textContent).toBe('x');
+    expect(details?.textContent).toContain('y');
+  });
+
+  it('strips ontoggle from details', () => {
+    const out = sanitizeWalkthrough('<details ontoggle="alert(1)"><summary>x</summary>y</details>');
+    expect(out.toLowerCase()).not.toContain('ontoggle');
+    expect(out).toContain('<details');
+  });
+
+  it('strips onerror from an img inside summary', () => {
+    const out = sanitizeWalkthrough('<details><summary><img src=x onerror=alert(1)></summary>y</details>');
+    expect(out.toLowerCase()).not.toContain('onerror');
+    expect(out).toContain('<summary');
+  });
+
+  describe('the shared payload corpus is still neutralized', () => {
+    for (const { name, html } of PAYLOADS) {
+      it(`blocks: ${name}`, () => {
+        assertNeutralized(sanitizeWalkthrough(html), name);
+      });
+    }
   });
 });

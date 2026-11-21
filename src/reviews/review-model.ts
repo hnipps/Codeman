@@ -25,6 +25,7 @@ export const DECIDED_VISIBLE_MS = 24 * 60 * 60 * 1000;
 const ID = /^[a-z0-9]{8,40}$/;
 export const ReviewIdSchema = z.string().regex(ID);
 const Sha = z.string().regex(/^[0-9a-f]{40}$/);
+export const ShaSchema = Sha;
 /** A branch name as git prints it. Validated again by `git check-ref-format` before any git call uses it. */
 export const RefSchema = z
   .string()
@@ -529,24 +530,27 @@ const where = (n: Note): string => {
 export function requestChangesPrompt(r: Review, notes: Note[]): { text: string } | { refusal: string } {
   const refused = sendRefusal(notes);
   if (refused) return { refusal: refused };
-  // A work item's review follows its pull request: a push to the branch and a report on the item is the resubmission.
-  const ending =
-    sourceOf(r).kind === 'work'
-      ? [
-          `Address each note on the same branch and push it to origin (${r.branch}), then report on ${r.sessionName}.`,
-          'Do not merge or deploy; the reviewer decides.',
-        ]
-      : [
-          'Address each note on the same branch. When you are done, submit the review again with an updated walkthrough',
-          '(`codeman agent review submit`). Do not merge or deploy; the reviewer decides.',
-        ];
   const lines = [
     `Review notes on "${r.title}" (branch ${r.branch}). The reviewer asked for changes.`,
     '',
     ...noteLines(notes),
-    ...ending,
+    ...requestChangesEnding(r),
   ];
   return { text: lines.join('\n') };
+}
+
+/** How a prompt that asks for changes ends, by the kind of review. pr-swarm's verdict prompt ends the same way. */
+export function requestChangesEnding(r: Pick<Review, 'sessionId' | 'sessionName' | 'branch'>): string[] {
+  // A work item's review follows its pull request: a push to the branch and a report on the item is the resubmission.
+  return sourceOf(r).kind === 'work'
+    ? [
+        `Address each note on the same branch and push it to origin (${r.branch}), then report on ${r.sessionName}.`,
+        'Do not merge or deploy; the reviewer decides.',
+      ]
+    : [
+        'Address each note on the same branch. When you are done, submit the review again with an updated walkthrough',
+        '(`codeman agent review submit`). Do not merge or deploy; the reviewer decides.',
+      ];
 }
 
 function sendRefusal(notes: Note[]): string | null {

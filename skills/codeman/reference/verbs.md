@@ -895,6 +895,8 @@ codeman agent review submit --title "Settings page" --file walkthrough.md \
 Rules:
 
 - Commit first. The review compares the branch's commits with its base; uncommitted work is not in it.
+- For a Work item, set its `pr` with `canvas_work update` and push the branch BEFORE you submit, or the submit
+  makes a separate session review instead of the item's walkthrough.
 - The branch must be checked out in this session's folder, and must not be the base branch. Pass
   `--base <branch>` when the work does not merge into the repository's main branch.
 - Submit again after you address the reviewer's notes. It updates the same review and keeps the notes.

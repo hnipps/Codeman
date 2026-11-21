@@ -4,8 +4,8 @@
  *
  * Rules this file keeps:
  * - Every string from an agent or from git is written with `textContent`. The walkthrough is the one exception:
- *   it goes through `marked` and then `window.sanitizeMarkdownHtml`, the dashboard's sanitizer, and is shown as
- *   plain text when either is missing.
+ *   it goes through `marked` and then `window.sanitizeWalkthroughHtml` (the dashboard's sanitizer plus
+ *   details/summary), and is shown as plain text when either is missing.
  * - A preview is a sandboxed frame without `allow-same-origin`, like a preview tab on the dashboard.
  * - Nothing is sent to a session without a press of Request changes (once the author session has ended, that press
  *   starts a new session and hands it the review).
@@ -615,7 +615,8 @@
     const body = el('div', 'rv-md');
     let html = null;
     try {
-      if (window.marked && window.sanitizeMarkdownHtml) html = window.sanitizeMarkdownHtml(window.marked.parse(text));
+      const sanitize = window.sanitizeWalkthroughHtml || window.sanitizeMarkdownHtml;
+      if (window.marked && sanitize) html = sanitize(window.marked.parse(text));
     } catch (_err) {
       html = null;
     }

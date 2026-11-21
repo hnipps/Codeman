@@ -815,6 +815,10 @@ export class Session extends EventEmitter {
   // at spawn, preserved across respawns via persisted state. Not written to .claude/settings.local.json.
   private _envOverrides: Record<string, string> | undefined;
 
+  // Env the server itself sets for a session it starts for its own work (`setInternalEnv`), never from a request, so
+  // the user-facing allowlist does not apply. An empty value blanks the variable. Applied after `_envOverrides`.
+  private _internalEnv: Record<string, string> | undefined;
+
   // Claude CLI effort level — injected as a `--settings` soft default at spawn so the
   // user can still switch in-session via /effort (incl. ultracode). Never carried as
   // the CLAUDE_CODE_EFFORT_LEVEL env var, which would hard-lock the session.
@@ -2261,6 +2265,14 @@ export class Session extends EventEmitter {
    * (e.g., OPENCODE_API_KEY); secrets must not land in `~/.codeman/state.json`.
    * Must NOT be included in any API-bound serializer — see toState() comment.
    */
+  /**
+   * Env the server sets for a session it starts for its own work, before the session's pane starts. An empty value
+   * blanks the variable. Not persisted: the tmux session keeps it for every respawn of its pane.
+   */
+  setInternalEnv(env: Record<string, string>): void {
+    this._internalEnv = { ...(this._internalEnv ?? {}), ...env };
+  }
+
   getEnvOverridesForPersist(): Record<string, string> | undefined {
     if (!this._envOverrides) return undefined;
     const safe: Record<string, string> = {};
@@ -2607,6 +2619,7 @@ export class Session extends EventEmitter {
       ompConfig: this._ompConfig,
       resumeSessionId: this._resumeSessionId,
       envOverrides: this._envOverrides,
+      internalEnv: this._internalEnv,
       unsetEnvKeys: this._pendingEnvUnsets.size > 0 ? [...this._pendingEnvUnsets] : undefined,
       effort: this._effort,
       advisorModel: this._advisorModel,
@@ -3089,6 +3102,7 @@ export class Session extends EventEmitter {
             ompConfig: this._ompConfig,
             resumeSessionId: this._resumeSessionId,
             envOverrides: this._envOverrides,
+            internalEnv: this._internalEnv,
             effort: this._effort,
             advisorModel: this._advisorModel,
             keepWarm: this._keepWarmEnabled,
@@ -3226,7 +3240,7 @@ export class Session extends EventEmitter {
             rows: 40,
             cwd: this.workingDir,
             // Merge envOverrides after buildClaudeEnv so user settings shadow defaults.
-            env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}) },
+            env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}), ...(this._internalEnv ?? {}) },
           })
         );
         this._notePtySpawnGeometry(120, 40);
@@ -4323,7 +4337,7 @@ export class Session extends EventEmitter {
               rows: 40,
               cwd: this.workingDir,
               // Merge envOverrides after buildClaudeEnv so user settings shadow defaults.
-              env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}) },
+              env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}), ...(this._internalEnv ?? {}) },
             })
           );
           this._notePtySpawnGeometry(120, 40);
