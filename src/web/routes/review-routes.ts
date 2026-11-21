@@ -361,10 +361,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
    * True when a review of a repository that deploys itself merges into a branch other than the repository's default:
    * a stacked review. Its merge is not a release, so Approve asks for no deploy, and it ships when its base lands.
    * `main` and `master` always count as default, so a clone without `origin/HEAD` still deploys its master reviews.
+   * A review's folder is often removed after the merge, and then it cannot say whether it deploys itself. Only a
+   * repository that deploys itself reaches `deploying` or `deploy-failed`, so such a decision on another base is stacked.
    */
   const shipsWithBase = async (review: Review): Promise<boolean> => {
-    if (review.base === 'main' || review.base === 'master' || !(await deploysItself(review.repoRoot))) return false;
-    return (await defaultBase(runGit, review.repoRoot)) !== review.base;
+    if (review.base === 'main' || review.base === 'master') return false;
+    if (await deploysItself(review.repoRoot)) return (await defaultBase(runGit, review.repoRoot)) !== review.base;
+    return review.decision?.kind === 'deploying' || review.decision?.kind === 'deploy-failed';
   };
 
   const live = options.live ?? createLiveControl();
