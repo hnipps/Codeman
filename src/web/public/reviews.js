@@ -607,7 +607,11 @@
     } else if (d && d.kind === 'closed') lines.push('Closed without merging. The branch is still on origin.');
     else if (d && d.kind === 'deploy-failed')
       lines.push(
-        `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
+        `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.${
+          state.approve && state.approve.shipsWithBase
+            ? ` ${state.review.base} is not the default branch, so this goes live when ${state.review.base} is merged and deployed; this page follows it.`
+            : ''
+        }`
       );
     if (state.review && isWork() && !d && !(workOf() && workOf().wanted))
       lines.push(
