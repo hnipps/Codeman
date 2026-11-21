@@ -176,6 +176,85 @@ describe('a work item pull request on the Reviews page', () => {
     await page.waitForFunction(() => document.getElementById('rvMeta')?.textContent?.includes('files'));
   });
 
+  it("keeps the reader's open sections open through note actions, and opens a closed one to show a note", async () => {
+    const id = (await page.getAttribute('.rv-queue-row .rv-queue-item', 'href'))!.split('/').pop()!;
+    const walkthrough = [
+      '## What changed',
+      '',
+      '<details>',
+      '<summary>First section</summary>',
+      '',
+      'The first section holds the anchored words.',
+      '',
+      '</details>',
+      '',
+      '<details>',
+      '<summary>Second section</summary>',
+      '',
+      'The second section stays open.',
+      '',
+      '</details>',
+      '',
+    ].join('\n');
+    // An agent walkthrough needs a linked session; the page is handed one on every review it reads.
+    const pattern = /\/api\/reviews\/[0-9a-f]{16}(\/notes(\/[^/]+)?)?$/;
+    await page.route(pattern, async (route) => {
+      const res = await route.fetch();
+      const json = (await res.json()) as { data?: { review?: Record<string, unknown> } };
+      if (json.data?.review)
+        json.data.review.authored = { sessionId: 's', sessionName: 'w9', walkthrough, headSha: 'a'.repeat(40), at: 1 };
+      await route.fulfill({ response: res, json });
+    });
+    const textNote = await page.evaluate(async (reviewId) => {
+      const res = await fetch(`api/reviews/${reviewId}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          at: {
+            kind: 'text',
+            anchor: { quote: 'anchored words', prefix: 'The first section holds the ', suffix: '.' },
+          },
+          text: 'Say which words.',
+        }),
+      });
+      const body = (await res.json()) as { data: { review: { notes: { id: string }[] } } };
+      return body.data.review.notes.at(-1)!.id;
+    }, id);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(`#rvWalk mark[data-note="${textNote}"]`, { state: 'attached' });
+    const opened = () => page.$$eval('#rvWalk details', (all) => all.map((d) => (d as HTMLDetailsElement).open));
+    const rows = () => page.locator('#rvNotes li.rv-note').count();
+    expect(await opened()).toEqual([false, false]);
+
+    await page.click(`li.rv-note[data-note="${textNote}"] .rv-note-at`);
+    expect(await opened()).toEqual([true, false]);
+    expect(await page.isVisible(`#rvWalk mark[data-note="${textNote}"]`)).toBe(true);
+    await page.click('#rvWalk details:nth-of-type(1) summary');
+    await page.click('#rvWalk details:nth-of-type(2) summary');
+    expect(await opened()).toEqual([false, true]);
+
+    await page.click('#rvGeneral');
+    await page.fill('#rvComposerText', 'A general note.');
+    await page.press('#rvComposerText', 'Control+Enter');
+    await vi.waitFor(async () => expect(await rows()).toBe(2));
+    expect(await opened()).toEqual([false, true]);
+
+    await page.click(`li.rv-note[data-note="${textNote}"] button:text-is("Resolve")`);
+    await page.waitForSelector(`li.rv-note-resolved[data-note="${textNote}"]`);
+    expect(await opened()).toEqual([false, true]);
+
+    for (const left of [1, 0]) {
+      await page.locator('#rvNotes li.rv-note button:text-is("Delete")').first().click();
+      await vi.waitFor(async () => expect(await rows()).toBe(left));
+      expect(await opened()).toEqual([false, true]);
+    }
+    await shoot('sections-open');
+    await page.unroute(pattern);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.getElementById('rvMeta')?.textContent?.includes('files'));
+    expect(failures).toEqual([]);
+  });
+
   it('sends notes to the item and says where they went', async () => {
     const id = (await page.getAttribute('.rv-queue-row .rv-queue-item', 'href'))!.split('/').pop()!;
     const added = await page.evaluate(
