@@ -23,7 +23,11 @@ import { CommandSchema } from '../src/canvas/operations.js';
 
 type Rgb = [number, number, number];
 type Point = { name: string; x: number; y: number };
-type Shot = { frames: { title: string; depth: number; captured: boolean; selfReported: boolean }[]; pixels: Rgb[] };
+type Shot = {
+  frames: { title: string; depth: number; captured: boolean; selfReported: boolean }[];
+  pixels: Rgb[];
+  png: string;
+};
 
 const b64 = (text: string) => Buffer.from(text).toString('base64');
 const near = (a: Rgb, b: Rgb, tolerance = 16) => a.every((v, i) => Math.abs(v - b[i]) <= tolerance);
@@ -145,8 +149,17 @@ describe('capture shows the canvas surfaces (acceptance check 5)', () => {
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(bitmap, 0, 0);
       const pixels = pts.map((p) => Array.from(ctx.getImageData(p.x, p.y, 1, 1).data).slice(0, 3));
-      return { frames: result.frames, pixels } as never;
+      const bytes = new Uint8Array(await result.blob.arrayBuffer());
+      let png = '';
+      for (const b of bytes) png += String.fromCharCode(b);
+      return { frames: result.frames, pixels, png: btoa(png) } as never;
     }, at);
+  }
+
+  /** With CAPTURE_SURFACES_SHOTS set, keeps the frozen picture for a person to look at. */
+  function save(name: string, shot: Shot) {
+    const dir = process.env.CAPTURE_SURFACES_SHOTS;
+    if (dir) writeFileSync(`${dir}/${name}.png`, Buffer.from(shot.png, 'base64'));
   }
 
   async function truth(at: Point[]): Promise<Rgb[]> {
@@ -173,8 +186,7 @@ describe('capture shows the canvas surfaces (acceptance check 5)', () => {
     const at = await points(page);
     const real = await truth(at);
     const shot = await freeze(at);
-    if (process.env.CAPTURE_SURFACES_SHOTS)
-      await page.screenshot({ path: `${process.env.CAPTURE_SURFACES_SHOTS}/canvas-page.png` });
+    save('canvas-page', shot);
     const bridged = shot.frames.filter((f) => f.selfReported);
     expect(bridged, JSON.stringify(shot.frames)).toHaveLength(2);
     expect(bridged.every((f) => f.captured && f.depth === 1)).toBe(true);
@@ -203,6 +215,7 @@ describe('capture shows the canvas surfaces (acceptance check 5)', () => {
     const at = await points(canvas, { x: 40, y: 60 });
     const real = await truth(at);
     const shot = await freeze(at);
+    save('dashboard-canvas', shot);
     const nested = shot.frames.filter((f) => f.depth === 2 && f.selfReported);
     expect(nested, JSON.stringify(shot.frames)).toHaveLength(2);
     expect(nested.every((f) => f.captured)).toBe(true);

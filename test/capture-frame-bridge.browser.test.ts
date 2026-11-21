@@ -50,6 +50,10 @@ const PAGES: Record<string, string> = {
   jpeg: liar(
     "(c, w, h) => { c.width = w; c.height = h; const x = c.getContext('2d'); x.fillStyle = 'rgb(255,0,255)'; x.fillRect(0, 0, w, h); return c.toDataURL('image/jpeg'); }"
   ),
+  // JPEG bytes under the PNG prefix: only the signature check stops the browser decoding them.
+  disguised: liar(
+    "(c, w, h) => { c.width = w; c.height = h; const x = c.getContext('2d'); x.fillStyle = 'rgb(255,0,255)'; x.fillRect(0, 0, w, h); return c.toDataURL('image/jpeg').replace('data:image/jpeg', 'data:image/png'); }"
+  ),
   big: liar(
     "(c, w, h) => { c.width = w * 3; c.height = h * 3; const x = c.getContext('2d'); x.fillStyle = 'rgb(255,0,255)'; x.fillRect(0, 0, c.width, c.height); return c.toDataURL('image/png'); }"
   ),
@@ -100,7 +104,7 @@ describe('capture through the frame bridge (I8 FramePicturesAreUntrusted)', () =
         const f = document.createElement('iframe');
         f.title = name;
         f.setAttribute('sandbox', 'allow-scripts');
-        f.style.cssText = `position:absolute;left:${100 + i * 260}px;top:300px;width:200px;height:100px;border:0`;
+        f.style.cssText = `position:absolute;left:${60 + i * 240}px;top:300px;width:200px;height:100px;border:0`;
         f.src = `/__capture-frames/${name}`;
         wrap.appendChild(f);
         return new Promise((r) => f.addEventListener('load', r, { once: true }));
@@ -128,11 +132,11 @@ describe('capture through the frame bridge (I8 FramePicturesAreUntrusted)', () =
       const at = (x: number, y: number) => Array.from(ctx.getImageData(x, y, 1, 1).data) as Rgba;
       const pixels: Record<string, Rgba> = {};
       names.forEach((name, i) => {
-        const left = 100 + i * 260;
+        const left = 60 + i * 240;
         pixels[`${name}:inside`] = at(left + 150, 380);
         pixels[`${name}:corner`] = at(left + 20, 320);
         pixels[`${name}:corner2`] = at(left + 4, 304);
-        pixels[`${name}:outside`] = at(left + 230, 350);
+        pixels[`${name}:outside`] = at(left + 220, 350);
         pixels[`${name}:below`] = at(left + 100, 420);
       });
       window.__shot = { frames: result.frames, freezeMs: result.freezeMs, pixels };
@@ -141,12 +145,12 @@ describe('capture through the frame bridge (I8 FramePicturesAreUntrusted)', () =
     const { frames, freezeMs, pixels } = await page.evaluate(() => window.__shot);
     const byTitle = Object.fromEntries(frames.map((f) => [f.title, f]));
     expect(byTitle.good).toMatchObject({ captured: true, selfReported: true, box: { width: 200, height: 100 } });
-    for (const name of ['jpeg', 'big', 'silent'])
+    for (const name of ['jpeg', 'disguised', 'big', 'silent'])
       expect(byTitle[name], name).toMatchObject({ captured: false, selfReported: false });
 
     expect(pixels['good:inside'], 'the frame body').toSatisfy((p: Rgba) => near(p, [0, 200, 0]));
     expect(pixels['good:corner'], 'the frame content').toSatisfy((p: Rgba) => near(p, [0, 0, 255]));
-    for (const name of ['jpeg', 'big', 'silent']) {
+    for (const name of ['jpeg', 'disguised', 'big', 'silent']) {
       for (const at of ['corner', 'corner2'])
         expect(pixels[`${name}:${at}`], `${name} is a placeholder`).toSatisfy(isPlaceholder);
       expect(pixels[`${name}:inside`], `${name} never shows its own pixels`).not.toSatisfy((p: Rgba) =>
