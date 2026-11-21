@@ -18,7 +18,7 @@ import { createRequire } from 'module';
 import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
-import { isGoTooOld, isGoVersionRefusal } from './lib/go-toolchain.mjs';
+import { CHAT_GRAPH_PLATFORMS, isGoTooOld, isGoVersionRefusal } from './lib/go-toolchain.mjs';
 import { join, extname, basename, dirname } from 'path';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
@@ -60,8 +60,9 @@ run('chmod dist/index.js', 'chmod +x dist/index.js');
 
 // 1b. Chat Graph's Go sidecar, next to the supervisor tsc just emitted. Offline by
 // construction: vendored modules only, no proxy, no toolchain download. An install without
-// `go`, or whose `go` is older than chat-graph/go.mod requires, builds without it and Chat
-// Graph stays off; any other `go build` failure fails the build. This fork's deploy gate
+// `go`, or whose `go` is older than chat-graph/go.mod requires, or whose platform is not one
+// chat-graph/vendor/ keeps (CHAT_GRAPH_PLATFORMS), builds without it and Chat Graph stays off;
+// any other `go build` failure fails the build. This fork's deploy gate
 // (deploy/test.sh) refuses a release that lacks the binary.
 // The old binary goes first, so a skipped build can never leave a stale one for the deploy gate.
 rmSync(join(ROOT, 'dist/chat-graph/chat-graph'), { force: true });
@@ -80,7 +81,16 @@ const goTooOld = (() => {
     return false;
   }
 })();
-if (hasGo && goTooOld) {
+const goPlatform = (() => {
+  try {
+    return execSync('go env GOOS GOARCH', { env: goEnv, encoding: 'utf-8' }).trim().split('\n').join('/');
+  } catch {
+    return null;
+  }
+})();
+if (hasGo && goPlatform && !CHAT_GRAPH_PLATFORMS.includes(goPlatform)) {
+  console.warn(`\n[build] chat-graph sidecar skipped: chat-graph/vendor/ carries no files for ${goPlatform}`);
+} else if (hasGo && goTooOld) {
   console.warn('\n[build] chat-graph sidecar skipped: the local `go` is older than chat-graph/go.mod requires');
 } else if (hasGo) {
   console.log('\n[build] chat-graph sidecar');

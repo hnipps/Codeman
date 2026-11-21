@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isGoTooOld, isGoVersionRefusal } from '../scripts/lib/go-toolchain.mjs';
+import { CHAT_GRAPH_PLATFORMS, isGoTooOld, isGoVersionRefusal } from '../scripts/lib/go-toolchain.mjs';
 
 const GO_MOD = 'module codeman/chat-graph\n\ngo 1.23\n';
 
@@ -78,4 +78,16 @@ describe('chat-graph build skip/fail split', () => {
     },
     60_000
   );
+});
+
+describe('chat-graph vendor', () => {
+  it('carries SQLite for exactly the platforms build.mjs builds the sidecar on', async () => {
+    const lib = path.join(__dirname, '..', 'chat-graph', 'vendor', 'modernc.org', 'sqlite', 'lib');
+    const platforms = (await fs.readdir(lib))
+      .map((name) => /^sqlite_([a-z0-9]+)_([a-z0-9]+)\.go$/.exec(name))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => `${m[1]}/${m[2]}`)
+      .sort();
+    expect(platforms).toEqual([...CHAT_GRAPH_PLATFORMS].sort());
+  });
 });
