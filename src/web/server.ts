@@ -4687,8 +4687,15 @@ export class WebServer extends EventEmitter {
    * Sweep orphans, then start this colour's Chat Graph sidecar, without blocking the caller; failures are logged.
    * Both are queued before this returns, so a retire's `stop()` called later runs after them.
    */
+  private chatGraphMissingLogged = false;
   private runChatGraph(): void {
     if (this.testMode) return;
+    // The supervisor tells its child from a recycled pid through /proc, which only Linux has.
+    if (process.platform !== 'linux') {
+      if (!this.chatGraphMissingLogged) console.log('[ChatGraph] sidecar not started: it needs Linux /proc');
+      this.chatGraphMissingLogged = true;
+      return;
+    }
     void this.chatGraph
       .sweep()
       .catch((err) => console.warn(`[ChatGraph] orphan sweep failed: ${getErrorMessage(err)}`));
@@ -4705,7 +4712,6 @@ export class WebServer extends EventEmitter {
       })
       .catch((err) => console.warn(`[ChatGraph] sidecar not started: ${getErrorMessage(err)}`));
   }
-  private chatGraphMissingLogged = false;
 
   /**
    * Move this process to another deploy role (see deploy-role.ts), one change at a time:
@@ -4789,8 +4795,15 @@ export class WebServer extends EventEmitter {
   private async retireFromLive(): Promise<void> {
     // Invariant I6: a child that outlived SIGKILL keeps this colour live rather than leave two writers.
     if (!(await this.chatGraph.stop())) throw new Error('the Chat Graph sidecar did not exit');
-    await this.store.settle();
-    const listWritten = this.writeSharedState();
+    let listWritten: Promise<void>;
+    try {
+      await this.store.settle();
+      listWritten = this.writeSharedState();
+    } catch (err) {
+      // The retire failed and this colour stays live, so it gets its sidecar back.
+      this.runChatGraph();
+      throw err;
+    }
     deployRole.enter('retired');
     releaseLiveLease();
     await listWritten;
@@ -4971,7 +4984,8 @@ export class WebServer extends EventEmitter {
     // port against the next start — the exact EADDRINUSE this feature already
     // got wrong once.
     void stopDeepSeekWeb();
-    void this.chatGraph.stop();
+    // Awaited before the state flush below: the Go child does not die with its parent.
+    const chatGraphStopped = this.chatGraph.stop();
 
     // The header's GPU / CPU clock sampler is a Windows child process under WSL, and its idle sweep a timer.
     stopHostSensors();
@@ -5067,6 +5081,8 @@ export class WebServer extends EventEmitter {
       imageWatcher.unwatchSession(sessionId);
     }
     // Don't delete sessions from the map or state.json — recovery needs them
+
+    await chatGraphStopped;
 
     // Flush state store to prevent data loss from debounced saves
     this.store.flushAll();

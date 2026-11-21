@@ -32,7 +32,7 @@ const supervisors: ChatGraphSupervisor[] = [];
 
 function environOf(pid: number): string {
   try {
-    return readFileSync(`/proc/${pid}/environ`, 'latin1');
+    return readFileSync(`/proc/${pid}/environ`, 'utf-8');
   } catch {
     return '';
   }
@@ -223,7 +223,40 @@ describe('ChatGraphSupervisor', () => {
     expect(markedPids(owner)).toEqual([]);
     live = false;
 
-    expect((await started).ok).toBe(true);
+    // The start gives way to the stop queued behind it rather than hold it for the readiness timeout.
+    expect(await started).toMatchObject({ ok: false, reason: 'failed' });
+  });
+
+  it('a stop is not held for the readiness timeout by a start whose sidecar never answers', async () => {
+    const silent = path.join(root, 'silent');
+    await fs.writeFile(silent, `#!${process.execPath}\nsetInterval(() => {}, 1e3);\n`);
+    await fs.chmod(silent, 0o755);
+    const sup = supervisor(() => true, { binary: silent, readyTimeoutMs: 30_000 });
+
+    const started = sup.start();
+    expect(await until(() => markedPids(owner).length === 1)).toBe(true);
+    const t0 = Date.now();
+    expect(await sup.stop()).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(await started).toMatchObject({ ok: false, reason: 'failed' });
+    expect(markedPids(owner)).toEqual([]);
+  }, 20_000);
+
+  it('refuses a socket path too long for sun_path, with a message naming the limit', async () => {
+    const sup = supervisor(() => true, { dir: path.join(root, 'x'.repeat(120)) });
+
+    const result = await sup.start();
+    expect(result).toMatchObject({ ok: false, reason: 'failed' });
+    expect(result.ok ? '' : result.error).toContain('107 bytes');
+    expect(markedPids(owner)).toEqual([]);
+  });
+
+  it('sweeps an orphan whose owner marker is a non-ASCII data dir', async () => {
+    const accented = `${owner}-josé`;
+    const sup = supervisor(() => true, { owner: accented });
+    await spawnMarked(accented);
+
+    expect(await sup.sweep()).toBe(1);
   });
 
   it('a start queued after a sweep runs once the orphans are gone, and keeps its own child', async () => {
@@ -309,8 +342,9 @@ describe('ChatGraphSupervisor', () => {
       expect(violations).toEqual([]);
       expect(markedPids(owner), `seed ${seed} (ended live: ${finallyLive})`).toEqual([]);
       for (const result of await Promise.all(starts)) {
-        const r = result as { ok: boolean; reason?: string };
-        expect(r.ok || r.reason === 'role', `seed ${seed}: ${JSON.stringify(r)}`).toBe(true);
+        const r = result as { ok: boolean; reason?: string; error?: string };
+        const gaveWay = r.reason === 'failed' && r.error?.startsWith('a stop was requested');
+        expect(r.ok || r.reason === 'role' || gaveWay, `seed ${seed}: ${JSON.stringify(r)}`).toBe(true);
       }
     }
   }, 60_000);

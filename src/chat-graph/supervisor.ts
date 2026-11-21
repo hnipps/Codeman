@@ -32,6 +32,8 @@ const READY_POLL_MS = 100;
 const HEALTH_TIMEOUT_MS = 1_000;
 const KILL_GRACE_MS = 3_000;
 const OUTPUT_CAP = 16_384;
+/** `sun_path` holds 108 bytes on Linux, its terminating NUL included. */
+const MAX_SOCKET_PATH_BYTES = 107;
 
 export interface ProcIdentity {
   pid: number;
@@ -76,7 +78,8 @@ function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
 export class ChatGraphSupervisor {
   private state: SidecarState = { kind: 'stopped' };
   private queue: Promise<unknown> = Promise.resolve();
-  private output = '';
+  /** Counts `stop()` calls, so a `start()` still waiting for readiness gives way to a stop queued behind it. */
+  private stopsRequested = 0;
   private readonly binary: string;
   private readonly readStat: (pid: number) => ProcStat | null;
 
@@ -124,14 +127,21 @@ export class ChatGraphSupervisor {
   }
 
   start(): Promise<ChatGraphStartResult> {
-    return this.serialize(() => this.startLocked());
+    // Read now, not when the queue reaches it: a stop called right after this start must count.
+    const stopsAtStart = this.stopsRequested;
+    return this.serialize(() => this.startLocked(stopsAtStart));
   }
 
-  private async startLocked(): Promise<ChatGraphStartResult> {
+  private async startLocked(stopsAtStart: number): Promise<ChatGraphStartResult> {
     const refused = (): ChatGraphStartResult => ({
       ok: false,
       reason: 'role',
       error: 'this deploy role may not run the Chat Graph sidecar',
+    });
+    const stoppedWhileStarting = (): ChatGraphStartResult => ({
+      ok: false,
+      reason: 'failed',
+      error: 'a stop was requested while the Chat Graph sidecar was starting',
     });
     if (!this.options.mayPersist()) return refused();
 
@@ -142,6 +152,13 @@ export class ChatGraphSupervisor {
       }
     }
 
+    if (Buffer.byteLength(this.socketPath) > MAX_SOCKET_PATH_BYTES) {
+      return {
+        ok: false,
+        reason: 'failed',
+        error: `The Chat Graph socket path ${this.socketPath} is longer than ${MAX_SOCKET_PATH_BYTES} bytes`,
+      };
+    }
     try {
       await access(this.binary, constants.X_OK);
     } catch {
@@ -153,6 +170,7 @@ export class ChatGraphSupervisor {
       return { ok: false, reason: 'failed', error: `Cannot create ${this.options.dir}: ${getErrorMessage(err)}` };
     }
     if (!this.options.mayPersist()) return refused();
+    if (this.stopsRequested !== stopsAtStart) return stoppedWhileStarting();
 
     let child: ChildProcess;
     try {
@@ -165,9 +183,10 @@ export class ChatGraphSupervisor {
     }
     const stat = child.pid === undefined ? null : this.readStat(child.pid);
 
-    this.output = '';
+    // Per child: a previous child's late output must not land in this start's error.
+    let output = '';
     const capture = (chunk: Buffer) => {
-      if (this.output.length < OUTPUT_CAP) this.output += chunk.toString('utf-8');
+      if (output.length < OUTPUT_CAP) output += chunk.toString('utf-8');
     };
     child.stdout?.on('data', capture);
     child.stderr?.on('data', capture);
@@ -179,27 +198,33 @@ export class ChatGraphSupervisor {
 
     if (!stat) {
       child.kill('SIGKILL');
-      return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited at once: ${this.output.trim()}` };
+      return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited at once: ${output.trim()}` };
     }
     this.state = { kind: 'running', child, identity: { pid: stat.pid, startTicks: stat.startTicks } };
 
     const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS);
     while (Date.now() < deadline) {
+      if (this.stopsRequested !== stopsAtStart) {
+        // The stop queued behind this start kills the child recorded above.
+        return stoppedWhileStarting();
+      }
       if (hasExited(child)) {
-        return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited: ${this.output.trim()}` };
+        return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited: ${output.trim()}` };
       }
       if (await this.health()) return { ok: true, reused: false };
       await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
     }
     await this.stopLocked();
-    return { ok: false, reason: 'failed', error: `Chat Graph sidecar did not answer in time: ${this.output.trim()}` };
+    return { ok: false, reason: 'failed', error: `Chat Graph sidecar did not answer in time: ${output.trim()}` };
   }
 
   /**
    * Stop this supervisor's own child, whatever the deploy role, after any start already called.
-   * Safe when nothing runs. False only when the child outlived SIGKILL's grace.
+   * A start still waiting for readiness gives up at its next poll, so the stop is not held for the
+   * readiness timeout. Safe when nothing runs. False only when the child outlived SIGKILL's grace.
    */
   stop(): Promise<boolean> {
+    this.stopsRequested++;
     return this.serialize(() => this.stopLocked());
   }
 
@@ -239,7 +264,8 @@ export class ChatGraphSupervisor {
       if (pid === own) continue;
       let environ: string;
       try {
-        environ = readFileSync(`/proc/${pid}/environ`, 'latin1');
+        // UTF-8, as the owner string was encoded into the child's environment: a non-ASCII data dir must still match.
+        environ = readFileSync(`/proc/${pid}/environ`, 'utf-8');
       } catch {
         continue;
       }
