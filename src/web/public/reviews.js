@@ -389,10 +389,11 @@
     const r = state.review;
     const button = $('rvApprove');
     const c = state.changes;
-    const retry = r.state === 'deploy-failed';
+    const retry = r.state === 'deploy-failed' && !(state.approve && state.approve.shipsWithBase);
     button.hidden = !(retry || !r.decision);
     if (button.hidden) return;
     const deploys = !!(state.approve && state.approve.deploys);
+    const stacked = !!(state.approve && state.approve.shipsWithBase);
     button.textContent = state.approving ? 'Working…' : retry ? 'Deploy again' : 'Approve';
     const ready = retry || (c && !c.gone && c.headSha);
     button.disabled = state.approving || !ready;
@@ -402,7 +403,7 @@
         ? 'The changes have not loaded, or the branch is gone.'
         : `Merges ${r.branch} into ${r.base}${deploys ? ' and deploys it' : ''}${
             workOf() ? ` and marks ${workOf().key} done` : ''
-          }.`;
+          }.${stacked ? ` Nothing deploys now. It goes live when ${r.base} is merged and deployed.` : ''}`;
   }
 
   function askApprove() {
@@ -420,6 +421,14 @@
     const lead =
       steps.length === 1 ? `${steps[0]}.` : `${steps.slice(0, -1).join(', ')} and ${steps[steps.length - 1]}.`;
     const body = [el('p', '', lead)];
+    if (state.approve && state.approve.shipsWithBase)
+      body.push(
+        el(
+          'p',
+          '',
+          `Nothing deploys now. ${r.base} is not the default branch, so this goes live when ${r.base} is merged and deployed.`
+        )
+      );
     if (c.moved)
       body.push(el('p', 'rv-confirm-warn', 'The branch has new commits since the walkthrough. They merge too.'));
     if (r.unsent)
@@ -580,7 +589,11 @@
         'The branch has new commits since this walkthrough was written. Its code links may point at lines that moved.'
       );
     const d = state.review && state.review.decision;
-    if (d && d.kind === 'merged') lines.push(`Merged into ${state.review.base} as ${shortSha(d.mergedSha)}.`);
+    if (d && d.kind === 'merged' && state.approve && state.approve.shipsWithBase)
+      lines.push(
+        `Merged into ${state.review.base} as ${shortSha(d.mergedSha)}. It goes live when ${state.review.base} is merged and deployed; this page follows it.`
+      );
+    else if (d && d.kind === 'merged') lines.push(`Merged into ${state.review.base} as ${shortSha(d.mergedSha)}.`);
     else if (d && d.kind === 'deploying')
       lines.push(`Merged as ${shortSha(d.mergedSha)}. The deploy is running; this page follows it.`);
     else if (d && d.kind === 'deployed') lines.push(`Merged as ${shortSha(d.mergedSha)} and deployed.`);
@@ -594,7 +607,11 @@
     } else if (d && d.kind === 'closed') lines.push('Closed without merging. The branch is still on origin.');
     else if (d && d.kind === 'deploy-failed')
       lines.push(
-        `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.`
+        `Merged as ${shortSha(d.mergedSha)}, but the deploy did not go through: ${d.error || 'no reason given'}. The live build is unchanged.${
+          state.approve && state.approve.shipsWithBase
+            ? ` ${state.review.base} is not the default branch, so this goes live when ${state.review.base} is merged and deployed; this page follows it.`
+            : ''
+        }`
       );
     if (state.review && isWork() && !d && !(workOf() && workOf().wanted))
       lines.push(
