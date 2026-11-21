@@ -3,7 +3,7 @@
  * The merges run against real temporary repositories. The supervisor is always a fake.
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import { fetchHead, resolveHead, reviewChanges } from '../src/reviews/review-git
 import { mergeReviewedBranch } from '../src/reviews/review-merge.js';
 import { runGit } from '../src/git-workspace-status.js';
 import { settledDeploy, type Decision } from '../src/reviews/review-model.js';
+import { readReview, writeReview } from '../src/reviews/review-store.js';
 import { registerReviewPageRoutes, type ReviewRouteOptions } from '../src/web/routes/review-routes.js';
 import { changeWork, readWork, workPath } from '../src/canvas/work-store.js';
 import {
@@ -162,6 +163,42 @@ describe('the merge Approve makes', () => {
     expect(gitIn(repo.origin!)('rev-parse', 'main')).toBe(theirs('rev-parse', 'HEAD'));
     expect(repo.git('status', '--porcelain')).toBe('');
   });
+
+  it('merges two new journal entries by union, with the rule read from the base tip, and still refuses other conflicts', async () => {
+    const repo = makeRepo({ remote: true });
+    const journal = join(repo.dir, 'docs', 'JOURNAL.md');
+    repo.git('checkout', '-q', 'main');
+    mkdirSync(dirname(journal));
+    writeFileSync(join(repo.dir, 'docs', '.gitattributes'), 'JOURNAL.md merge=union\n');
+    writeFileSync(journal, '# Journal\n\n## old\n');
+    repo.git('add', '.');
+    repo.git('commit', '-q', '-m', 'journal');
+    const addEntry = (branch: string, entry: string, extra?: [string, string]) => {
+      repo.git('checkout', '-q', '-B', branch, 'main');
+      writeFileSync(journal, readFileSync(journal, 'utf8').replace('# Journal\n\n', `# Journal\n\n## ${entry}\n\n`));
+      if (extra) writeFileSync(join(repo.dir, extra[0]), extra[1]);
+      repo.git('commit', '-q', '-am', entry);
+      return { ...input(repo), head: { from: 'local-first' as const, branch }, headSha: repo.git('rev-parse', branch) };
+    };
+    const mine = addEntry('feat/mine', 'mine');
+    const clash = addEntry('feat/clash', 'clash', ['a.txt', 'one\nclash\nthree\n']);
+    repo.git('checkout', '-q', 'main');
+    writeFileSync(journal, '# Journal\n\n## theirs\n\n## old\n');
+    writeFileSync(join(repo.dir, 'a.txt'), 'one\ntheirs\nthree\n');
+    repo.git('commit', '-q', '-am', 'theirs');
+    repo.git('push', '-q', 'origin', 'main');
+    // The shared checkout sits on a branch with no docs/.gitattributes, so only the base tip carries the rule.
+    repo.git('checkout', '-q', 'feat/x');
+
+    const result = await mergeReviewedBranch(mine);
+    if (!result.ok) throw new Error(result.message);
+    const merged = gitIn(repo.origin!)('show', 'main:docs/JOURNAL.md');
+    expect(merged).toContain('## theirs');
+    expect(merged).toContain('## mine');
+    expect(merged).toContain('## old');
+
+    expect(await mergeReviewedBranch(clash)).toMatchObject({ ok: false, code: 'CONFLICT' });
+  });
 });
 
 describe('a head read from origin only', () => {
@@ -276,6 +313,10 @@ describe('how a deploy ended', () => {
     expect(
       settledDeploy({ kind: 'merged', at: 1, mergedSha: 'a'.repeat(40) }, { ...base, recent: [] }, 2, false)
     ).toBeNull();
+    // A stacked review is left `merged` by Approve and is deployed once the live release contains its merge.
+    expect(
+      settledDeploy({ kind: 'merged', at: 1, mergedSha: 'a'.repeat(40) }, { ...base, recent: [] }, 2, true)
+    ).toEqual({ kind: 'deployed', at: 2, mergedSha: 'a'.repeat(40) });
   });
   it('reads a failed deploy as deployed once a later deploy ships the merge, and only then', () => {
     const failed: Decision = { ...deploying, kind: 'deploy-failed', error: 'The deploy failed at health' };
@@ -333,7 +374,7 @@ describe('approve routes', () => {
     expect(repo.git('rev-parse', 'main')).not.toBe(head);
 
     const read = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
-    expect(read.approve).toEqual({ deploys: false });
+    expect(read.approve).toEqual({ deploys: false, shipsWithBase: false });
     const done = await approve(id, head);
     expect(done.statusCode).toBe(200);
     const merged = done.json().data;
@@ -731,10 +772,16 @@ describe('approve routes', () => {
 
   describe('Approve closes the other reviews of its branch', () => {
     const AGENT2 = { 'x-codeman-parent-session': 'test-session-2' };
-    /** A second session on the same checkout, so a second review of `feat/x` can exist beside the first. */
+    /**
+     * A second session on the same checkout under another owner, so a second open review of `feat/x` can exist beside
+     * the first: a session of the same owner would update the first review instead.
+     */
     const secondSession = () => {
       const first = harness.ctx.sessions.get('test-session-1')!;
-      const twin = Object.assign(Object.create(Object.getPrototypeOf(first)), first, { id: 'test-session-2' });
+      const twin = Object.assign(Object.create(Object.getPrototypeOf(first)), first, {
+        id: 'test-session-2',
+        owner: 'other',
+      });
       harness.ctx.sessions.set('test-session-2', twin);
     };
     const commit = (name: string) => {
@@ -821,7 +868,10 @@ describe('approve routes', () => {
     const id = await start({
       deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
     });
-    expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.approve).toEqual({ deploys: true });
+    expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.approve).toEqual({
+      deploys: true,
+      shipsWithBase: false,
+    });
 
     const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
     const mergedSha = done.review.decision.mergedSha as string;
@@ -870,6 +920,222 @@ describe('approve routes', () => {
       expect(deployed.state).toBe('deployed');
       const retry = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/deploy`, payload: {} });
       expect(retry.statusCode).toBe(409);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('merges a stacked review into its base without a deploy, and settles it once the base ships', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'stack' },
+    });
+    const id = made.json().data.id as string;
+    expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.approve).toEqual({
+      deploys: false,
+      shipsWithBase: true,
+    });
+
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    expect(done.review).toMatchObject({ state: 'merged', decision: { kind: 'merged', mergedSha } });
+    expect(repo.git('rev-parse', 'stack')).toBe(mergedSha);
+    expect(repo.git('rev-parse', 'main')).toBe(overview.live!.sha);
+    expect(requestDeploy).not.toHaveBeenCalled();
+
+    vi.useFakeTimers({ now: Date.now() + 30_000, toFake: ['Date'] });
+    try {
+      expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review.state).toBe('merged');
+      repo.git('checkout', '-q', 'main');
+      repo.git('merge', '-q', '--no-ff', '-m', 'land the stack', 'stack');
+      overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
+      vi.setSystemTime(Date.now() + 5_000);
+      const review = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+      expect(review).toMatchObject({ state: 'deployed', decision: { mergedSha } });
+      expect(requestDeploy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles a stacked review whose folder was removed after the merge', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    repo.git('checkout', '-q', 'main');
+    const tree = join(temp('review-tree-'), 'w');
+    repo.git('worktree', 'add', '-q', tree, 'feat/x');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    const session = harness.ctx.sessions.get('test-session-1')!;
+    session.workingDir = tree;
+    const submit = (base: string) =>
+      harness.app.inject({
+        method: 'POST',
+        url: '/api/reviews',
+        headers: AGENT,
+        payload: { title: 'Work', walkthrough: 'Done', base },
+      });
+    const id = (await submit('stack')).json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    expect(done.review.state).toBe('merged');
+    repo.git('worktree', 'remove', '--force', tree);
+
+    // Another review names the main checkout, as reviews of the same repository do.
+    repo.git('checkout', '-q', '-b', 'feat/z', 'main');
+    repo.git('commit', '-q', '--allow-empty', '-m', 'other work');
+    session.workingDir = repo.dir;
+    expect((await submit('main')).statusCode).toBe(201);
+    repo.git('checkout', '-q', 'main');
+    repo.git('merge', '-q', '--no-ff', '-m', 'land the stack', 'stack');
+    overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
+
+    vi.useFakeTimers({ now: Date.now() + 40_000, toFake: ['Date'] });
+    try {
+      const review = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+      expect(review).toMatchObject({ state: 'deployed', decision: { mergedSha } });
+      expect(requestDeploy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to ask again for a deploy of a stacked merge whose deploy failed', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'stack' },
+    });
+    const id = made.json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    // A stacked review left `deploy-failed` by a build from before stacked reviews were recognised.
+    const stored = readReview(id);
+    if (!stored.ok) throw new Error('review not stored');
+    writeReview({ ...stored.review, decision: { kind: 'deploy-failed', at: 1, mergedSha, error: 'refused' } });
+
+    const again = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/deploy`, payload: {} });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toMatch(/^STACKED:/);
+    expect(requestDeploy).not.toHaveBeenCalled();
+  });
+
+  it('refuses to ask again for a deploy of a stacked merge whose review folder was removed', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'stack' },
+    });
+    const id = made.json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    // Left `deploy-failed` by an older build, in a worktree that was removed after the merge.
+    const stored = readReview(id);
+    if (!stored.ok) throw new Error('review not stored');
+    writeReview({
+      ...stored.review,
+      repoRoot: `${repo.dir}-removed`,
+      decision: { kind: 'deploy-failed', at: 1, mergedSha, error: 'refused' },
+    });
+
+    const view = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
+    expect(view.approve).toMatchObject({ deploys: false, shipsWithBase: true });
+    const again = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/deploy`, payload: {} });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toMatch(/^STACKED:/);
+    expect(requestDeploy).not.toHaveBeenCalled();
+  });
+
+  it('does not read a merged review into main on every settle, since it is never stacked', async () => {
+    const overview: DeployOverviewConfigured = { configured: true, live: null, releases: [], recent: [], busy: false };
+    const readOverview = vi.fn(async () => overview);
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'main' },
+    });
+    const id = made.json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    expect(done.review.decision.kind).toBe('merged');
+    expect(requestDeploy).not.toHaveBeenCalled();
+    readOverview.mockClear();
+
+    vi.useFakeTimers({ now: Date.now() + 50_000, toFake: ['Date'] });
+    try {
+      expect((await harness.app.inject({ url: '/api/reviews' })).statusCode).toBe(200);
+      expect(readOverview).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

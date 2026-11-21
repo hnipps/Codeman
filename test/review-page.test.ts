@@ -18,17 +18,20 @@ import {
 } from '../src/reviews/review-git.js';
 import {
   addNote,
+  mayAddCaptures,
   patchNote,
   queueOf,
   removeNote,
   requestChangesPrompt,
   reviewState,
+  sameWork,
   stampSent,
   submitReview,
   toView,
   unsentNotes,
   type Review,
 } from '../src/reviews/review-model.js';
+import { readReview, writeReview } from '../src/reviews/review-store.js';
 import { readSwarm } from '../src/reviews/swarm-store.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
 import type { Webview } from '../src/types/webview.js';
@@ -82,6 +85,30 @@ describe('review rules', () => {
     expect(again.walkthrough).toBe('Second');
     expect(again.notes).toHaveLength(1);
     expect(again.headSha).toBe('b'.repeat(40));
+  });
+
+  it('a resubmission from another session of the owner makes that session the author', () => {
+    const again = submitReview(
+      fresh(),
+      { title: 'T', walkthrough: 'Second' },
+      facts,
+      { owner: null, sessionId: 'sess-2', sessionName: 'w5' },
+      'cccccccc',
+      2000
+    );
+    expect(again).toMatchObject({ id: 'aaaaaaaa', revision: 2, sessionId: 'sess-2', sessionName: 'w5' });
+    expect(mayAddCaptures(again, 'sess-2')).toBe(true);
+    expect(mayAddCaptures(again, 'sess-1')).toBe(false);
+  });
+
+  it('the same work is the owner, repository and branch of a session review, whichever session sent it', () => {
+    const r = fresh();
+    expect(sameWork(r, null, facts)).toBe(true);
+    expect(sameWork({ ...r, sessionId: 'sess-2' }, null, facts)).toBe(true);
+    expect(sameWork(r, 'bob', facts)).toBe(false);
+    expect(sameWork(r, null, { ...facts, branch: 'feat/y' })).toBe(false);
+    expect(sameWork(r, null, { ...facts, repoRoot: '/other' })).toBe(false);
+    expect(sameWork({ ...r, sessionId: 'work:ws1:7', sessionName: 'W-7' }, null, facts)).toBe(false);
   });
 
   it('moves ready → changes requested → updated', () => {
@@ -299,6 +326,111 @@ describe('review routes', () => {
     expect(one.review).toMatchObject({ title: 'Work', branch: 'feat/x', base: 'main', state: 'ready' });
     expect(one.review.repoRoot).toBeUndefined();
     expect(JSON.stringify(one)).not.toContain(repo);
+  });
+
+  it('a submit of the branch from another session of the owner updates the open review and moves its author', async () => {
+    const other = createMockSession('test-session-2');
+    other.name = 'w9';
+    other.workingDir = repo;
+    harness.ctx.sessions.set(other.id, other as never);
+    const first = await submit();
+    expect(first.statusCode).toBe(201);
+    const id = first.json().data.id as string;
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/reviews/${id}/notes`,
+      payload: { at: { kind: 'general' }, text: 'Keep me' },
+    });
+    const second = await submit({ 'x-codeman-parent-session': 'test-session-2' }, 'From the second worker');
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data).toMatchObject({ id, revision: 2 });
+    const reviews = readdirSync(dataPath('reviews')).filter((n) => n.endsWith('.json') && !n.endsWith('.swarm.json'));
+    expect(reviews).toHaveLength(1);
+    const one = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+    expect(one).toMatchObject({
+      sessionId: 'test-session-2',
+      sessionName: 'w9',
+      walkthrough: 'From the second worker',
+    });
+    expect(one.notes).toHaveLength(1);
+  });
+
+  it('where two open reviews of the branch already exist, each session updates its own', async () => {
+    const other = createMockSession('test-session-2');
+    other.workingDir = repo;
+    Object.assign(other, { owner: 'bob' });
+    harness.ctx.sessions.set(other.id, other as never);
+    // Two open reviews of one owner's branch, as a release before W-77 could leave them.
+    const theirs = (await submit({ 'x-codeman-parent-session': 'test-session-2' })).json().data.id as string;
+    const mine = (await submit()).json().data.id as string;
+    const read = readReview(theirs);
+    if (!read.ok) throw new Error('review not written');
+    writeReview({ ...read.review, owner: null });
+    Object.assign(other, { owner: undefined });
+
+    for (const [headers, id] of [
+      [AGENT, mine],
+      [{ 'x-codeman-parent-session': 'test-session-2' }, theirs],
+    ] as const) {
+      const again = await submit(headers, 'Again');
+      expect(again.statusCode).toBe(200);
+      expect(again.json().data).toMatchObject({ id, revision: 2 });
+    }
+  });
+
+  it('where two open reviews of the branch exist and neither is the caller’s, the newest is updated, a tie to the higher id', async () => {
+    const other = createMockSession('test-session-2');
+    other.workingDir = repo;
+    Object.assign(other, { owner: 'bob' });
+    harness.ctx.sessions.set(other.id, other as never);
+    const third = createMockSession('test-session-3');
+    third.workingDir = repo;
+    harness.ctx.sessions.set(third.id, third as never);
+    // Two open reviews of one owner's branch, as a release before W-77 could leave them.
+    const a = (await submit({ 'x-codeman-parent-session': 'test-session-2' })).json().data.id as string;
+    const b = (await submit()).json().data.id as string;
+    const stamp = (id: string, updatedAt: number, owner: string | null = null) => {
+      const read = readReview(id);
+      if (!read.ok) throw new Error('review not written');
+      writeReview({ ...read.review, owner, updatedAt });
+    };
+    const caller = { 'x-codeman-parent-session': 'test-session-3' };
+
+    stamp(a, 5000);
+    stamp(b, 4000);
+    const newest = await submit(caller, 'Newest');
+    expect(newest.statusCode).toBe(200);
+    expect(newest.json().data.id).toBe(a);
+
+    // The update moved `a` to the caller; put both back on other sessions with equal times.
+    const tie = 9_000_000_000_000;
+    for (const [id, sessionId] of [
+      [a, 'test-session-2'],
+      [b, 'test-session-1'],
+    ] as const) {
+      const read = readReview(id);
+      if (!read.ok) throw new Error('review not written');
+      writeReview({ ...read.review, owner: null, sessionId, updatedAt: tie });
+    }
+    const tied = await submit(caller, 'Tied');
+    expect(tied.statusCode).toBe(200);
+    expect(tied.json().data.id).toBe(a > b ? a : b);
+  });
+
+  it('a submit of the branch by another owner, or after a decision, opens a new review', async () => {
+    const other = createMockSession('test-session-2');
+    other.workingDir = repo;
+    Object.assign(other, { owner: 'bob' });
+    harness.ctx.sessions.set(other.id, other as never);
+    const first = (await submit()).json().data.id as string;
+    const bobs = await submit({ 'x-codeman-parent-session': 'test-session-2' });
+    expect(bobs.statusCode).toBe(201);
+    expect(bobs.json().data.id).not.toBe(first);
+
+    expect((await harness.app.inject({ method: 'POST', url: `/api/reviews/${first}/close` })).statusCode).toBe(200);
+    const after = await submit();
+    expect(after.statusCode).toBe(201);
+    expect(after.json().data.id).not.toBe(first);
   });
 
   it('serves the changes, and a diff only for a file the branch changed', async () => {

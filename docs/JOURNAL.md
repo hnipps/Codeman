@@ -2,6 +2,24 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — The journal merges by union on Approve (W-129)
+
+**Type:** intent-refinement
+**Touches:** `docs/.gitattributes`, `src/reviews/review-merge.ts`, `docs/architecture-invariants.md`
+**Why:** Every review conflict on 2026-11-21 was in this file, because every change adds its entry at the top.
+**Links:** [intent/2026-11-21-journal-union-merge.md](../intent/2026-11-21-journal-union-merge.md)
+
+`docs/JOURNAL.md` merges with git's built-in union driver (`docs/.gitattributes`, kept out of the short repo root), and Approve reads that rule from the base branch tip with `--attr-source`. Rejected: reading attributes from the shared checkout's working tree, which may be on any branch, and from the reviewed branch, which would let a branch choose how it merges. Union drops the blank line between two new entries; a heading still starts a new block, so the file still renders. Entries that edit the same older entry still conflict.
+
+## 2026-11-21 — A stacked review's merge never deploys (W-118)
+
+**Type:** intent-refinement
+**Touches:** `src/web/routes/review-routes.ts`, `src/reviews/review-model.ts`, `src/web/public/reviews.js`, `docs/architecture-invariants.md`
+**Why:** Approve on a review stacked on another branch asked for a deploy that `codeman-deploy` refuses, and the review read `deploy-failed` until its base shipped.
+**Links:** [intent/2026-11-21-stacked-review-approve.md](../intent/2026-11-21-stacked-review-approve.md)
+
+Approve in Codeman's own repository deploys only a merge into the default branch (`main`, `master`, or what `origin/HEAD` names). A merge into any other base records `merged` and waits; the settle pass marks it `deployed` once the live release contains it. Rejected: deciding by whether the merge contains the live release, because a stacked base that is up to date with `master` would then deploy the base's own unreviewed commits.
+
 ## 2026-11-21 — The Chat Graph sweep kills only orphans whose Codeman is gone (W-88)
 
 **Type:** intent-refinement
@@ -19,6 +37,15 @@ The child now also carries `CODEMAN_CHAT_GRAPH_PARENT=<pid>:<start ticks>` of th
 **Links:** [intent/2026-11-21-canvas-conversation-eviction.md](../intent/2026-11-21-canvas-conversation-eviction.md)
 
 The cap stays 50 stored records, because the previous release's schema refuses a longer list, but only active records hold a place: a start on a full canvas evicts inactive ones oldest first. Active is a live session working now or active in the last hour, read from the pane's last output and input and the record's message times. Eviction is Remove, and the record goes even when Remove kept something, so a kept record never blocks a start: a dirty worktree stays on disk for the left-behind list, and a session that would not close stays in the session list. Rejected: raising the stored bound for kept records (breaks rollback), and keeping kept records (they could fill the canvas for good).
+
+## 2026-11-21 — A review is the owner's branch, not one session's (W-77)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `docs/architecture-invariants.md`, `docs/api-reference.md`, `test/review-page.test.ts`, `test/review-approve.test.ts`
+**Why:** A second worker on `spec/chat-graph` queued the branch twice on 2026-11-19, and a review's `sessionId` was hand-edited for spec-w70 after its author's pane ended.
+**Links:** [intent/2026-11-21-w77-review-resubmit-any-session.md](../intent/2026-11-21-w77-review-resubmit-any-session.md), Work item W-77
+
+`sameWork` now matches an open session review on owner, repository and branch, and the submitter becomes the author. The newest submitter is taken to be the session doing the work, so Request changes goes to it. A work review is left out of the match: its author comes from the item, and taking it over would turn it into a session review. Two open reviews of one branch can still exist when two owners submit it, which is what `closeSuperseded` and Reopen's twin check still cover. Same-owner duplicates written before this change stay open: a submit updates the caller's own one, else the most recently updated one, and leaves the other.
 
 ## 2026-11-21 — pr-swarm runs start on submit and on a moved tip (W-112, ticket t4)
 

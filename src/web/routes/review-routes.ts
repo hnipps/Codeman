@@ -68,6 +68,7 @@ import { deployRole } from '../../deploy-role.js';
 import { isInsideAny, runGit } from '../../git-workspace-status.js';
 import { isPathWithin } from '../../git-worktrees.js';
 import {
+  defaultBase,
   line,
   ReviewGitRefusal,
   repoFacts,
@@ -356,6 +357,19 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     return value;
   };
 
+  /**
+   * True when a review of a repository that deploys itself merges into a branch other than the repository's default:
+   * a stacked review. Its merge is not a release, so Approve asks for no deploy, and it ships when its base lands.
+   * `main` and `master` always count as default, so a clone without `origin/HEAD` still deploys its master reviews.
+   * A review's folder is often removed after the merge, and then it cannot say whether it deploys itself. Only a
+   * repository that deploys itself reaches `deploying` or `deploy-failed`, so such a decision on another base is stacked.
+   */
+  const shipsWithBase = async (review: Review): Promise<boolean> => {
+    if (review.base === 'main' || review.base === 'master') return false;
+    if (await deploysItself(review.repoRoot)) return (await defaultBase(runGit, review.repoRoot)) !== review.base;
+    return review.decision?.kind === 'deploying' || review.decision?.kind === 'deploy-failed';
+  };
+
   const live = options.live ?? createLiveControl();
 
   /** The live session that wrote a review; a work review has none. */
@@ -435,9 +449,20 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (Date.now() - settledAt < SETTLE_EVERY_MS || !deployRole.allows('persist')) return;
     settledAt = Date.now();
     const all = listReviews();
-    const waiting = all.filter((r) => r.decision?.kind === 'deploying' || r.decision?.kind === 'deploy-failed');
     const cli = deploy.cli();
-    if (!waiting.length || !cli) return;
+    if (!cli) return;
+    // A `merged` review waits too: a stacked one (`shipsWithBase`) is deployed once the live release contains its merge.
+    // Its folder is often removed by then, so it is not asked whether it deploys itself; `liveContains` asks every
+    // repository, and a merge of another repository is never an ancestor of the live commit. A review into `main` or
+    // `master` is never stacked, so it is not read here: merged reviews are kept forever, and reading each of them on
+    // every settle would ask the supervisor and git again every few seconds for reviews that can never settle.
+    const waiting = all.filter(
+      (r) =>
+        r.decision?.kind === 'deploying' ||
+        r.decision?.kind === 'deploy-failed' ||
+        (r.decision?.kind === 'merged' && r.base !== 'main' && r.base !== 'master')
+    );
+    if (!waiting.length) return;
     let overview: DeployOverviewConfigured;
     try {
       overview = await deploy.readOverview(cli);
@@ -527,7 +552,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     // Read, decide and write with no await between them, so two submissions cannot both make a new review.
     const all = listReviews();
     const owner = session.owner ?? null;
-    const open = all.find((r) => isOpen(r) && sameWork(r, session.id, facts));
+    // Where two open reviews of the branch already exist (written before W-77), the caller's own one is the match,
+    // else the most recently updated one (a tie goes to the higher id), so the choice does not hang on directory order.
+    const same = all.filter((r) => isOpen(r) && sameWork(r, owner, facts));
+    const newer = (r: Review, a: Review) => r.updatedAt > a.updatedAt || (r.updatedAt === a.updatedAt && r.id > a.id);
+    const open =
+      same.find((r) => r.sessionId === session.id) ??
+      same.reduce<Review | undefined>((a, r) => (!a || newer(r, a) ? r : a), undefined);
     if (!open && all.filter((r) => isOpen(r) && r.owner === owner).length >= MAX_OPEN_REVIEWS)
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'FULL: too many reviews are waiting; decide some first');
     const review = submitReview(
@@ -557,6 +588,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     });
   });
 
+  /** What the Approve button will do, so the page can say so before it is pressed and after. */
+  const approveFacts = async (review: Review): Promise<{ deploys: boolean; shipsWithBase: boolean }> => {
+    const stacked = await shipsWithBase(review);
+    const merged = review.decision?.kind === 'merged';
+    return { deploys: !merged && !stacked && (await deploysItself(review.repoRoot)), shipsWithBase: stacked };
+  };
+
   app.get<{ Params: { id: string } }>('/api/reviews/:id', async (req, reply) => {
     await settleDeploys();
     const read = reviewOf(req, reply);
@@ -571,8 +609,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       data: {
         review: toView(review),
         ...(sourceOf(review).kind === 'work' ? { work: workReviews.facts([review]).get(review.id) ?? null } : {}),
-        // What the Approve button will do, so the page can say so before it is pressed.
-        approve: { deploys: review.decision?.kind === 'merged' ? false : await deploysItself(review.repoRoot) },
+        approve: await approveFacts(review),
         live: await liveOf(review),
         sessionLive: !!session && canAccessOwned(getAuthUser(req), session.owner) && !session.paneExit,
       },
@@ -690,8 +727,8 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
 
   /**
    * Approve. Merges the branch into its base exactly as the reviewer was shown it (`headSha`), and for Codeman's own
-   * repository asks the supervisor to deploy the merge. Nothing here runs without this request, and nothing in it
-   * touches a working tree (`review-merge.ts`).
+   * repository asks the supervisor to deploy the merge, unless the base is not the default branch (`shipsWithBase`).
+   * Nothing here runs without this request, and nothing in it touches a working tree (`review-merge.ts`).
    */
   app.post<{ Params: { id: string } }>('/api/reviews/:id/approve', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;
@@ -708,8 +745,11 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (review.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
     const refusal = await gitRefusal(authorSession(review), review.repoRoot);
     if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
-    const deploys = await deploysItself(review.repoRoot);
-    if (deploys && !mayDeploy(req, reply)) return reply;
+    // Who may approve in Codeman's own repository is unchanged. A stacked review merges into its base and records
+    // `merged`; settleDeploys marks it deployed once the base ships.
+    const selfDeploys = await deploysItself(review.repoRoot);
+    if (selfDeploys && !mayDeploy(req, reply)) return reply;
+    const deploys = selfDeploys && !(await shipsWithBase(review));
     if (merging.has(review.repoRoot))
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'BUSY: another merge is running in this repository');
     merging.add(review.repoRoot);
@@ -790,7 +830,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   /**
    * Close without merging, for a duplicate or work nobody wants any more. Only a person closes, and only a review
    * nothing was decided on. The branch, the notes and a work item are left as they are; the review's live preview is
-   * destroyed, as on Approve. If the author submits again, `sameWork` finds no open review and a new one opens.
+   * destroyed, as on Approve. If the branch is submitted again, `sameWork` finds no open review and a new one opens.
    */
   app.post<{ Params: { id: string } }>('/api/reviews/:id/close', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;
@@ -837,6 +877,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!mergedSha)
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'NOTHING: this review has no failed deploy to try again');
     if (!mayDeploy(req, reply)) return reply;
+    if (await shipsWithBase(review))
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        `STACKED: this merge went into ${review.base}, not the default branch; it goes live when ${review.base} is merged and deployed`
+      );
     const decision = await askForDeploy(mergedSha);
     const changed = changeReview(review.id, (r) => decide(r, decision));
     if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
