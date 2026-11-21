@@ -93,8 +93,8 @@
     loadSeq: 0,
     /** `GET /api/reviews/:id/swarm` for the open review: `{ swarm, chip, live, refusal }`, null until read. */
     swarm: null,
-    /** A Run pr-swarm or Send again press is in flight. */
-    swarmBusy: false,
+    /** The review whose Run pr-swarm or Send again press is in flight, or null. */
+    swarmBusy: null,
   };
   const Swarm = window.CodemanReviewSwarm;
   /** A server error reads `CODE: what happened`; the page shows what happened. */
@@ -651,48 +651,54 @@
 
   // ---------------------------------------------------------------- pr-swarm
 
+  let swarmReads = 0;
+
   async function loadSwarm(seq) {
     const id = state.id;
     if (!id || !Swarm) return;
+    // Events can arrive close together; only the newest read may paint.
+    const read = ++swarmReads;
     let data;
     try {
       data = await api(`api/reviews/${encodeURIComponent(id)}/swarm`);
     } catch (_err) {
       data = null;
     }
-    if (seq !== state.loadSeq || id !== state.id) return;
+    if (read !== swarmReads || seq !== state.loadSeq || id !== state.id) return;
     state.swarm = data;
     renderSwarm();
   }
 
   async function runSwarm() {
-    if (!state.id || state.swarmBusy) return;
+    const id = state.id;
+    if (!id || state.swarmBusy === id) return;
     const seq = state.loadSeq;
-    state.swarmBusy = true;
+    state.swarmBusy = id;
     renderSwarm();
     try {
-      await api(`api/reviews/${encodeURIComponent(state.id)}/swarm`, { method: 'POST', body: {} });
+      await api(`api/reviews/${encodeURIComponent(id)}/swarm`, { method: 'POST', body: {} });
       toast('pr-swarm is queued for the branch tip.', 'ok');
     } catch (err) {
       toast(plainError(err.message), 'bad');
     }
-    state.swarmBusy = false;
+    if (state.swarmBusy === id) state.swarmBusy = null;
     await loadSwarm(seq);
     renderSwarm();
   }
 
   async function resendSwarm() {
-    if (!state.id || state.swarmBusy) return;
+    const id = state.id;
+    if (!id || state.swarmBusy === id) return;
     const seq = state.loadSeq;
-    state.swarmBusy = true;
+    state.swarmBusy = id;
     renderSwarm();
     try {
-      await api(`api/reviews/${encodeURIComponent(state.id)}/swarm/resend`, { method: 'POST', body: {} });
+      await api(`api/reviews/${encodeURIComponent(id)}/swarm/resend`, { method: 'POST', body: {} });
       toast('The findings were sent again.', 'ok');
     } catch (err) {
       toast(plainError(err.message), 'bad');
     }
-    state.swarmBusy = false;
+    if (state.swarmBusy === id) state.swarmBusy = null;
     await loadSwarm(seq);
     renderSwarm();
   }
@@ -721,7 +727,7 @@
       session.href = `session/${encodeURIComponent(active.sessionId)}`;
       session.setAttribute('aria-label', 'Open the pr-swarm run session');
     } else session.removeAttribute('href');
-    const button = Swarm.runButton(data, { busy: state.swarmBusy, decided: !!state.review.decision });
+    const button = Swarm.runButton(data, { busy: state.swarmBusy === state.id, decided: !!state.review.decision });
     const run = $('rvSwarmRun');
     run.textContent = button.text;
     run.disabled = button.disabled;
@@ -794,9 +800,9 @@
       const line = el('div', 'rv-swarm-send');
       line.append(el('span', send.failed ? 'rv-swarm-warn' : 'rv-dim', send.text));
       if (send.failed) {
-        const again = el('button', 'rv-btn rv-btn-sm', state.swarmBusy ? 'Sending…' : 'Send again');
+        const again = el('button', 'rv-btn rv-btn-sm', state.swarmBusy === state.id ? 'Sending…' : 'Send again');
         again.type = 'button';
-        again.disabled = state.swarmBusy || data.live === false;
+        again.disabled = state.swarmBusy === state.id || data.live === false;
         again.addEventListener('click', resendSwarm);
         line.append(again);
       }
