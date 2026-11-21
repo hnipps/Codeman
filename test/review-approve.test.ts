@@ -933,6 +933,59 @@ describe('approve routes', () => {
     }
   });
 
+  it('settles a stacked review whose folder was removed after the merge', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    repo.git('checkout', '-q', 'main');
+    const tree = join(temp('review-tree-'), 'w');
+    repo.git('worktree', 'add', '-q', tree, 'feat/x');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    const session = harness.ctx.sessions.get('test-session-1')!;
+    session.workingDir = tree;
+    const submit = (base: string) =>
+      harness.app.inject({
+        method: 'POST',
+        url: '/api/reviews',
+        headers: AGENT,
+        payload: { title: 'Work', walkthrough: 'Done', base },
+      });
+    const id = (await submit('stack')).json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    expect(done.review.state).toBe('merged');
+    repo.git('worktree', 'remove', '--force', tree);
+
+    // Another review names the main checkout, as reviews of the same repository do.
+    repo.git('checkout', '-q', '-b', 'feat/z', 'main');
+    repo.git('commit', '-q', '--allow-empty', '-m', 'other work');
+    session.workingDir = repo.dir;
+    expect((await submit('main')).statusCode).toBe(201);
+    repo.git('checkout', '-q', 'main');
+    repo.git('merge', '-q', '--no-ff', '-m', 'land the stack', 'stack');
+    overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
+
+    vi.useFakeTimers({ now: Date.now() + 40_000, toFake: ['Date'] });
+    try {
+      const review = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+      expect(review).toMatchObject({ state: 'deployed', decision: { mergedSha } });
+      expect(requestDeploy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('leaves the queue when a later deploy ships a merge whose own deploy failed', async () => {
     const overview: DeployOverviewConfigured = {
       configured: true,

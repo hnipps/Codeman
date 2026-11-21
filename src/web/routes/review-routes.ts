@@ -360,9 +360,12 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   /**
    * True when a review of a repository that deploys itself merges into a branch other than the repository's default:
    * a stacked review. Its merge is not a release, so Approve asks for no deploy, and it ships when its base lands.
+   * `main` and `master` always count as default, so a clone without `origin/HEAD` still deploys its master reviews.
    */
-  const shipsWithBase = async (review: Review): Promise<boolean> =>
-    (await deploysItself(review.repoRoot)) && (await defaultBase(runGit, review.repoRoot)) !== review.base;
+  const shipsWithBase = async (review: Review): Promise<boolean> => {
+    if (review.base === 'main' || review.base === 'master' || !(await deploysItself(review.repoRoot))) return false;
+    return (await defaultBase(runGit, review.repoRoot)) !== review.base;
+  };
 
   const live = options.live ?? createLiveControl();
 
@@ -445,14 +448,12 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const all = listReviews();
     const cli = deploy.cli();
     if (!cli) return;
-    // In a repository that deploys itself, Approve leaves a review `merged` only when it was stacked on another branch
-    // (`shipsWithBase`); it waits for the live release to contain its merge like a deploy that failed.
-    const waiting: Review[] = [];
-    for (const r of all) {
-      const kind = r.decision?.kind;
-      if (kind === 'deploying' || kind === 'deploy-failed' || (kind === 'merged' && (await deploysItself(r.repoRoot))))
-        waiting.push(r);
-    }
+    // A `merged` review waits too: a stacked one (`shipsWithBase`) is deployed once the live release contains its merge.
+    // Its folder is often removed by then, so it is not asked whether it deploys itself; `liveContains` asks every
+    // repository, and a merge of another repository is never an ancestor of the live commit.
+    const waiting = all.filter(
+      (r) => r.decision?.kind && ['deploying', 'deploy-failed', 'merged'].includes(r.decision.kind)
+    );
     if (!waiting.length) return;
     let overview: DeployOverviewConfigured;
     try {
@@ -712,8 +713,8 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
 
   /**
    * Approve. Merges the branch into its base exactly as the reviewer was shown it (`headSha`), and for Codeman's own
-   * repository asks the supervisor to deploy the merge, unless the base is not the default branch (`shipsWithBase`). Nothing here runs without this request, and nothing in it
-   * touches a working tree (`review-merge.ts`).
+   * repository asks the supervisor to deploy the merge, unless the base is not the default branch (`shipsWithBase`).
+   * Nothing here runs without this request, and nothing in it touches a working tree (`review-merge.ts`).
    */
   app.post<{ Params: { id: string } }>('/api/reviews/:id/approve', async (req, reply) => {
     if (!personMayWrite(req, reply)) return reply;
@@ -730,9 +731,11 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (review.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
     const refusal = await gitRefusal(authorSession(review), review.repoRoot);
     if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
-    // A stacked review merges into its base and records `merged`; settleDeploys marks it deployed once the base ships.
-    const deploys = !(await shipsWithBase(review)) && (await deploysItself(review.repoRoot));
-    if (deploys && !mayDeploy(req, reply)) return reply;
+    // Who may approve in Codeman's own repository is unchanged. A stacked review merges into its base and records
+    // `merged`; settleDeploys marks it deployed once the base ships.
+    const selfDeploys = await deploysItself(review.repoRoot);
+    if (selfDeploys && !mayDeploy(req, reply)) return reply;
+    const deploys = selfDeploys && !(await shipsWithBase(review));
     if (merging.has(review.repoRoot))
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'BUSY: another merge is running in this repository');
     merging.add(review.repoRoot);
