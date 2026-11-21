@@ -431,7 +431,7 @@ func undoID(opID string) string { return "undo:" + opID }
 // states before it (a topic it created becomes retracted), the memberships
 // it added are removed, and fresh copies of the ones it removed are added.
 // Undoing an undone op is a no-op. Undo refuses with ErrConflict, writing
-// nothing, when a later op has built on what id did.
+// nothing, when a later op that still stands has built on what id did.
 func (s *Store) Undo(id string) (OpResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -460,6 +460,10 @@ func (s *Store) Undo(id string) (OpResult, error) {
 	}
 	now := s.now()
 	t := &opTx{tx: tx, opID: undoID(id), now: now}
+	standing, err := t.standingRows(id)
+	if err != nil {
+		return OpResult{}, err
+	}
 
 	for i := len(p.Topics) - 1; i >= 0; i-- {
 		c := p.Topics[i]
@@ -473,7 +477,7 @@ func (s *Store) Undo(id string) (OpResult, error) {
 		before := topicState{Status: "retracted"}
 		if c.Before != nil {
 			before = *c.Before
-		} else if err := t.requireOnlyEdgesOf(c.ID, id); err != nil {
+		} else if err := t.requireOnlyEdgesOf(c.ID, id, standing); err != nil {
 			return OpResult{}, err
 		}
 		if err := t.writeStatus(c.ID, before); err != nil {
@@ -481,16 +485,10 @@ func (s *Store) Undo(id string) (OpResult, error) {
 		}
 	}
 
-	var gone int
-	if err := tx.QueryRow(`SELECT count(*) FROM memberships WHERE op_id = ? AND removed_at IS NOT NULL`, id).Scan(&gone); err != nil {
-		return OpResult{}, err
-	}
-	if gone > 0 {
-		return OpResult{}, conflict("a later op removed a membership op %s added", id)
-	}
-	if _, err := tx.Exec(`UPDATE memberships SET removed_at = ?, removed_by = ? WHERE op_id = ? AND removed_at IS NULL`,
-		now, undoID(id), id); err != nil {
-		return OpResult{}, err
+	for rowID := range standing {
+		if err := t.removeEdge(edgeRow{RowID: rowID}); err != nil {
+			return OpResult{}, err
+		}
 	}
 
 	removed, err := scanEdges(tx.Query(`SELECT id, message_id, topic_id, source, confidence FROM memberships

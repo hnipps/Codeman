@@ -91,16 +91,65 @@ func (t *opTx) writeStatus(id string, s topicState) error {
 
 // requireOnlyEdgesOf refuses to retract a topic that later ops filed
 // messages to, which would hide those messages on a topic nobody sees.
-func (t *opTx) requireOnlyEdgesOf(topicID, opID string) error {
-	var n int
-	if err := t.tx.QueryRow(`SELECT count(*) FROM memberships WHERE topic_id = ? AND removed_at IS NULL AND op_id != ?`,
-		topicID, opID).Scan(&n); err != nil {
+// standing is opID's live rows, from standingRows.
+func (t *opTx) requireOnlyEdgesOf(topicID, opID string, standing map[int64]bool) error {
+	edges, err := t.liveEdges(topicID)
+	if err != nil {
 		return err
 	}
-	if n > 0 {
-		return conflict("topic %s has messages filed after op %s", topicID, opID)
+	for _, e := range edges {
+		if !standing[e.RowID] {
+			return conflict("topic %s has messages filed after op %s", topicID, opID)
+		}
 	}
 	return nil
+}
+
+// standingRows returns the live row that stands for each row opID added.
+// That is the row itself, or, when a later op removed it and has since been
+// undone, the copy that undo restored, followed as far as the chain goes.
+// It refuses when a chain ends at a row removed by an op that still stands.
+// Each copy is a newer row than the one it replaces, so a chain ends.
+func (t *opTx) standingRows(opID string) (map[int64]bool, error) {
+	type link struct {
+		rowID          int64
+		message, topic string
+		removedBy      sql.NullString
+	}
+	rows, err := t.tx.Query(`SELECT id, message_id, topic_id, removed_by FROM memberships WHERE op_id = ?`, opID)
+	if err != nil {
+		return nil, err
+	}
+	var added []link
+	for rows.Next() {
+		var l link
+		if err := rows.Scan(&l.rowID, &l.message, &l.topic, &l.removedBy); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		added = append(added, l)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	standing := map[int64]bool{}
+	for _, l := range added {
+		for l.removedBy.Valid {
+			// Undoing the remover restored a copy of every row it removed,
+			// so no copy means the remover still stands.
+			err := t.tx.QueryRow(`SELECT id, removed_by FROM memberships WHERE op_id = ? AND message_id = ? AND topic_id = ?`,
+				undoID(l.removedBy.String), l.message, l.topic).Scan(&l.rowID, &l.removedBy)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, conflict("a later op removed a membership op %s added", opID)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+		standing[l.rowID] = true
+	}
+	return standing, nil
 }
 
 func (t *opTx) liveEdge(messageID, topicID string) (edgeRow, bool, error) {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -66,10 +67,29 @@ func diff(a, b map[liveKey]liveVal) map[liveKey]liveVal {
 }
 
 type appliedOp struct {
-	id             string
-	before, after  map[liveKey]liveVal
-	added, removed map[liveKey]liveVal
-	undone         bool
+	id                      string
+	kind                    Kind
+	before, after           map[liveKey]liveVal
+	added, removed          map[liveKey]liveVal
+	stateBefore, stateAfter string
+	undone                  bool
+}
+
+// unwound reports whether the store is exactly what op left once the ops
+// applied after it are accounted for: every one of them is undone, and the
+// visible state matches the state op left.
+func (m *model) unwound(op *appliedOp) bool {
+	if op.undone || !kinds[op.kind].undoable {
+		return false
+	}
+	later := false
+	for _, h := range m.history {
+		if later && !h.undone {
+			return false
+		}
+		later = later || h == op
+	}
+	return visibleState(m.t, m.s) == op.stateAfter
 }
 
 type model struct {
@@ -177,6 +197,28 @@ func (m *model) nextOp(rows map[int64]membership) Op {
 	}
 }
 
+// opBody renders op as the request body the sidecar receives, so the model's
+// ops pass the same parser as real ones.
+func opBody(op Op) []byte {
+	b, err := json.Marshal(op.Change)
+	if err != nil {
+		panic(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(b, &body); err != nil {
+		panic(err)
+	}
+	body["id"], body["kind"] = op.ID, op.Change.Kind()
+	if len(op.NewTopics) > 0 {
+		body["newTopics"] = op.NewTopics
+	}
+	out, err := json.Marshal(body)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
 func slicesSortByID(ms []membership) {
 	for i := 1; i < len(ms); i++ {
 		for j := i; j > 0 && ms[j].id < ms[j-1].id; j-- {
@@ -220,13 +262,14 @@ func (m *model) dump() string {
 	return dumpTables(m.t, m.s, []string{"memberships", "messages", "ops", "topics"})
 }
 
-func (m *model) run(steps int) (undos, exact int) {
+func (m *model) run(steps int) (undos, exact, unwound int) {
 	rows := readMemberships(m.t, m.s)
 	for step := 0; step < steps; step++ {
 		var before map[liveKey]liveVal
 		var tables string
 
 		var target *appliedOp
+		var mustUndo bool
 		var err error
 		if len(m.history) > 0 && m.rng.Intn(100) < 23 {
 			effective := []*appliedOp{}
@@ -241,23 +284,32 @@ func (m *model) run(steps int) (undos, exact int) {
 				target = m.history[m.rng.Intn(len(m.history))]
 			}
 			before, tables = live(rows), m.dump()
+			mustUndo = m.unwound(target)
 			_, err = m.s.Undo(target.id)
 		} else {
 			op := m.nextOp(rows)
 			rows = readMemberships(m.t, m.s)
 			before, tables = live(rows), m.dump()
-			_, err = m.s.Apply(op)
+			stateBefore := visibleState(m.t, m.s)
+			op, err = ParseOp(opBody(op))
+			if err == nil {
+				_, err = m.s.Apply(op)
+			}
 			if err == nil {
 				after := live(readMemberships(m.t, m.s))
-				m.history = append(m.history, &appliedOp{id: op.ID, before: before, after: after, added: diff(before, after), removed: diff(after, before)})
+				m.history = append(m.history, &appliedOp{id: op.ID, kind: op.Change.Kind(), before: before, after: after,
+					added: diff(before, after), removed: diff(after, before),
+					stateBefore: stateBefore, stateAfter: visibleState(m.t, m.s)})
 			}
 		}
 
 		after := readMemberships(m.t, m.s)
 		m.checkAppendOnly(step, rows, after)
 		switch {
+		case mustUndo && err != nil:
+			m.fail(step, "undo of %s refused although every later op is undone and the store is what %s left: %v", target.id, target.id, err)
 		case err != nil:
-			if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrNotFound) {
+			if !errors.Is(err, ErrConflict) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInvalid) {
 				m.fail(step, "unexpected error %v", err)
 			}
 			if got := m.dump(); got != tables {
@@ -283,12 +335,18 @@ func (m *model) run(steps int) (undos, exact int) {
 				}
 				exact++
 			}
+			if mustUndo {
+				if got := visibleState(m.t, m.s); got != target.stateBefore {
+					m.fail(step, "unwinding to %s and undoing it left\n%s\nwant\n%s", target.id, got, target.stateBefore)
+				}
+				unwound++
+			}
 			target.undone = true
 			undos++
 		}
 		rows = after
 	}
-	return undos, exact
+	return undos, exact, unwound
 }
 
 // Invariant I1: MembershipIsAppendOnly
@@ -304,17 +362,19 @@ func TestMembershipIsAppendOnly(t *testing.T) {
 		}
 		seeds = []int64{n}
 	}
-	var undos, exact int
+	var undos, exact, unwound int
 	for _, seed := range seeds {
 		m := &model{t: t, seed: seed, rng: rand.New(rand.NewSource(seed)), s: openAt(t, dbPath(t), migrations)}
-		u, e := m.run(150)
-		undos, exact = undos+u, exact+e
+		u, e, w := m.run(150)
+		undos, exact, unwound = undos+u, exact+e, unwound+w
 		m.s.Close()
 	}
-	if undos < 10*len(seeds) || exact < 5*len(seeds) {
-		t.Fatalf("only %d undos succeeded (%d from the state the op left) across %d seeds", undos, exact, len(seeds))
+	if undos < 10*len(seeds) || exact < 5*len(seeds) || unwound < 3*len(seeds) {
+		t.Fatalf("only %d undos succeeded (%d from the state the op left, %d after unwinding later ops) across %d seeds",
+			undos, exact, unwound, len(seeds))
 	}
-	t.Logf("%d successful undos, %d from the state the op left, across %d seeds", undos, exact, len(seeds))
+	t.Logf("%d successful undos, %d from the state the op left, %d after unwinding later ops, across %d seeds",
+		undos, exact, unwound, len(seeds))
 }
 
 // Invariant I1: MembershipIsAppendOnly

@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
 	"strconv"
 	"syscall"
 
@@ -35,6 +37,13 @@ func open(path string, now func() int64, ms []migration) (*Store, error) {
 	// SQLite creates -wal and -shm lazily, after Open returns, so the umask
 	// cannot be restored afterwards: it stays 077 for the process.
 	syscall.Umask(0o077)
+	// The umask covers files created from now on; one an earlier run left
+	// readable is tightened here.
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(f, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+	}
 
 	q := url.Values{}
 	for _, p := range []string{
