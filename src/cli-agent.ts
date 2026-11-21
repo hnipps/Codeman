@@ -1446,6 +1446,64 @@ export async function agentReviewSubmit(
   return EXIT.ok;
 }
 
+/**
+ * `agent swarm report` — a pr-swarm run's session hands its result back to the review it runs for
+ * (`src/reviews/swarm-runner.ts`). Only that run's own session may; the server checks it from the session header.
+ */
+export const SWARM_REPORT_MAX_BYTES = 400 * 1024;
+const SWARM_RUN_ID = /^[a-z0-9]{8,40}$/;
+
+/**
+ * The result in what the session saved: the whole text as JSON, or else the last fenced JSON block in it, since a
+ * skill prints its result as one. It must be one JSON object.
+ */
+export function parseSwarmReportText(
+  text: string
+): { ok: true; report: Record<string, unknown> } | { ok: false; error: string } {
+  const candidates = [text.trim()];
+  const fences = [...text.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/g)];
+  if (fences.length) candidates.push(fences[fences.length - 1][1].trim());
+  for (const candidate of candidates) {
+    let value: unknown;
+    try {
+      value = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    if (typeof value === 'object' && value !== null && !Array.isArray(value))
+      return { ok: true, report: value as Record<string, unknown> };
+    return { ok: false, error: 'the result must be one JSON object' };
+  }
+  return { ok: false, error: 'no JSON result found: save the JSON the skill printed, alone or in a ```json block' };
+}
+
+export async function agentSwarmReport(deps: AgentDeps, options: { runId: string; text: string }): Promise<number> {
+  if (!SWARM_RUN_ID.test(options.runId))
+    return fail(deps, `refusing: ${JSON.stringify(options.runId)} is not a pr-swarm run id`, EXIT.refused);
+  if (Buffer.byteLength(options.text, 'utf8') > SWARM_REPORT_MAX_BYTES)
+    return fail(deps, `refusing: the result is over ${SWARM_REPORT_MAX_BYTES / 1024} KB`, EXIT.refused);
+  const parsed = parseSwarmReportText(options.text);
+  if (!parsed.ok) return fail(deps, `refusing: ${parsed.error}`, EXIT.refused);
+  const res = await deps.request(deps.ctx, {
+    method: 'POST',
+    path: `/api/v1/reviews/swarm-runs/${options.runId}/report`,
+    body: { report: parsed.report },
+    timeoutMs: 60_000,
+  });
+  if (!res.json?.success) return fail(deps, describeFailure(res));
+  const data = res.json.data as { state: string; round?: number; tip?: string };
+  if (deps.json) emitJson(deps, data);
+  else
+    deps.io.out(
+      palette.ok(
+        data.state === 'running'
+          ? `${GLYPH.ok} reported; round ${data.round} follows for ${data.tip}, and its instructions arrive as your next prompt. End your turn now.`
+          : `${GLYPH.ok} reported; the run is ${data.state}. End your turn now.`
+      )
+    );
+  return EXIT.ok;
+}
+
 /** `agent preview ls` — this session's previews, plus servers Codeman could not stop. */
 export async function agentPreviewLs(deps: AgentDeps): Promise<number> {
   const self = await resolveSessionId(deps, deps.ctx.selfId);
@@ -1862,6 +1920,52 @@ export function registerAgentCommands(program: Command): Command {
         Boolean(options.json),
         (deps) => agentReviewSubmit(deps, { title: options.title, walkthrough, base: options.base, captures }),
         'A review is submitted by the session in CODEMAN_SESSION_ID, so run this from inside that session.'
+      );
+    });
+
+  const swarmCmd = agent
+    .command('swarm')
+    .description('For a pr-swarm run on a review: hand its result back to Codeman');
+  swarmCmd
+    .command('report <runId>')
+    .description(
+      "Report a pr-swarm run's result. Only the run's own session may. The file holds the JSON result, alone or in a ```json block"
+    )
+    .requiredOption('--file <path>', 'The saved result (- for stdin)')
+    .option('--json', 'Machine-readable output')
+    .action(async (runId: string, options: { file: string; json?: boolean }) => {
+      let text: string;
+      try {
+        if (options.file === '-') {
+          text = await new Promise<string>((done, bad) => {
+            let read = '';
+            process.stdin.setEncoding('utf8');
+            process.stdin.on('data', (chunk) => (read += chunk));
+            process.stdin.on('end', () => done(read));
+            process.stdin.on('error', bad);
+          });
+        } else {
+          const info = await stat(options.file);
+          if (!info.isFile()) throw new Error('not a regular file');
+          // Read one byte past the cap, so an oversized file is refused by the verb rather than loaded whole.
+          const handle = await open(options.file, 'r');
+          try {
+            const buffer = Buffer.alloc(Math.min(info.size, SWARM_REPORT_MAX_BYTES + 1));
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+            text = buffer.subarray(0, bytesRead).toString('utf8');
+          } finally {
+            await handle.close();
+          }
+        }
+      } catch (err) {
+        console.error(palette.err(`${GLYPH.fail} cannot read ${options.file}: ${getErrorMessage(err)}`));
+        process.exitCode = EXIT.error;
+        return;
+      }
+      return run(
+        Boolean(options.json),
+        (deps) => agentSwarmReport(deps, { runId, text }),
+        'A run is reported by its own session, the one in CODEMAN_SESSION_ID, so run this from inside it.'
       );
     });
 

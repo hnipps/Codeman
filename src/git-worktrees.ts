@@ -772,13 +772,40 @@ export async function createCaseWorktree(
   req: CreateWorktreeRequest,
   opts: WorktreeOptions = {}
 ): Promise<{ ok: true; worktree: CreatedWorktree } | WorktreeFailure> {
-  const git = opts.git ?? runWorktreeGit;
   const nameError = worktreeNameError(req.name);
   if (nameError) return fail('INVALID_INPUT', nameError);
   const branch = req.branch || defaultWorktreeBranch(req.name);
   const branchError = worktreeBranchError(branch);
   if (branchError) return fail('INVALID_INPUT', branchError);
-  const base = req.base || 'HEAD';
+  const made = await addManagedWorktree(repo, req.name, branch, req.base || 'HEAD', opts);
+  return made.ok ? { ok: true, worktree: { ...made.worktree, branch } } : made;
+}
+
+/**
+ * A managed worktree checked out at `commit` with no branch (`git worktree add --detach`), for work that must look at
+ * one exact commit and must never move a branch by committing in place (a pr-swarm run on a review).
+ */
+export async function createDetachedWorktree(
+  repo: CaseRepository,
+  req: { name: string; commit: string },
+  opts: WorktreeOptions = {}
+): Promise<{ ok: true; worktree: Omit<CreatedWorktree, 'branch'> } | WorktreeFailure> {
+  if (!/^[0-9a-f]{40,64}$/.test(req.commit))
+    return fail('INVALID_INPUT', 'A detached worktree needs a full commit id.');
+  return addManagedWorktree(repo, req.name, null, req.commit, opts);
+}
+
+/** The create both forms share. `branch` null checks out `base` detached. */
+async function addManagedWorktree(
+  repo: CaseRepository,
+  name: string,
+  branch: string | null,
+  base: string,
+  opts: WorktreeOptions
+): Promise<{ ok: true; worktree: Omit<CreatedWorktree, 'branch'> } | WorktreeFailure> {
+  const git = opts.git ?? runWorktreeGit;
+  const nameError = worktreeNameError(name);
+  if (nameError) return fail('INVALID_INPUT', nameError);
   const baseError = worktreeBaseError(base);
   if (baseError) return fail('INVALID_INPUT', baseError);
 
@@ -786,27 +813,32 @@ export async function createCaseWorktree(
     // A name already taken says so in those words, before the branch check would report the
     // derived branch instead. Rechecked after the folders are prepared, below.
     try {
-      if ((await lstatState(managedWorktreePath(repo.repoRoot, req.name))) !== 'absent') {
-        return fail('ALREADY_EXISTS', `A worktree named "${req.name}" already exists in this case.`);
+      if ((await lstatState(managedWorktreePath(repo.repoRoot, name))) !== 'absent') {
+        return fail('ALREADY_EXISTS', `A worktree named "${name}" already exists in this case.`);
       }
     } catch {
       /* unreadable: the check after the folders are prepared reports it */
     }
-    // git's own word on the branch name. The output must be the input: `--branch` expands
-    // shorthands, and anything it rewrote is not the name the user typed.
-    const refFormat = await git(repo.repoRoot, [...READ_ONLY_GIT_OPTIONS, 'check-ref-format', '--branch', branch], {
-      timeoutMs: WORKTREE_READ_TIMEOUT_MS,
-    });
-    if (refFormat.code !== 0 || refFormat.stdout.trim() !== branch) {
-      return fail('INVALID_INPUT', `"${branch}" is not a valid branch name.`, gitRefusalText(refFormat.stderr));
-    }
-    const existingBranch = await git(
-      repo.repoRoot,
-      [...READ_ONLY_GIT_OPTIONS, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`],
-      { timeoutMs: WORKTREE_READ_TIMEOUT_MS }
-    );
-    if (existingBranch.code === 0) {
-      return fail('ALREADY_EXISTS', `A branch named "${branch}" already exists. Pick another worktree name or branch.`);
+    if (branch !== null) {
+      // git's own word on the branch name. The output must be the input: `--branch` expands
+      // shorthands, and anything it rewrote is not the name the user typed.
+      const refFormat = await git(repo.repoRoot, [...READ_ONLY_GIT_OPTIONS, 'check-ref-format', '--branch', branch], {
+        timeoutMs: WORKTREE_READ_TIMEOUT_MS,
+      });
+      if (refFormat.code !== 0 || refFormat.stdout.trim() !== branch) {
+        return fail('INVALID_INPUT', `"${branch}" is not a valid branch name.`, gitRefusalText(refFormat.stderr));
+      }
+      const existingBranch = await git(
+        repo.repoRoot,
+        [...READ_ONLY_GIT_OPTIONS, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`],
+        { timeoutMs: WORKTREE_READ_TIMEOUT_MS }
+      );
+      if (existingBranch.code === 0) {
+        return fail(
+          'ALREADY_EXISTS',
+          `A branch named "${branch}" already exists. Pick another worktree name or branch.`
+        );
+      }
     }
     const resolved = await git(
       repo.repoRoot,
@@ -822,7 +854,7 @@ export async function createCaseWorktree(
 
     const prepared = await prepareWorktreesDir(repo.repoRoot);
     if (!prepared.ok) return prepared;
-    const target = join(prepared.dir, req.name);
+    const target = join(prepared.dir, name);
     try {
       if ((await lstatState(target)) !== 'absent') {
         return fail('ALREADY_EXISTS', `${target} already exists. Pick another worktree name.`);
@@ -839,7 +871,7 @@ export async function createCaseWorktree(
     const excluded = await ensureExcluded(
       repo,
       [
-        { line: WORKTREES_EXCLUDE_LINE, probe: `${WORKTREES_DIR_SEGMENTS.join('/')}/${req.name}` },
+        { line: WORKTREES_EXCLUDE_LINE, probe: `${WORKTREES_DIR_SEGMENTS.join('/')}/${name}` },
         { line: SETTINGS_LOCAL_EXCLUDE_LINE, probe: '.claude/settings.local.json' },
         ...skillProbes,
       ],
@@ -849,7 +881,8 @@ export async function createCaseWorktree(
 
     // The resolved commit, not the ref text, after `--`: nothing here can be read as an option,
     // and `--no-track` keeps a worktree started from `origin/main` from tracking (and pulling) main.
-    const add = await git(repo.repoRoot, ['worktree', 'add', '--no-track', '-b', branch, '--', target, head], {
+    const checkout = branch === null ? ['--detach'] : ['--no-track', '-b', branch];
+    const add = await git(repo.repoRoot, ['worktree', 'add', ...checkout, '--', target, head], {
       timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
     });
     if (add.code !== 0 || add.spawnError || add.timedOut) {
@@ -860,9 +893,8 @@ export async function createCaseWorktree(
     return {
       ok: true,
       worktree: {
-        name: req.name,
+        name: name,
         path: target,
-        branch,
         base,
         head,
         excludeAdded: excluded.added,

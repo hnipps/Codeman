@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — The pr-swarm runner blanks gh by a server-only env channel (W-111, ticket t3)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-runner.ts`, `src/reviews/swarm-git.ts`, `src/git-worktrees.ts`, `src/session.ts`, `src/tmux-manager.ts`, `src/web/routes/review-routes.ts`, `src/cli-agent.ts`, `CLAUDE.md`, `docs/architecture-invariants.md`, `docs/api-reference.md`
+**Why:** I3 asks for a run session with blank `GH_TOKEN` and `GITHUB_TOKEN`, and no existing path could set that.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work item W-111
+
+The per-session env allowlist refuses both keys, and tmux skipped an empty value, so a run session would have inherited the server's own token. `Session.setInternalEnv()` is a second channel the server sets between create and start: never from a request, never persisted, and the one path that sets an empty tmux value. On this host gh is signed in through its own config file, so blank tokens alone still let it write; the run also points `GH_CONFIG_DIR` at an empty folder. Three choices the spec left open: a local-only branch that a worktree has checked out gets a review-only run (git would refuse every fix push, and the run would never settle); the runner recovers lazily from its minute tick once the colour is live and restored, instead of hooks in boot, promote and reinstate; and a report is applied with `r3Required: false` until the R-3 ticket, so nothing auto-approves in t3.
+
 ## 2026-11-20 — The Chat Graph main chat lives in a command palette
 
 **Type:** intent-refinement
