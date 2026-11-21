@@ -535,7 +535,9 @@ describe('swarm runner', () => {
       await f.runner.trigger(a.id, 'submit', sha(1));
       await settle();
       expect(f.sent[0].text).not.toContain('--spec');
-      await f.runner.report(runIdOf(a.id), f.started[0].sessionId, approve());
+      // A pass the session claims anyway is not believed: no step was given the spec.
+      const r3 = { verdict: 'pass', findings: [], deviations: [], tip: sha(1) };
+      await f.runner.report(runIdOf(a.id), f.started[0].sessionId, approve(sha(1), { r3 }));
       const read = readSwarm(a.id);
       expect(read.ok && read.file.runs[0]).toMatchObject({
         r3: { verdict: 'unavailable', reason: 'The spec intent/x.md could not be read at 000000000000' },
@@ -570,22 +572,33 @@ describe('swarm runner', () => {
     });
 
     it('recovery reads the plan again for the run it adopts', async () => {
-      f.r3 = { required: true, spec: SPEC };
-      const a = addReview(f);
-      await f.runner.trigger(a.id, 'submit', sha(1));
-      await settle();
-      const sessionId = f.started[0].sessionId;
-      const g = fake();
-      g.r3 = { required: true, spec: SPEC };
-      g.activity.set(sessionId, g.now);
-      g.deps.reviews = () => [...f.reviews.values()];
-      g.deps.review = (id) => f.reviews.get(id) ?? null;
-      g.deps.tip = async (review) => f.tips.get(review.id) ?? null;
-      const adopted = createSwarmRunner(g.deps);
-      await adopted.recover();
-      await adopted.report(runIdOf(a.id), sessionId, approve());
-      const read = readSwarm(a.id);
-      expect(read.ok && read.file.runs[0]).toMatchObject({ r3: { verdict: 'unavailable' } });
+      const adopt = async (plan: R3Plan, extra: object = {}) => {
+        const first = fake();
+        first.r3 = { required: true, spec: SPEC };
+        await first.runner.recover();
+        const a = addReview(first);
+        await first.runner.trigger(a.id, 'submit', sha(1));
+        await settle();
+        const sessionId = first.started[0].sessionId;
+        const g = fake();
+        g.r3 = plan;
+        g.activity.set(sessionId, g.now);
+        g.deps.reviews = () => [...first.reviews.values()];
+        g.deps.review = (id) => first.reviews.get(id) ?? null;
+        g.deps.tip = async (review) => first.tips.get(review.id) ?? null;
+        const adopted = createSwarmRunner(g.deps);
+        await adopted.recover();
+        expect(await adopted.report(runIdOf(a.id), sessionId, approve(sha(1), extra))).toMatchObject({ ok: true });
+        const read = readSwarm(a.id);
+        return read.ok ? read.file.runs[0] : undefined;
+      };
+      expect(await adopt({ required: false })).not.toHaveProperty('r3');
+      expect(await adopt({ required: true, spec: SPEC })).toMatchObject({
+        r3: { verdict: 'unavailable', reason: 'The run reported no R-3 result' },
+      });
+      // The brief may have carried the flags, so a result the adopted run reports stands.
+      const r3 = { verdict: 'changes', findings: ['Outcome 2 is missing.'], deviations: [], tip: sha(1) };
+      expect(await adopt({ required: true, spec: SPEC }, { r3 })).toMatchObject({ r3 });
     });
 
     it('planR3: a spec review never needs R-3, and a review-only run of attributed work cannot give it', () => {

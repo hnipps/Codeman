@@ -24,6 +24,7 @@ import {
   type SwarmAction,
   type SwarmEvent,
   type SwarmFile,
+  type SwarmReport,
   type SwarmRun,
   type SwarmTrigger,
   type TipChange,
@@ -65,8 +66,17 @@ export type BriefInput = {
   r3?: { spec: string; potetoSkill: string };
 };
 
-/** Whether a run's report must carry an R-3 result (I9), and why it cannot when the run was not given what R-3 needs. */
-export type R3Need = { required: false } | { required: true; unavailable?: string };
+/**
+ * Whether a run's report must carry an R-3 result (I9). `unavailable` says why the run was not given what R-3 needs;
+ * then an R-3 result the session reports anyway is not believed, since no step was given the spec to check against.
+ * `unknown` is a run adopted after a restart, whose brief may or may not have carried the flags: its reported result
+ * stands, and a missing one reads as `unavailable` with that reason.
+ */
+export type R3Need =
+  | { required: false }
+  | { required: true }
+  | { required: true; unavailable: string }
+  | { required: true; unknown: string };
 
 /**
  * What a run does about R-3, from the attribution read at start and the run's plan. R-3 runs only inside
@@ -83,6 +93,13 @@ export function planR3(plan: R3Plan, reviewOnly: ReviewOnlyReason | null): { nee
     };
   if (!plan.spec) return { need: { required: true, unavailable: plan.missing } };
   return { need: { required: true }, spec: plan.spec };
+}
+
+/** The report as the model may read it: an R-3 result from a run that was not given R-3's inputs is dropped. */
+function given(report: SwarmReport, need: R3Need): SwarmReport {
+  if (!('unavailable' in need) || !report.r3) return report;
+  const { r3: _, ...rest } = report;
+  return rest;
 }
 
 const reportFile = (runId: string): string => `/tmp/pr-swarm-${runId}.json`;
@@ -467,7 +484,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
           runId: run.id,
           sessionId: run.sessionId,
           heardAt: deps.now(),
-          r3: { required: true, unavailable: 'Whether this work answers to a spec was not read again after a restart' },
+          r3: { required: true, unknown: 'Whether this work answers to a spec was not read again after a restart' },
         };
         slot = adopted;
         // The plan is not stored, so it is read again, after the slot is taken so nothing else starts meanwhile.
@@ -477,9 +494,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
           const plan = await readR3Plan(review, run.roundTip);
           adopted.r3 = !plan.required
             ? { required: false }
-            : plan.spec
-              ? { required: true }
-              : { required: true, unavailable: plan.missing };
+            : { required: true, unknown: plan.spec ? 'The run reported no R-3 result' : plan.missing };
         }
         continue;
       }
@@ -556,10 +571,11 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       const done = apply(run.reviewId, {
         type: 'report',
         runId,
-        report: parsed.report,
+        report: given(parsed.report, run.r3),
         branchTip: tip.sha,
         r3Required: run.r3.required,
-        ...(run.r3.required && run.r3.unavailable ? { r3Unavailable: run.r3.unavailable } : {}),
+        ...('unavailable' in run.r3 ? { r3Unavailable: run.r3.unavailable } : {}),
+        ...('unknown' in run.r3 ? { r3Unavailable: run.r3.unknown } : {}),
         newRunId: deps.newRunId(),
       });
       if (!done.ok) return { ok: false, code: 'FILE', message: done.message };

@@ -211,6 +211,18 @@ describe('swarm git', () => {
       git(repo, 'checkout', '-q', 'master');
       const code = merged(repo, workReview(repo, 'build/w108-code', 108, 'codecodecode01'));
       expect(await readR3Plan(work, workTip, lookup([code]))).toEqual({ required: false });
+
+      // Approve found it already merged and made no commit: its mergedSha is the base tip, not a merge of its head.
+      git(repo, 'checkout', '-q', '-b', 'spec/ff');
+      commit(repo, 'src/before.ts', 'export const b = 1;\n');
+      commit(repo, 'intent/2026-11-21-ff.md', '# FF\n');
+      git(repo, 'checkout', '-q', 'master');
+      git(repo, 'merge', '-q', '--ff-only', 'spec/ff');
+      const ff: Review = {
+        ...workReview(repo, 'spec/ff', 108, 'ffffffffffff01'),
+        decision: { kind: 'merged', at: 1, mergedSha: git(repo, 'rev-parse', 'HEAD') },
+      };
+      expect(await readR3Plan(work, workTip, lookup([ff]))).toEqual({ required: false });
     });
 
     it('does not require it when the work review is itself a spec review', async () => {

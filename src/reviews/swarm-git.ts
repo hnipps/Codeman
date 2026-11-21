@@ -180,11 +180,16 @@ async function readBlob(git: GitRunner, repoRoot: string, commit: string, path: 
 /**
  * The spec files a merged review changed, when it was a spec review. Its changes are read from where its head left
  * the base line the merge was made on (the merge commit's first parent) to that head, which is what was reviewed.
+ * Only a merge commit whose second parent is that head counts: a review Approve found already merged made no commit,
+ * and its `mergedSha` says nothing about what the review changed.
  */
 async function mergedSpecFiles(git: GitRunner, review: Review): Promise<string[]> {
   const merged = review.decision?.mergedSha;
   if (!merged || !SHA.test(merged)) return [];
-  const onto = line((await tryGit(git, review.repoRoot, ['rev-parse', '--verify', '--quiet', `${merged}^1`])) ?? '');
+  const parent = async (n: number) =>
+    line((await tryGit(git, review.repoRoot, ['rev-parse', '--verify', '--quiet', `${merged}^${n}`])) ?? '');
+  if ((await parent(2)) !== review.headSha) return [];
+  const onto = await parent(1);
   if (!SHA.test(onto)) return [];
   const from = line((await tryGit(git, review.repoRoot, ['merge-base', onto, review.headSha])) ?? '');
   if (!SHA.test(from) || from === review.headSha) return [];
