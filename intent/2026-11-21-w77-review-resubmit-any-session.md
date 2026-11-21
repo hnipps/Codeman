@@ -16,7 +16,7 @@ The owner, who sees one review per branch. Agents that submit through `POST /api
 
 ## Constraints
 
-Another owner's review is never matched. A work review is never taken over. A decided or closed review is never reopened by a submit.
+Another owner's review is never matched. A work review is never taken over. A decided or closed review is never reopened by a submit, except a review whose deploy failed, which stays open so the agent's next submit answers it.
 
 ## Open questions
 

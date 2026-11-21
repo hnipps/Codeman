@@ -18,7 +18,7 @@ The cap stays 50 stored records, because the previous release's schema refuses a
 **Why:** A second worker on `spec/chat-graph` queued the branch twice on 2026-11-19, and a review's `sessionId` was hand-edited for spec-w70 after its author's pane ended.
 **Links:** [intent/2026-11-21-w77-review-resubmit-any-session.md](../intent/2026-11-21-w77-review-resubmit-any-session.md), Work item W-77
 
-`sameWork` now matches an open session review on owner, repository and branch, and the submitter becomes the author. The newest submitter is taken to be the session doing the work, so Request changes goes to it. A work review is left out of the match: its author comes from the item, and taking it over would turn it into a session review. Two open reviews of one branch can still exist when two owners submit it, which is what `closeSuperseded` and Reopen's twin check still cover.
+`sameWork` now matches an open session review on owner, repository and branch, and the submitter becomes the author. The newest submitter is taken to be the session doing the work, so Request changes goes to it. A work review is left out of the match: its author comes from the item, and taking it over would turn it into a session review. Two open reviews of one branch can still exist when two owners submit it, which is what `closeSuperseded` and Reopen's twin check still cover. Same-owner duplicates written before this change stay open: a submit updates the caller's own one, else the most recently updated one, and leaves the other.
 
 ## 2026-11-21 — pr-swarm runs start on submit and on a moved tip (W-112, ticket t4)
 
