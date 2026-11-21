@@ -15,7 +15,8 @@
  *   POST   /api/reviews/:id/request-changes      a PERSON sends every unsent note as ONE prompt
  *   POST   /api/reviews/:id/new-session          a PERSON hands the review, with its notes, to a NEW session once the
  *                                                author session has ended
- *   GET    /api/reviews/:id/swarm                the review's pr-swarm runs, and the run this server is driving
+ *   GET    /api/reviews/:id/swarm                the review's pr-swarm runs, whether this server drives them, and why
+ *                                                the tip watcher could not read the branch
  *   POST   /api/reviews/:id/swarm                a PERSON starts a pr-swarm run at the branch tip (409 RUNNING: one
  *                                                is queued or running, and the answer carries it)
  *   POST   /api/reviews/:id/swarm/resend         a PERSON sends a finished run's findings again (not built yet: 501)
@@ -38,6 +39,10 @@
  * branch and base, the changed files, the open canvas Work items linked to the old session, and the notes. Only once
  * that paste reached the pane does the review move to the new session (its resubmissions then update the same review)
  * and the work items link it; a paste that never landed deletes the session again and changes nothing.
+ *
+ * pr-swarm runs start by themselves: a submit or resubmit triggers one after its answer has gone out, and the tip
+ * watcher (`swarm-watcher.ts`) looks at every open review's branch on the runner's minute tick. Both reach the one
+ * runner this function makes (or is given), so the one-run-at-a-time slot holds.
  *
  * The prompt is delivered the way a canvas conversation is (`deliver()`): a paste that never reached the pane
  * stamps nothing; one that was written is stamped even when Enter was not confirmed, since sending again would
@@ -133,11 +138,20 @@ import {
   writeReview,
 } from '../../reviews/review-store.js';
 import { closeSessionWork, handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
-import { prepareRun, readRunTip, removeRunWorktree } from '../../reviews/swarm-git.js';
+import {
+  prepareRun,
+  readRunTip,
+  removeRunWorktree,
+  WATCH_READ_TIMEOUT_MS,
+  watchTipReader,
+} from '../../reviews/swarm-git.js';
 import { createSwarmRunner, SWARM_TICK_MS, type SwarmRunner } from '../../reviews/swarm-runner.js';
+import { readSwarm } from '../../reviews/swarm-store.js';
+import { createSwarmWatcher } from '../../reviews/swarm-watcher.js';
 import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
+import { CleanupManager } from '../../utils/index.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
 import { readWebviews } from '../../webview-store.js';
 import { approvalInbox } from '../approval-inbox.js';
@@ -498,6 +512,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       changesCache.delete(work.review.id);
       announce(work.review);
       syncLive(work.review, work.goneSha, true);
+      swarmOnSubmit(work.review);
       return reply.code(200).send({
         success: true,
         data: {
@@ -535,6 +550,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     changesCache.delete(review.id);
     announce(review);
     syncLive(review, open?.headSha, true);
+    swarmOnSubmit(review);
     return reply.code(open ? 200 : 201).send({
       success: true,
       data: { id: review.id, revision: review.revision, state: toView(review).state, url: `reviews/${review.id}` },
@@ -1194,6 +1210,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   const swarmHeaders = options.swarmHeaders ?? (async () => null);
   const announceSwarm = (review: Review) =>
     ctx.broadcast(SseEvent.ReviewSwarm, { id: review.id, owner: review.owner ?? '@single' });
+  const swarmRefusal = (review: Review) => gitRefusal(authorSession(review), review.repoRoot);
   const swarmDocker = async (): Promise<string[] | null> => {
     try {
       return await dockerWorkspaces();
@@ -1213,7 +1230,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         const read = readReview(id);
         return read.ok ? read.review : null;
       },
-      refusal: (review) => gitRefusal(authorSession(review), review.repoRoot),
+      refusal: swarmRefusal,
       tip: (review) => readRunTip(review),
       prepare: async (review, runId, tip) => {
         const roots = await swarmDocker();
@@ -1263,11 +1280,52 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       skillsDir: join(homedir(), '.claude', 'plugins', 'marketplaces', 'nicholls', 'pr-swarm', 'skills'),
       ghConfigDir: join(getDataDir(), 'reviews', 'swarm-gh'),
     });
+  const watcher = createSwarmWatcher({
+    mayAct: () => deployRole.allows('persist'),
+    reviews: listReviews,
+    runs: (id) => {
+      const read = readSwarm(id);
+      return read.ok ? read.file : null;
+    },
+    refusal: swarmRefusal,
+    reader: watchTipReader(),
+    feed: (id, tip, change) => swarm.tipMoved(id, tip, change),
+    log: (text) => console.log(text),
+    readTimeoutMs: WATCH_READ_TIMEOUT_MS,
+  });
   if (!options.swarm) {
-    const timer = setInterval(() => void swarm.tick().catch(() => undefined), SWARM_TICK_MS);
-    timer.unref?.();
-    app.addHook('onClose', async () => clearInterval(timer));
+    // One minute tick for both: the runner's queue and the tip watcher. Neither waits for the other.
+    const cleanup = new CleanupManager();
+    cleanup.setInterval(
+      () => {
+        void swarm.tick().catch(() => undefined);
+        void watcher.pass().catch(() => undefined);
+      },
+      SWARM_TICK_MS,
+      { description: 'pr-swarm runner and tip watcher' }
+    );
+    cleanup.registerCleanup('watcher', () => watcher.stop(), 'pr-swarm tip watcher');
+    app.addHook('onClose', async () => cleanup.dispose());
   }
+
+  /**
+   * A submit or resubmit asks for a run of the tip it describes, once its answer has gone out. A refusal or a failure
+   * is logged and never reaches the submitter; the runner refuses a colour that is not live, as the submit did.
+   */
+  const swarmOnSubmit = (review: Review): void => {
+    setImmediate(() => {
+      swarm.trigger(review.id, 'submit', review.headSha).then(
+        (result) => {
+          if (!result.ok && result.code !== 'NOT_LIVE')
+            console.warn(`[pr-swarm] review ${review.id}: no run on submit: ${result.code}: ${result.message}`);
+        },
+        (err: unknown) =>
+          console.warn(
+            `[pr-swarm] review ${review.id}: no run on submit: ${err instanceof Error ? err.message : String(err)}`
+          )
+      );
+    });
+  };
 
   app.get('/api/reviews/:id/swarm', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
     const review = reviewOf(req, reply);
@@ -1280,7 +1338,10 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         ApiErrorCode.CONFLICT,
         read.reason === 'newer' ? 'The run file was saved by a newer release' : 'The run file could not be read'
       );
-    return { success: true, data: { swarm: read.file, live: deployRole.allows('persist') } };
+    return {
+      success: true,
+      data: { swarm: read.file, live: deployRole.allows('persist'), refusal: watcher.refusalOf(review.id) },
+    };
   });
 
   app.post('/api/reviews/:id/swarm', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
