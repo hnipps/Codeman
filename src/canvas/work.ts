@@ -883,7 +883,7 @@ export function waitsOnSessionReview(item: WorkItem, sessionId: string): boolean
   if (newest?.author.kind !== 'agent' || newest.author.sessionId !== sessionId) return false;
   if (item.status === 'in-progress') return item.assignee?.kind === 'session' && item.assignee.sessionId === sessionId;
   if (item.status === 'human-required' && item.needs?.sessionId === sessionId) return true;
-  return newest.text.startsWith(`${RELEASED}session ${sessionId} `);
+  return newest.text.startsWith(sessionReleasePrefix(sessionId));
 }
 
 /**
@@ -997,6 +997,8 @@ export type OwnerFacts = {
 /** Releases in a row after which the next release asks the person, and a claim is refused (I4, F2). */
 export const MAX_RELEASES_IN_A_ROW = 2;
 const RELEASED = 'Released: ';
+/** How an I2 release of an interactive session's item begins: `waitsOnSessionReview` reads (c) off this line. */
+const sessionReleasePrefix = (sessionId: string): string => `${RELEASED}session ${sessionId} `;
 
 /** The items created from `item` that are not closed: they own it while nobody is assigned (I7). */
 export const openTickets = (file: WorkFile, item: WorkItem): WorkItem[] =>
@@ -1115,7 +1117,7 @@ export function releaseFor(item: WorkItem, file: WorkFile, owner: Owner): Releas
     owner.kind === 'run'
       ? `${RELEASED}run ${owner.runId} ended without a report`
       : owner.kind === 'session'
-        ? `${RELEASED}session ${owner.sessionId} ${owner.state === 'gone' ? 'ended' : 'exited'} without a report`
+        ? `${sessionReleasePrefix(owner.sessionId)}${owner.state === 'gone' ? 'ended' : 'exited'} without a report`
         : `${RELEASED}it was In progress with no owner`;
   const key = workKey(item.number);
   const earlier = releasesInARowOf(item);
