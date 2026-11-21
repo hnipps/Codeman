@@ -45,7 +45,8 @@
 import { createHash } from 'node:crypto';
 import { WEBVIEW_PROXY_PREFIX } from '../config/webview-limits.js';
 import { stripBasePath } from '../config/base-path.js';
-import { FRAME_BRIDGE_SCRIPT, FRAME_BRIDGE_SOURCE } from '../canvas/frame-bridge.js';
+import { FRAME_BRIDGE_SOURCE, FRAME_SCRIPTS } from '../canvas/frame-bridge.js';
+import { CAPTURE_RASTERISER_SOURCE } from '../canvas/capture-rasteriser.js';
 
 /** Headers that are per-connection and must never be relayed in either direction. */
 const HOP_BY_HOP = new Set([
@@ -689,14 +690,19 @@ function moduleImportMap(html: string, prefix: string): string {
  * relative URLs, attribute rewriting for root-absolute markup, and the shim for
  * URLs built at runtime.
  */
-const FRAME_BRIDGE_HASH = `'sha256-${createHash('sha256').update(FRAME_BRIDGE_SOURCE, 'utf8').digest('base64')}'`;
+const scriptHash = (source: string): string =>
+  `'sha256-${createHash('sha256').update(source, 'utf8').digest('base64')}'`;
+/** The bridge's hash, then the capture rasteriser's when it ships (`capture-rasteriser.ts`). */
+const FRAME_SCRIPT_HASHES = [FRAME_BRIDGE_SOURCE, CAPTURE_RASTERISER_SOURCE]
+  .filter((source): source is string => !!source)
+  .map(scriptHash);
 const INLINE_PROOF = /^'(?:nonce-|sha(?:256|384|512)-)/i;
 
 /**
  * Let the frame bridge run under a page's own Content-Security-Policy. A policy that restricts
  * inline scripts would block the injected bridge, and with it Escape, Pick element and the lasso.
- * The bridge's hash is added to the directive that governs inline scripts, in every policy of the
- * header; it allows that one script and nothing else.
+ * The hashes of the bridge and of the capture rasteriser injected after it are added to the directive
+ * that governs inline scripts, in every policy of the header; they allow those two scripts and nothing else.
  *
  * A directive that allows inline scripts with a bare `'unsafe-inline'` is left alone: a hash beside
  * it would switch `'unsafe-inline'` off and block the page's own scripts.
@@ -719,7 +725,9 @@ export function allowFrameBridge(csp: string): string {
         sources.some((source) => source.toLowerCase() === "'unsafe-inline'") &&
         !sources.some((source) => INLINE_PROOF.test(source) || source.toLowerCase() === "'strict-dynamic'");
       if (inlineAllowed) return policy;
-      const allowed = [...sources.filter((source) => source.toLowerCase() !== "'none'"), FRAME_BRIDGE_HASH].join(' ');
+      const allowed = [...sources.filter((source) => source.toLowerCase() !== "'none'"), ...FRAME_SCRIPT_HASHES].join(
+        ' '
+      );
       // A page with only `default-src` gets a script directive of its own, so nothing but scripts is touched.
       if (at >= 0) directives[at] = `${directives[at].split(/\s+/)[0]} ${allowed}`;
       else directives.push(`script-src ${allowed}`);
@@ -748,7 +756,7 @@ export function rewriteHtml(
     runtimeUrlShim(prefix) +
     (moduleMap ? moduleImportMap(rebased, prefix) : '') +
     // A canvas frame is cross-origin to the canvas: the bridge is the one channel between them.
-    (frameBridge ? FRAME_BRIDGE_SCRIPT : '');
+    (frameBridge ? FRAME_SCRIPTS : '');
 
   const headMatch = /<head\b[^>]*>/i.exec(rebased);
   if (headMatch) {

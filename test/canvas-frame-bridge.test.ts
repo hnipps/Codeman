@@ -8,11 +8,14 @@ import {
   FRAME_BRIDGE_SCRIPT,
   FRAME_BRIDGE_SOURCE,
   FRAME_LIMITS,
+  FRAME_SCRIPTS,
   injectFrameBridge,
 } from '../src/canvas/frame-bridge.js';
+import { CAPTURE_RASTERISER_SCRIPT } from '../src/canvas/capture-rasteriser.js';
 import { ElementRefSchema, MAX_ELEMENT_REFS } from '../src/canvas/element-ref.js';
-import { parseFrameMessage } from '../packages/canvas/src/frame-messages.js';
+import { MAX_FRAME_PICTURE_CHARS, parseFrameMessage } from '../packages/canvas/src/frame-messages.js';
 import { allowFrameBridge, rewriteHtml } from '../src/web/webview-proxy.js';
+import { createHash } from 'node:crypto';
 
 type Posted = Record<string, unknown> & { type: string };
 const posted: Posted[] = [];
@@ -89,11 +92,14 @@ describe('the frame bridge script', () => {
     // A page in another charset must read the same script, or its hash stops matching.
     expect(FRAME_BRIDGE_SOURCE).toMatch(/^[\x00-\x7f]+$/);
     expect(FRAME_BRIDGE_SOURCE.length).toBeLessThan(24_000);
+    // The capture rasteriser follows the bridge in every bridged page.
+    expect(CAPTURE_RASTERISER_SCRIPT).not.toBe('');
+    expect(FRAME_SCRIPTS).toBe(FRAME_BRIDGE_SCRIPT + CAPTURE_RASTERISER_SCRIPT);
     expect(injectFrameBridge('<!doctype html><html><head><script src=a.js></script></head></html>')).toBe(
-      `<!doctype html><html><head>${FRAME_BRIDGE_SCRIPT}<script src=a.js></script></head></html>`
+      `<!doctype html><html><head>${FRAME_SCRIPTS}<script src=a.js></script></head></html>`
     );
-    expect(injectFrameBridge('<!doctype html><p>bare</p>')).toBe(`<!doctype html>${FRAME_BRIDGE_SCRIPT}<p>bare</p>`);
-    expect(rewriteHtml('<html><head></head></html>', 'cap', '', { frameBridge: true })).toContain(FRAME_BRIDGE_SCRIPT);
+    expect(injectFrameBridge('<!doctype html><p>bare</p>')).toBe(`<!doctype html>${FRAME_SCRIPTS}<p>bare</p>`);
+    expect(rewriteHtml('<html><head></head></html>', 'cap', '', { frameBridge: true })).toContain(FRAME_SCRIPTS);
     expect(rewriteHtml('<html><head></head></html>', 'cap', '')).not.toContain('codeman:frame-ready');
   });
   it('announces itself, shows nothing, and answers only its parent', () => {
@@ -369,8 +375,11 @@ describe('requests from the canvas', () => {
 });
 
 describe('a page policy that restricts inline scripts', () => {
-  const hash = /'sha256-[A-Za-z0-9+/=]{44}'/;
-  it('gains the hash of the bridge and nothing else', () => {
+  const one = /'sha256-[A-Za-z0-9+/=]{44}'/;
+  // The bridge's hash, then the capture rasteriser's.
+  const hash = new RegExp(`${one.source} ${one.source}`);
+  const sha = (text: string) => `'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`;
+  it('gains the hashes of the bridge and the capture rasteriser and nothing else', () => {
     expect(allowFrameBridge("script-src 'self'")).toMatch(new RegExp(`^script-src 'self' ${hash.source}$`));
     expect(allowFrameBridge("default-src 'self'; img-src *")).toMatch(
       new RegExp(`^default-src 'self'; img-src \\*; script-src 'self' ${hash.source}$`)
@@ -380,9 +389,13 @@ describe('a page policy that restricts inline scripts', () => {
     expect(allowFrameBridge("script-src 'self'; script-src-elem 'self'")).toMatch(
       new RegExp(`^script-src 'self'; script-src-elem 'self' ${hash.source}$`)
     );
-    expect(allowFrameBridge("script-src 'self', default-src 'none'").match(new RegExp(hash.source, 'g'))).toHaveLength(
-      2
+    expect(allowFrameBridge("script-src 'self', default-src 'none'").match(new RegExp(one.source, 'g'))).toHaveLength(
+      4
     );
+    const scripts = /<script>([\s\S]*?)<\/script>/g;
+    const sources = [...FRAME_SCRIPTS.matchAll(scripts)].map((m) => m[1]);
+    expect(sources).toEqual([FRAME_BRIDGE_SOURCE, expect.any(String)]);
+    expect(allowFrameBridge("script-src 'self'")).toBe(`script-src 'self' ${sources.map(sha).join(' ')}`);
   });
   it('is left alone where inline scripts already run, since a hash would switch that off', () => {
     for (const csp of ["script-src 'self' 'unsafe-inline'", "default-src * 'unsafe-inline'", 'img-src *', ''])
@@ -427,5 +440,113 @@ describe('locate hints: an element a later version moved or renamed', () => {
     expect(locateHinted('img.gone', { tag: 'img', text: '', x: 200, y: 105 })).toBeNull();
     expect(locateHinted('img.gone', { tag: 'img, button', text: '', x: 100, y: 100 })).toBeNull();
     expect(locateHinted('img.gone', 'img')).toBeNull();
+  });
+});
+
+// Invariant I8: FramePicturesAreUntrusted
+describe('capture: the frame rasterises itself for whoever asks', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgo=';
+  let answer: unknown;
+  let calls: unknown[];
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+  // A page DOM rebuilt by beforeEach may also report rects-changed; only answers to the capture count here.
+  const captures = () => posted.filter((m) => m.type === 'codeman:frame-capture');
+  beforeEach(() => {
+    calls = [];
+    answer = PNG;
+    Object.defineProperty(window, '__codemanCapture', {
+      configurable: true,
+      writable: true,
+      value: (width: number) => {
+        calls.push(width);
+        return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+      },
+    });
+  });
+  const request = (extra: Record<string, unknown> = {}, source: Window | null = parentWindow) => {
+    posted.length = 0;
+    fromParent({ type: 'codeman:capture', requestId: 'cap-1', width: 400, height: 200, ...extra }, source);
+  };
+
+  it('answers the asker with the PNG data URL, rasterised at the width asked', async () => {
+    request();
+    await settle();
+    expect(calls).toEqual([400]);
+    expect(captures()).toEqual([{ type: 'codeman:frame-capture', requestId: 'cap-1', dataUrl: PNG }]);
+    expect(parseFrameMessage(posted[0], 'e')).toEqual({ type: 'capture', requestId: 'cap-1', dataUrl: PNG });
+  });
+  it('sends nothing for a picture that is not a PNG, is too long, or failed', async () => {
+    for (const bad of [
+      'data:image/jpeg;base64,/9j/',
+      'x'.repeat(10),
+      PNG.padEnd(FRAME_LIMITS.picture + 1, 'A'),
+      new Error('no'),
+    ]) {
+      answer = bad;
+      request();
+      await settle();
+      expect(captures(), String(bad).slice(0, 30)).toEqual([]);
+    }
+  });
+  it('refuses a request without an id, or a size out of bounds, before rasterising', async () => {
+    for (const extra of [
+      { requestId: undefined },
+      { width: 0 },
+      { height: 1.5 },
+      { width: FRAME_LIMITS.capturePixels + 1 },
+      { width: '400' },
+    ]) {
+      request(extra);
+      await settle();
+    }
+    expect(calls).toEqual([]);
+    expect(captures()).toEqual([]);
+  });
+  it('takes the request only from its parent or the top window, and nothing else from the top', async () => {
+    const stranger = document.createElement('iframe');
+    document.body.append(stranger);
+    request({}, stranger.contentWindow);
+    await settle();
+    expect(calls).toEqual([]);
+    // A canvas framed by the dashboard: the top window asks, and the answer goes to it, not the parent.
+    const top = window.top as Window;
+    const toTop: unknown[] = [];
+    const own = top.postMessage;
+    top.postMessage = ((message: unknown) => void toTop.push(message)) as typeof top.postMessage;
+    try {
+      request({}, top);
+      await settle();
+    } finally {
+      top.postMessage = own;
+    }
+    expect(toTop).toEqual([{ type: 'codeman:frame-capture', requestId: 'cap-1', dataUrl: PNG }]);
+    expect(captures()).toEqual([]);
+    fromParent(
+      {
+        type: 'codeman:query-polygon',
+        requestId: 'q',
+        points: [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+        ],
+      },
+      window.top
+    );
+    expect(captures()).toEqual([]);
+  });
+  it('sends nothing when the rasteriser did not run', async () => {
+    Object.defineProperty(window, '__codemanCapture', { configurable: true, writable: true, value: undefined });
+    request();
+    await settle();
+    expect(captures()).toEqual([]);
+  });
+  it('is parsed by the canvas only as a bounded PNG data URL', () => {
+    const wire = (dataUrl: string) => ({ type: 'codeman:frame-capture', requestId: 'r', dataUrl });
+    expect(FRAME_LIMITS.picture).toBe(MAX_FRAME_PICTURE_CHARS);
+    expect(parseFrameMessage(wire(PNG), 'e')?.type).toBe('capture');
+    expect(parseFrameMessage(wire('data:image/jpeg;base64,/9j/'), 'e')).toBeNull();
+    expect(parseFrameMessage(wire(PNG.padEnd(MAX_FRAME_PICTURE_CHARS + 1, 'A')), 'e')).toBeNull();
+    expect(parseFrameMessage({ ...wire(PNG), extra: 1 }, 'e')).toBeNull();
   });
 });

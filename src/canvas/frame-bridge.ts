@@ -12,14 +12,21 @@
  * Frame to parent: `codeman:canvas-escape`, `codeman:frame-ready`, `codeman:frame-key` (bare Q only),
  * `codeman:frame-picked`, `codeman:frame-pick-cancelled`, `codeman:frame-elements`, `codeman:frame-rects`,
  * `codeman:frame-rects-changed` (on a scroll or resize, and on a DOM change that moves, adds or removes an element
- * the canvas located). Parent to frame: `codeman:pick-start`, `codeman:pick-stop`,
- * `codeman:query-polygon`, `codeman:locate`.
+ * the canvas located), `codeman:frame-capture`. Parent to frame: `codeman:pick-start`, `codeman:pick-stop`,
+ * `codeman:query-polygon`, `codeman:locate`, `codeman:capture`.
+ *
+ * `codeman:capture` (ambient capture) is the one request also taken from the top window, which is not the parent
+ * when the frame sits in a canvas that is itself framed by the dashboard; the picture goes back to whichever window
+ * asked. The page rasterises itself through `__codemanCapture`, defined by the script injected right after this one
+ * (`capture-rasteriser.ts`), and the answer is a PNG data URL `width` device pixels wide. Nothing is sent when that
+ * script did not run or the raster fails, and the asker paints "Frame not captured".
  *
  * `codeman:locate` may carry `hints` beside its selectors, one per selector: the tag, text and pick-time position
  * of the element. A selector that finds nothing is then looked for again by tag and text (or by tag and position
  * when the element had no text), nearest where it was, so a comment follows its element into a version that
  * renamed a class or moved it in the tree.
  */
+import { CAPTURE_RASTERISER_SCRIPT } from './capture-rasteriser.js';
 import { MAX_ELEMENT_REFS } from './element-ref.js';
 
 /** Bounds the bridge applies to what it reports and to what it accepts from the parent. */
@@ -34,6 +41,10 @@ export const FRAME_LIMITS = {
   attr: 512,
   style: 256,
   source: 512,
+  /** Widest or tallest picture, in device pixels, a capture may ask for. */
+  capturePixels: 8192,
+  /** Longest PNG data URL a capture answers with; the parent holds the same number. */
+  picture: 12 * 1024 * 1024,
 } as const;
 export type FrameLimits = { readonly [K in keyof typeof FRAME_LIMITS]: number };
 
@@ -528,12 +539,45 @@ export function frameBridge(limits: FrameLimits): void {
     // Light DOM only: a change inside a shadow root is seen when it also touches the light DOM, or on a scroll.
     observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
   };
+  const capture = (asker: Dom, requestId: string, width: unknown, height: unknown): void => {
+    const size = (n: unknown): boolean =>
+      Number.isInteger(n) && (n as number) >= 1 && (n as number) <= limits.capturePixels;
+    const rasterise = window.__codemanCapture;
+    if (typeof rasterise !== 'function' || !size(width) || !size(height)) return;
+    Promise.resolve()
+      .then(() => rasterise(width))
+      .then(
+        (dataUrl: unknown) => {
+          if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) return;
+          if (dataUrl.length > limits.picture) return;
+          try {
+            asker.postMessage({ type: 'codeman:frame-capture', requestId, dataUrl }, '*');
+          } catch {
+            /* An asker that went away gets nothing. */
+          }
+        },
+        () => {
+          /* A raster that fails sends nothing. */
+        }
+      );
+  };
   window.addEventListener('message', (e: Dom) => {
-    if (e.source !== host) return;
-    const data = e.data as { type?: unknown; requestId?: unknown; points?: unknown; selectors?: unknown } | null;
+    const data = e.data as {
+      type?: unknown;
+      requestId?: unknown;
+      points?: unknown;
+      selectors?: unknown;
+      width?: unknown;
+      height?: unknown;
+    } | null;
     if (!data || typeof data !== 'object' || typeof data.type !== 'string') return;
+    const fromTop = e.source === window.top && data.type === 'codeman:capture';
+    if (e.source !== host && !fromTop) return;
     const requestId = typeof data.requestId === 'string' && data.requestId.length <= 64 ? data.requestId : null;
     switch (data.type) {
+      case 'codeman:capture':
+        if (requestId) capture(e.source, requestId, data.width, data.height);
+        break;
       case 'codeman:pick-start':
         startPick();
         break;
@@ -575,13 +619,14 @@ export const FRAME_BRIDGE_SOURCE =
     (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
   );
 export const FRAME_BRIDGE_SCRIPT = `<script>${FRAME_BRIDGE_SOURCE}</script>`;
+/** The bridge, then the capture rasteriser it calls: what every bridged page gets, in that order. */
+export const FRAME_SCRIPTS = FRAME_BRIDGE_SCRIPT + CAPTURE_RASTERISER_SCRIPT;
 
 /** Put the bridge first in the document, ahead of any script of the page's own. */
 export function injectFrameBridge(html: string): string {
   const head = /<head[^>]*>/i.exec(html);
-  if (head)
-    return html.slice(0, head.index + head[0].length) + FRAME_BRIDGE_SCRIPT + html.slice(head.index + head[0].length);
+  if (head) return html.slice(0, head.index + head[0].length) + FRAME_SCRIPTS + html.slice(head.index + head[0].length);
   const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
   const at = doctype ? doctype[0].length : 0;
-  return html.slice(0, at) + FRAME_BRIDGE_SCRIPT + html.slice(at);
+  return html.slice(0, at) + FRAME_SCRIPTS + html.slice(at);
 }
