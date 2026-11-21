@@ -9,7 +9,7 @@ Newest entries first. After an entry is on the default branch, correct it with a
 **Why:** Approve on a review stacked on another branch asked for a deploy that `codeman-deploy` refuses, and the review read `deploy-failed` until its base shipped.
 **Links:** [intent/2026-11-21-stacked-review-approve.md](../intent/2026-11-21-stacked-review-approve.md)
 
-Approve in Codeman's own repository deploys only a merge into the default branch (`defaultBase()`: `origin/HEAD`, then `main`, then `master`). A merge into any other base records `merged` and waits; the settle pass marks it `deployed` once the live release contains it. Rejected: deciding by whether the merge contains the live release, because a stacked base that is up to date with `master` would then deploy the base's own unreviewed commits.
+Approve in Codeman's own repository deploys only a merge into the default branch (`main`, `master`, or what `origin/HEAD` names). A merge into any other base records `merged` and waits; the settle pass marks it `deployed` once the live release contains it. Rejected: deciding by whether the merge contains the live release, because a stacked base that is up to date with `master` would then deploy the base's own unreviewed commits.
 
 ## 2026-11-21 — A full canvas evicts its oldest inactive record
 
