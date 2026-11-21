@@ -350,7 +350,9 @@ export function applySwarmEvent(file: SwarmFile, event: SwarmEvent, now: number)
     }
     case 'tip': {
       if (active) return unchanged(noteTip(file, active, event.tip));
-      // With no run going, the run's own last push is already reviewed; anything else is new work.
+      // The watcher measures a move from the newest tip the runs recorded, so a finished run's own reviewed push never
+      // arrives here. `own` with no run means the run ended after the watcher read it, and its report read that tip
+      // or a newer one.
       if (event.change === 'own') return unchanged(file);
       return applySwarmEvent(file, { type: 'trigger', trigger: 'push', tip: event.tip, runId: event.newRunId }, now);
     }
@@ -586,7 +588,8 @@ export const SWARM_TRAILER = 'PR-Swarm-Automated: true';
 /**
  * I8: a tip change is the running run's own work only when a run is active and every new commit carries the trailer
  * in its final trailer block. A person's or another agent's commit, a rewind (no new commits), or any change while no
- * run is active is a change.
+ * run is active is a change. This alone does not keep a finished run's pushes from starting a run: the watcher's
+ * baseline (`tipMove()`, the newest tip the runs recorded) does, so a push the run reviewed is never fed as a move.
  */
 export function classifyTipChange(commits: readonly { message: string }[], runActive: boolean): TipChange {
   if (!runActive || !commits.length) return 'change';

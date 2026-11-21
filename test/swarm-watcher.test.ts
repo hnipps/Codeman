@@ -14,13 +14,16 @@ import {
   activeRun,
   applySwarmEvent,
   emptySwarmFile,
+  MAX_ROUNDS,
+  parseSwarmReport,
   SWARM_TRAILER,
+  type SwarmAction,
   type SwarmFile,
   type SwarmRun,
   type TipChange,
 } from '../src/reviews/swarm-model.js';
 import type { SwarmTipResult } from '../src/reviews/swarm-runner.js';
-import { createSwarmWatcher, type TipReader } from '../src/reviews/swarm-watcher.js';
+import { createSwarmWatcher, tipMove, type TipReader } from '../src/reviews/swarm-watcher.js';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -237,6 +240,136 @@ describe('the tip watcher', () => {
     t.watcher.stop();
     await t.watcher.pass();
     expect(t.reader.tip).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * I8 after a run ends. The model queues a run for any `change` once no run is active, so what keeps a finished run's
+ * own pushes from starting another is the watcher's baseline: `tipMove()` measures from the newest tip the runs
+ * recorded. The report's `branchTip` is the runner's own read of the branch, and these drive the model with it.
+ */
+describe('a run’s own pushes after the run ends (I8)', () => {
+  const ROUND_TWO = 'run00000002';
+  const reportAt = (round: number, headSha: string) => {
+    const parsed = parseSwarmReport({
+      head_sha: headSha,
+      round,
+      verdict: 'APPROVE',
+      findings: [],
+      triage: { fix_commits: [], deferred: [] },
+    });
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parsed.report;
+  };
+  /** The runner applying the session's report, with the tip it read from the branch then. */
+  const report = (t: ReturnType<typeof setup>, round: number, headSha: string, branchTip: string): SwarmAction[] => {
+    const step = applySwarmEvent(
+      t.files.get('r1')!,
+      {
+        type: 'report',
+        runId: 'run00000001',
+        report: reportAt(round, headSha),
+        branchTip,
+        r3Required: false,
+        newRunId: ROUND_TWO,
+      },
+      6
+    );
+    t.files.set('r1', step.file);
+    return step.actions;
+  };
+  const runningOn = (tip: string) =>
+    setup({
+      reviews: [review('r1')],
+      tips: { r1: tip },
+      files: { r1: { ...emptySwarmFile('r1'), runs: [running(tip)] } },
+    });
+
+  it('A: the run pushes a fix, reports passed at it and ends; the next pass at that tip queues nothing', async () => {
+    const t = runningOn(A);
+    await t.watcher.pass();
+    expect(t.fed).toEqual([]);
+
+    // The trailer commit lands and the run reports at it before any pass reads the branch.
+    expect(report(t, 1, B, B).map((a) => a.kind)).toEqual(['stop']);
+    expect(t.files.get('r1')!.runs).toMatchObject([{ state: 'passed', reviewedTip: B }]);
+    expect(tipMove(B, review('r1'), t.files.get('r1')!, A)).toEqual({ kind: 'none' });
+
+    t.reader.tip.mockResolvedValue(B);
+    const after = setup({ reviews: [review('r1')], tips: { r1: B }, files: { r1: t.files.get('r1')! } });
+    await t.watcher.pass();
+    expect(t.reader.tip).toHaveLastResolvedWith(B);
+    await after.watcher.pass();
+    expect(t.reader.commits).not.toHaveBeenCalled();
+    expect([...t.fed, ...after.fed]).toEqual([]);
+    expect(t.files.get('r1')!.runs).toHaveLength(1);
+    expect(after.files.get('r1')!.runs).toHaveLength(1);
+  });
+
+  it('B: a fix the watcher noted during the run, reported at the older tip, gets another round on the new tip', async () => {
+    const t = runningOn(A);
+    t.reader.commits.mockResolvedValue([OWN]);
+    t.reader.tip.mockResolvedValue(B);
+    await t.watcher.pass();
+    expect(t.fed).toEqual([{ id: 'r1', tip: B, change: 'own' }]);
+    expect(t.files.get('r1')!.runs).toEqual([{ ...running(A), pendingTip: B }]);
+
+    expect(report(t, 1, A, B)).toEqual([{ kind: 'round', runId: 'run00000001', round: 2, tip: B }]);
+    expect(t.files.get('r1')!.runs).toEqual([{ ...running(B), round: 2 }]);
+    await t.watcher.pass();
+    expect(t.fed).toHaveLength(1);
+    expect(t.files.get('r1')!.runs).toHaveLength(1);
+  });
+
+  it('B at the round cap: the run ends incomplete and one push run is queued for the new tip', async () => {
+    const t = setup({
+      reviews: [review('r1')],
+      tips: { r1: B },
+      files: { r1: { ...emptySwarmFile('r1'), runs: [{ ...running(A), round: MAX_ROUNDS }] } },
+    });
+    t.reader.commits.mockResolvedValue([OWN]);
+    await t.watcher.pass();
+    expect(t.fed).toEqual([{ id: 'r1', tip: B, change: 'own' }]);
+
+    expect(report(t, MAX_ROUNDS, A, B)).toEqual([
+      { kind: 'stop', runId: 'run00000001' },
+      { kind: 'enqueue', runId: ROUND_TWO },
+    ]);
+    expect(t.files.get('r1')!.runs).toMatchObject([
+      { id: ROUND_TWO, state: 'queued', trigger: 'push', tip: B },
+      { id: 'run00000001', state: 'incomplete', reviewedTip: A, branchTip: B },
+    ]);
+    const after = setup({ reviews: [review('r1')], tips: { r1: B }, files: { r1: t.files.get('r1')! } });
+    await t.watcher.pass();
+    await after.watcher.pass();
+    expect(t.fed).toHaveLength(1);
+    expect(after.fed).toEqual([]);
+    expect(after.files.get('r1')!.runs).toHaveLength(2);
+  });
+
+  it('B′: a fix first read after the run ended at the older tip is a change, and queues one run', async () => {
+    const t = runningOn(A);
+    await t.watcher.pass();
+    // The runner read the branch at A for the report; the trailer commit lands after.
+    expect(report(t, 1, A, A).map((a) => a.kind)).toEqual(['stop']);
+    expect(t.files.get('r1')!.runs).toMatchObject([{ state: 'passed', reviewedTip: A }]);
+
+    t.reader.commits.mockResolvedValue([OWN]);
+    t.reader.tip.mockResolvedValue(B);
+    const fresh = setup({ reviews: [review('r1')], tips: { r1: B }, files: { r1: t.files.get('r1')! } });
+    fresh.reader.commits.mockResolvedValue([OWN]);
+    await t.watcher.pass();
+    await fresh.watcher.pass();
+    for (const w of [t, fresh]) {
+      expect(w.reader.commits).not.toHaveBeenCalled();
+      expect(w.fed).toEqual([{ id: 'r1', tip: B, change: 'change' }]);
+      expect(w.files.get('r1')!.runs).toMatchObject([
+        { state: 'queued', trigger: 'push', tip: B },
+        { state: 'passed', reviewedTip: A },
+      ]);
+    }
+    await t.watcher.pass();
+    expect(t.fed).toHaveLength(1);
   });
 });
 
