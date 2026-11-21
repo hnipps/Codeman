@@ -13,6 +13,7 @@ import { fetchHead, resolveHead, reviewChanges } from '../src/reviews/review-git
 import { mergeReviewedBranch } from '../src/reviews/review-merge.js';
 import { runGit } from '../src/git-workspace-status.js';
 import { settledDeploy, type Decision } from '../src/reviews/review-model.js';
+import { readReview, writeReview } from '../src/reviews/review-store.js';
 import { registerReviewPageRoutes, type ReviewRouteOptions } from '../src/web/routes/review-routes.js';
 import { changeWork, readWork, workPath } from '../src/canvas/work-store.js';
 import {
@@ -984,6 +985,43 @@ describe('approve routes', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refuses to ask again for a deploy of a stacked merge whose deploy failed', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'stack' },
+    });
+    const id = made.json().data.id as string;
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    // A stacked review left `deploy-failed` by a build from before stacked reviews were recognised.
+    const stored = readReview(id);
+    if (!stored.ok) throw new Error('review not stored');
+    writeReview({ ...stored.review, decision: { kind: 'deploy-failed', at: 1, mergedSha, error: 'refused' } });
+
+    const again = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/deploy`, payload: {} });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error).toMatch(/^STACKED:/);
+    expect(requestDeploy).not.toHaveBeenCalled();
   });
 
   it('does not read a merged review into main on every settle, since it is never stacked', async () => {

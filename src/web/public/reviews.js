@@ -389,7 +389,7 @@
     const r = state.review;
     const button = $('rvApprove');
     const c = state.changes;
-    const retry = r.state === 'deploy-failed';
+    const retry = r.state === 'deploy-failed' && !(state.approve && state.approve.shipsWithBase);
     button.hidden = !(retry || !r.decision);
     if (button.hidden) return;
     const deploys = !!(state.approve && state.approve.deploys);

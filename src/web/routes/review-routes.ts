@@ -868,6 +868,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!mergedSha)
       return fail(reply, 409, ApiErrorCode.CONFLICT, 'NOTHING: this review has no failed deploy to try again');
     if (!mayDeploy(req, reply)) return reply;
+    if (await shipsWithBase(review))
+      return fail(
+        reply,
+        409,
+        ApiErrorCode.CONFLICT,
+        `STACKED: this merge went into ${review.base}, not the default branch; it goes live when ${review.base} is merged and deployed`
+      );
     const decision = await askForDeploy(mergedSha);
     const changed = changeReview(review.id, (r) => decide(r, decision));
     if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
