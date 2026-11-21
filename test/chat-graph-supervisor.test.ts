@@ -195,7 +195,7 @@ describe('ChatGraphSupervisor', () => {
     const sup = supervisor(() => live);
 
     const started = sup.start();
-    await sup.stop();
+    expect(await sup.stop()).toBe(true);
     expect(markedPids(owner)).toEqual([]);
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(markedPids(owner)).toEqual([]);
@@ -204,17 +204,20 @@ describe('ChatGraphSupervisor', () => {
     expect((await started).ok).toBe(true);
   });
 
-  it('a sweep queued beside a start never kills the child that start spawned', async () => {
+  it('a start queued after a sweep runs once the orphans are gone, and keeps its own child', async () => {
     const sup = supervisor(() => true);
+    const orphan = await spawnMarked(owner);
 
-    const first = sup.start();
     const swept = sup.sweep();
-    const second = sup.start();
+    const started = sup.start();
+    const again = sup.sweep();
 
-    expect(await first).toEqual({ ok: true, reused: false });
-    expect(await swept).toBe(0);
-    expect(await second).toEqual({ ok: true, reused: true });
+    expect(await swept).toBe(1);
+    expect(isAlive(orphan)).toBe(false);
+    expect(await started).toEqual({ ok: true, reused: false });
+    expect(await again).toBe(0);
     expect(markedPids(owner)).toHaveLength(1);
+    expect(await sup.health()).toBe(true);
   });
 
   /**

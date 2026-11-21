@@ -13,7 +13,7 @@
  * The lifecycle copies `src/deepseek-web-server.ts`: one instance, killed on shutdown, failures
  * reported with the child's captured output. `sweep`, `start` and `stop` run one at a time, in the
  * order they were called: a `stop` that ran beside a pending `start` could find nothing running and
- * then watch the start spawn, and a `sweep` beside one could kill the child it just spawned.
+ * then watch the start spawn, and a `start` queued after a `sweep` must wait for the orphans to die.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -197,13 +197,13 @@ export class ChatGraphSupervisor {
 
   /**
    * Stop this supervisor's own child, whatever the deploy role, after any start already called.
-   * Safe when nothing runs.
+   * Safe when nothing runs. False only when the child outlived SIGKILL's grace.
    */
-  async stop(): Promise<void> {
-    await this.serialize(() => this.stopLocked());
+  stop(): Promise<boolean> {
+    return this.serialize(() => this.stopLocked());
   }
 
-  /** False only when the child outlived SIGKILL's grace. A recycled pid counts as gone: it is not ours. */
+  /** A recycled pid counts as gone: it is not ours. */
   private async stopLocked(): Promise<boolean> {
     const running = this.state;
     this.state = { kind: 'stopped' };

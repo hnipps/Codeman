@@ -4767,7 +4767,8 @@ export class WebServer extends EventEmitter {
    * on top of them; the session list's write is the one awaited after.
    */
   private async retireFromLive(): Promise<void> {
-    await this.chatGraph.stop();
+    // Invariant I6: a child that outlived SIGKILL keeps this colour live rather than leave two writers.
+    if (!(await this.chatGraph.stop())) throw new Error('the Chat Graph sidecar did not exit');
     await this.store.settle();
     const listWritten = this.writeSharedState();
     deployRole.enter('retired');
