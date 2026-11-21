@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — The Chat Graph supervisor runs every operation through one queue (W-88)
+
+**Type:** propagated-discovery
+**Touches:** `src/chat-graph/supervisor.ts`, `src/web/server.ts`, `test/chat-graph-supervisor.test.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** Review asked for the state machines to be found and checked with Crosscheck. The check found that I6 did not hold when a retire came soon after a start.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I6), Work item W-88, PR #92
+
+Only `start()` was serialized. `stop()` and `sweep()` ran beside it. A retire right after a boot, promote or reinstate could stop nothing while the queued start was still before its spawn, and the start then spawned during the retire's remaining awaits, before the role flipped. A seeded interleaving test that drives the real supervisor the way `server.ts` does showed `sidecar <pid> alive when retire returned` on the old code. All three operations now share one FIFO queue, `runChatGraph()` queues both of its operations before it returns, a restart waits for the old child to exit, and the fire-and-forget chain in `server.ts` catches its rejections. The interleaving test is a search over 8 seeds, not a proof.
+
 ## 2026-11-20 — The Chat Graph sidecar builds from the system go, and the deploy gate requires it (W-88)
 
 **Type:** intent-refinement

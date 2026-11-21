@@ -4663,12 +4663,17 @@ export class WebServer extends EventEmitter {
 
   private roleChangeQueue: Promise<unknown> = Promise.resolve();
 
-  /** Sweep orphans, then start this colour's Chat Graph sidecar, without blocking the caller; failures are logged. */
+  /**
+   * Sweep orphans, then start this colour's Chat Graph sidecar, without blocking the caller; failures are logged.
+   * Both are queued before this returns, so a retire's `stop()` called later runs after them.
+   */
   private runChatGraph(): void {
     if (this.testMode) return;
     void this.chatGraph
       .sweep()
-      .then(() => this.chatGraph.start())
+      .catch((err) => console.warn(`[ChatGraph] orphan sweep failed: ${getErrorMessage(err)}`));
+    void this.chatGraph
+      .start()
       .then((result) => {
         if (result.ok) return;
         if (result.reason === 'missing-binary') {
@@ -4677,7 +4682,8 @@ export class WebServer extends EventEmitter {
         } else {
           console.warn(`[ChatGraph] sidecar not started (${result.reason}): ${result.error}`);
         }
-      });
+      })
+      .catch((err) => console.warn(`[ChatGraph] sidecar not started: ${getErrorMessage(err)}`));
   }
   private chatGraphMissingLogged = false;
 

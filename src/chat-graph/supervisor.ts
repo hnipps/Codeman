@@ -10,8 +10,10 @@
  * `CODEMAN_CHAT_GRAPH_OWNER=<data dir>`, which is how a later sweep finds an orphan left by a
  * crashed Codeman. The child gets a minimal environment, so Codeman's password never reaches it.
  *
- * The lifecycle copies `src/deepseek-web-server.ts`: one instance, serialized starts, killed on
- * shutdown, failures reported with the child's captured output.
+ * The lifecycle copies `src/deepseek-web-server.ts`: one instance, killed on shutdown, failures
+ * reported with the child's captured output. `sweep`, `start` and `stop` run one at a time, in the
+ * order they were called: a `stop` that ran beside a pending `start` could find nothing running and
+ * then watch the start spawn, and a `sweep` beside one could kill the child it just spawned.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -73,7 +75,7 @@ function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
 
 export class ChatGraphSupervisor {
   private state: SidecarState = { kind: 'stopped' };
-  private startLock: Promise<unknown> = Promise.resolve();
+  private queue: Promise<unknown> = Promise.resolve();
   private output = '';
   private readonly binary: string;
   private readonly readStat: (pid: number) => ProcStat | null;
@@ -115,13 +117,14 @@ export class ChatGraphSupervisor {
     });
   }
 
-  start(): Promise<ChatGraphStartResult> {
-    const run = this.startLock.then(
-      () => this.startLocked(),
-      () => this.startLocked()
-    );
-    this.startLock = run.catch(() => undefined);
+  private serialize<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(op, op);
+    this.queue = run.catch(() => undefined);
     return run;
+  }
+
+  start(): Promise<ChatGraphStartResult> {
+    return this.serialize(() => this.startLocked());
   }
 
   private async startLocked(): Promise<ChatGraphStartResult> {
@@ -134,7 +137,9 @@ export class ChatGraphSupervisor {
 
     if (this.state.kind === 'running') {
       if (await this.health()) return { ok: true, reused: true };
-      await this.stop();
+      if (!(await this.stopLocked())) {
+        return { ok: false, reason: 'failed', error: 'the previous Chat Graph sidecar did not exit' };
+      }
     }
 
     try {
@@ -142,7 +147,11 @@ export class ChatGraphSupervisor {
     } catch {
       return { ok: false, reason: 'missing-binary', error: `Chat Graph sidecar not found at ${this.binary}` };
     }
-    await mkdir(this.options.dir, { recursive: true, mode: 0o700 });
+    try {
+      await mkdir(this.options.dir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      return { ok: false, reason: 'failed', error: `Cannot create ${this.options.dir}: ${getErrorMessage(err)}` };
+    }
     if (!this.options.mayPersist()) return refused();
 
     let child: ChildProcess;
@@ -182,19 +191,27 @@ export class ChatGraphSupervisor {
       if (await this.health()) return { ok: true, reused: false };
       await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
     }
-    await this.stop();
+    await this.stopLocked();
     return { ok: false, reason: 'failed', error: `Chat Graph sidecar did not answer in time: ${this.output.trim()}` };
   }
 
-  /** Stop this supervisor's own child, whatever the deploy role. Safe when nothing runs. */
+  /**
+   * Stop this supervisor's own child, whatever the deploy role, after any start already called.
+   * Safe when nothing runs.
+   */
   async stop(): Promise<void> {
+    await this.serialize(() => this.stopLocked());
+  }
+
+  /** False only when the child outlived SIGKILL's grace. A recycled pid counts as gone: it is not ours. */
+  private async stopLocked(): Promise<boolean> {
     const running = this.state;
     this.state = { kind: 'stopped' };
-    if (running.kind === 'stopped' || hasExited(running.child)) return;
-    if (!this.signalIfSame(running.identity, 'SIGTERM')) return;
-    if (await waitForExit(running.child, KILL_GRACE_MS)) return;
+    if (running.kind === 'stopped' || hasExited(running.child)) return true;
+    if (!this.signalIfSame(running.identity, 'SIGTERM')) return true;
+    if (await waitForExit(running.child, KILL_GRACE_MS)) return true;
     this.signalIfSame(running.identity, 'SIGKILL');
-    await waitForExit(running.child, KILL_GRACE_MS);
+    return waitForExit(running.child, KILL_GRACE_MS);
   }
 
   /**
@@ -205,7 +222,11 @@ export class ChatGraphSupervisor {
    * SIGKILL, not SIGTERM: an orphan shutting down cleanly removes `<dir>/sock` on its way out,
    * which can delete the socket of the sidecar `start()` spawns right after.
    */
-  async sweep(): Promise<number> {
+  sweep(): Promise<number> {
+    return this.serialize(() => this.sweepLocked());
+  }
+
+  private async sweepLocked(): Promise<number> {
     if (!this.options.mayPersist()) return 0;
     const own = this.state.kind === 'running' ? this.state.identity.pid : null;
     const orphans: ProcIdentity[] = [];

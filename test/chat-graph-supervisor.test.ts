@@ -189,6 +189,107 @@ describe('ChatGraphSupervisor', () => {
     expect(await sup.health()).toBe(true);
   });
 
+  it('a stop called after a start runs after it, so nothing outlives a retire', async () => {
+    // Invariant I6: OnlyTheLiveColourRunsTheSidecar
+    let live = true;
+    const sup = supervisor(() => live);
+
+    const started = sup.start();
+    await sup.stop();
+    expect(markedPids(owner)).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(markedPids(owner)).toEqual([]);
+    live = false;
+
+    expect((await started).ok).toBe(true);
+  });
+
+  it('a sweep queued beside a start never kills the child that start spawned', async () => {
+    const sup = supervisor(() => true);
+
+    const first = sup.start();
+    const swept = sup.sweep();
+    const second = sup.start();
+
+    expect(await first).toEqual({ ok: true, reused: false });
+    expect(await swept).toBe(0);
+    expect(await second).toEqual({ ok: true, reused: true });
+    expect(markedPids(owner)).toHaveLength(1);
+  });
+
+  /**
+   * Property-based check of the supervisor under the call structure `server.ts` gives it
+   * (Crosscheck /lightweight-verify, option B). Role changes run one at a time, like
+   * `changeDeployRole`; `runChatGraph` queues a sweep and a start without awaiting them, and a
+   * retire awaits `stop()` and flips the role only after more awaited work, as `retireFromLive`
+   * does. Schedules come from a seeded generator so a failure names a replayable seed.
+   */
+  it('holds I6 over random interleavings of boot, retire, reinstate and shutdown', async () => {
+    // Invariant I6: OnlyTheLiveColourRunsTheSidecar
+    const seeds = [1, 2, 3, 4, 5, 6, 7, 8];
+    for (const seed of seeds) {
+      let state = seed;
+      const rand = (n: number) => {
+        state = (state * 1103515245 + 12345) % 2 ** 31;
+        return state % n;
+      };
+      const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      let live = true;
+      const sup = supervisor(() => live);
+      const starts: Promise<unknown>[] = [];
+      const runChatGraph = () => {
+        void sup.sweep();
+        starts.push(sup.start());
+      };
+      let roles: Promise<void> = Promise.resolve();
+      const violations: string[] = [];
+
+      runChatGraph();
+      for (let step = 0; step < 6; step++) {
+        const op = rand(3);
+        if (op === 0) {
+          roles = roles.then(async () => {
+            if (!live) return;
+            await sup.stop();
+            await pause(rand(150));
+            const left = markedPids(owner);
+            if (left.length > 0) violations.push(`seed ${seed}: sidecar ${left.join(',')} alive when retire returned`);
+            live = false;
+          });
+        } else if (op === 1) {
+          roles = roles.then(async () => {
+            if (live) return;
+            live = true;
+            runChatGraph();
+          });
+        } else {
+          roles = roles.then(async () => {
+            if (live) runChatGraph();
+          });
+        }
+        await pause(rand(80));
+      }
+      await roles;
+      await Promise.all(starts);
+      const finallyLive = live;
+      roles = roles.then(async () => {
+        if (!live) return;
+        await sup.stop();
+        live = false;
+      });
+      await roles;
+      await pause(200);
+
+      expect(violations).toEqual([]);
+      expect(markedPids(owner), `seed ${seed} (ended live: ${finallyLive})`).toEqual([]);
+      for (const result of await Promise.all(starts)) {
+        const r = result as { ok: boolean; reason?: string };
+        expect(r.ok || r.reason === 'role', `seed ${seed}: ${JSON.stringify(r)}`).toBe(true);
+      }
+    }
+  }, 60_000);
+
   it('reports a missing binary without spawning', async () => {
     const sup = supervisor(() => true, { binary: path.join(root, 'absent') });
 
