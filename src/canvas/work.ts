@@ -890,9 +890,11 @@ export function closeLinkedWork(
     return { ok: true, file, item: current, filed: [], duplicate: false };
   const next = structuredClone(file);
   const item = findWork(next, number)!;
+  const cleared = [item.needs && 'its question', item.changes && 'its requested changes'].filter(Boolean);
   setStatus(next, item, 'done', ctx);
   delete item.needs;
   delete item.changes;
+  if (cleared.length) log(item, ctx, `Cleared ${cleared.join(' and ')}`);
   log(item, ctx, `Done: review ${reviewId} merged ${mergedSha.slice(0, 7)}`);
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };

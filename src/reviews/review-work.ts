@@ -66,9 +66,15 @@ export function linkSessionToWork(items: ReviewWorkItem[], sessionId: string, au
   return [...changed];
 }
 
+/** What Approve did to the author session's items: keys moved to Done, and keys it could not write with the reason. */
+export type ClosedSessionWork = {
+  closed: { workspaceId: string; key: string }[];
+  failed: { workspaceId: string; key: string; reason: string }[];
+};
+
 /**
- * Approve merged a review written by `sessionId`: each In progress item of the owner's workspaces that links the
- * session moves to Done (W-70 I8). Returns the workspaces that changed; an item that cannot be written is skipped.
+ * Approve merged a review written by `sessionId`: each item of the owner's workspaces that `closeLinkedWork` finds
+ * done moves to Done (W-70 I8). A refused or failed write is returned in `failed`, never thrown: the merge stands.
  */
 export function closeSessionWork(
   owner: string | null,
@@ -76,17 +82,19 @@ export function closeSessionWork(
   reviewId: string,
   mergedSha: string,
   author: Author
-): string[] {
-  const changed = new Set<string>();
+): ClosedSessionWork {
+  const out: ClosedSessionWork = { closed: [], failed: [] };
   for (const w of workItemsForSession(owner, sessionId)) {
+    const key = workKey(w.number);
     try {
       const result = changeWork(w.workspaceId, (file) =>
         closeLinkedWork(file, w.number, sessionId, reviewId, mergedSha, { author, now: Date.now() })
       );
-      if (result.ok && result.item.status === 'done') changed.add(w.workspaceId);
-    } catch {
-      /* The file went away: the merge stands without the move. */
+      if (!result.ok) out.failed.push({ workspaceId: w.workspaceId, key, reason: result.message });
+      else if (result.item.status === 'done') out.closed.push({ workspaceId: w.workspaceId, key });
+    } catch (err) {
+      out.failed.push({ workspaceId: w.workspaceId, key, reason: err instanceof Error ? err.message : String(err) });
     }
   }
-  return [...changed];
+  return out;
 }

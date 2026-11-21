@@ -3,9 +3,9 @@
  * The merges run against real temporary repositories. The supervisor is always a fake.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataPath } from '../src/config/instance.js';
 import type { DeployOverviewConfigured } from '../src/deploy-control.js';
@@ -14,7 +14,7 @@ import { mergeReviewedBranch } from '../src/reviews/review-merge.js';
 import { runGit } from '../src/git-workspace-status.js';
 import { settledDeploy, type Decision } from '../src/reviews/review-model.js';
 import { registerReviewPageRoutes, type ReviewRouteOptions } from '../src/web/routes/review-routes.js';
-import { changeWork, readWork } from '../src/canvas/work-store.js';
+import { changeWork, readWork, workPath } from '../src/canvas/work-store.js';
 import { closeLinkedWork, createWork, CreateWorkSchema, emptyWorkFile, findWork } from '../src/canvas/work.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { createRouteTestHarness, type RouteTestHarness } from './routes/_route-test-utils.js';
@@ -436,6 +436,62 @@ describe('approve routes', () => {
       expect(other.ok && other.file).toBe(file);
       const unlinked = closeLinkedWork(file, open, 'not-linked', 'r1', 'a'.repeat(40), ctx);
       expect(unlinked.ok && unlinked.file).toBe(file);
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('answers which items it closed, and the ones it could not write, while the merge stands', async () => {
+      const items = fileItems();
+      const id = await start();
+      chmodSync(dirname(workPath(items.workspace)), 0o500);
+      let done;
+      try {
+        done = await approve(id, repo.git('rev-parse', 'feat/x'));
+      } finally {
+        chmodSync(dirname(workPath(items.workspace)), 0o700);
+      }
+      expect(done.statusCode).toBe(200);
+      expect(done.json().data.review.decision.kind).toBe('merged');
+      const linked = done.json().data.linkedWork;
+      expect(linked.authorSession).toBe('test-session-1');
+      expect(linked.closed).toEqual([]);
+      expect(linked.failed.map((f: { key: string }) => f.key)).toEqual([`W-${items.inProgress}`]);
+      expect(statusOf(items.workspace, items.inProgress).status).toBe('in-progress');
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('lists the keys it moved to Done in the response', async () => {
+      const items = fileItems();
+      const id = await start();
+      const done = await approve(id, repo.git('rev-parse', 'feat/x'));
+      expect(done.json().data.linkedWork).toEqual({
+        authorSession: 'test-session-1',
+        closed: [`W-${items.inProgress}`],
+        failed: [],
+      });
+    });
+
+    // Invariant I8: SessionReviewApproveClosesLinkedWork
+    it('closeLinkedWork records the question and requested changes it clears', () => {
+      const made = createWork(
+        emptyWorkFile(),
+        CreateWorkSchema.parse({
+          title: 'open',
+          status: 'in-progress',
+          sessions: ['s'],
+          assignee: { kind: 'session', sessionId: 's' },
+        }),
+        ctx
+      );
+      if (!made.ok) throw new Error(made.message);
+      const item = findWork(made.file, made.item.number)!;
+      item.needs = { question: 'Ship it?', at: 1 };
+      const closed = closeLinkedWork(made.file, made.item.number, 's', 'r1', 'b'.repeat(40), ctx);
+      if (!closed.ok) throw new Error(closed.message);
+      expect(closed.item.needs).toBeUndefined();
+      expect(closed.item.history.slice(0, 2).map((e) => e.text)).toEqual([
+        'Done: review r1 merged bbbbbbb',
+        'Cleared its question',
+      ]);
     });
   });
 

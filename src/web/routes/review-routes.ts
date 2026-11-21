@@ -715,12 +715,16 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const mergedSha = merged.mergedSha;
     const first = changeReview(review.id, (r) => decide(r, { kind: 'merged', at: Date.now(), mergedSha }));
     let latest = first.ok ? first.review : review;
+    // Before any await: once the review reads decided, a second Approve is refused, so nothing would retry this.
+    const authorId = authorSessionId(review);
+    const linkedWork = authorId
+      ? closeSessionWork(review.owner, authorId, review.id, mergedSha, personAuthor(req))
+      : { closed: [], failed: [] };
+    for (const workspaceId of new Set(linkedWork.closed.map((c) => c.workspaceId))) options.announceWork?.(workspaceId);
+    for (const f of linkedWork.failed)
+      console.warn(`[reviews] Approve of ${review.id} merged, but ${f.key} could not move to Done: ${f.reason}`);
     const closedOthers = await closeSuperseded(review, mergedSha);
     workReviews.accepted(latest, mergedSha, personAuthor(req));
-    const authorId = authorSessionId(review);
-    if (authorId && deployRole.allows('persist'))
-      for (const workspaceId of closeSessionWork(review.owner, authorId, review.id, mergedSha, personAuthor(req)))
-        options.announceWork?.(workspaceId);
     if (deploys) {
       const decision = await askForDeploy(mergedSha);
       const second = changeReview(review.id, (r) => decide(r, decision));
@@ -736,6 +740,11 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         review: toView(latest),
         merge: { pushed: merged.pushed, localMoved: merged.localMoved, already: merged.already },
         closedOthers,
+        linkedWork: {
+          authorSession: authorId ?? null,
+          closed: linkedWork.closed.map((c) => c.key),
+          failed: linkedWork.failed.map(({ key, reason }) => ({ key, reason })),
+        },
       },
     };
   });
