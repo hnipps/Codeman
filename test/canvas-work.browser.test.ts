@@ -468,7 +468,7 @@ describe('canvas work lanes (W-48)', () => {
         status: 'not-doing',
         deleted: { from: 'backlog', author: { kind: 'human' } },
       });
-    expect(await page.locator('#workDetail').isHidden()).toBe(true);
+    await expect.poll(() => page.locator('#workDetail').isHidden()).toBe(true);
     expect(await page.locator('[data-lane="backlog"] .work-card').count()).toBe(0);
     expect(await page.locator('[data-lane="deleted"]').count()).toBe(0);
     // Backlog is empty now, so its "+ Add item" takes the keyboard.
