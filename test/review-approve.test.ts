@@ -333,7 +333,7 @@ describe('approve routes', () => {
     expect(repo.git('rev-parse', 'main')).not.toBe(head);
 
     const read = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data;
-    expect(read.approve).toEqual({ deploys: false });
+    expect(read.approve).toEqual({ deploys: false, shipsWithBase: false });
     const done = await approve(id, head);
     expect(done.statusCode).toBe(200);
     const merged = done.json().data;
@@ -821,7 +821,10 @@ describe('approve routes', () => {
     const id = await start({
       deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
     });
-    expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.approve).toEqual({ deploys: true });
+    expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.approve).toEqual({
+      deploys: true,
+      shipsWithBase: false,
+    });
 
     const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
     const mergedSha = done.review.decision.mergedSha as string;
@@ -870,6 +873,57 @@ describe('approve routes', () => {
       expect(deployed.state).toBe('deployed');
       const retry = await harness.app.inject({ method: 'POST', url: `/api/reviews/${id}/deploy`, payload: {} });
       expect(retry.statusCode).toBe(409);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('merges a stacked review into its base without a deploy, and settles it once the base ships', async () => {
+    const overview: DeployOverviewConfigured = {
+      configured: true,
+      live: { sha: repo.git('rev-parse', 'main'), since: 't' },
+      releases: [],
+      recent: [],
+      busy: false,
+    };
+    const requestDeploy = vi.fn(async () => ({ requestId: 'req-1' }));
+    repo.git('branch', 'stack', 'main');
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => [],
+        deploy: { cli: () => '/fake/supervisor', readOverview: async () => overview, requestDeploy },
+      })
+    );
+    harness.ctx.sessions.get('test-session-1')!.workingDir = repo.dir;
+    const made = await harness.app.inject({
+      method: 'POST',
+      url: '/api/reviews',
+      headers: AGENT,
+      payload: { title: 'Work', walkthrough: 'Done', base: 'stack' },
+    });
+    const id = made.json().data.id as string;
+    expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.approve).toEqual({
+      deploys: false,
+      shipsWithBase: true,
+    });
+
+    const done = (await approve(id, repo.git('rev-parse', 'feat/x'))).json().data;
+    const mergedSha = done.review.decision.mergedSha as string;
+    expect(done.review).toMatchObject({ state: 'merged', decision: { kind: 'merged', mergedSha } });
+    expect(repo.git('rev-parse', 'stack')).toBe(mergedSha);
+    expect(repo.git('rev-parse', 'main')).toBe(overview.live!.sha);
+    expect(requestDeploy).not.toHaveBeenCalled();
+
+    vi.useFakeTimers({ now: Date.now() + 60_000, toFake: ['Date'] });
+    try {
+      expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review.state).toBe('merged');
+      repo.git('checkout', '-q', 'main');
+      repo.git('merge', '-q', '--no-ff', '-m', 'land the stack', 'stack');
+      overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
+      vi.setSystemTime(Date.now() + 10_000);
+      const review = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
+      expect(review).toMatchObject({ state: 'deployed', decision: { mergedSha } });
+      expect(requestDeploy).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
