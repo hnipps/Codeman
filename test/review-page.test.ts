@@ -29,6 +29,7 @@ import {
   unsentNotes,
   type Review,
 } from '../src/reviews/review-model.js';
+import { readSwarm } from '../src/reviews/swarm-store.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
 import type { Webview } from '../src/types/webview.js';
 import { webviewCapabilities } from '../src/webview-capabilities.js';
@@ -282,8 +283,15 @@ describe('review routes', () => {
     const second = await submit(AGENT, 'Updated');
     expect(second.statusCode).toBe(200);
     expect(second.json().data).toMatchObject({ id, revision: 2 });
-    expect(readdirSync(dataPath('reviews')).filter((n) => n.endsWith('.json'))).toHaveLength(1);
+    const files = () => readdirSync(dataPath('reviews')).filter((n) => n.endsWith('.json'));
+    expect(files().filter((n) => !n.endsWith('.swarm.json'))).toHaveLength(1);
     expect(harness.ctx.broadcast).toHaveBeenCalledWith('review:changed', { id, owner: '@single' });
+    // Both submits reached the route's own pr-swarm runner: one run, queued by the first, joined by the second.
+    await vi.waitFor(() => expect(files()).toContain(`${id}.swarm.json`));
+    await vi.waitFor(() => {
+      const runs = readSwarm(id);
+      expect(runs.ok && runs.file.runs).toMatchObject([{ state: 'queued', trigger: 'submit' }]);
+    });
 
     const queue = (await harness.app.inject({ url: '/api/reviews' })).json().data;
     expect(queue.waiting).toHaveLength(1);

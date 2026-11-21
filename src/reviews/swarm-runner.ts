@@ -26,6 +26,7 @@ import {
   type SwarmFile,
   type SwarmRun,
   type SwarmTrigger,
+  type TipChange,
 } from './swarm-model.js';
 import { changeSwarm, readSwarm, type SwarmRead } from './swarm-store.js';
 import type { PushRemote, RunPlan, RunTip } from './swarm-git.js';
@@ -196,6 +197,9 @@ export type SwarmTriggerResult =
   | { ok: true; joined: boolean; run: SwarmRun }
   | { ok: false; code: 'NOT_LIVE' | 'NOT_FOUND' | 'DECIDED' | 'REFUSED' | 'BAD_TIP' | 'FILE'; message: string };
 
+type TriggerRefusal = Extract<SwarmTriggerResult, { ok: false }>;
+export type SwarmTipResult = { ok: true; run: SwarmRun | null } | TriggerRefusal;
+
 export type SwarmReportResult =
   | { ok: true; state: SwarmRun['state']; round?: number; tip?: string; duplicate?: true }
   | {
@@ -210,6 +214,12 @@ export interface SwarmRunner {
    * that moment. A review with a run queued or running joins it (I1) and the tip is recorded on it (I2).
    */
   trigger(reviewId: string, source: SwarmTrigger, tip: string): Promise<SwarmTriggerResult>;
+  /**
+   * The tip watcher saw the branch move to `tip`; `change` is `classifyTipChange()`'s answer (I8). A running run records
+   * the tip (I2), a `change` with no run going queues one, and the run's own commits with no run going queue nothing.
+   * `run` is the run the tip went to, or null when it went to none.
+   */
+  tipMoved(reviewId: string, tip: string, change: TipChange): Promise<SwarmTipResult>;
   /** A run's session hands back its result. Only the run's own session may (`callerSessionId`). */
   report(runId: string, callerSessionId: string, json: unknown): Promise<SwarmReportResult>;
   /** A review's runs, read only. */
@@ -418,23 +428,38 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
     void pump();
   }
 
+  /** The checks every automatic or manual start makes, then one event applied: a trigger or a watched tip. */
+  const startEvent = async (
+    reviewId: string,
+    tip: string,
+    event: (runId: string) => SwarmEvent
+  ): Promise<{ ok: true; joined: boolean; run: SwarmRun | undefined } | TriggerRefusal> => {
+    if (!deps.mayAct()) return { ok: false, code: 'NOT_LIVE', message: 'Only the live colour starts pr-swarm runs' };
+    if (!SHA.test(tip)) return { ok: false, code: 'BAD_TIP', message: 'The tip is not a commit id' };
+    const review = deps.review(reviewId);
+    if (!review) return { ok: false, code: 'NOT_FOUND', message: 'Review not found' };
+    if (!isOpen(review)) return { ok: false, code: 'DECIDED', message: 'This review has been decided' };
+    const refusal = await deps.refusal(review);
+    if (refusal) return { ok: false, code: 'REFUSED', message: refusal };
+    const before = readSwarm(reviewId);
+    if (!before.ok) return { ok: false, code: 'FILE', message: `The run file is ${before.reason}` };
+    const joined = activeRun(before.file) !== undefined;
+    const done = apply(reviewId, event(deps.newRunId()));
+    if (!done.ok) return { ok: false, code: 'FILE', message: done.message };
+    return { ok: true, joined, run: activeRun(done.file) };
+  };
+
   return {
     async trigger(reviewId, source, tip) {
-      if (!deps.mayAct()) return { ok: false, code: 'NOT_LIVE', message: 'Only the live colour starts pr-swarm runs' };
-      if (!SHA.test(tip)) return { ok: false, code: 'BAD_TIP', message: 'The tip is not a commit id' };
-      const review = deps.review(reviewId);
-      if (!review) return { ok: false, code: 'NOT_FOUND', message: 'Review not found' };
-      if (!isOpen(review)) return { ok: false, code: 'DECIDED', message: 'This review has been decided' };
-      const refusal = await deps.refusal(review);
-      if (refusal) return { ok: false, code: 'REFUSED', message: refusal };
-      const before = readSwarm(reviewId);
-      if (!before.ok) return { ok: false, code: 'FILE', message: `The run file is ${before.reason}` };
-      const joined = activeRun(before.file) !== undefined;
-      const done = apply(reviewId, { type: 'trigger', trigger: source, tip, runId: deps.newRunId() });
-      if (!done.ok) return { ok: false, code: 'FILE', message: done.message };
-      const run = activeRun(done.file);
-      if (!run) return { ok: false, code: 'FILE', message: 'The run was not recorded' };
-      return { ok: true, joined, run };
+      const done = await startEvent(reviewId, tip, (runId) => ({ type: 'trigger', trigger: source, tip, runId }));
+      if (!done.ok) return done;
+      if (!done.run) return { ok: false, code: 'FILE', message: 'The run was not recorded' };
+      return { ok: true, joined: done.joined, run: done.run };
+    },
+
+    async tipMoved(reviewId, tip, change) {
+      const done = await startEvent(reviewId, tip, (newRunId) => ({ type: 'tip', tip, change, newRunId }));
+      return done.ok ? { ok: true, run: done.run ?? null } : done;
     },
 
     async report(runId, callerSessionId, json) {

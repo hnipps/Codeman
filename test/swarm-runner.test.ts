@@ -185,6 +185,28 @@ describe('swarm runner', () => {
     expect(f.started).toHaveLength(1);
   });
 
+  it('I2 and I8: a watched tip joins the running run, and with no run going only a change queues one', async () => {
+    const a = addReview(f);
+    await f.runner.trigger(a.id, 'submit', sha(1));
+    await settle();
+    const joined = await f.runner.tipMoved(a.id, sha(2), 'own');
+    expect(joined).toMatchObject({ ok: true, run: { state: 'running', roundTip: sha(1), pendingTip: sha(2) } });
+
+    const b = addReview(f);
+    expect(await f.runner.tipMoved(b.id, sha(2), 'own')).toEqual({ ok: true, run: null });
+    expect(readSwarm(b.id)).toMatchObject({ ok: true, file: { runs: [] } });
+    expect(await f.runner.tipMoved(b.id, sha(3), 'change')).toMatchObject({
+      ok: true,
+      run: { state: 'queued', trigger: 'push', tip: sha(3) },
+    });
+
+    f.deps.refusal = async () => 'A Docker session cannot be reviewed here';
+    expect(await f.runner.tipMoved(addReview(f).id, sha(2), 'change')).toMatchObject({ ok: false, code: 'REFUSED' });
+    f.live = false;
+    expect(await f.runner.tipMoved(addReview(f).id, sha(2), 'change')).toMatchObject({ ok: false, code: 'NOT_LIVE' });
+    expect(f.started).toHaveLength(1);
+  });
+
   it('I2: a report on a tip the branch has moved past asks the same session for another round', async () => {
     const a = addReview(f);
     await f.runner.trigger(a.id, 'submit', sha(1));
