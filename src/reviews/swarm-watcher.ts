@@ -93,7 +93,7 @@ export function createSwarmWatcher(deps: SwarmWatcherDeps): SwarmWatcher {
   let stopped = false;
   let passing = false;
 
-  const watchOne = async (review: Review, alive: () => boolean): Promise<void> => {
+  const watchOne = async (review: Review, deadline: number, alive: () => boolean): Promise<void> => {
     const refused = await deps.refusal(review);
     if (refused) {
       refusals.set(review.id, refused);
@@ -101,7 +101,6 @@ export function createSwarmWatcher(deps: SwarmWatcherDeps): SwarmWatcher {
     }
     refusals.delete(review.id);
     if (!alive()) return;
-    const deadline = now() + deps.readTimeoutMs;
     const tip = await deps.reader.tip(review, deadline);
     if (!tip || !SHA.test(tip) || !alive()) return;
     const file = deps.runs(review.id);
@@ -121,8 +120,12 @@ export function createSwarmWatcher(deps: SwarmWatcherDeps): SwarmWatcher {
       deps.log(`[pr-swarm] the new tip of review ${review.id} was not recorded: ${fed.code}: ${fed.message}`);
   };
 
-  /** One review's read under its deadline. Given up, its slot frees and nothing it finds afterwards is used. */
+  /**
+   * One review's look under its deadline. The deadline starts with the look, so the refusal check spends it too and
+   * every git call is killed before the look is given up: a slot frees only once its git is gone.
+   */
   const watchBounded = async (review: Review): Promise<void> => {
+    const deadline = now() + deps.readTimeoutMs;
     let late = false;
     let timer: NodeJS.Timeout | undefined;
     const expired = new Promise<void>((done) => {
@@ -137,7 +140,7 @@ export function createSwarmWatcher(deps: SwarmWatcherDeps): SwarmWatcher {
     const alive = () => !late && !stopped && deps.mayAct();
     try {
       await Promise.race([
-        watchOne(review, alive).catch((err: unknown) =>
+        watchOne(review, deadline, alive).catch((err: unknown) =>
           deps.log(
             `[pr-swarm] the tip of review ${review.id} could not be read: ${err instanceof Error ? err.message : String(err)}`
           )
