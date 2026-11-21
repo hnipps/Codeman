@@ -527,20 +527,25 @@
       state.review = data.review;
       const d = data.review.decision || {};
       const where = data.merge && data.merge.pushed ? ' on origin' : '';
-      toast(
+      const parts = [
         d.kind === 'deploying'
           ? `Merged as ${shortSha(d.mergedSha)}. The deploy is queued.`
           : d.kind === 'deploy-failed'
             ? `Merged as ${shortSha(d.mergedSha)}, but the deploy could not be requested: ${d.error || 'no reason given'}`
             : `Merged into ${data.review.base}${where} as ${shortSha(d.mergedSha)}.`,
-        d.kind === 'deploy-failed' ? 'bad' : 'ok'
-      );
+      ];
       const others = (data.closedOthers || []).length;
       if (others)
-        toast(
-          `Closed ${others} other ${others === 1 ? 'review' : 'reviews'} of ${data.review.branch}: the merge holds their commits.`,
-          'ok'
+        parts.push(
+          `Closed ${others} other ${others === 1 ? 'review' : 'reviews'} of ${data.review.branch}: the merge holds their commits.`
         );
+      const linked = data.linkedWork || { closed: [], failed: [] };
+      if (linked.closed.length) parts.push(`Moved ${linked.closed.join(', ')} to Done.`);
+      if (linked.failed.length)
+        parts.push(
+          `${linked.failed.map((f) => f.key).join(', ')} could not move to Done: move ${linked.failed.length === 1 ? 'it' : 'them'} on the canvas.`
+        );
+      toast(parts.join(' '), d.kind === 'deploy-failed' || linked.failed.length ? 'bad' : 'ok');
       loadQueue();
     } catch (err) {
       toast(err.message, 'bad');
