@@ -279,8 +279,9 @@ export type RepoFacts = { repoRoot: string; project: string; branch: string; bas
 export type Author = { owner: string | null; sessionId: string; sessionName: string };
 
 /**
- * A first submission makes a review; a later one from the same session for the same branch replaces the
- * walkthrough of the review that is still open and keeps its notes. A decided review is never reopened.
+ * A first submission makes a review; a later one for the same work (`sameWork`), from whichever session of the owner,
+ * replaces the walkthrough of the review that is still open, keeps its notes and makes the submitter its author. A
+ * decided review is never reopened.
  */
 export function submitReview(
   open: Review | undefined,
@@ -299,6 +300,7 @@ export function submitReview(
       walkthrough,
       base: facts.base,
       headSha: facts.headSha,
+      sessionId: author.sessionId,
       sessionName: author.sessionName,
       revision: open.revision + 1,
       // A failed deploy that the agent answers with a new submission is an open review again.
@@ -331,8 +333,13 @@ export function keepCaptures(review: Review, names: readonly string[] | undefine
 export const mayAddCaptures = (review: Review, sessionId: string): boolean =>
   sessionId === authorSessionId(review) || sessionId === review.authored?.sessionId;
 
-export const sameWork = (r: Review, sessionId: string, facts: RepoFacts): boolean =>
-  r.sessionId === sessionId && r.repoRoot === facts.repoRoot && r.branch === facts.branch;
+/**
+ * A session's submission is the same work as a session review of the same owner, repository and branch, whichever
+ * session wrote it: a second worker on the branch, or one that replaced an ended author, updates that review instead
+ * of queueing the branch twice. A work review is never taken over; its author comes from the work item.
+ */
+export const sameWork = (r: Review, owner: string | null, facts: RepoFacts): boolean =>
+  sourceOf(r).kind === 'session' && r.owner === owner && r.repoRoot === facts.repoRoot && r.branch === facts.branch;
 
 export const NoteBodySchema = z.object({ at: NoteAnchorSchema, text: z.string().min(1).max(MAX_NOTE_CHARS) }).strict();
 export const NotePatchSchema = z

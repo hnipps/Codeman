@@ -736,10 +736,16 @@ describe('approve routes', () => {
 
   describe('Approve closes the other reviews of its branch', () => {
     const AGENT2 = { 'x-codeman-parent-session': 'test-session-2' };
-    /** A second session on the same checkout, so a second review of `feat/x` can exist beside the first. */
+    /**
+     * A second session on the same checkout under another owner, so a second open review of `feat/x` can exist beside
+     * the first: a session of the same owner would update the first review instead.
+     */
     const secondSession = () => {
       const first = harness.ctx.sessions.get('test-session-1')!;
-      const twin = Object.assign(Object.create(Object.getPrototypeOf(first)), first, { id: 'test-session-2' });
+      const twin = Object.assign(Object.create(Object.getPrototypeOf(first)), first, {
+        id: 'test-session-2',
+        owner: 'other',
+      });
       harness.ctx.sessions.set('test-session-2', twin);
     };
     const commit = (name: string) => {
