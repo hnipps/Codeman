@@ -30,6 +30,7 @@ import {
   unsentNotes,
   type Review,
 } from '../src/reviews/review-model.js';
+import { readReview, writeReview } from '../src/reviews/review-store.js';
 import { readSwarm } from '../src/reviews/swarm-store.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
 import type { Webview } from '../src/types/webview.js';
@@ -349,6 +350,29 @@ describe('review routes', () => {
       walkthrough: 'From the second worker',
     });
     expect(one.notes).toHaveLength(1);
+  });
+
+  it('where two open reviews of the branch already exist, each session updates its own', async () => {
+    const other = createMockSession('test-session-2');
+    other.workingDir = repo;
+    Object.assign(other, { owner: 'bob' });
+    harness.ctx.sessions.set(other.id, other as never);
+    // Two open reviews of one owner's branch, as a release before W-77 could leave them.
+    const theirs = (await submit({ 'x-codeman-parent-session': 'test-session-2' })).json().data.id as string;
+    const mine = (await submit()).json().data.id as string;
+    const read = readReview(theirs);
+    if (!read.ok) throw new Error('review not written');
+    writeReview({ ...read.review, owner: null });
+    Object.assign(other, { owner: undefined });
+
+    for (const [headers, id] of [
+      [AGENT, mine],
+      [{ 'x-codeman-parent-session': 'test-session-2' }, theirs],
+    ] as const) {
+      const again = await submit(headers, 'Again');
+      expect(again.statusCode).toBe(200);
+      expect(again.json().data).toMatchObject({ id, revision: 2 });
+    }
   });
 
   it('a submit of the branch by another owner, or after a decision, opens a new review', async () => {
