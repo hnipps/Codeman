@@ -18,6 +18,7 @@ import {
 } from '../src/reviews/review-git.js';
 import {
   addNote,
+  mayAddCaptures,
   patchNote,
   queueOf,
   removeNote,
@@ -96,6 +97,8 @@ describe('review rules', () => {
       2000
     );
     expect(again).toMatchObject({ id: 'aaaaaaaa', revision: 2, sessionId: 'sess-2', sessionName: 'w5' });
+    expect(mayAddCaptures(again, 'sess-2')).toBe(true);
+    expect(mayAddCaptures(again, 'sess-1')).toBe(false);
   });
 
   it('the same work is the owner, repository and branch of a session review, whichever session sent it', () => {
