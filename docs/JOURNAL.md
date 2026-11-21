@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — A full canvas evicts its oldest inactive record
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/conversation-eviction.ts`, `src/web/routes/canvas-task-routes.ts`, `src/web/routes/canvas-conversation-routes.ts`, `src/web/sse-events.ts`, `src/mcp-server.ts`, `CLAUDE.md`, `docs/architecture-invariants.md`, `docs/api-reference.md`
+**Why:** Dead and idle conversations filled the 50-record cap and refused routine fires.
+**Links:** [intent/2026-11-21-canvas-conversation-eviction.md](../intent/2026-11-21-canvas-conversation-eviction.md)
+
+The cap stays 50 stored records, because the previous release's schema refuses a longer list, but only active records hold a place: a start on a full canvas evicts inactive ones oldest first. Active is a live session working now or active in the last hour, read from the pane's last output and input and the record's message times. Eviction is Remove, and the record goes even when Remove kept something, so a kept record never blocks a start: a dirty worktree stays on disk for the left-behind list, and a session that would not close stays in the session list. Rejected: raising the stored bound for kept records (breaks rollback), and keeping kept records (they could fill the canvas for good).
+
 ## 2026-11-20 — The Chat Graph main chat lives in a command palette
 
 **Type:** intent-refinement
