@@ -1239,6 +1239,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       stopSession: async (review, sessionId) => {
         const headers = await swarmHeaders(review.owner ?? null);
         if (headers) await options.discardSession?.(headers, sessionId);
+        else console.warn(`[pr-swarm] session ${sessionId} was left running: its owner cannot be acted for`);
       },
       announce: announceSwarm,
       log: (text) => console.log(text),
@@ -1275,6 +1276,9 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!review) return reply;
     parseBody(SwarmStartSchema, req.body ?? {});
     if (!isOpen(review)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been decided');
+    // Before any git: reading the tip fetches, and git never runs for a remote or Docker case.
+    const refused = await gitRefusal(authorSession(review), review.repoRoot);
+    if (refused) return fail(reply, 409, ApiErrorCode.CONFLICT, `REFUSED: ${refused}`);
     const tip = await swarm.tipOf(review);
     if (!tip) return fail(reply, 409, ApiErrorCode.CONFLICT, 'TIP_UNREADABLE: the branch tip could not be read');
     const started = await swarm.trigger(review.id, 'manual', tip.sha);

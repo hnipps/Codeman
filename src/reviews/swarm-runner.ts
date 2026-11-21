@@ -38,6 +38,8 @@ export const FINISH_GRACE_MS = 5_000;
 /** After a report asks for another round, the session is given this long to end its turn first. */
 export const ROUND_DELAY_MS = 5_000;
 const ROUND_SEND_ATTEMPTS = 3;
+/** A start or a stop still going after this long is given up, so one hung call cannot hold the slot for ever. */
+export const SLOT_STUCK_MS = 15 * 60_000;
 
 /**
  * The run session's own environment (I3). The tokens are blank, and gh reads an empty config folder, because a gh
@@ -186,19 +188,19 @@ type QueueEntry = { reviewId: string; runId: string };
 /** The server-wide slot. `starting` and `stopping` hold it too, so a run's setup and cleanup never overlap another run. */
 type Slot =
   | { kind: 'idle' }
-  | ({ kind: 'starting' } & QueueEntry)
-  | ({ kind: 'running'; sessionId: string; heardAt: number } & QueueEntry)
-  | ({ kind: 'stopping' } & QueueEntry);
+  | ({ kind: 'starting'; since: number } & QueueEntry)
+  | ({ kind: 'running'; sessionId: string; heardAt: number; lastReport?: string } & QueueEntry)
+  | ({ kind: 'stopping'; since: number } & QueueEntry);
 
 export type SwarmTriggerResult =
   | { ok: true; joined: boolean; run: SwarmRun }
   | { ok: false; code: 'NOT_LIVE' | 'NOT_FOUND' | 'DECIDED' | 'REFUSED' | 'BAD_TIP' | 'FILE'; message: string };
 
 export type SwarmReportResult =
-  | { ok: true; state: SwarmRun['state']; round?: number; tip?: string }
+  | { ok: true; state: SwarmRun['state']; round?: number; tip?: string; duplicate?: true }
   | {
       ok: false;
-      code: 'NOT_LIVE' | 'NOT_RUNNING' | 'FORBIDDEN' | 'INVALID' | 'TIP_UNREADABLE' | 'FILE';
+      code: 'NOT_LIVE' | 'NOT_RUNNING' | 'FORBIDDEN' | 'INVALID' | 'REFUSED' | 'TIP_UNREADABLE' | 'FILE';
       message: string;
     };
 
@@ -212,7 +214,7 @@ export interface SwarmRunner {
   report(runId: string, callerSessionId: string, json: unknown): Promise<SwarmReportResult>;
   /** A review's runs, read only. */
   view(reviewId: string): SwarmRead;
-  /** The tip a run of this review would review now. */
+  /** The tip a run of this review would review now; null when it cannot be read or git may not run there. */
   tipOf(review: Review): Promise<RunTip | null>;
   /**
    * Rebuilds the slot and the queue from the run files. `tick()` calls it the first time it finds this colour live
@@ -229,6 +231,8 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
   let ready = false;
   let wasLive = false;
   let pumping = false;
+  /** Bumped when a hung start is given up, so its loop stops and a new one may run. */
+  let pumpGeneration = 0;
 
   /** One event, written in one tick, then its actions carried out. */
   const apply = (
@@ -283,7 +287,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       return;
     }
     const { sessionId } = slot;
-    slot = { kind: 'stopping', reviewId, runId };
+    slot = { kind: 'stopping', reviewId, runId, since: deps.now() };
     deps.later(FINISH_GRACE_MS, () => {
       void (async () => {
         const review = deps.review(reviewId);
@@ -364,10 +368,11 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
   const pump = async (): Promise<void> => {
     if (pumping || !ready) return;
     pumping = true;
+    const generation = pumpGeneration;
     try {
-      while (slot.kind === 'idle' && queue.length && deps.mayAct()) {
+      while (generation === pumpGeneration && slot.kind === 'idle' && queue.length && deps.mayAct()) {
         const entry = queue.shift()!;
-        slot = { kind: 'starting', ...entry };
+        slot = { kind: 'starting', ...entry, since: deps.now() };
         try {
           await start(entry);
         } catch (err) {
@@ -378,7 +383,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
         }
       }
     } finally {
-      pumping = false;
+      if (generation === pumpGeneration) pumping = false;
     }
   };
 
@@ -442,14 +447,25 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
         return { ok: false, code: 'FORBIDDEN', message: "Only the run's own session may report it" };
       const stored = readSwarm(run.reviewId);
       const active = stored.ok ? activeRun(stored.file) : undefined;
+      // The verb is told to retry when it hears nothing back, so a report the server already applied can arrive
+      // again, after its round has moved on. The same result twice is answered, never counted a second time.
+      const digest = JSON.stringify(json);
+      if (digest === run.lastReport && active?.id === runId)
+        return active.state === 'running'
+          ? { ok: true, state: active.state, round: active.round, tip: active.roundTip, duplicate: true }
+          : { ok: true, state: active.state, duplicate: true };
       const round = active?.state === 'running' ? active.round : 1;
       const parsed = parseSwarmReport(reportInput(json, round));
       if (!parsed.ok) return { ok: false, code: 'INVALID', message: parsed.error };
       const review = deps.review(run.reviewId);
+      // The same refusal as a start, before git fetches anything for this review.
+      const refused = review ? await deps.refusal(review) : 'The review is gone';
+      if (refused) return { ok: false, code: 'REFUSED', message: refused };
       const tip = review ? await deps.tip(review) : null;
       if (!tip) return { ok: false, code: 'TIP_UNREADABLE', message: 'The branch tip could not be read; report again' };
       if (!running()) return { ok: false, code: 'NOT_RUNNING', message: 'The run ended while the report was read' };
       run.heardAt = deps.now();
+      run.lastReport = digest;
       const done = apply(run.reviewId, {
         type: 'report',
         runId,
@@ -468,7 +484,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
 
     view: (reviewId) => readSwarm(reviewId),
 
-    tipOf: (review) => deps.tip(review),
+    tipOf: async (review) => ((await deps.refusal(review)) ? null : deps.tip(review)),
 
     recover,
 
@@ -478,6 +494,16 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
         return;
       }
       if (!ready || !wasLive) return recover();
+      if ((slot.kind === 'starting' || slot.kind === 'stopping') && deps.now() - slot.since >= SLOT_STUCK_MS) {
+        const { kind, reviewId, runId } = slot;
+        deps.log(
+          `[pr-swarm] review ${reviewId} run ${runId}: the ${kind === 'starting' ? 'start' : 'stop'} hung; the slot is freed`
+        );
+        slot = { kind: 'idle' };
+        pumpGeneration++;
+        pumping = false;
+        if (kind === 'starting') failRun(reviewId, runId, 'The run took too long to start');
+      }
       if (slot.kind === 'running') {
         const { reviewId, runId, heardAt } = slot;
         const session = deps.session(slot.sessionId);

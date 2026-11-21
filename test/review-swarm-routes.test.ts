@@ -96,6 +96,21 @@ describe('pr-swarm review routes', () => {
     expect(named.statusCode).toBe(400);
   });
 
+  it('a start for a review inside a Docker case is refused before git runs', async () => {
+    await harness.app.close();
+    harness = await createRouteTestHarness((app, ctx) =>
+      registerReviewPageRoutes(app, ctx, {
+        dockerWorkspaces: async () => ['/repo'],
+        swarm: runner as unknown as SwarmRunner,
+      })
+    );
+    const res = await start();
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/^REFUSED:/);
+    expect(runner.tipOf).not.toHaveBeenCalled();
+    expect(runner.trigger).not.toHaveBeenCalled();
+  });
+
   it('rule 6: a colour that is not live starts nothing', async () => {
     vi.spyOn(deployRole, 'allows').mockReturnValue(false);
     const res = await start();

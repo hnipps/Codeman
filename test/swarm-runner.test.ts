@@ -14,6 +14,7 @@ import {
   reportInput,
   ROUND_DELAY_MS,
   SILENCE_LIMIT_MS,
+  SLOT_STUCK_MS,
   swarmBrief,
   swarmCommand,
   swarmRoundPrompt,
@@ -306,15 +307,84 @@ describe('swarm runner', () => {
 
   it('rule 6: a colour that is not live starts nothing, writes nothing and takes no report', async () => {
     const a = addReview(f);
+    await f.runner.trigger(a.id, 'submit', sha(1));
+    await settle();
+    const read = readSwarm(a.id);
+    const runId = read.ok ? activeRun(read.file)!.id : '';
+    const b = addReview(f);
     f.live = false;
-    expect(await f.runner.trigger(a.id, 'submit', sha(1))).toMatchObject({ ok: false, code: 'NOT_LIVE' });
-    expect(readSwarm(a.id)).toMatchObject({ ok: true, file: { runs: [] } });
-    expect(await f.runner.report('run00000001', 'session-1', result(1, sha(1)))).toMatchObject({
+    expect(await f.runner.trigger(b.id, 'submit', sha(1))).toMatchObject({ ok: false, code: 'NOT_LIVE' });
+    expect(readSwarm(b.id)).toMatchObject({ ok: true, file: { runs: [] } });
+    // The run is really running here, so only the live check can refuse its own session's report.
+    expect(await f.runner.report(runId, f.started[0].sessionId, result(1, sha(1)))).toMatchObject({
       ok: false,
       code: 'NOT_LIVE',
     });
+    // Nor does a colour that is not live judge a silent session.
+    f.now += SILENCE_LIMIT_MS * 2;
     await f.runner.tick();
-    expect(f.started).toEqual([]);
+    const after = readSwarm(a.id);
+    expect(after.ok && activeRun(after.file)?.state).toBe('running');
+    expect(f.started).toHaveLength(1);
+    expect(f.stopped).toEqual([]);
+  });
+
+  it('a report that arrives twice is answered once and counted once', async () => {
+    const a = addReview(f);
+    await f.runner.trigger(a.id, 'submit', sha(1));
+    await settle();
+    const read = readSwarm(a.id);
+    const runId = read.ok ? activeRun(read.file)!.id : '';
+    f.tips.set(a.id, { sha: sha(2), remote: 'origin' });
+    const triage = { mode: 'local', pr: null, pr_swarm_result: result(1, sha(1)), commits: [], dispositions: [] };
+    const first = await f.runner.report(runId, f.started[0].sessionId, triage);
+    expect(first).toMatchObject({ ok: true, state: 'running', round: 2 });
+    const again = await f.runner.report(runId, f.started[0].sessionId, triage);
+    expect(again).toMatchObject({ ok: true, state: 'running', round: 2, duplicate: true });
+  });
+
+  it('a report for a review git may no longer run on is refused before the tip is read', async () => {
+    const a = addReview(f);
+    await f.runner.trigger(a.id, 'submit', sha(1));
+    await settle();
+    const read = readSwarm(a.id);
+    const runId = read.ok ? activeRun(read.file)!.id : '';
+    let tipReads = 0;
+    f.deps.tip = async () => {
+      tipReads++;
+      return { sha: sha(1), remote: 'origin' };
+    };
+    f.deps.refusal = async () => 'A repository inside a Docker case cannot be reviewed here';
+    expect(await f.runner.report(runId, f.started[0].sessionId, result(1, sha(1)))).toMatchObject({
+      ok: false,
+      code: 'REFUSED',
+    });
+    expect(await f.runner.tipOf(a)).toBeNull();
+    expect(tipReads).toBe(0);
+  });
+
+  it('a start that hangs is given up, and the queue moves on', async () => {
+    const hang = fake();
+    let calls = 0;
+    const real = hang.deps.startSession;
+    hang.deps.startSession = async (review, request) => {
+      if (++calls === 1) return new Promise(() => undefined);
+      return real(review, request);
+    };
+    const runner = createSwarmRunner(hang.deps);
+    await runner.recover();
+    const a = addReview(hang);
+    const b = addReview(hang);
+    await runner.trigger(a.id, 'submit', sha(1));
+    await runner.trigger(b.id, 'submit', sha(1));
+    await settle();
+    expect(hang.started).toEqual([]);
+    hang.now += SLOT_STUCK_MS;
+    await runner.tick();
+    await settle();
+    const first = readSwarm(a.id);
+    expect(first.ok && first.file.runs[0]).toMatchObject({ state: 'failed' });
+    expect(hang.started.map((s) => s.reviewId)).toEqual([b.id]);
   });
 
   it('does not start before recovery, and recovery starts what was queued', async () => {
@@ -359,6 +429,9 @@ describe('swarm runner', () => {
     h.deps.review = (id) => first.reviews.get(id) ?? null;
     await createSwarmRunner(h.deps).recover();
     expect(h.stopped).toEqual([first.started[0].sessionId]);
+    const gone = readSwarm(b.id);
+    await h.flush();
+    expect(h.removed).toContain(gone.ok ? gone.file.runs[0].id : 'missing');
     const failed = readSwarm(b.id);
     expect(failed.ok && failed.file.runs[0]).toMatchObject({ state: 'failed' });
   });
