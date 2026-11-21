@@ -211,8 +211,12 @@ export class ChatGraphSupervisor {
       if (hasExited(child)) {
         return { ok: false, reason: 'failed', error: `Chat Graph sidecar exited: ${output.trim()}` };
       }
-      // Re-checked after the answer: a child that lost the lock to another sidecar may not have exited yet.
-      if ((await this.health()) && !hasExited(child)) return { ok: true, reused: false };
+      // A child that lost the lock to another sidecar can still be alive when that sidecar answers,
+      // so an answer counts only if our child is still running one poll later.
+      if (await this.health()) {
+        if (!(await waitForExit(child, READY_POLL_MS))) return { ok: true, reused: false };
+        continue;
+      }
       await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
     }
     await this.stopLocked();

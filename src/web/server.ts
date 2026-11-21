@@ -4989,6 +4989,8 @@ export class WebServer extends EventEmitter {
     void stopDeepSeekWeb();
     // Awaited before the state flush below, since the Go child does not die with its parent, but
     // bounded: the flush must run inside the CLI's force-exit budget even if the child will not die.
+    // A stop still running after the wait carries on in the background; if the process exits first,
+    // the next live boot's sweep() ends the child.
     const chatGraphStopped = Promise.race([
       this.chatGraph.stop().catch(() => false),
       new Promise<void>((resolve) => setTimeout(resolve, CHAT_GRAPH_SHUTDOWN_WAIT_MS).unref()),

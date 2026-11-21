@@ -71,6 +71,14 @@ async function spawnMarked(markerOwner: string): Promise<number> {
   return pid;
 }
 
+const shortBases: string[] = [];
+/** A directory under `/tmp` itself, not `os.tmpdir()`, so the socket-path edge cases fit whatever TMPDIR is. */
+async function shortBase(): Promise<string> {
+  const base = await fs.mkdtemp('/tmp/cg-');
+  shortBases.push(base);
+  return base;
+}
+
 function supervisor(
   mayPersist: () => boolean,
   extra: Partial<ConstructorParameters<typeof ChatGraphSupervisor>[0]> = {}
@@ -99,6 +107,7 @@ afterEach(async () => {
     }
   }
   await fs.rm(root, { recursive: true, force: true });
+  for (const base of shortBases.splice(0)) await fs.rm(base, { recursive: true, force: true });
 });
 
 describe('ChatGraphSupervisor', () => {
@@ -243,8 +252,9 @@ describe('ChatGraphSupervisor', () => {
   }, 20_000);
 
   it('refuses a socket path too long for sun_path, with a message naming the limit', async () => {
-    // `<dir>/sock` of exactly 108 bytes: one over the limit.
-    const long = path.join(root, 'x'.repeat(108 - Buffer.byteLength(root) - '//sock'.length));
+    // `<dir>/sock` of exactly 108 bytes: one over the limit. Under a short base, so a long TMPDIR cannot break it.
+    const base = await shortBase();
+    const long = path.join(base, 'x'.repeat(108 - Buffer.byteLength(base) - '//sock'.length));
     expect(Buffer.byteLength(path.join(long, 'sock'))).toBe(108);
     const sup = supervisor(() => true, { dir: long });
 
@@ -255,7 +265,8 @@ describe('ChatGraphSupervisor', () => {
   });
 
   it('starts on a socket path of exactly 107 bytes', async () => {
-    const edge = path.join(root, 'y'.repeat(107 - Buffer.byteLength(root) - '//sock'.length));
+    const base = await shortBase();
+    const edge = path.join(base, 'y'.repeat(107 - Buffer.byteLength(base) - '//sock'.length));
     expect(Buffer.byteLength(path.join(edge, 'sock'))).toBe(107);
 
     expect(await supervisor(() => true, { dir: edge }).start()).toEqual({ ok: true, reused: false });
