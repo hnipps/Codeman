@@ -11,6 +11,15 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 The cap stays 50 stored records, because the previous release's schema refuses a longer list, but only active records hold a place: a start on a full canvas evicts inactive ones oldest first. Active is a live session working now or active in the last hour, read from the pane's last output and input and the record's message times. Eviction is Remove, and the record goes even when Remove kept something, so a kept record never blocks a start: a dirty worktree stays on disk for the left-behind list, and a session that would not close stays in the session list. Rejected: raising the stored bound for kept records (breaks rollback), and keeping kept records (they could fill the canvas for good).
 
+## 2026-11-21 — pr-swarm runs start on submit and on a moved tip (W-112, ticket t4)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-watcher.ts`, `src/reviews/swarm-git.ts`, `src/reviews/swarm-runner.ts`, `src/web/routes/review-routes.ts`, `CLAUDE.md`, `docs/architecture-invariants.md`, `docs/api-reference.md`
+**Why:** The spec's `swarm-watcher.ts` entry leaves three choices open: which tip a move is measured from, where the watcher's timer lives, and where a refusal is kept.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work item W-112
+
+A move is measured from what the watcher read last, else the newest tip the review's runs recorded, else the submitted head. So a restart notices a push made while Codeman was down, a review submitted before this release whose branch moved since gets one run, and the fix a run pushed and reviewed starts nothing after the run, even when the watcher never saw the push (I8). The watcher rides the runner's minute tick through one `CleanupManager` interval instead of a second timer. A refusal is kept in memory and published on `GET .../swarm`, since the run file is strict and already shipped (rule 5 in spirit). A watched move goes through a new runner method, `tipMoved()`, so the model's `tip` event and I8's classifier decide it in one write; `trigger(..., 'push')` would have queued a run for the run's own commits when the run ended between the read and the write. One case is left as a change on purpose: fix commits pushed by a run that then ended `failed`, before the watcher saw them, queue a new run, since no finished run has reviewed them.
+
 ## 2026-11-21 — Agents design with impeccable, build in poteto-mode, and get an independent check before review
 
 **Type:** intent-refinement
