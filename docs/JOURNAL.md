@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — Agent-started Codex and Antigravity workers take their bypass from App Settings (W-130)
+
+**Type:** intent-refinement
+**Touches:** `src/config/cli-registry/stock.ts`, `src/web/launch-defaults.ts`, `src/web/schemas.ts`, `src/web/public/settings-ui.js`, `src/web/public/index.html`
+**Why:** A worker an agent starts sends no CLI config, so codex and agy stopped at their first approval with nobody to answer.
+**Links:** [intent/2026-11-21-agent-worker-bypass.md](../intent/2026-11-21-agent-worker-bypass.md)
+
+The bypass rides `capabilities.launchDefaults` like codex's model and effort: codex reads `codexDangerouslyBypassApprovals`, antigravity a new synced `antigravitySkipPermissions` (default off). `false` reads as unset, so a setting only turns a flag on and a value the caller sent always wins. The defaults are filled before the multi-user clamp, which forces them off for a non-granted owner. Rejected: a per-route branch for the two CLIs, which would put CLI ids in the routes.
+
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 
 **Type:** intent-refinement
