@@ -20,4 +20,4 @@ Another owner's review is never matched. A work review is never taken over. A de
 
 ## Open questions
 
-None.
+The work-review path is unchanged, so a session review left open by a worker not linked to the work item can still sit beside the work review of the same branch once a linked worker submits. Whether a work submit should close or absorb that session review is not decided here.

@@ -14,7 +14,7 @@ The cap stays 50 stored records, because the previous release's schema refuses a
 ## 2026-11-21 — A review is the owner's branch, not one session's (W-77)
 
 **Type:** intent-refinement
-**Touches:** `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `docs/architecture-invariants.md`
+**Touches:** `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `docs/architecture-invariants.md`, `docs/api-reference.md`, `test/review-page.test.ts`, `test/review-approve.test.ts`
 **Why:** A second worker on `spec/chat-graph` queued the branch twice on 2026-11-19, and a review's `sessionId` was hand-edited for spec-w70 after its author's pane ended.
 **Links:** [intent/2026-11-21-w77-review-resubmit-any-session.md](../intent/2026-11-21-w77-review-resubmit-any-session.md), Work item W-77
 
