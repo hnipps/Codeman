@@ -872,8 +872,23 @@ export function approveWork(
 }
 
 /**
- * Approve merged a review written by `sessionId`: an In progress item that links that session is done (W-70 I8). Any
- * other item, an item in any other status included, is returned as it is, so a second call changes nothing.
+ * Whether Approve of a review written by `sessionId` closes this item (W-70 I8, revised 2026-11-21): it links the
+ * session, the newest line of its history is the session's own write, so nobody else has written to it since, and that
+ * write left it waiting on the session's work. That is In progress held by the session, Human required on a question
+ * the session asked, or the session's own release (whichever status and question the release gave it).
+ */
+export function waitsOnSessionReview(item: WorkItem, sessionId: string): boolean {
+  if (workClosed(item.status) || !item.sessions.includes(sessionId)) return false;
+  const newest = item.history[0];
+  if (newest?.author.kind !== 'agent' || newest.author.sessionId !== sessionId) return false;
+  if (item.status === 'in-progress') return item.assignee?.kind === 'session' && item.assignee.sessionId === sessionId;
+  if (item.status === 'human-required' && item.needs?.sessionId === sessionId) return true;
+  return newest.text.startsWith(`${RELEASED}session ${sessionId} `);
+}
+
+/**
+ * Approve merged a review written by `sessionId`: each item `waitsOnSessionReview` picks is done (W-70 I8). Any other
+ * item is returned as it is, so a second call changes nothing.
  */
 export function closeLinkedWork(
   file: WorkFile,
@@ -886,8 +901,7 @@ export function closeLinkedWork(
   const refused = unchangeable(file, number, undefined);
   if (refused) return refused;
   const current = findWork(file, number)!;
-  if (current.status !== 'in-progress' || !current.sessions.includes(sessionId))
-    return { ok: true, file, item: current, filed: [], duplicate: false };
+  if (!waitsOnSessionReview(current, sessionId)) return { ok: true, file, item: current, filed: [], duplicate: false };
   const next = structuredClone(file);
   const item = findWork(next, number)!;
   const cleared = [item.needs && 'its question', item.changes && 'its requested changes'].filter(Boolean);

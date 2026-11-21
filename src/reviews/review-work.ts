@@ -3,7 +3,7 @@
  * review links its author session; so the items of a review are the open items, in its owner's canvas workspaces,
  * that link that session. Used when a review is handed to a new session (`POST /api/reviews/:id/new-session`): the
  * items go into the new session's prompt, and the new session is linked to them so the canvas follows the work.
- * Also used on Approve of a session's review: its In progress items move to Done (W-70 I8).
+ * Also used on Approve of a session's review: the items that session left waiting move to Done (W-70 I8).
  *
  * Reads tolerate a workspace whose work file cannot be read (it is skipped); a link that cannot be written is
  * reported, never thrown, since the hand-over itself has already happened by then.
