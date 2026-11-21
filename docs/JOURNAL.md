@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-21 — Work items wait in Blocked, tickets are marked, and only a session holds In progress (W-116, spec)
+
+**Type:** intent-refinement
+**Touches:** `src/canvas/work.ts`, `src/web/routine-runner.ts`, `src/canvas/routines.ts`, `src/reviews/` (Approve), `docs/architecture-invariants.md`, `CLAUDE.md`, `docs/subsystem-rules.md`, `src/mcp-server.ts`
+**Why:** Chains of items sat in Needs refinement with "blocked by W-n" in prose that nothing could read; a follow-up held W-70 open because I7 counted every item created from it; a person's In progress card could never be released; and Approve of a spec left its tickets to be filed by hand (W-68).
+**Links:** [intent/2026-11-21-w116-work-lifecycle.md](../intent/2026-11-21-w116-work-lifecycle.md), Work items W-116 and W-68
+
+Draft, for review. A new Blocked lane (stored as `todo` + `todoStatus: "blocked"`, so the previous release reads it as Needs refinement) holds items with a typed `dependsOn`; the tick moves one to Ready for work once every dependency is Done and merged, and asks a person if one is given up. Only `ticketOf` makes an item a ticket, never `createdFrom`. A person can no longer hold In progress: that work is Human required. A Ready item loses a session that ended, written as the server so W-70 I8 cannot close it. Rejected: inferring dependencies from prose; counting a Done dependency as enough without a merge; redirecting a person's move into In progress to Human required instead of refusing it; and unlinking ended sessions, which would break I8 revision 2. A parent follows its tickets once each time they all close, so a person's answer is not undone, and the cycle check covers ticket links, so a ticket cannot wait on its own parent; both came from the independent review. A multi-item Dafny model proves the new rules and W-70's kept ones; it also showed that W-70 I4 and I5 cannot hold as written once parents close from every open lane, and the spec supersedes both clauses.
+
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 
 **Type:** intent-refinement
