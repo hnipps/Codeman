@@ -91,7 +91,14 @@
     flashPin: null,
     composing: null,
     loadSeq: 0,
+    /** `GET /api/reviews/:id/swarm` for the open review: `{ swarm, chip, live, refusal }`, null until read. */
+    swarm: null,
+    /** A Run pr-swarm or Send again press is in flight. */
+    swarmBusy: false,
   };
+  const Swarm = window.CodemanReviewSwarm;
+  /** A server error reads `CODE: what happened`; the page shows what happened. */
+  const plainError = (message) => String(message).replace(/^[A-Z_]+: /, '');
 
   // ---------------------------------------------------------------- network
 
@@ -172,10 +179,14 @@
         const pill = el('span', 'rv-pill', STATE_LABEL[row.state] || row.state);
         pill.dataset.tone = STATE_TONE[row.state] || 'dim';
         const by = row.work ? row.work.key : row.sessionName || 'session';
-        line.append(
-          pill,
-          el('span', '', decidedRow ? `${by} · ${clock(row.decidedAt)}` : `${by} · ${ago(row.createdAt)}`)
-        );
+        line.append(pill);
+        const chip = Swarm && Swarm.chip(row.swarm);
+        if (chip) {
+          const swarmPill = el('span', 'rv-pill', chip.text);
+          swarmPill.dataset.tone = chip.tone;
+          line.append(swarmPill);
+        }
+        line.append(el('span', '', decidedRow ? `${by} · ${clock(row.decidedAt)}` : `${by} · ${ago(row.createdAt)}`));
         a.append(line);
         a.addEventListener('click', (event) => {
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
@@ -235,6 +246,8 @@
     $('rvFiles').replaceChildren();
     $('rvDiff').replaceChildren();
     $('rvNotes').hidden = true;
+    state.swarm = null;
+    renderSwarm();
     renderWorkItem();
   }
 
@@ -261,9 +274,11 @@
     state.picking = false;
     state.pinRects = new Map();
     state.flashPin = null;
+    state.swarm = null;
     closeComposer();
     renderWorkItem();
     renderQueue();
+    renderSwarm();
     let data;
     try {
       data = await api(`api/reviews/${encodeURIComponent(id)}`);
@@ -287,6 +302,7 @@
     setPane('doc');
     loadChanges(seq);
     loadPreview(seq);
+    loadSwarm(seq);
   }
 
   /** Reads the open review again after a change elsewhere, keeping the reader's place. */
@@ -330,6 +346,7 @@
       renderNotes();
       renderCaptures();
     }
+    renderSwarm();
   }
 
   function renderHeader() {
@@ -630,6 +647,244 @@
     renderNotice();
     renderCaptures();
     $('rvNotes').hidden = false;
+  }
+
+  // ---------------------------------------------------------------- pr-swarm
+
+  async function loadSwarm(seq) {
+    const id = state.id;
+    if (!id || !Swarm) return;
+    let data;
+    try {
+      data = await api(`api/reviews/${encodeURIComponent(id)}/swarm`);
+    } catch (_err) {
+      data = null;
+    }
+    if (seq !== state.loadSeq || id !== state.id) return;
+    state.swarm = data;
+    renderSwarm();
+  }
+
+  async function runSwarm() {
+    if (!state.id || state.swarmBusy) return;
+    const seq = state.loadSeq;
+    state.swarmBusy = true;
+    renderSwarm();
+    try {
+      await api(`api/reviews/${encodeURIComponent(state.id)}/swarm`, { method: 'POST', body: {} });
+      toast('pr-swarm is queued for the branch tip.', 'ok');
+    } catch (err) {
+      toast(plainError(err.message), 'bad');
+    }
+    state.swarmBusy = false;
+    await loadSwarm(seq);
+    renderSwarm();
+  }
+
+  async function resendSwarm() {
+    if (!state.id || state.swarmBusy) return;
+    const seq = state.loadSeq;
+    state.swarmBusy = true;
+    renderSwarm();
+    try {
+      await api(`api/reviews/${encodeURIComponent(state.id)}/swarm/resend`, { method: 'POST', body: {} });
+      toast('The findings were sent again.', 'ok');
+    } catch (err) {
+      toast(plainError(err.message), 'bad');
+    }
+    state.swarmBusy = false;
+    await loadSwarm(seq);
+    renderSwarm();
+  }
+
+  /** The top bar's pr-swarm group, the escalation line and the panel under the walkthrough, from `state.swarm`. */
+  function renderSwarm() {
+    const data = Swarm && state.review ? state.swarm : null;
+    const file = data && data.swarm;
+    $('rvSwarm').hidden = !data;
+    $('rvSwarmEscalation').hidden = true;
+    $('rvSwarmPanel').hidden = true;
+    if (!data) return;
+
+    const chip = Swarm.chip(data.chip);
+    const chipEl = $('rvSwarmChip');
+    chipEl.hidden = !chip;
+    if (chip) {
+      chipEl.textContent = chip.text;
+      chipEl.dataset.tone = chip.tone;
+    }
+    $('rvSwarmLine').textContent = Swarm.statusLine(file);
+    const active = Swarm.activeRun(file);
+    const session = $('rvSwarmSession');
+    session.hidden = !(active && active.sessionId);
+    if (active && active.sessionId) {
+      session.href = `session/${encodeURIComponent(active.sessionId)}`;
+      session.setAttribute('aria-label', 'Open the pr-swarm run session');
+    } else session.removeAttribute('href');
+    const button = Swarm.runButton(data, { busy: state.swarmBusy, decided: !!state.review.decision });
+    const run = $('rvSwarmRun');
+    run.textContent = button.text;
+    run.disabled = button.disabled;
+    run.title = button.title;
+
+    const why = Swarm.escalation(file);
+    const banner = $('rvSwarmEscalation');
+    banner.hidden = !why;
+    banner.textContent = why || '';
+
+    renderSwarmPanel(data);
+  }
+
+  const swarmPill = (text, tone) => {
+    const pill = el('span', 'rv-pill', text);
+    pill.dataset.tone = tone;
+    return pill;
+  };
+
+  function swarmList(title, items, build) {
+    const box = el('section', 'rv-swarm-section');
+    box.append(el('h3', '', `${title} · ${items.length}`));
+    const list = el('ol', 'rv-swarm-list');
+    for (const item of items) list.append(build(item));
+    box.append(list);
+    return box;
+  }
+
+  function renderSwarmPanel(data) {
+    const file = data.swarm;
+    const runs = (file && file.runs) || [];
+    const panel = $('rvSwarmPanel');
+    if (!runs.length && !data.refusal) return;
+    panel.hidden = false;
+    const latest = runs[0];
+    const summary = $('rvSwarmSummary');
+    summary.replaceChildren(el('span', 'rv-swarm-title', 'pr-swarm'));
+    if (latest) summary.append(swarmPill(Swarm.verdict(latest), Swarm.verdictTone(latest)));
+
+    const body = $('rvSwarmBody');
+    body.replaceChildren();
+    if (data.refusal) body.append(el('p', 'rv-swarm-warn', `pr-swarm cannot read this branch: ${data.refusal}`));
+    if (!latest) {
+      body.append(el('p', 'rv-dim', 'No run yet.'));
+      return;
+    }
+    body.append(el('div', 'rv-by', Swarm.runLine(latest, agoText)));
+    if (latest.state === 'failed') body.append(el('p', 'rv-swarm-warn', latest.reason));
+    if (latest.state === 'incomplete')
+      body.append(
+        el(
+          'p',
+          'rv-dim',
+          `The branch moved to ${shortSha(latest.branchTip)} after five rounds. No verdict, so nothing was sent; a new run is queued for the new tip.`
+        )
+      );
+
+    const result = latest.result;
+    if (result) {
+      if (result.degradations.length)
+        body.append(swarmList('Gaps in this review', result.degradations, (text) => el('li', '', text)));
+      if (result.findings.length) body.append(swarmList('Findings', result.findings, findingItem));
+      else body.append(el('p', 'rv-dim', 'No findings.'));
+      if (result.triage) body.append(triageSection(result.triage));
+    }
+    if (latest.r3) body.append(r3Section(latest.r3));
+
+    const send = Swarm.sendLine(latest, clock);
+    if (send) {
+      const line = el('div', 'rv-swarm-send');
+      line.append(el('span', send.failed ? 'rv-swarm-warn' : 'rv-dim', send.text));
+      if (send.failed) {
+        const again = el('button', 'rv-btn rv-btn-sm', state.swarmBusy ? 'Sending…' : 'Send again');
+        again.type = 'button';
+        again.disabled = state.swarmBusy || data.live === false;
+        again.addEventListener('click', resendSwarm);
+        line.append(again);
+      }
+      body.append(line);
+    }
+
+    const earlier = runs.slice(1);
+    if (earlier.length)
+      body.append(
+        swarmList('Earlier runs', earlier, (run) => {
+          const li = el('li', 'rv-swarm-run');
+          li.append(swarmPill(Swarm.verdict(run), Swarm.verdictTone(run)), el('span', '', Swarm.runLine(run, agoText)));
+          return li;
+        })
+      );
+  }
+
+  function findingItem(finding) {
+    const li = el('li', 'rv-swarm-finding');
+    const head = el('div', 'rv-swarm-finding-head');
+    if (finding.severity)
+      head.append(swarmPill(finding.severity, /block|crit|high/i.test(finding.severity) ? 'bad' : 'dim'));
+    if (finding.reviewer) head.append(el('span', 'rv-dim', finding.reviewer));
+    const href = Swarm.findingHref(finding);
+    if (href) {
+      const a = el('a', '', finding.line === 'general' ? finding.file : `${finding.file}:${finding.line}`);
+      a.href = href;
+      wireLink(a);
+      head.append(a);
+    }
+    li.append(head, el('p', 'rv-swarm-text', finding.body));
+    return li;
+  }
+
+  function triageSection(triage) {
+    const box = el('section', 'rv-swarm-section');
+    box.append(el('h3', '', 'Triage'));
+    const work = workOf();
+    if (triage.fixCommits.length) {
+      const p = el('p', 'rv-swarm-commits', 'Fixes pushed: ');
+      triage.fixCommits.forEach((sha, i) => {
+        if (i) p.append(', ');
+        const href = Swarm.commitHref(work && work.prUrl, sha);
+        if (href) {
+          const a = el('a', 'rv-mono', shortSha(sha));
+          a.href = href;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          p.append(a);
+        } else p.append(el('span', 'rv-mono', shortSha(sha)));
+      });
+      box.append(p);
+    } else box.append(el('p', 'rv-dim', 'No fixes pushed.'));
+    if (triage.deferred.length) {
+      const list = el('ol', 'rv-swarm-list');
+      for (const d of triage.deferred) {
+        const li = el('li', '');
+        li.append(el('span', 'rv-mono', d.location), el('p', 'rv-swarm-text', d.reason));
+        list.append(li);
+      }
+      box.append(el('p', 'rv-dim', 'Left for you:'), list);
+    }
+    return box;
+  }
+
+  function r3Section(r3) {
+    const box = el('section', 'rv-swarm-section');
+    const head = el('h3', '');
+    head.append(swarmPill(Swarm.r3Label(r3), Swarm.r3Tone(r3)));
+    if (r3.verdict !== 'unavailable') head.append(el('span', 'rv-dim', ` on ${shortSha(r3.tip)}`));
+    box.append(head);
+    if (r3.verdict === 'unavailable') {
+      box.append(el('p', 'rv-dim', `R-3 did not judge this run: ${r3.reason}. Nothing merges by itself.`));
+      return box;
+    }
+    const trigger = Swarm.r3Trigger(r3);
+    if (trigger) box.append(el('p', 'rv-swarm-warn', trigger));
+    const list = (title, items) => {
+      if (!items.length) return;
+      box.append(el('p', 'rv-dim', title));
+      const ol = el('ol', 'rv-swarm-list');
+      for (const text of items) ol.append(el('li', 'rv-swarm-text', text));
+      box.append(ol);
+    };
+    list('Findings', r3.findings);
+    list('Deviations from the spec', r3.deviations);
+    if (!r3.findings.length && !r3.deviations.length) box.append(el('p', 'rv-dim', 'No findings and no deviations.'));
+    return box;
   }
 
   // ---------------------------------------------------------------- walkthrough
@@ -2008,6 +2263,7 @@
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) $('rvComposer').requestSubmit();
       if (event.key === 'Escape') closeComposer();
     });
+    $('rvSwarmRun').addEventListener('click', runSwarm);
     $('rvTabPreview').addEventListener('click', () => setTab('preview'));
     $('rvTabChanges').addEventListener('click', () => setTab('changes'));
     $('rvTabCaptures').addEventListener('click', () => setTab('captures'));
@@ -2072,6 +2328,16 @@
         }
         loadQueue();
         if (changed && changed.id === state.id && !state.composing) refreshReview();
+      });
+      events.addEventListener('review:swarm', (event) => {
+        let changed = null;
+        try {
+          changed = JSON.parse(event.data);
+        } catch (_err) {
+          changed = null;
+        }
+        loadQueue();
+        if (changed && changed.id === state.id) loadSwarm(state.loadSeq);
       });
     } catch (_err) {
       /* No live updates; the page still works on reload. */
