@@ -276,6 +276,10 @@ describe('how a deploy ended', () => {
     expect(
       settledDeploy({ kind: 'merged', at: 1, mergedSha: 'a'.repeat(40) }, { ...base, recent: [] }, 2, false)
     ).toBeNull();
+    // A stacked review is left `merged` by Approve and is deployed once the live release contains its merge.
+    expect(
+      settledDeploy({ kind: 'merged', at: 1, mergedSha: 'a'.repeat(40) }, { ...base, recent: [] }, 2, true)
+    ).toEqual({ kind: 'deployed', at: 2, mergedSha: 'a'.repeat(40) });
   });
   it('reads a failed deploy as deployed once a later deploy ships the merge, and only then', () => {
     const failed: Decision = { ...deploying, kind: 'deploy-failed', error: 'The deploy failed at health' };
@@ -914,13 +918,13 @@ describe('approve routes', () => {
     expect(repo.git('rev-parse', 'main')).toBe(overview.live!.sha);
     expect(requestDeploy).not.toHaveBeenCalled();
 
-    vi.useFakeTimers({ now: Date.now() + 60_000, toFake: ['Date'] });
+    vi.useFakeTimers({ now: Date.now() + 30_000, toFake: ['Date'] });
     try {
       expect((await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review.state).toBe('merged');
       repo.git('checkout', '-q', 'main');
       repo.git('merge', '-q', '--no-ff', '-m', 'land the stack', 'stack');
       overview.live = { sha: repo.git('rev-parse', 'main'), since: 'u' };
-      vi.setSystemTime(Date.now() + 10_000);
+      vi.setSystemTime(Date.now() + 5_000);
       const review = (await harness.app.inject({ url: `/api/reviews/${id}` })).json().data.review;
       expect(review).toMatchObject({ state: 'deployed', decision: { mergedSha } });
       expect(requestDeploy).not.toHaveBeenCalled();

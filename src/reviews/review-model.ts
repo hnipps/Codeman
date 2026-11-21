@@ -361,7 +361,10 @@ export function settledDeploy(
   liveHasMerge: boolean
 ): Decision | null {
   if (!decision.mergedSha) return null;
-  if (liveHasMerge && (decision.kind === 'deploying' || decision.kind === 'deploy-failed')) {
+  if (
+    liveHasMerge &&
+    (decision.kind === 'deploying' || decision.kind === 'deploy-failed' || decision.kind === 'merged')
+  ) {
     const { error: _old, ...rest } = decision;
     return { ...rest, kind: 'deployed', at: now };
   }
