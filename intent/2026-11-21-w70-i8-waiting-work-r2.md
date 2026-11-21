@@ -34,6 +34,17 @@ The history line stays `Done: review <id> merged <sha7>`. When Done clears an op
 - *Not closed:* an item S only linked (a follow-up or idea it filed in Backlog or Needs refinement); an In progress item held by another session or the person; a Human required item whose question another session or a person asked, other than a release of S as in (c); an item whose question a person answered (answering clears `needs` and moves it to Needs refinement); an item released by another session, including one whose id starts with S's; a released item someone touched since (the release line is no longer newest); an item Ready, Backlog or Needs refinement for any other reason.
 - *Test:* a review written by S, and items linking S in each of (a), (b) and (c), (c) both with and without a waiting pull request, plus each "not closed" case above. After Approve, exactly (a), (b) and (c) are Done. (b) and (c) are also checked through the Approve route. A failed merge closes nothing. A second call changes nothing.
 
+## How this was checked
+
+- *Formal: proved.* [`2026-11-21-w70-i8-model.dfy`](2026-11-21-w70-i8-model.dfy) models one item with the session behind each write: claim, the person taking it, a report `ask`, a session's release and a routine run's release (I2, with and without a waiting pull request), Request changes (I6), an answer, and the writes that move nothing (comment, PR, link). `WaitsOn` is this revision's rule, as `waitsOnSessionReview()` implements it. Dafny 4.11.0 verifies it, 14 verified and 0 errors, and `dafny audit` reports 0 findings. It proves:
+  - *Sound* (`I8_ClosesOnlyWhatSLeftWaiting`): from any start and any sequence of writes, Approve of S's review closes an item only if the last write that moved its status, assignee or question was S's.
+  - *Complete where it should be* (`I8_ClosesWhatSJustLeft`): when the newest write is S's claim, S's question or S's exit, and S is still linked, it closes.
+  - *Idempotent* (`I8_Idempotent`): a closed item never matches again.
+  - *Revision 1's gaps, as counterexamples:* it closes another session's live item after Request changes (`Gap1_Rev1ClosesAnotherSessionsWork`); its (c) and its "not closed" list both apply to the pull-request release (`Gap2_Rev1ContradictsItself`); a run's release is out of reach of both revisions (`Gap3_RunWorkIsOutOfReach`).
+  - *A choice the model surfaced* (`Note_CommentAfterReleaseKeepsItOpen`): a comment after S's release keeps the item open, because the release line is no longer newest, while a comment after S's claim or question does not. Kept: it errs towards leaving work open, and a person who commented on a released item may well want to look at it.
+- *Mutation check.* Putting revision 1's wider (a) back into `WaitsOn`, or accepting any session's release in (c), each fails the soundness proof. So the proof is not vacuous.
+- *What this does not cover.* One item at a time, and the model is not the TypeScript: the link is the citations in the model and the tests in `test/review-approve.test.ts`, which build each case through the real `reportWork`, `releaseFor`/`applyRelease` and `updateWork`, and the Approve route. History truncation, timing and `expectedRevision` races are outside it.
+
 ## Constraints
 
 - The decision is read from the item alone (status, `needs.sessionId`, newest history line). No new stored field, no link to the review store.
