@@ -1,0 +1,3 @@
+# Every change adds its entry at the top of the journal, so two branches always touch the same lines.
+# Union keeps both entries. Approve reads this rule from the base branch tip (src/reviews/review-merge.ts).
+JOURNAL.md merge=union

@@ -14,6 +14,8 @@
  * - The branch must still point at the commit the reviewer was shown. Anything newer is refused, so what was read is
  *   what merges.
  * - A conflict is refused. Nothing resolves one here; the agent merges the base into its branch and submits again.
+ *   Merge attributes are read from the base tip (`--attr-source`, git 2.40+), so the `.gitattributes` files on the base
+ *   branch decide, for example, that `docs/JOURNAL.md` merges by union.
  * - `--no-verify` on the push: the reviewer's approval is the gate, and a repository's pre-push hook would otherwise
  *   run inside the Codeman server.
  *
@@ -141,7 +143,11 @@ export async function mergeReviewedBranch(
   if (!already) {
     let tree: string;
     try {
-      tree = line(await git(repoRoot, ['merge-tree', '--write-tree', '--no-messages', tip, head]));
+      // Merge attributes come from the base tip: the shared checkout's working tree may be on any branch, and the
+      // reviewed branch must not choose how it merges.
+      tree = line(
+        await git(repoRoot, [`--attr-source=${tip}`, 'merge-tree', '--write-tree', '--no-messages', tip, head])
+      );
     } catch (err) {
       return (err as { code?: unknown }).code === 1
         ? refuse(

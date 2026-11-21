@@ -3,7 +3,7 @@
  * The merges run against real temporary repositories. The supervisor is always a fake.
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -162,6 +162,42 @@ describe('the merge Approve makes', () => {
     // Nothing was pushed, and nothing local moved.
     expect(gitIn(repo.origin!)('rev-parse', 'main')).toBe(theirs('rev-parse', 'HEAD'));
     expect(repo.git('status', '--porcelain')).toBe('');
+  });
+
+  it('merges two new journal entries by union, with the rule read from the base tip, and still refuses other conflicts', async () => {
+    const repo = makeRepo({ remote: true });
+    const journal = join(repo.dir, 'docs', 'JOURNAL.md');
+    repo.git('checkout', '-q', 'main');
+    mkdirSync(dirname(journal));
+    writeFileSync(join(repo.dir, 'docs', '.gitattributes'), 'JOURNAL.md merge=union\n');
+    writeFileSync(journal, '# Journal\n\n## old\n');
+    repo.git('add', '.');
+    repo.git('commit', '-q', '-m', 'journal');
+    const addEntry = (branch: string, entry: string, extra?: [string, string]) => {
+      repo.git('checkout', '-q', '-B', branch, 'main');
+      writeFileSync(journal, readFileSync(journal, 'utf8').replace('# Journal\n\n', `# Journal\n\n## ${entry}\n\n`));
+      if (extra) writeFileSync(join(repo.dir, extra[0]), extra[1]);
+      repo.git('commit', '-q', '-am', entry);
+      return { ...input(repo), head: { from: 'local-first' as const, branch }, headSha: repo.git('rev-parse', branch) };
+    };
+    const mine = addEntry('feat/mine', 'mine');
+    const clash = addEntry('feat/clash', 'clash', ['a.txt', 'one\nclash\nthree\n']);
+    repo.git('checkout', '-q', 'main');
+    writeFileSync(journal, '# Journal\n\n## theirs\n\n## old\n');
+    writeFileSync(join(repo.dir, 'a.txt'), 'one\ntheirs\nthree\n');
+    repo.git('commit', '-q', '-am', 'theirs');
+    repo.git('push', '-q', 'origin', 'main');
+    // The shared checkout sits on a branch with no docs/.gitattributes, so only the base tip carries the rule.
+    repo.git('checkout', '-q', 'feat/x');
+
+    const result = await mergeReviewedBranch(mine);
+    if (!result.ok) throw new Error(result.message);
+    const merged = gitIn(repo.origin!)('show', 'main:docs/JOURNAL.md');
+    expect(merged).toContain('## theirs');
+    expect(merged).toContain('## mine');
+    expect(merged).toContain('## old');
+
+    expect(await mergeReviewedBranch(clash)).toMatchObject({ ok: false, code: 'CONFLICT' });
   });
 });
 
