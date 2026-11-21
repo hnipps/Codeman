@@ -7,11 +7,12 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { submitReview, type Review } from '../src/reviews/review-model.js';
 import type { R3Plan, RunTip } from '../src/reviews/swarm-git.js';
-import { activeRun } from '../src/reviews/swarm-model.js';
+import { activeRun, parseSwarmReport } from '../src/reviews/swarm-model.js';
 import {
   createSwarmRunner,
   FINISH_GRACE_MS,
   planR3,
+  r3Input,
   reportInput,
   ROUND_DELAY_MS,
   SILENCE_LIMIT_MS,
@@ -666,6 +667,65 @@ describe('reportInput', () => {
         { location: 'b.ts:2', reason: 'needs a design call' },
         { location: 'f3', reason: 'deferred' },
       ],
+    });
+  });
+
+  describe("/review-triage's r3 block (pr-swarm 0.5.0)", () => {
+    const triage = (r3: object) => ({
+      mode: 'local',
+      verdict: 'APPROVE',
+      pr_swarm_result: result(1, sha(1), 'APPROVE'),
+      commits: [],
+      dispositions: [],
+      r3,
+    });
+    const shaped = {
+      verdict: 'changes',
+      findings: [
+        { ref: 'Outcome 3', location: 'src/a.ts:12', body: 'The flag is never passed.', deferred: false },
+        { ref: null, location: 'general', body: 'Should this be per case?', deferred: true },
+      ],
+      deviations: [{ ref: 'I9', what: 'Reads the spec from a copy.', why: 'The copy is the merged text.' }],
+      tip: sha(1),
+      spec: '/d/spec.md',
+      poteto_skill: '/p/SKILL.md',
+      reason: null,
+    };
+
+    it('parses end to end into the run record shape', () => {
+      const parsed = parseSwarmReport(reportInput(triage(shaped), 1));
+      expect(parsed).toMatchObject({
+        ok: true,
+        report: {
+          r3: {
+            verdict: 'changes',
+            tip: sha(1),
+            findings: ['Outcome 3: The flag is never passed. (src/a.ts:12)', 'Should this be per case? [deferred]'],
+            deviations: ['I9: Reads the spec from a copy. Why it still holds: The copy is the merged text.'],
+          },
+        },
+      });
+    });
+
+    it('an unavailable result with a null tip parses, keeping its reason', () => {
+      const parsed = parseSwarmReport(
+        reportInput(triage({ verdict: 'unavailable', findings: [], deviations: [], tip: null, reason: 'ENOENT /p' }), 1)
+      );
+      expect(parsed).toMatchObject({ ok: true, report: { r3: { verdict: 'unavailable', reason: 'ENOENT /p' } } });
+    });
+
+    it("maps the skill's trigger ids onto the lifecycle's, and an unknown one to unavailable", () => {
+      const escalate = (trigger: string) => ({ ...shaped, verdict: 'escalate', trigger });
+      expect(r3Input(escalate('undescribed-change'))).toMatchObject({ trigger: 'unspecified-visible-change' });
+      expect(r3Input(escalate('outgrew-ticket'))).toMatchObject({ trigger: 'outgrew-ticket' });
+      expect(r3Input(escalate('vibes'))).toEqual({
+        verdict: 'unavailable',
+        reason: 'R-3 escalated with a trigger Codeman does not know: vibes',
+      });
+      expect(parseSwarmReport(reportInput(triage(escalate('undescribed-change')), 1))).toMatchObject({
+        ok: true,
+        report: { r3: { verdict: 'escalate', trigger: 'unspecified-visible-change' } },
+      });
     });
   });
 });

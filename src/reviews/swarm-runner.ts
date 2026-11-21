@@ -21,6 +21,8 @@ import {
   activeRun,
   applySwarmEvent,
   parseSwarmReport,
+  R3_TRIGGERS,
+  type R3Trigger,
   type SwarmAction,
   type SwarmEvent,
   type SwarmFile,
@@ -164,6 +166,46 @@ export function swarmRoundPrompt(i: { runId: string; round: number; tip: string 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown): string => (typeof v === 'string' ? v : '');
 
+/** `/review-triage`'s trigger ids that name one of the lifecycle's under another id. */
+const R3_TRIGGER_ALIASES: Record<string, R3Trigger> = { 'undescribed-change': 'unspecified-visible-change' };
+
+/**
+ * `/review-triage`'s `r3` block (pr-swarm 0.5.0, Step 5b) as the model reads it. Findings (`ref`, `location`, `body`,
+ * `deferred`) and deviations (`ref`, `what`, `why`) become one line each, and a `null` tip or reason is left out. An
+ * escalation whose trigger the lifecycle's list does not hold becomes `unavailable` naming it, so the pr-swarm result
+ * still lands and nothing it would gate merges. Anything else passes through for the model to judge.
+ */
+export function r3Input(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const line = (parts: string[]): string => parts.filter(Boolean).join(' ');
+  const finding = (f: unknown): unknown => {
+    if (!isRecord(f)) return f;
+    const where = text(f.location) && text(f.location) !== 'general' ? `(${text(f.location)})` : '';
+    return line([text(f.ref) ? `${text(f.ref)}:` : '', text(f.body), where, f.deferred === true ? '[deferred]' : '']);
+  };
+  const deviation = (d: unknown): unknown =>
+    isRecord(d)
+      ? line([
+          text(d.ref) ? `${text(d.ref)}:` : '',
+          text(d.what),
+          text(d.why) ? `Why it still holds: ${text(d.why)}` : '',
+        ])
+      : d;
+  const out: Record<string, unknown> = { verdict: raw.verdict };
+  if (Array.isArray(raw.findings)) out.findings = raw.findings.map(finding);
+  if (Array.isArray(raw.deviations)) out.deviations = raw.deviations.map(deviation);
+  if (raw.tip !== null && raw.tip !== undefined) out.tip = raw.tip;
+  if (raw.reason !== null && raw.reason !== undefined) out.reason = raw.reason;
+  if (raw.verdict === 'escalate') {
+    const id = text(raw.trigger);
+    const trigger = (R3_TRIGGERS as readonly string[]).includes(id) ? (id as R3Trigger) : R3_TRIGGER_ALIASES[id];
+    if (!trigger)
+      return { verdict: 'unavailable', reason: `R-3 escalated with a trigger Codeman does not know: ${id || 'none'}` };
+    out.trigger = trigger;
+  }
+  return out;
+}
+
 /**
  * Turns what the session reports into pr-swarm's return contract. pr-swarm's own result passes through. A
  * `/review-triage --local` result carries the last pr-swarm result in `pr_swarm_result`: its pushed fix commits and
@@ -185,7 +227,7 @@ export function reportInput(json: unknown, round: number): unknown {
           reason: text(u.reason) || text(u.gate) || 'deferred',
         })),
     },
-    ...(json.r3 !== undefined ? { r3: json.r3 } : {}),
+    ...(json.r3 !== undefined ? { r3: r3Input(json.r3) } : {}),
   };
 }
 
