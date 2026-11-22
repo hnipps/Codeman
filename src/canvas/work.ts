@@ -850,6 +850,9 @@ export function requestChangesOnWork(
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }
 
+/** The history line `escalateWork` writes, which is how an escalation finds the items it moved. */
+export const ESCALATED_LINE = 'Escalated to a person by an automated review';
+
 /**
  * An automated review escalated to the owner (pr-swarm, `intent/2026-11-20-pr-swarm-reviews.md` I6): the item moves to
  * Human required with `note` as its question, so it shows as Needs you, and as a comment in its thread. Any review
@@ -870,7 +873,7 @@ export function escalateWork(file: WorkFile, number: number, note: string, ctx: 
   if (item.status !== 'human-required') setStatus(next, item, 'human-required', ctx);
   item.needs = { question: text, at: ctx.now };
   item.comments = [...item.comments, { at: ctx.now, author: ctx.author, text }];
-  log(item, ctx, 'Escalated to a person by an automated review');
+  log(item, ctx, ESCALATED_LINE);
   touch(item, ctx);
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }

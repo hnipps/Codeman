@@ -35,6 +35,7 @@ import {
   type Review,
 } from '../src/reviews/review-model.js';
 import { readReview } from '../src/reviews/review-store.js';
+import { escalationHeld } from '../src/reviews/review-work.js';
 import { syncedReview, walkthroughOf, wanted, workReviewId } from '../src/reviews/work-review-model.js';
 import { createWorkReviews } from '../src/reviews/work-reviews.js';
 
@@ -198,6 +199,25 @@ describe('work item changes a review makes', () => {
       ok: false,
       code: 'INVALID_INPUT',
     });
+  });
+
+  it('escalationHeld: only an item the escalation moved holds it, and leaving Human required releases it', () => {
+    const agent = { author: { kind: 'agent' as const, sessionId: 'swarm-session' }, now: 2000 };
+    const moved = escalateWork(itemFile(), 1, 'note', agent);
+    if (!moved.ok) throw new Error(moved.message);
+    const w = (item: typeof moved.item) => ({ workspaceId: 'ws', number: 1, item });
+    expect(escalationHeld([w(moved.item)], 2000)).toBe(true);
+    // An item the escalation refused (Backlog) never held it, so the tick must not read it as answered.
+    const backlog = itemFile({ status: 'backlog' }).items[0];
+    expect(escalationHeld([w(backlog)], 2000)).toBeNull();
+    // An older escalation's line does not count for a newer one.
+    expect(escalationHeld([w(moved.item)], 2001)).toBeNull();
+    const answered = updateWork(moved.file, 1, UpdateWorkSchema.parse({ needs: null }), {
+      ...ctx,
+      now: 3000,
+    });
+    if (!answered.ok) throw new Error(answered.message);
+    expect(escalationHeld([w(answered.item), w(backlog)], 2000)).toBe(false);
   });
 
   it('Approve: the item is done, with the merge in its history; once', () => {

@@ -13,6 +13,7 @@ import { changeWork, readWork } from '../canvas/work-store.js';
 import {
   WORK_STATUS_NAMES,
   MAX_WORK_NOTE_CHARS,
+  ESCALATED_LINE,
   closeLinkedWork,
   commentWork,
   escalateWork,
@@ -164,6 +165,16 @@ export function escalateReviewWork(items: ReviewWorkItem[], note: string, author
     }
   }
   return out;
+}
+
+/**
+ * Whether an escalation made at `since` still waits in the items: true while one of the items it moved is in Human
+ * required, false once all have left it, null when it moved none of them. Only the items it moved count: one it
+ * refused (Backlog, a full thread) never held it, so it can never clear it.
+ */
+export function escalationHeld(items: ReviewWorkItem[], since: number): boolean | null {
+  const moved = items.filter((w) => w.item.history.some((e) => e.at >= since && e.text === ESCALATED_LINE));
+  return moved.length ? moved.some((w) => w.item.status === 'human-required') : null;
 }
 
 /** Adds `text` as a comment to each item. Returns the workspaces that changed; an item that refuses it is skipped. */

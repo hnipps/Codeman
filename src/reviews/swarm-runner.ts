@@ -294,10 +294,11 @@ export interface SwarmRunnerDeps {
    */
   escalate(review: Review, run: FlaggedRun, note: string): Promise<string>;
   /**
-   * Whether the review's escalation still waits in a work item: true while one of its open items is in Human
-   * required, false once all have left it, null when the review has no open item to wait in.
+   * Whether the review's escalation, made at `since`, still waits in a work item: true while one of the open items it
+   * moved is in Human required, false once all have left it, null when it moved no item that is still open (it went
+   * out as a notification, or every item refused it), so the tick never clears it.
    */
-  escalationHeld(review: Review): boolean | null;
+  escalationHeld(review: Review, since: number): boolean | null;
   /** The Approve button's own function, for a run whose automatic Approve `decideAutoApprove()` allowed (I4). */
   approve(
     review: Review,
@@ -523,7 +524,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       if (!isOpen(review) || escalating.has(review.id)) continue;
       const read = readSwarm(review.id);
       if (!read.ok || !read.file.escalated) continue;
-      if (deps.escalationHeld(review) === false) apply(review.id, { type: 'clear' });
+      if (deps.escalationHeld(review, read.file.escalated.at) === false) apply(review.id, { type: 'clear' });
     }
   };
 

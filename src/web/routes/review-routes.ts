@@ -143,6 +143,7 @@ import {
   closeSessionWork,
   commentReviewWork,
   escalateReviewWork,
+  escalationHeld,
   handoverWork,
   reviewWorkItems,
   linkSessionToWork,
@@ -1432,10 +1433,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         });
         return `a notification went out${failed ? `; no item moved: ${failed}` : ''}`;
       },
-      escalationHeld: (review) => {
-        const items = reviewWorkItems(review);
-        return items.length ? items.some((w) => w.item.status === 'human-required') : null;
-      },
+      escalationHeld: (review, since) => escalationHeld(reviewWorkItems(review), since),
       approve: async (review, run, tip) => {
         const approved = await approveReview(review, tip, { kind: 'swarm', runId: run.id, sessionId: run.sessionId });
         return approved.ok ? { ok: true } : { ok: false, message: approved.message };
