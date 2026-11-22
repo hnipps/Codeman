@@ -633,6 +633,42 @@ function hasTrailer(message: string): boolean {
   return (blocks[blocks.length - 1] ?? '').split('\n').some((l) => l.trim() === SWARM_TRAILER);
 }
 
+const R3_TRIGGER_TEXT: Readonly<Record<R3Trigger, string>> = {
+  'outcome-changed': 'the work changes an outcome the spec promised',
+  'constraint-broken': 'the work breaks a constraint of the spec',
+  'unspecified-visible-change': 'the work makes a visible change the spec does not ask for',
+  'outgrew-ticket': 'the work outgrew its ticket',
+  'unresolved-disagreement': 'the reviewers and the builder disagree and nothing settled it',
+  unverifiable: 'the work could not be verified',
+  'deploy-fix-failed': 'a fix for a failed deploy failed',
+};
+
+const verdictText = (run: SwarmRun | undefined): string => {
+  if (!run || (run.state !== 'changes' && run.state !== 'blocked')) return 'an earlier verdict';
+  const r3 = run.r3 && run.r3.verdict !== 'pass' && run.r3.verdict !== 'unavailable' ? `, R-3 ${run.r3.verdict}` : '';
+  return `${run.result.verdict}${r3} on ${run.reviewedTip.slice(0, 7)} (run ${run.id})`;
+};
+
+/**
+ * The comment an escalation leaves on each open work item of the review, and the notification's text when it has none
+ * (I6): which review, why, and what the owner has to decide. Nothing was sent to an agent.
+ */
+export function swarmEscalationNote(review: Review, file: SwarmFile, escalation: SwarmEscalation): string {
+  const runOf = (id: string) => file.runs.find((r) => r.id === id);
+  const why =
+    escalation.kind === 'streak'
+      ? `pr-swarm gave two non-approve verdicts in a row: ${escalation.runIds
+          .map((id) => verdictText(runOf(id)))
+          .join('; the one before it, ')}.`
+      : `R-3 escalated because ${R3_TRIGGER_TEXT[escalation.trigger]}: ${verdictText(runOf(escalation.runId))}.`;
+  return [
+    `pr-swarm escalated the review "${review.title}" (branch ${review.branch}, reviews/${review.id}) to you. ${why}`,
+    'Nothing was sent to an agent and nothing merges by itself until you act. Read the findings on the Reviews page,',
+    'then send notes, approve, close the review, or press Run pr-swarm. Moving this item out of Human required also',
+    'clears the escalation.',
+  ].join(' ');
+}
+
 /** Agent text after its marker, every later line indented, so only the prompt's own lines start at column 0. */
 const marked = (marker: string, text: string): string[] => {
   const [first = '', ...rest] = text.split('\n');

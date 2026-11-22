@@ -39,7 +39,7 @@ import {
   type SwarmRun,
   type SwarmVerdict,
 } from '../src/reviews/swarm-model.js';
-import { changeSwarm, readSwarm, writeSwarm } from '../src/reviews/swarm-store.js';
+import { changeSwarm, readSwarm } from '../src/reviews/swarm-store.js';
 import frozenReviewFile from './fixtures/review-file-schema.v1.json' with { type: 'json' };
 
 const sha = (n: number): string => n.toString(16).padStart(40, '0');
@@ -704,7 +704,7 @@ describe('I7 ReviewFilesUnchanged', () => {
       const d = driver(emptySwarmFile(review.id));
       runOnce(d, 'REQUEST_CHANGES');
       runOnce(d, 'APPROVE');
-      writeSwarm(d.file);
+      expect(changeSwarm(review.id, () => ({ file: d.file }))).toMatchObject({ ok: true });
     }
 
     const names = readdirSync(dataPath('reviews'));
@@ -735,9 +735,9 @@ describe('I7 ReviewFilesUnchanged', () => {
     const id = 'dddddddddddddddd';
     expect(readSwarm(id)).toEqual({ ok: true, file: emptySwarmFile(id) });
     deployRole.enter('retired');
-    expect(() => writeSwarm(emptySwarmFile(id))).toThrow();
+    expect(() => changeSwarm(id, (file) => ({ file: { ...file, streak: 1 } }))).toThrow();
     deployRole.enter('live');
-    writeSwarm({ ...emptySwarmFile(id), streak: 1 });
+    changeSwarm(id, (file) => ({ file: { ...file, streak: 1 } }));
     expect(readSwarm(id)).toMatchObject({ ok: true, file: { streak: 1 } });
 
     const path = dataPath('reviews', `${id}.swarm.json`);
@@ -747,6 +747,21 @@ describe('I7 ReviewFilesUnchanged', () => {
     const result = changeSwarm(id, (file) => ({ file: { ...file, streak: 5 } }));
     expect(result).toEqual({ ok: false, reason: 'newer' });
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ version: 2 });
+  });
+
+  it('a change whose file fails the schema or names another review answers invalid and leaves the file alone', () => {
+    const id = 'ffffffffffffffff';
+    changeSwarm(id, (file) => ({ file: { ...file, streak: 2 } }));
+    const path = dataPath('reviews', `${id}.swarm.json`);
+    const before = readFileSync(path, 'utf8');
+
+    expect(changeSwarm(id, (file) => ({ file: { ...file, streak: -1 } }))).toEqual({ ok: false, reason: 'invalid' });
+    expect(changeSwarm(id, (file) => ({ file: { ...file, reviewId: 'eeeeeeeeeeeeeeee' } }))).toEqual({
+      ok: false,
+      reason: 'invalid',
+    });
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(readdirSync(dataPath('reviews'))).not.toContain('eeeeeeeeeeeeeeee.swarm.json');
   });
 });
 
