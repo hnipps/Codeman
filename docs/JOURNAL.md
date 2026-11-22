@@ -10,6 +10,14 @@ Newest entries first. After an entry is on the default branch, correct it with a
 **Links:** [intent/2026-11-19-ambient-capture.md](../intent/2026-11-19-ambient-capture.md) (I2, I9), Work item W-95
 
 The overlay, the `under` reader and the `capture.json` builder live in `capture-layer.js`, loaded after `capture.js`, so `freeze()` stays the small core tickets 1, 2 and 7 pinned. Send builds the bundle and passes it to a function registered with `CodemanCaptureLayer.setSender()`; ticket 4's filing registers one. With none, or when it throws, the panel says why and keeps the capture, the same shape I7's refusal needs. The outline path is rounded to 0.1 CSS px before anything draws it, so the stored path redraws the marked pictures exactly. `under` keeps the spec's 24 entries and 2000 characters (the bridge's own `maxElements` is 50). Enter on the hint skips the outline, so a keyboard-only person can still file a capture; the marked pictures are then the clean one. The bridge's polygon answer is asked only of bridged frames directly in the top document, because the bridge answers its parent alone.
+## 2026-11-22 — Chat Graph routing records its decision in the route op, and the first decision stands (W-81)
+
+**Type:** intent-refinement
+**Touches:** `chat-graph/route/`, `chat-graph/routing.go`, `chat-graph/store/`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** Ticket 3 of the Chat Graph spec. The spec named `Decide` and the bands but left open how a retried route answers, where explicit signals and the reactivate offer are recorded, and how the retrieval weight is set.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I3, I4, I5), Work item W-81
+
+The `route` op gains three `omitempty` fields (`source`, `resolvedText`, `reactivate`), so a retry is answered from the stored op by the same function as the first answer, and a plain route op's canonical request is unchanged. A retry with a different body does not re-decide: the first decision stands, and a person fixes it with a move. A new topic's id defaults to the message id, which is unique because a message creates at most one topic. `Decide` takes `route.Scored` (id, status, score) only, so activation cannot reach the bands (I4) by construction. Statuses are read from the store, never the request. The similarity weight is 5, a placeholder until the correction log can tune it. Reads are not touches yet, so every GET stays a read. Rejected: re-deciding on retry (a timed-out first call could then file a message twice), and storing the reactivate offer outside the op (a retry could not repeat it).
 
 ## 2026-11-21 — The Chat Graph store vendors SQLite for Linux only and keeps I1 in its schema (W-80)
 

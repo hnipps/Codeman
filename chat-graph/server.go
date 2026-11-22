@@ -61,6 +61,7 @@ func newHandler(st *store.Store) http.Handler {
 		topic, err := st.Topic(r.PathValue("id"))
 		respond(w, topic, err)
 	})
+	registerRouting(mux, st)
 	return mux
 }
 
