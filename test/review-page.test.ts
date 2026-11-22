@@ -445,7 +445,7 @@ describe('review routes', () => {
   });
 
   it('reviews the branch of the caller’s folder when it is a worktree of the session’s repository, and nothing else', async () => {
-    const tree = join(realpathSync(mkdtempSync(join(tmpdir(), 'review-tree-'))), 'wt');
+    const tree = join(realpathSync(mkdtempSync(join(tmpdir(), 'review-tree-'))), 'wt (copy)');
     const other = makeRepo();
     const git = (cwd: string, ...args: string[]) =>
       execFileSync(
@@ -479,7 +479,7 @@ describe('review routes', () => {
       const unrelated = await send(other);
       expect(unrelated.statusCode).toBe(400);
       expect(unrelated.json().error).toContain('NOT_THIS_REPO');
-      for (const bad of [join(tree, 'nope'), join(tree, 'y.txt'), 'relative/path', `${tree}/../wt`]) {
+      for (const bad of [join(tree, 'nope'), join(tree, 'y.txt'), 'relative/path', `${tree}/../wt (copy)`]) {
         const res = await send(bad);
         expect(res.statusCode, bad).toBe(400);
       }

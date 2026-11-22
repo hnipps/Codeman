@@ -10,7 +10,6 @@
  */
 import { z } from 'zod';
 import { ReviewAnchorSchema, MAX_NOTES_PER_SEND } from '../canvas/review-schema.js';
-import { isValidWorkingDir } from '../web/schemas.js';
 
 export const MAX_TITLE_CHARS = 140;
 export const MAX_WALKTHROUGH_CHARS = 60_000;
@@ -264,7 +263,8 @@ export const isOpen = (r: Review): boolean => r.decision === undefined || r.deci
 /**
  * What an agent sends. The server supplies everything else from the session and the repository. `cwd` is the folder
  * the caller runs in (a subagent shares its parent's session but may work in a worktree); the server reads the branch
- * there, and only when it is the same repository as the session's folder.
+ * there, and only when it is the same repository as the session's folder. Git takes it as an argument, never through
+ * a shell, so any folder name is accepted; this module is in the canvas browser bundle and imports no server module.
  */
 export const SubmitSchema = z
   .object({
@@ -279,7 +279,9 @@ export const SubmitSchema = z
     cwd: z
       .string()
       .max(1000)
-      .refine(isValidWorkingDir, { message: 'cwd must be an absolute path with no shell metacharacters or traversal' })
+      .refine((p) => p.startsWith('/') && !/[\0\r\n]/.test(p) && !p.split('/').includes('..'), {
+        message: 'cwd must be an absolute path with no .. segment',
+      })
       .optional(),
   })
   .strict();

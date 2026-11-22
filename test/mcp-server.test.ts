@@ -392,6 +392,20 @@ describe('the tools', () => {
     expect(result.structured).toMatchObject({ session_id: MINE, ready: true });
   });
 
+  it('submit_review passes the folder the agent names and adds none of its own', async () => {
+    const fake = fakeCodeman(undefined, {
+      'POST /api/v1/reviews': () => ok({ id: 'abcdef0123456789', revision: 1, state: 'ready', url: 'x' }),
+    });
+    const { tools, calls } = runner(config({ selfId: SELF }), fake);
+    await tools.run('submit_review', { title: 'T', walkthrough: 'W', cwd: '/work/tree' });
+    await tools.run('submit_review', { title: 'T', walkthrough: 'W' });
+    const posts = calls.filter((c) => c.path === '/api/v1/reviews');
+    expect(posts.map((c) => c.body)).toEqual([
+      { title: 'T', walkthrough: 'W', cwd: '/work/tree' },
+      { title: 'T', walkthrough: 'W' },
+    ]);
+  });
+
   it('start_session still returns the session id when only the readiness call fails', async () => {
     const busy = fakeCodeman(undefined, {
       'GET /api/v1/sessions/*': () => ({
