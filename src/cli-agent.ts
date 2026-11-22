@@ -1348,7 +1348,7 @@ export async function agentPreviewAdd(deps: AgentDeps, options: { name: string; 
 export const REVIEW_WALKTHROUGH_MAX_CHARS = 60_000;
 
 /**
- * `agent review submit` — hand this session's checked-out branch to the Reviews page with a walkthrough.
+ * `agent review submit` — hand the branch checked out in this process's folder to the Reviews page with a walkthrough.
  * A second submit for the same branch replaces the walkthrough of the review that is still open. The body carries
  * this process's folder (`cwd`), and the server takes the branch and commit checked out there, refusing a folder
  * outside the session's repository; a subagent in its own worktree shares its parent's session, so the session's
