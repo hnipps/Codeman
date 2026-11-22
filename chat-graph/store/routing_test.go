@@ -227,4 +227,12 @@ func TestCorrectionsRecordMovesThatStand(t *testing.T) {
 	if got, _ := s.Corrections(50); !reflect.DeepEqual(got, want[1:]) {
 		t.Fatalf("corrections after undoing op-move2: %+v, want %+v", got, want[1:])
 	}
+
+	mustApply(t, s, `{"id":"op-move3","kind":"move","messageId":"m1","from":"b","to":"a"}`)
+	addMsg(t, s, "m5")
+	mustApply(t, s, `{"id":"m5","kind":"route","messageId":"m5","topics":[{"topicId":"a"}],"source":"reply"}`)
+	mustApply(t, s, `{"id":"op-move4","kind":"move","messageId":"m5","from":"a","to":"b"}`)
+	if got, _ := s.Corrections(50); !reflect.DeepEqual(got, want[1:]) {
+		t.Fatalf("moves of a person's or a signal's edge logged a correction: %+v", got)
+	}
 }

@@ -264,8 +264,9 @@ func (a Attach) apply(t *opTx) error {
 }
 
 // A move is a person overriding where a message was filed, so the new edge
-// is the person's ("move") and carries no router confidence, and the
-// correction log records what the router got wrong.
+// is the person's ("move") and carries no router confidence. Moving a
+// router-filed edge is a correction the routing prompt learns from; moving
+// an edge a person or a signal chose records nothing.
 func (m Move) apply(t *opTx) error {
 	e, ok, err := t.liveEdge(m.MessageID, m.From)
 	if err != nil {
@@ -279,6 +280,9 @@ func (m Move) apply(t *opTx) error {
 	}
 	if err := t.addEdge(m.MessageID, m.To, "move", nil); err != nil {
 		return err
+	}
+	if e.Source != "route" {
+		return nil
 	}
 	_, err = t.tx.Exec(`INSERT INTO corrections (message_id, resolved_text, wrong_topic_id, right_topic_id, op_id, created_at)
 		SELECT id, coalesce(resolved_text, text), ?, ?, ?, ? FROM messages WHERE id = ?`,

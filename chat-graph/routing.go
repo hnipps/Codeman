@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -277,6 +278,13 @@ func routeMessage(st *store.Store, messageID string, b routeBody) (routeAnswer, 
 		return routeAnswer{}, err
 	}
 	res, err := st.Apply(op)
+	if errors.Is(err, store.ErrConflict) {
+		// A retry that overlapped the first call can decide differently and
+		// lose the race; it answers with the decision that won (I5).
+		if r, nts, res, ok, rerr := st.StoredRoute(messageID); rerr == nil && ok {
+			return describe(r, nts, res), nil
+		}
+	}
 	if err != nil {
 		return routeAnswer{}, err
 	}
