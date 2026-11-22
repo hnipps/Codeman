@@ -74,7 +74,7 @@ func (s *Store) AddMessage(m Message) error {
 // UnroutedMessages returns the ids of stored messages with no route op. A
 // route op's id is its message id.
 func (s *Store) UnroutedMessages() ([]string, error) {
-	rows, err := s.db.Query(`SELECT m.id FROM messages m LEFT JOIN ops o ON o.id = m.id WHERE o.id IS NULL ORDER BY m.ts, m.id`)
+	rows, err := s.db.Query(`SELECT m.id FROM messages m LEFT JOIN ops o ON o.id = m.id AND o.kind = 'route' WHERE o.id IS NULL ORDER BY m.ts, m.id`)
 	if err != nil {
 		return nil, err
 	}

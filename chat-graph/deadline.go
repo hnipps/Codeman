@@ -79,7 +79,11 @@ func (d *deadlines) seed(st *store.Store) error {
 func (d *deadlines) sweep(st *store.Store) {
 	for _, id := range d.expired() {
 		if _, err := routeMessage(st, id, routeBody{Unsorted: true}); err != nil {
+			// Try again after another deadline rather than leaving it unrouted until a restart.
 			log.Printf("chat-graph: filing %s to Unsorted: %v", id, err)
+			d.done(id)
+			d.add(id)
+			continue
 		}
 		d.done(id)
 	}

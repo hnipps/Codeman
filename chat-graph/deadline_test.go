@@ -137,3 +137,18 @@ func TestDeadlineSeedsFromTheStoreAfterARestart(t *testing.T) {
 		t.Fatalf("unrouted after the sweep: %v %v", ids, err)
 	}
 }
+
+// Invariant I2: EveryMessageLandsVisibly
+func TestDeadlineRetriesAFailedFiling(t *testing.T) {
+	_, st, dl, clock := deadlineHandler(t)
+	dl.add("ghost") // no such message: filing it fails
+	clock.at = clock.at.Add(routeDeadline)
+	dl.sweep(st)
+	if got := dl.expired(); len(got) != 0 {
+		t.Fatalf("a failed filing is retried every sweep: %v", got)
+	}
+	clock.at = clock.at.Add(routeDeadline)
+	if got := dl.expired(); len(got) != 1 || got[0] != "ghost" {
+		t.Fatalf("a failed filing was dropped: expired = %v", got)
+	}
+}

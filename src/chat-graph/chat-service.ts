@@ -138,7 +138,12 @@ export class ChatGraphService {
       routing = 'unsorted';
       answer = await this.routeUnsorted(messageId);
     }
-    if (!answer) return { messageId, kind, ts, routing: 'pending', chips: [] };
+    if (!answer) {
+      // The sidecar's own deadline files it; a capture still gets its acknowledgement (I10).
+      const pending: PostedMessage = { messageId, kind, ts, routing: 'pending', chips: [] };
+      if (kind === 'capture') pending.ack = 'Saved; it will be filed in a moment';
+      return pending;
+    }
     if (answer.decision.unsorted) routing = 'unsorted';
 
     const chips = await this.chips(answer.decision, titles);

@@ -184,6 +184,20 @@ describe('POST /api/chat-graph/messages', () => {
   });
 
   // Invariant I10: CapturesGetNoReply
+  it('still acknowledges a capture whose routing is left to the sidecar deadline', async () => {
+    runPrompt.mockImplementation(async () => {
+      sidecar.down = true;
+      throw new Error('gone');
+    });
+    const res = await post('/api/chat-graph/messages', { text: '> buy stamps' });
+    expect(res.json().data).toMatchObject({
+      kind: 'capture',
+      routing: 'pending',
+      ack: 'Saved; it will be filed in a moment',
+    });
+  });
+
+  // Invariant I10: CapturesGetNoReply
   it('stores a > message as a capture and answers only an acknowledgement', async () => {
     sidecar.candidates = [{ topicId: 'errands', title: 'Errands' }];
     runPrompt.mockResolvedValue('{"scores":[{"topicId":"errands","score":0.85}],"title":"Errands"}');
