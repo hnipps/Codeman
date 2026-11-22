@@ -551,6 +551,13 @@
     } catch {
       return fn();
     }
+    // Two tabs can both write: wait a jittered moment for the other tab's write to arrive, then go
+    // ahead only if the lease is still this tab's.
+    await new Promise((r) => global.setTimeout(r, 100 + Math.random() * 200));
+    if (read()?.owner !== leaseOwner) {
+      global.setTimeout(() => service?.drain(), LEASE_MS);
+      return undefined;
+    }
     const renew = global.setInterval(write, LEASE_MS / 4);
     try {
       return await fn();
