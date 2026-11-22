@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+
+	"codeman/chat-graph/route"
 )
 
 // opTx is one op's transaction. Every topic it changes is recorded in
@@ -181,7 +183,22 @@ func (t *opTx) addEdge(messageID, topicID, source string, confidence *float64) e
 	if err := t.insertEdge(messageID, topicID, source, confidence); err != nil {
 		return err
 	}
-	_, err := t.tx.Exec(`UPDATE topics SET last_active_at = max(last_active_at, ?) WHERE id = ?`, t.now, topicID)
+	if _, err := t.tx.Exec(`UPDATE topics SET last_active_at = max(last_active_at, ?) WHERE id = ?`, t.now, topicID); err != nil {
+		return err
+	}
+	return t.touch(topicID, messageID)
+}
+
+// touch records an attach for activation and keeps the topic's newest
+// route.MaxTouches. Undo's restored edges are history, not new activity,
+// so insertEdge writes none.
+func (t *opTx) touch(topicID, messageID string) error {
+	if _, err := t.tx.Exec(`INSERT INTO touches (topic_id, message_id, kind, at) VALUES (?, ?, 'attach', ?)`,
+		topicID, messageID, t.now); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(`DELETE FROM touches WHERE topic_id = ? AND id NOT IN
+		(SELECT id FROM touches WHERE topic_id = ? ORDER BY at DESC, id DESC LIMIT ?)`, topicID, topicID, route.MaxTouches)
 	return err
 }
 

@@ -40,7 +40,7 @@ type Change interface {
 }
 
 var kinds = map[Kind]struct {
-	parse func(raw []byte, opID string) (Change, error)
+	parse func(raw []byte) (Change, error)
 	// A route op files a message for the first time; undoing it would leave
 	// the message on no topic (invariant I2), so it is fixed by a move instead.
 	undoable bool
@@ -53,10 +53,20 @@ var kinds = map[Kind]struct {
 	KindArchive: {decode[Archive], true},
 }
 
+// Route's optional fields are omitempty so a plain route op's canonical
+// request, and so its replay check, is unchanged from before they existed.
 type Route struct {
 	MessageID string       `json:"messageId"`
 	Topics    []RouteTopic `json:"topics"`
+	// Source is "" for the router, else the explicit signal: reply, quote or chip.
+	Source       string `json:"source,omitempty"`
+	ResolvedText string `json:"resolvedText,omitempty"`
+	// Reactivate is the archived topic the new topic's chip offers back.
+	// It is recorded in the request only, so a replay can describe it.
+	Reactivate string `json:"reactivate,omitempty"`
 }
+
+var routeSources = map[string]bool{"": true, "reply": true, "quote": true, "chip": true}
 
 type RouteTopic struct {
 	TopicID    string   `json:"topicId"`
@@ -109,15 +119,24 @@ func ParseOp(raw []byte) (Op, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return Op{}, invalid("op body is not a JSON op")
 	}
-	if !validID(env.ID) {
-		return Op{}, invalid("op id %q", env.ID)
-	}
 	k, ok := kinds[env.Kind]
 	if !ok {
 		return Op{}, invalid("op kind %q", env.Kind)
 	}
+	change, err := k.parse(raw)
+	if err != nil {
+		return Op{}, err
+	}
+	return NewOp(env.ID, env.NewTopics, change)
+}
+
+// NewOp checks an op built in code exactly as ParseOp checks one from a body.
+func NewOp(id string, newTopics []NewTopic, change Change) (Op, error) {
+	if !validID(id) {
+		return Op{}, invalid("op id %q", id)
+	}
 	seen := map[string]bool{}
-	for _, nt := range env.NewTopics {
+	for _, nt := range newTopics {
 		if err := nt.validate(); err != nil {
 			return Op{}, err
 		}
@@ -126,20 +145,16 @@ func ParseOp(raw []byte) (Op, error) {
 		}
 		seen[nt.ID] = true
 	}
-	change, err := k.parse(raw, env.ID)
-	if err != nil {
+	if err := change.validate(id); err != nil {
 		return Op{}, err
 	}
-	return Op{ID: env.ID, NewTopics: env.NewTopics, Change: change}, nil
+	return Op{ID: id, NewTopics: newTopics, Change: change}, nil
 }
 
-func decode[C Change](raw []byte, opID string) (Change, error) {
+func decode[C Change](raw []byte) (Change, error) {
 	var c C
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, invalid("%s op fields", c.Kind())
-	}
-	if err := c.validate(opID); err != nil {
-		return nil, err
 	}
 	return c, nil
 }
@@ -162,6 +177,12 @@ func (r Route) validate(opID string) error {
 	}
 	if len(r.Topics) == 0 {
 		return invalid("route op %s names no topic", opID)
+	}
+	if !routeSources[r.Source] {
+		return invalid("route op %s source %q", opID, r.Source)
+	}
+	if r.Reactivate != "" && !validID(r.Reactivate) {
+		return invalid("route op %s reactivate %q", opID, r.Reactivate)
 	}
 	seen := map[string]bool{}
 	for _, rt := range r.Topics {
@@ -222,12 +243,20 @@ func (a Archive) validate(string) error {
 }
 
 func (r Route) apply(t *opTx) error {
+	source := r.Source
+	if source == "" {
+		source = "route"
+	}
 	for _, rt := range r.Topics {
-		if err := t.addEdge(r.MessageID, rt.TopicID, "route", rt.Confidence); err != nil {
+		if err := t.addEdge(r.MessageID, rt.TopicID, source, rt.Confidence); err != nil {
 			return err
 		}
 	}
-	return nil
+	if r.ResolvedText == "" {
+		return nil
+	}
+	_, err := t.tx.Exec(`UPDATE messages SET resolved_text = ? WHERE id = ? AND resolved_text IS NULL`, r.ResolvedText, r.MessageID)
+	return err
 }
 
 func (a Attach) apply(t *opTx) error {
@@ -235,7 +264,8 @@ func (a Attach) apply(t *opTx) error {
 }
 
 // A move is a person overriding where a message was filed, so the new edge
-// is the person's ("move") and carries no router confidence.
+// is the person's ("move") and carries no router confidence, and the
+// correction log records what the router got wrong.
 func (m Move) apply(t *opTx) error {
 	e, ok, err := t.liveEdge(m.MessageID, m.From)
 	if err != nil {
@@ -247,7 +277,13 @@ func (m Move) apply(t *opTx) error {
 	if err := t.removeEdge(e); err != nil {
 		return err
 	}
-	return t.addEdge(m.MessageID, m.To, "move", nil)
+	if err := t.addEdge(m.MessageID, m.To, "move", nil); err != nil {
+		return err
+	}
+	_, err = t.tx.Exec(`INSERT INTO corrections (message_id, resolved_text, wrong_topic_id, right_topic_id, op_id, created_at)
+		SELECT id, coalesce(resolved_text, text), ?, ?, ?, ? FROM messages WHERE id = ?`,
+		m.From, m.To, t.opID, t.now, m.MessageID)
+	return err
 }
 
 // Merge and split relocate memberships as they are, source and confidence included.
