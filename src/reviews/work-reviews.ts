@@ -8,6 +8,9 @@
  * when a work review's page is read, before Approve, and once after boot for items that have no review yet. Never on a
  * timer, and never for the polled queue read.
  *
+ * A new work review takes over the owner's open session reviews of the same branch (an agent that submitted before it
+ * set the item's pull request): the newest gives it its walkthrough, notes and stills, and every one closes, naming it.
+ *
  * Git runs in the repository of the workspace's case, and never for a remote or Docker case or for a repository at or
  * inside a Docker case workspace. The head is read from `origin` only (`headOf`). Only the live deploy colour writes,
  * checked at the moment of each write.
@@ -25,6 +28,7 @@ import { changeWork, readWork, subscribeWork } from '../canvas/work-store.js';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
 import { defaultBase, fetchHead, line, resolveHead, tryGit, validRef } from './review-git.js';
 import {
+  closeReview,
   isOpen,
   MAX_OPEN_REVIEWS,
   sourceOf,
@@ -34,8 +38,15 @@ import {
   type WorkFacts,
   type WorkRef,
 } from './review-model.js';
-import { changeReview, listReviews, readReview, writeReview } from './review-store.js';
-import { authorWorkReview, syncedReview, walkthroughOf, wanted, workReviewId } from './work-review-model.js';
+import { changeReview, copyCaptureFiles, listReviews, readReview, writeReview } from './review-store.js';
+import {
+  adoptSessionReview,
+  authorWorkReview,
+  syncedReview,
+  walkthroughOf,
+  wanted,
+  workReviewId,
+} from './work-review-model.js';
 
 export type SyncProblem = 'NO_BRANCH' | 'NO_BASE' | 'NO_REPO' | 'REFUSED' | 'FETCH_FAILED' | 'FULL' | 'NOT_LIVE';
 export type SyncResult =
@@ -112,6 +123,30 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     return running;
   };
 
+  const commonDir = async (cwd: string): Promise<string> =>
+    line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
+
+  /**
+   * Ids of the owner's open session reviews of `branch` in the repository at `repoRoot`. A session review records the
+   * top level of the folder it was submitted from, often a worktree, so the repository is matched by its common git
+   * directory, as `authorFor` matches it, never by the path.
+   */
+  const sessionReviewsOf = async (owner: string | null, repoRoot: string, branch: string): Promise<string[]> => {
+    const found = listReviews().filter(
+      (r) => isOpen(r) && sourceOf(r).kind === 'session' && r.owner === owner && r.branch === branch
+    );
+    if (!found.length) return [];
+    const mine = await commonDir(repoRoot);
+    if (!mine) return [];
+    const dirs = new Map<string, string>();
+    const ids: string[] = [];
+    for (const r of found) {
+      if (!dirs.has(r.repoRoot)) dirs.set(r.repoRoot, await commonDir(r.repoRoot));
+      if (dirs.get(r.repoRoot) === mine) ids.push(r.id);
+    }
+    return ids;
+  };
+
   const itemOf = (work: WorkRef): WorkItem | undefined => {
     const read = readWork(work.workspaceId);
     return read.ok ? findWork(read.file, work.number) : undefined;
@@ -179,6 +214,8 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     const base = item.pr.base ?? (await defaultBase(git, repoRoot));
     if (!base || !(await validRef(git, repoRoot, base)) || base === branch)
       return problem('NO_BASE', `no base branch to compare ${branch} with`);
+    const owner = workspace.owner ?? null;
+    const adoptable = existing ? [] : await sessionReviewsOf(owner, repoRoot, branch);
 
     // No await from here: the item and the review are read again and written in one tick.
     const fresh = itemOf(work);
@@ -187,9 +224,21 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     const open = againRead.ok ? againRead.review : undefined;
     if (!againRead.ok && againRead.reason !== 'missing')
       return problem('REFUSED', 'the review file could not be read; nothing was changed');
-    const owner = workspace.owner ?? null;
-    if (!open && listReviews().filter((r) => isOpen(r) && r.owner === owner).length >= MAX_OPEN_REVIEWS)
+    // A session review of this branch, submitted before the item had its pull request, is the same work: the new work
+    // review takes it over (the newest, when there are several) and every one of them closes, naming the work review.
+    const adopted = open
+      ? []
+      : adoptable.flatMap((rid) => {
+          const read = readReview(rid);
+          return read.ok && isOpen(read.review) && sourceOf(read.review).kind === 'session' ? [read.review] : [];
+        });
+    if (
+      !open &&
+      !adopted.length &&
+      listReviews().filter((r) => isOpen(r) && r.owner === owner).length >= MAX_OPEN_REVIEWS
+    )
       return problem('FULL', 'too many reviews are waiting; decide some first');
+    const at = now();
     const next = syncedReview(
       open,
       {
@@ -204,13 +253,22 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
       },
       work,
       id,
-      now()
+      at
     );
     if (next === open) return { review: next, changed: false };
     if (!deployRole.allows('persist')) return problem('NOT_LIVE', 'only the live colour writes reviews');
-    writeReview(next);
-    deps.announce(next);
-    return { review: next, changed: true };
+    const newest = adopted.reduce<Review | undefined>(
+      (a, r) => (!a || r.updatedAt > a.updatedAt || (r.updatedAt === a.updatedAt && r.id > a.id) ? r : a),
+      undefined
+    );
+    const written = newest ? adoptSessionReview(next, newest, copyCaptureFiles(newest, id)) : next;
+    writeReview(written);
+    deps.announce(written);
+    for (const r of adopted) {
+      const closed = changeReview(r.id, (current) => closeReview(current, at, id));
+      if (closed.ok) deps.announce(closed.review);
+    }
+    return { review: written, changed: true };
   };
 
   const facts: WorkReviews['facts'] = (reviews) => {
@@ -264,9 +322,6 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
       for (const item of [change.item, ...change.filed])
         if (item.pr) void sync({ workspaceId, number: item.number }).catch(() => undefined);
     });
-
-  const commonDir = async (cwd: string): Promise<string> =>
-    line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
 
   const authorFor: WorkReviews['authorFor'] = async (caller, repo, input) => {
     const owner = caller.owner || null;

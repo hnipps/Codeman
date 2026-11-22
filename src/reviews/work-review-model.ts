@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto';
 import { workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import {
+  type Capture,
   cleanLine,
   cleanText,
   keepCaptures,
@@ -107,6 +108,29 @@ export function authorWorkReview(
       at: now,
     },
     updatedAt: Math.max(now, review.updatedAt + 1),
+  };
+}
+
+/**
+ * A new work review that takes over an open session review of the same branch, written before the item had its pull
+ * request. The session's walkthrough becomes `authored`, as if the agent had submitted it to the work review, and its
+ * notes, its stills (those whose files were copied: `captures`) and its Request changes stamp come across. Only for a
+ * work review with nothing of its own yet: the one `syncedReview` just made.
+ */
+export function adoptSessionReview(review: Review, session: Review, captures: Capture[]): Review {
+  const { captures: _none, ...rest } = review;
+  return {
+    ...rest,
+    ...(captures.length ? { captures } : {}),
+    authored: {
+      sessionId: session.sessionId,
+      sessionName: session.sessionName,
+      walkthrough: session.walkthrough,
+      headSha: session.headSha,
+      at: session.updatedAt,
+    },
+    notes: session.notes,
+    ...(session.requestedAt !== undefined ? { requestedAt: session.requestedAt } : {}),
   };
 }
 

@@ -10,7 +10,10 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
+  constants as fsConstants,
+  copyFileSync,
   existsSync,
   lstatSync,
   fsyncSync,
@@ -160,6 +163,33 @@ export function findCaptureFile(review: Review, name: string): { path: string; s
   } catch {
     return null;
   }
+}
+
+/**
+ * Copies the stills of `from` that have a file into the folder of review `toId`, and returns those copied. The work
+ * review that adopts a session review takes its stills this way; the session review keeps its own files.
+ */
+export function copyCaptureFiles(from: Review, toId: string): Capture[] {
+  if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'may write reviews');
+  const id = ReviewIdSchema.parse(toId);
+  const copied: Capture[] = [];
+  for (const capture of from.captures ?? []) {
+    const found = findCaptureFile(from, capture.name);
+    if (!found) continue;
+    const dir = capturesDir(id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = `${dir}/${captureFile(capture)}`;
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      copyFileSync(found.path, tmp, fsConstants.COPYFILE_EXCL);
+      chmodSync(tmp, 0o600);
+      renameSync(tmp, path);
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+    copied.push(capture);
+  }
+  return copied;
 }
 
 /** Removes every still file the review's record no longer names. With no record left, the folder goes too. */

@@ -2,7 +2,8 @@
  * @fileoverview An agent's `codeman agent review submit` on the branch of a Work item it builds writes the item's work
  * review (`authored`, release 2 of `docs/work-review-walkthroughs-spec.md`) instead of making a session review. Real
  * temporary repositories: a bare origin, the case's clone, and the session in a `git worktree` of that clone, so the
- * repository match goes through the shared git common dir.
+ * repository match goes through the shared git common dir. A walkthrough submitted before the item had its pull request
+ * makes a session review, and the work review made when the pull request is set takes that session review over.
  *
  * Port: 0 (app.inject, no listener is used).
  */
@@ -16,6 +17,7 @@ import { createWork, CreateWorkSchema, updateWork, UpdateWorkSchema } from '../s
 import { changeWork } from '../src/canvas/work-store.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { putCapture, type Review } from '../src/reviews/review-model.js';
+import { readReview, writeReview } from '../src/reviews/review-store.js';
 import { authorWorkReview, syncedReview, workReviewId } from '../src/reviews/work-review-model.js';
 import { createWorkReviews } from '../src/reviews/work-reviews.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
@@ -97,6 +99,7 @@ describe('submitting on a work item branch', () => {
   let devDir: string;
   let wt: (...args: string[]) => string;
   let wtDir: string;
+  let repo: string;
   let workspaceId: string;
   let workReviews: ReturnType<typeof createWorkReviews>;
 
@@ -120,7 +123,7 @@ describe('submitting on a work item branch', () => {
     dev('commit', '-q', '-m', 'the work');
     dev('push', '-q', 'origin', 'build/w-1');
 
-    const repo = temp('rwa-case-');
+    repo = temp('rwa-case-');
     execFileSync('git', ['clone', '-q', origin, repo], { stdio: 'ignore' });
     const clone = gitIn(repo);
     clone('config', 'user.name', 't');
@@ -276,5 +279,113 @@ describe('submitting on a work item branch', () => {
       walkthrough: 'Other work',
     });
     expect((await page()).review.authored).toBeUndefined();
+  });
+  describe('a session review submitted before the item had its pull request', () => {
+    const sessionReviewFirst = async () => {
+      item({ sessions: [SESSION] });
+      const sent = await submit('Walkthrough written first');
+      expect(sent.statusCode).toBe(201);
+      const sessionId = sent.json().data.id as string;
+      expect((await putStill(sessionId, 'outline')).statusCode).toBe(200);
+      const note = await harness.app.inject({
+        method: 'POST',
+        url: `/api/reviews/${sessionId}/notes`,
+        payload: { at: { kind: 'capture', name: 'outline' }, text: 'Tighten the outline' },
+      });
+      expect(note.statusCode).toBe(200);
+      return sessionId;
+    };
+    const setPr = () => item({ pr: { url: URL1, branch: 'build/w-1' } });
+
+    it('is taken over by the work review: one open review with its walkthrough, stills and notes', async () => {
+      const sessionId = await sessionReviewFirst();
+      setPr();
+      expect(await workReviews.sync({ workspaceId, number: 1 })).toMatchObject({ changed: true });
+
+      const { review } = await page();
+      expect(review.authored).toMatchObject({
+        sessionId: SESSION,
+        walkthrough: 'Walkthrough written first',
+        headSha: gitIn(devDir)('rev-parse', 'HEAD'),
+      });
+      expect(review.captures).toMatchObject([{ name: 'outline', width: 4, height: 3 }]);
+      expect(review.notes).toMatchObject([{ text: 'Tighten the outline', at: { kind: 'capture', name: 'outline' } }]);
+      const still = await harness.app.inject({ url: `/api/reviews/${id()}/captures/outline` });
+      expect(still.statusCode).toBe(200);
+      expect(still.rawPayload.equals(png(4, 3))).toBe(true);
+
+      const closed = (await harness.app.inject({ url: `/api/reviews/${sessionId}` })).json().data;
+      expect(closed.review.decision).toMatchObject({ kind: 'closed', closedBy: id() });
+      expect(closed.adopted).toBe(true);
+      expect(closed.review.notes).toHaveLength(1);
+      expect((await queue()).waiting.map((r: { id: string }) => r.id)).toEqual([id()]);
+    });
+
+    it('a resubmission after the takeover writes onto the work review and opens no session review', async () => {
+      await sessionReviewFirst();
+      setPr();
+      await workReviews.sync({ workspaceId, number: 1 });
+      const again = await submit('Second walkthrough');
+      expect(again.statusCode).toBe(200);
+      expect(again.json().data.id).toBe(id());
+      expect((await page()).review.authored.walkthrough).toBe('Second walkthrough');
+      expect((await queue()).waiting.map((r: { id: string }) => r.id)).toEqual([id()]);
+    });
+
+    it('two syncs at once make one work review and close the session review once', async () => {
+      const sessionId = await sessionReviewFirst();
+      setPr();
+      const announced: Review[] = [];
+      const racing = createWorkReviews({
+        casePath: async () => repo,
+        dockerWorkspaces: async () => [],
+        announce: (r) => announced.push(r),
+      });
+      const ref = { workspaceId, number: 1 };
+      const results = await Promise.all([racing.sync(ref), racing.sync(ref)]);
+      expect(results.filter((r) => 'changed' in r && r.changed)).toHaveLength(1);
+      expect(announced.filter((r) => r.id === sessionId)).toHaveLength(1);
+      expect(announced.filter((r) => r.id === id())).toHaveLength(1);
+      expect((await page()).review.authored.walkthrough).toBe('Walkthrough written first');
+    });
+
+    it('takes the newest of several, closes every one, and leaves another owner and branch alone', async () => {
+      const newest = await sessionReviewFirst();
+      const read = readReview(newest);
+      if (!read.ok) throw new Error('missing');
+      const { captures: _c, ...plain } = read.review;
+      const older = { ...plain, id: 'aaaaaaaaaaaaaaa1', walkthrough: 'Older', notes: [], updatedAt: 1 };
+      const foreign = { ...older, id: 'aaaaaaaaaaaaaaa2', owner: 'someone-else' };
+      const elsewhere = { ...older, id: 'aaaaaaaaaaaaaaa3', branch: 'build/w-2' };
+      for (const r of [older, foreign, elsewhere]) writeReview(r);
+      setPr();
+      await workReviews.sync({ workspaceId, number: 1 });
+
+      expect((await page()).review.authored.walkthrough).toBe('Walkthrough written first');
+      const decision = (rid: string) => {
+        const r = readReview(rid);
+        return r.ok ? r.review.decision : 'missing';
+      };
+      expect(decision(newest)).toMatchObject({ kind: 'closed', closedBy: id() });
+      expect(decision(older.id)).toMatchObject({ kind: 'closed', closedBy: id() });
+      expect(decision(foreign.id)).toBeUndefined();
+      expect(decision(elsewhere.id)).toBeUndefined();
+    });
+
+    it('a session review closed by an Approve of the work review does not read as taken over', async () => {
+      await linked();
+      const work = readReview(id());
+      if (!work.ok) throw new Error('missing');
+      const superseded = {
+        ...work.review,
+        id: 'aaaaaaaaaaaaaaa4',
+        sessionId: SESSION,
+        sessionName: 'w1',
+        decision: { kind: 'closed' as const, at: work.review.createdAt + 5000, closedBy: id() },
+      };
+      writeReview(superseded);
+      const closed = (await harness.app.inject({ url: `/api/reviews/${superseded.id}` })).json().data;
+      expect(closed.adopted).toBe(false);
+    });
   });
 });
