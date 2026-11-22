@@ -172,6 +172,27 @@ removes the preview but cannot stop that server. Otherwise Delete stops the serv
 when the answer is a `409`, a `previewStop: "deferred"` or a `leftRunning`, a toast
 says what happened instead of reporting success.
 
+### The Previews drawer
+
+The **Previews** button in the toolbar (an icon left of the settings gear on a phone)
+opens one list of every preview you can see, from every session. The button shows how
+many are running. Each row shows the preview's name, port, session, state and uptime,
+with the longest running first, and has a **Delete** that works like the one in the
+switch. Tap a row to open that session with its Preview view. On a phone the list is
+a sheet from the bottom of the screen; on a wider screen it is a panel above the
+toolbar.
+
+Uptime counts from when the preview's web tab was created. A `PUT` that replaces a
+preview's server keeps the same web tab, so it does not reset the uptime. A `stopped`
+or `exited` preview shows its state and no uptime. The list is read again when you
+open the drawer and every 10 seconds while it is open, and a new or deleted preview
+shows at once. Servers listed under `leftRunning` are not rows: they have no preview
+left to open or delete.
+
+The drawer works from the keyboard: Tab moves through the rows and their Delete
+buttons and stays inside the drawer, Enter opens or deletes, and Escape closes it and
+puts focus back on the button.
+
 ## The sandbox, and when to turn it off
 
 Because a proxied dashboard is served from Codeman's own address, it is
@@ -338,4 +359,5 @@ then every API call fails, which looks like the dashboard being broken.
 | Limits                   | `src/config/webview-limits.ts`          |
 | Frontend                 | `src/web/public/webview-tabs.js`        |
 | Preview switch + badge   | `src/web/public/session-ui.js`          |
+| Previews drawer          | `src/web/public/webview-tabs.js`        |
 | Auth exemption           | `src/web/middleware/auth.ts`             |
