@@ -27,7 +27,9 @@ var errorCodes = []struct {
 // newHandler serves the store's routes. GET /health answers with this
 // process's pid, which is how Codeman tells its own child's answer from
 // another sidecar's on the socket.
-func newHandler(st *store.Store) http.Handler {
+// dl, when not nil, is given every newly stored message and told when one is
+// routed.
+func newHandler(st *store.Store, dl *deadlines) http.Handler {
 	health := []byte(fmt.Sprintf(`{"ok":true,"pid":%d}`, os.Getpid()))
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -38,6 +40,11 @@ func newHandler(st *store.Store) http.Handler {
 		m, err := parseBody(w, r, store.ParseMessage)
 		if err == nil {
 			err = st.AddMessage(m)
+		}
+		if err == nil {
+			if routed, rerr := st.Routed(m.ID); rerr == nil && !routed {
+				dl.add(m.ID)
+			}
 		}
 		respond(w, m, err)
 	})
@@ -61,7 +68,7 @@ func newHandler(st *store.Store) http.Handler {
 		topic, err := st.Topic(r.PathValue("id"))
 		respond(w, topic, err)
 	})
-	registerRouting(mux, st)
+	registerRouting(mux, st, dl)
 	return mux
 }
 

@@ -375,9 +375,9 @@ describe('types utility functions', () => {
       expect(ApiErrorCode.INTERNAL_ERROR).toBe('INTERNAL_ERROR');
     });
 
-    it('should have 14 error codes', () => {
+    it('should have 15 error codes', () => {
       const codes = Object.values(ApiErrorCode);
-      expect(codes).toHaveLength(14);
+      expect(codes).toHaveLength(15);
     });
 
     it('includes the multi-user error codes', () => {

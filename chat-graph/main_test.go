@@ -35,7 +35,7 @@ func TestHealthOnPrivateSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: newHandler(nil)}
+	srv := &http.Server{Handler: newHandler(nil, nil)}
 	go srv.Serve(ln)
 	defer srv.Close()
 

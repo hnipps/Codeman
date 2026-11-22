@@ -34,7 +34,14 @@ func notFoundf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{store.ErrNotFound}, args...)...)
 }
 
-func registerRouting(mux *http.ServeMux, st *store.Store) {
+// unsortedID is the topic a message lands in when routing fails or times
+// out (invariant I2). It is created by the first message filed there.
+const (
+	unsortedID    = "unsorted"
+	unsortedTitle = "Unsorted"
+)
+
+func registerRouting(mux *http.ServeMux, st *store.Store, dl *deadlines) {
 	mux.HandleFunc("POST /messages/{id}/candidates", func(w http.ResponseWriter, r *http.Request) {
 		body, err := parseBody(w, r, parseCandidatesBody)
 		var out candidatesAnswer
@@ -48,6 +55,9 @@ func registerRouting(mux *http.ServeMux, st *store.Store) {
 		var out routeAnswer
 		if err == nil {
 			out, err = routeMessage(st, r.PathValue("id"), body)
+		}
+		if err == nil {
+			dl.done(r.PathValue("id"))
 		}
 		respond(w, out, err)
 	})
@@ -161,6 +171,7 @@ type routeBody struct {
 		Title string `json:"title"`
 	} `json:"newTopic"`
 	ResolvedText string `json:"resolvedText"`
+	Unsorted     bool   `json:"unsorted"`
 }
 
 func parseRouteBody(raw []byte) (routeBody, error) {
@@ -169,8 +180,17 @@ func parseRouteBody(raw []byte) (routeBody, error) {
 		return b, invalidf("route body is not JSON")
 	}
 	scored := b.Scores != nil || b.Title != nil
-	if (b.Signal != nil) == scored {
-		return b, invalidf("a route body carries exactly one of signal and scores with title")
+	shapes := 0
+	for _, has := range []bool{b.Signal != nil, scored, b.Unsorted} {
+		if has {
+			shapes++
+		}
+	}
+	if shapes != 1 {
+		return b, invalidf("a route body carries exactly one of signal, scores with title, and unsorted")
+	}
+	if b.Unsorted {
+		return b, nil
 	}
 	if s := b.Signal; s != nil {
 		switch {
@@ -204,6 +224,8 @@ type wireDecision struct {
 	Attach     []wireAttachment `json:"attach"`
 	NewTopic   *store.NewTopic  `json:"newTopic,omitempty"`
 	Reactivate string           `json:"reactivate,omitempty"`
+	// Unsorted says the router did not file this message: the chip says so.
+	Unsorted bool `json:"unsorted,omitempty"`
 }
 
 type routeAnswer struct {
@@ -214,7 +236,7 @@ type routeAnswer struct {
 // describe renders a stored route op. The first answer and every replay
 // both come from here, so a retry after a timeout gets the same body (I5).
 func describe(r store.Route, newTopics []store.NewTopic, res store.OpResult) routeAnswer {
-	d := wireDecision{Attach: []wireAttachment{}, Reactivate: r.Reactivate}
+	d := wireDecision{Attach: []wireAttachment{}, Reactivate: r.Reactivate, Unsorted: r.Source == "unsorted"}
 	created := map[string]bool{}
 	for i := range newTopics {
 		created[newTopics[i].ID] = true
@@ -246,6 +268,9 @@ func routeMessage(st *store.Store, messageID string, b routeBody) (routeAnswer, 
 	}
 	if _, err := st.Message(messageID); err != nil {
 		return routeAnswer{}, err
+	}
+	if b.Unsorted {
+		return routeUnsorted(st, messageID)
 	}
 	var d route.Decision
 	var source string
@@ -289,6 +314,46 @@ func routeMessage(st *store.Store, messageID string, b routeBody) (routeAnswer, 
 		return routeAnswer{}, err
 	}
 	return describe(r, newTopics, res), nil
+}
+
+// routeUnsorted files a message to the Unsorted topic, creating it with the
+// same op when it does not exist. When Unsorted is archived or merged it is
+// left alone and the message gets an Unsorted topic of its own (I3).
+func routeUnsorted(st *store.Store, messageID string) (routeAnswer, error) {
+	for attempt := 0; ; attempt++ {
+		r := store.Route{MessageID: messageID, Source: "unsorted", Topics: []store.RouteTopic{{TopicID: unsortedID}}}
+		var newTopics []store.NewTopic
+		info, err := st.TopicInfos([]string{unsortedID})
+		if err != nil {
+			return routeAnswer{}, err
+		}
+		if existing, ok := info[unsortedID]; !ok {
+			newTopics = []store.NewTopic{{ID: unsortedID, Title: unsortedTitle}}
+		} else if existing.Status != route.StatusLive {
+			own := unsortedID + "-" + messageID
+			newTopics = []store.NewTopic{{ID: own, Title: unsortedTitle}}
+			r.Topics = []store.RouteTopic{{TopicID: own}}
+		}
+		op, err := store.NewOp(messageID, newTopics, r)
+		if err != nil {
+			return routeAnswer{}, err
+		}
+		res, err := st.Apply(op)
+		if errors.Is(err, store.ErrConflict) {
+			if r, nts, res, ok, rerr := st.StoredRoute(messageID); rerr == nil && ok {
+				return describe(r, nts, res), nil
+			}
+			// Another message created Unsorted between the read and the
+			// write: read again and attach to it.
+			if attempt == 0 {
+				continue
+			}
+		}
+		if err != nil {
+			return routeAnswer{}, err
+		}
+		return describe(r, newTopics, res), nil
+	}
 }
 
 // decideScores reads every scored topic's status from the store: the body

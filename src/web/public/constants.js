@@ -1977,6 +1977,9 @@ const SSE_EVENTS = {
   REVIEW_SWARM: 'review:swarm',
   CANVAS_VIEW_COMMAND: 'canvas:viewCommand',
   CANVAS_CONVERSATION: 'canvas:conversation',
+
+  // Chat Graph
+  CHAT_GRAPH_ROUTED: 'chat-graph:routed',
 };
 
 // ═══════════════════════════════════════════════════════════════

@@ -510,6 +510,9 @@ export const ReviewSwarm = 'review:swarm' as const;
 export const CanvasViewCommand = 'canvas:viewCommand' as const;
 /** A canvas conversation or background task was started, took a message or changed (`task`: cancelled, completed or removed; `removed`: a conversation evicted to make room on a full canvas). Payload `{ workspaceId, conversationId, change: 'created' | 'message' | 'task' | 'removed', owner }` (no `conversationId` when a left-behind task worktree was removed), no text; routed to the workspace owner and admins. The browser refetches the conversation. */
 export const CanvasConversation = 'canvas:conversation' as const;
+/** Chat Graph filed a person's message. Payload `{ messageId, kind, routing, chips }`: chips carry topic ids and
+ *  titles, never the message text. Chat Graph refuses multi-user mode, so it has no owner to route by. */
+export const ChatGraphRouted = 'chat-graph:routed' as const;
 
 // ─── Namespace Re-export ─────────────────────────────────────────────────────
 
@@ -742,4 +745,7 @@ export const SseEvent = {
   ReviewSwarm,
   CanvasViewCommand,
   CanvasConversation,
+
+  // Chat Graph
+  ChatGraphRouted,
 } as const;

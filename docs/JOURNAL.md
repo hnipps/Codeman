@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-22 — Chat Graph routing from Codeman: one Unsorted topic, a sidecar deadline, and helpers on Codeman's socket (W-82)
+
+**Type:** intent-refinement
+**Touches:** `chat-graph/deadline.go`, `chat-graph/routing.go`, `src/chat-graph/chat-service.ts`, `src/chat-graph/routing-prompt.ts`, `src/claude-prompt.ts`, `src/web/routes/chat-graph-routes.ts`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** Ticket 4 of the Chat Graph spec. The spec named the Unsorted fallback and the sidecar's 20 s deadline but not how Unsorted is identified, where the deadline lives, or what name a helper takes on Codeman's socket.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I2, I10), Work item W-82
+
+Unsorted is one topic with the fixed id `unsorted`, created by the first message filed there; when it is archived or merged, a message gets its own `unsorted-<id>` topic rather than reviving it (I3). The fallback is a fourth route body, `{"unsorted":true}`, so the sidecar decides it and records `source: unsorted` in the op. The deadline is in memory in the sidecar and seeded from unrouted messages at start, so a restart gives each a fresh 20 s; rejected: deriving it from the message's `ts`, which a later bootstrap replay (ticket 9) sets in the past. The routing call sees the retriever's candidates topped up with the most recently active live topics and the last 4 messages kept in Codeman's memory, because "ok do that" shares no words with its topic. Helpers move onto Codeman's socket under a `helper-` prefix, since boot reconcile adopts every `codeman-*` session there; the predictor's copy of the spawn code is deleted in favour of the one runner. Model and timeout are constants (Haiku, 15 s), not a setting yet.
+
 ## 2026-11-22 — The capture highlight layer is its own module and hands Send to a sender (W-95)
 
 **Type:** intent-refinement

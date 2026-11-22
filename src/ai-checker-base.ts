@@ -3,7 +3,7 @@
  *
  * Provides shared functionality for AI-powered checkers that spawn fresh Claude CLI
  * sessions to analyze terminal output. This base class handles:
- * - Mux session spawning and cleanup
+ * - Mux session spawning and cleanup (through claude-prompt.ts, on Codeman's socket)
  * - Temp file management for output capture
  * - Polling for completion markers
  * - Cooldown management
@@ -23,7 +23,6 @@
  * @module ai-checker-base
  */
 
-import { execSync, spawn as childSpawn } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,30 +30,7 @@ import { EventEmitter } from 'node:events';
 import { getAugmentedPath, ANSI_ESCAPE_PATTERN_SIMPLE } from './utils/index.js';
 import { AI_CHECK_MAX_BACKOFF_MS } from './config/ai-defaults.js';
 import { getErrorMessage } from './types.js';
-
-// ========== Security Validation ==========
-
-/**
- * Validates that a model name is safe for shell use.
- * Model names should only contain alphanumeric characters, hyphens, underscores, and dots.
- * Exported for the Read My Mind predictor, which reuses these spawn mechanics standalone.
- */
-export function isValidModelName(model: string): boolean {
-  if (!model || typeof model !== 'string') return false;
-  // Allow: alphanumeric, hyphens, underscores, dots, slashes (for model paths like claude/opus-4.5)
-  // Max length 100 to prevent abuse
-  return /^[a-zA-Z0-9._/-]+$/.test(model) && model.length <= 100;
-}
-
-/**
- * Validates that a mux session name is safe for shell use.
- * Names should only contain alphanumeric characters, hyphens, and underscores.
- * Exported for the Read My Mind predictor (see isValidModelName).
- */
-export function isValidMuxName(muxName: string): boolean {
-  if (!muxName || typeof muxName !== 'string') return false;
-  return /^[a-zA-Z0-9_-]+$/.test(muxName) && muxName.length <= 100;
-}
+import { isValidModelName, isValidMuxName, killHelperSession, spawnHelperSession } from './claude-prompt.js';
 
 // ========== Types ==========
 
@@ -403,20 +379,9 @@ export abstract class AiCheckerBase<
     const claudeCmd = `cat "${this.checkPromptFile}" | claude -p ${modelArg} --output-format text`;
     const fullCmd = `export PATH="${augmentedPath}"; ${claudeCmd} > "${this.checkTempFile}" 2> "${this.checkStderrFile}"; echo "${this.doneMarker}" >> "${this.checkTempFile}"; rm -f "${this.checkPromptFile}"`;
 
-    // Spawn tmux session
+    // Spawn the helper session on Codeman's socket (claude-prompt.ts checks the deploy role first)
     try {
-      // Kill any leftover session with this name first (mux name already validated above)
-      try {
-        execSync(`tmux kill-session -t "${this.checkMuxName}" 2>/dev/null`, { timeout: 3000 });
-      } catch {
-        // No existing session, that's fine
-      }
-
-      const muxProcess = childSpawn('tmux', ['new-session', '-d', '-s', this.checkMuxName, 'bash', '-c', fullCmd], {
-        detached: true,
-        stdio: 'ignore',
-      });
-      muxProcess.unref();
+      spawnHelperSession(this.checkMuxName, fullCmd);
     } catch (err) {
       throw new Error(`Failed to spawn ${this.checkDescription} tmux session: ${getErrorMessage(err)}`);
     }
@@ -505,14 +470,9 @@ export abstract class AiCheckerBase<
       this.checkTimeoutTimer = null;
     }
 
-    // Kill the tmux session
+    // Kill the helper session
     if (this.checkMuxName) {
-      const muxName = this.checkMuxName;
-      try {
-        execSync(`tmux kill-session -t "${muxName}" 2>/dev/null`, { timeout: 2000 });
-      } catch {
-        // Session may already be dead
-      }
+      killHelperSession(this.checkMuxName);
       this.checkMuxName = null;
     }
 

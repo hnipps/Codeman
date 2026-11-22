@@ -3,7 +3,7 @@ import { AiIdleChecker, AiCheckVerdict } from '../src/ai-idle-checker.js';
 
 // Mock child_process
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
   spawn: vi.fn(() => ({
     unref: vi.fn(),
     pid: 12345,
@@ -19,10 +19,11 @@ vi.mock('node:fs', () => ({
   writeFileSync: vi.fn(),
 }));
 
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { resolveTmuxSocketName } from '../src/config/instance.js';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-const mockedExecSync = vi.mocked(execSync);
+const mockedExecFileSync = vi.mocked(execFileSync);
 const mockedSpawn = vi.mocked(spawn);
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -150,7 +151,14 @@ describe('AiIdleChecker', () => {
       // Verify tmux was spawned with correct args
       expect(mockedSpawn).toHaveBeenCalledWith(
         'tmux',
-        expect.arrayContaining(['new-session', '-d', '-s', expect.stringContaining('codeman-aicheck-')]),
+        expect.arrayContaining([
+          '-L',
+          resolveTmuxSocketName(),
+          'new-session',
+          '-d',
+          '-s',
+          expect.stringMatching(/^helper-codeman-aicheck-/),
+        ]),
         expect.objectContaining({ detached: true, stdio: 'ignore' })
       );
     });
@@ -163,8 +171,9 @@ describe('AiIdleChecker', () => {
       await checkPromise;
 
       // First call should try to kill existing session
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('tmux kill-session -t "codeman-aicheck-'),
+      expect(mockedExecFileSync).toHaveBeenCalledWith(
+        'tmux',
+        ['-L', resolveTmuxSocketName(), 'kill-session', '-t', expect.stringMatching(/^helper-codeman-aicheck-/)],
         expect.any(Object)
       );
     });
@@ -247,8 +256,8 @@ describe('AiIdleChecker', () => {
       await checkPromise;
 
       // Should have tried to kill the tmux session (initial kill + cleanup kill)
-      const killCalls = mockedExecSync.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('kill-session')
+      const killCalls = mockedExecFileSync.mock.calls.filter(
+        (call) => Array.isArray(call[1]) && call[1].includes('kill-session')
       );
       expect(killCalls.length).toBeGreaterThan(0);
     });

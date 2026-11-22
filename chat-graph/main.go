@@ -40,7 +40,14 @@ func main() {
 		log.Fatalf("chat-graph: open store: %v", err)
 	}
 	defer st.Close()
-	srv := &http.Server{Handler: newHandler(st), ReadHeaderTimeout: 5 * time.Second}
+	dl := newDeadlines(routeDeadline, time.Now)
+	if err := dl.seed(st); err != nil {
+		log.Printf("chat-graph: reading unrouted messages: %v", err)
+	}
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	defer stopSweep()
+	go dl.run(sweepCtx, st, time.Second)
+	srv := &http.Server{Handler: newHandler(st, dl), ReadHeaderTimeout: 5 * time.Second}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

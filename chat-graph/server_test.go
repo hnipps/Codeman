@@ -27,7 +27,7 @@ func testHandler(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return newHandler(st)
+	return newHandler(st, nil)
 }
 
 func call(t *testing.T, h http.Handler, method, path, body string) (int, map[string]any) {

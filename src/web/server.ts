@@ -153,6 +153,9 @@ import { composerIsEmpty, plainFrame } from '../session-submit-verifier.js';
 import { detectUsageLimitPause } from '../usage-limit-patterns.js';
 import { stopDeepSeekWeb } from '../deepseek-web-server.js';
 import { ChatGraphSupervisor } from '../chat-graph/supervisor.js';
+import { ChatGraphService } from '../chat-graph/chat-service.js';
+import { runClaudePrompt } from '../claude-prompt.js';
+import { randomUUID } from 'node:crypto';
 import {
   wireRespawnListeners,
   stopRespawnForSession,
@@ -296,6 +299,7 @@ import {
   tryWebviewRefererFallback,
   registerCliRegistryRoutes,
   registerExtensionRoutes,
+  registerChatGraphRoutes,
 } from './routes/index.js';
 import { isLostWebviewFrameNavigation } from './webview-proxy.js';
 import { CronService } from '../cron/cron-service.js';
@@ -316,6 +320,8 @@ const COPILOT_USAGE_POLL_INTERVAL_MS = 10 * 60_000;
 const CONFIG_BACKUP_INTERVAL_MS = 5 * 60_000;
 /** How long shutdown waits for the Chat Graph sidecar to stop before flushing state anyway (the CLI force-exits at 10 s). */
 const CHAT_GRAPH_SHUTDOWN_WAIT_MS = 4_000;
+const CHAT_GRAPH_ROUTING_MODEL = 'haiku';
+const CHAT_GRAPH_ROUTING_TIMEOUT_MS = 15_000;
 const CUSTOM_MODEL_REDISCOVER_INTERVAL_MS = 5 * 60_000;
 // Much shorter than the model-LIST refresh above on purpose: this catches an actual
 // eviction (a session's model no longer loaded, silently swapped out by another
@@ -459,6 +465,22 @@ export class WebServer extends EventEmitter {
     dir: dataPath('chat-graph'),
     owner: getDataDir(),
     mayPersist: () => deployRole.allows('persist'),
+  });
+  /** Chat Graph's routing call: Haiku, accepted at about 5 s (spec Decision 3), cut off well inside the sidecar's 20 s deadline. */
+  private readonly chatGraphService = new ChatGraphService({
+    sidecar: this.chatGraph,
+    runPrompt: async (prompt, messageId) =>
+      (
+        await runClaudePrompt({
+          name: `chatgraph-${messageId.slice(0, 8)}`,
+          prompt,
+          model: CHAT_GRAPH_ROUTING_MODEL,
+          timeoutMs: CHAT_GRAPH_ROUTING_TIMEOUT_MS,
+          label: 'Chat Graph routing',
+        })
+      ).output,
+    now: () => Date.now(),
+    newId: () => randomUUID(),
   });
   private restoreSucceeded = false;
   private previewReconcileInFlight: Promise<void> | null = null;
@@ -1596,6 +1618,11 @@ export class WebServer extends EventEmitter {
     registerCustomModelRoutes(this.app);
     registerCliRegistryRoutes(this.app);
     registerExtensionRoutes(this.app);
+    registerChatGraphRoutes(this.app, {
+      service: this.chatGraphService,
+      sidecar: this.chatGraph,
+      broadcast: (event, data) => this.broadcast(event, data),
+    });
 
     // Cron: build the service from the same context, recompute
     // due times for any persisted jobs, then expose it to its routes.
