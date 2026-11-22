@@ -808,10 +808,16 @@ const CODEX: CliEntry = {
       screenLine: String.raw`(?:^|\n) {2}([A-Za-z0-9][\w.:/@+-]{0,79}) (?:${CODEX_EFFORT_WORDS}) · [^\n]*(?:\n {2}[^\n]*)?$`,
       screenLines: 2,
     },
-    // App Settings → Codex model / reasoning effort (synced), filled into a LOCAL launch's
-    // codexConfig wherever the caller left the field unset. Launch-only: nothing writes
-    // codex's own config.toml. Read by applyLaunchDefaults() in src/web/launch-defaults.ts.
-    launchDefaults: { model: 'codexModel', reasoningEffort: 'codexReasoningEffort' },
+    // App Settings → Codex model / reasoning effort / bypass (synced), filled into a LOCAL
+    // launch's codexConfig wherever the caller left the field unset, so a worker an agent
+    // starts gets the same bypass the Run button sends. Launch-only: nothing writes codex's
+    // own config.toml. Read by applyLaunchDefaults() in src/web/launch-defaults.ts, which
+    // runs before the multi-user clamp below.
+    launchDefaults: {
+      model: 'codexModel',
+      reasoningEffort: 'codexReasoningEffort',
+      bypassApprovals: 'codexDangerouslyBypassApprovals',
+    },
     // Two columns, like claude's, measured on a live 0.154.0 answer: the `•`/`›`/`⚠`
     // markers sit in the gutter, prose continuations sit at 2, and a nested YAML block
     // the model wrote rendered at 2/4/6/8 for its own 0/2/4/6. Replayed at 100, 120,
@@ -1073,8 +1079,12 @@ const ANTIGRAVITY: CliEntry = {
       promptGlyph: '? for sh',
       workingLine: String.raw`(?:^|\n)[⠀-⣿]  [A-Z][A-Za-z ]{2,30}(?:\.\.\.|…)`,
     },
+    // App Settings → Antigravity → Skip permissions for agent-started workers (synced,
+    // default off), filled where the caller sent none. The Run button always sends true.
+    launchDefaults: { dangerouslySkipPermissions: 'antigravitySkipPermissions' },
     // Like codex: an ABSENT config already defaults safe (no bypass flag), so only a
-    // SENT config needs the flag forced off — nothing is materialized.
+    // SENT config needs the flag forced off — nothing is materialized. A launch default
+    // fills the config before this clamp runs, so a filled true is forced off too.
     privilegedParams: [{ param: 'dangerouslySkipPermissions', clampTo: false }],
     // No relocation var: `agy` 1.1.12 resolves `~/.gemini/config` from $HOME only.
     mcpConfig: { path: '.gemini/config/mcp_config.json', format: 'antigravity-json' },

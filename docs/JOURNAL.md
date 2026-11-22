@@ -2,6 +2,23 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-22 — The capture highlight layer is its own module and hands Send to a sender (W-95)
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/capture-layer.js`, `src/web/public/app.js`, `src/web/public/index.html`, `src/web/public/styles.css`, `src/web/CLAUDE.md`
+**Why:** Ticket 3 of the ambient capture spec. The spec put the overlay, bundle and filing in `capture.js` and left Send's behaviour before ticket 4 open.
+**Links:** [intent/2026-11-19-ambient-capture.md](../intent/2026-11-19-ambient-capture.md) (I2, I9), Work item W-95
+
+The overlay, the `under` reader and the `capture.json` builder live in `capture-layer.js`, loaded after `capture.js`, so `freeze()` stays the small core tickets 1, 2 and 7 pinned. Send builds the bundle and passes it to a function registered with `CodemanCaptureLayer.setSender()`; ticket 4's filing registers one. With none, or when it throws, the panel says why and keeps the capture, the same shape I7's refusal needs. The outline path is rounded to 0.1 CSS px before anything draws it, so the stored path redraws the marked pictures exactly. `under` keeps the spec's 24 entries and 2000 characters (the bridge's own `maxElements` is 50). Enter on the hint skips the outline, so a keyboard-only person can still file a capture; the marked pictures are then the clean one. The bridge's polygon answer is asked only of bridged frames directly in the top document, because the bridge answers its parent alone.
+## 2026-11-22 — Chat Graph routing records its decision in the route op, and the first decision stands (W-81)
+
+**Type:** intent-refinement
+**Touches:** `chat-graph/route/`, `chat-graph/routing.go`, `chat-graph/store/`, `docs/architecture-invariants.md`, `docs/subsystem-rules.md`
+**Why:** Ticket 3 of the Chat Graph spec. The spec named `Decide` and the bands but left open how a retried route answers, where explicit signals and the reactivate offer are recorded, and how the retrieval weight is set.
+**Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I3, I4, I5), Work item W-81
+
+The `route` op gains three `omitempty` fields (`source`, `resolvedText`, `reactivate`), so a retry is answered from the stored op by the same function as the first answer, and a plain route op's canonical request is unchanged. A retry with a different body does not re-decide: the first decision stands, and a person fixes it with a move. A new topic's id defaults to the message id, which is unique because a message creates at most one topic. `Decide` takes `route.Scored` (id, status, score) only, so activation cannot reach the bands (I4) by construction. Statuses are read from the store, never the request. The similarity weight is 5, a placeholder until the correction log can tune it. Reads are not touches yet, so every GET stays a read. Rejected: re-deciding on retry (a timed-out first call could then file a message twice), and storing the reactivate offer outside the op (a retry could not repeat it).
+
 ## 2026-11-21 — Work items wait in Blocked, tickets are marked, and only a session holds In progress (W-116, spec)
 
 **Type:** intent-refinement
@@ -10,6 +27,7 @@ Newest entries first. After an entry is on the default branch, correct it with a
 **Links:** [intent/2026-11-21-w116-work-lifecycle.md](../intent/2026-11-21-w116-work-lifecycle.md), Work items W-116 and W-68
 
 Draft, for review. A new Blocked lane (stored as `todo` + `todoStatus: "blocked"`, so the previous release reads it as Needs refinement) holds items with a typed `dependsOn`; the tick moves one to Ready for work once every dependency is Done and merged, and asks a person if one is given up. Only `ticketOf` makes an item a ticket, never `createdFrom`. A person can no longer hold In progress: that work is Human required. A Ready item loses a session that ended, written as the server so W-70 I8 cannot close it. Rejected: inferring dependencies from prose; counting a Done dependency as enough without a merge; redirecting a person's move into In progress to Human required instead of refusing it; and unlinking ended sessions, which would break I8 revision 2. A parent follows its tickets once each time they all close, so a person's answer is not undone, and the cycle check covers ticket links, so a ticket cannot wait on its own parent; both came from the independent review. A multi-item Dafny model proves the new rules and W-70's kept ones; it also showed that W-70 I4 and I5 cannot hold as written once parents close from every open lane, and the spec supersedes both clauses.
+
 ## 2026-11-21 — The Chat Graph store vendors SQLite for Linux only and keeps I1 in its schema (W-80)
 
 **Type:** intent-refinement
@@ -18,6 +36,23 @@ Draft, for review. A new Blocked lane (stored as `todo` + `todoStatus: "blocked"
 **Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I1, I5, I7), Work item W-80
 
 `modernc.org/sqlite` is pinned at v1.38.2, the newest release that builds on go 1.23; v1.39 and later need go 1.24. A full `go mod vendor` is 229 MB of per-platform generated code, so `scripts/vendor-chat-graph.mjs` keeps linux/amd64 and linux/arm64 only (33 MB) and `build.mjs` skips the sidecar elsewhere, where the supervisor never runs it anyway. Rejected: committing the full 229 MB, and a committed binary. Membership rows gain `removed_by` beside the spec's `removed_at`, so undo knows which rows an op removed and adds fresh copies rather than clearing `removed_at`; triggers enforce append-only for every writer. Topics gain a `retracted` status for a topic whose creating op was undone. Undo writes no op row of its own: its rows carry `undo:<op>`. An undo that a later op has overtaken answers 409 instead of guessing.
+## 2026-11-21 — Agent-started Codex and Antigravity workers take their bypass from App Settings (W-130)
+
+**Type:** intent-refinement
+**Touches:** `src/config/cli-registry/stock.ts`, `src/web/launch-defaults.ts`, `src/web/schemas.ts`, `src/web/public/settings-ui.js`, `src/web/public/index.html`
+**Why:** A worker an agent starts sends no CLI config, so codex and agy stopped at their first approval with nobody to answer.
+**Links:** [intent/2026-11-21-agent-worker-bypass.md](../intent/2026-11-21-agent-worker-bypass.md)
+
+The bypass rides `capabilities.launchDefaults` like codex's model and effort: codex reads `codexDangerouslyBypassApprovals`, antigravity a new synced `antigravitySkipPermissions` (default off). `false` reads as unset, so a setting only turns a flag on and a value the caller sent always wins. The defaults are filled before the multi-user clamp, which forces them off for a non-granted owner. Rejected: a per-route branch for the two CLIs, which would put CLI ids in the routes.
+
+## 2026-11-21 — pr-swarm passes the approved spec to R-3 (W-131)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-git.ts`, `src/reviews/swarm-runner.ts`, `src/reviews/swarm-model.ts`, `src/reviews/review-work.ts`, `src/web/routes/review-routes.ts`, `docs/architecture-invariants.md`
+**Why:** t7 part 2 of the pr-swarm spec: `/review-triage` (pr-swarm v0.5.0) takes `--spec` and `--poteto-skill`, and a report was still applied with `r3Required: false`.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work items W-131, W-115
+
+The spec R-3 reads is a copy of the parent spec review's one `intent/*.md` file at its merge commit, written to the data dir, not the file in the run's worktree: the spec says "read at the merged commit", and the worktree holds whatever master had when the work branched. A parent that changed two spec files gets no spec and an `unavailable` R-3 rather than a guess. Whether a run needs R-3 is kept in memory and read again on recovery, because a new field in the run file would make it unreadable to the previous release (rule 5). The spec's two history triggers ("builder and R-3 still disagree after 2 rounds", "a deploy fix fails") are not built here: R-3 `changes` already counts toward the two-verdict streak escalation, and fixing failed deploys is one of the spec's non-goals.
 
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 

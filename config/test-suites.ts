@@ -39,6 +39,7 @@ export const BROWSER_TEST_GLOBS = [
   'test/capture-frame-bridge.browser.test.ts',
   'test/capture-surfaces.browser.test.ts',
   'test/capture-tab-mode.browser.test.ts',
+  'test/capture-layer.browser.test.ts',
   'test/canvas-assistant.browser.test.ts',
   'test/canvas-markdown.browser.test.ts',
   'test/canvas-activity.browser.test.ts',

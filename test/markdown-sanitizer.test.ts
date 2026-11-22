@@ -240,6 +240,42 @@ describe('COD-56 markdown sanitizer (DOMPurify allowlist)', () => {
   });
 });
 
+/** Run sanitize-html.js the way the browser does: no `module`, and a root that already carries DOMPurify. */
+function loadBrowserGlobals(): Record<string, unknown> {
+  const dompurifySrc = readFileSync(join(publicDir, 'vendor/dompurify.min.js'), 'utf8');
+  const sanitizeSrc = readFileSync(join(publicDir, 'sanitize-html.js'), 'utf8');
+  const dpModule: { exports: unknown } = { exports: {} };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+  new Function('module', 'exports', dompurifySrc)(dpModule, dpModule.exports);
+  const factory = dpModule.exports as (win: unknown) => unknown;
+  const root: Record<string, unknown> = { DOMPurify: factory(jsdomWindow) };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+  new Function('module', 'globalThis', sanitizeSrc)(undefined, root);
+  return root;
+}
+
+describe('sanitize-html.js browser globals', () => {
+  const html = '<details open><summary>a</summary>b</details>';
+
+  it('wires sanitizeWalkthroughHtml, which keeps details with open', () => {
+    const root = loadBrowserGlobals();
+    expect(typeof root.sanitizeWalkthroughHtml).toBe('function');
+    const out = (root.sanitizeWalkthroughHtml as (h: string) => string)(html);
+    expect(out).toContain('<details open');
+    expect(out).toContain('<summary>a</summary>');
+  });
+
+  it('wires sanitizeMarkdownHtml, which strips details and keeps the text', () => {
+    const root = loadBrowserGlobals();
+    expect(typeof root.sanitizeMarkdownHtml).toBe('function');
+    const out = (root.sanitizeMarkdownHtml as (h: string) => string)(html);
+    expect(out).not.toContain('<details');
+    expect(out).not.toContain('<summary');
+    expect(out).toContain('a');
+    expect(out).toContain('b');
+  });
+});
+
 describe('W-69 review walkthrough sanitizer (details/summary)', () => {
   let sanitize: (html: string) => string;
   let sanitizeWalkthrough: (html: string) => string;

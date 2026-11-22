@@ -10,6 +10,8 @@
  * The tip watcher's reads (`watchTipReader()`) go through the fetch runner, so every git process they start is
  * non-interactive and is killed with its whole process tree when the read's deadline passes.
  */
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   createDetachedWorktree,
   removeCaseWorktree,
@@ -19,8 +21,8 @@ import {
 import { runFetch } from '../git-fetch.js';
 import { isSafeRepoRelativePath, runGit, type GitRunner } from '../git-workspace-status.js';
 import { fetchHead, forkPoint, line, MAX_REVIEW_DOC_BYTES, resolveHead, SHA, tryGit, validRef } from './review-git.js';
-import { sourceOf, type Review } from './review-model.js';
-import { isSpecReview } from './swarm-model.js';
+import { sourceOf, type Review, type WorkRef } from './review-model.js';
+import { attributedSpec, isSpecReview } from './swarm-model.js';
 import type { TipReader } from './swarm-watcher.js';
 
 /** Where a run pushes the triage's fix commits: `origin`, or this repository (`.`) for a branch origin does not have. */
@@ -111,7 +113,7 @@ export async function prepareRun(
     }
   );
   if (!made.ok) return { ok: false, reason: made.message };
-  const spec = await specReviewAt(git, review.repoRoot, base, tip.sha);
+  const spec = (await specFilesAt(git, review.repoRoot, base, tip.sha)).length > 0;
   const checkedOut = tip.remote === '.' && (await branchCheckedOut(git, review.repoRoot, review.branch));
   return {
     ok: true,
@@ -141,9 +143,9 @@ export async function removeRunWorktree(
 
 /**
  * `isSpecReview()` on the commits themselves: the paths changed from the fork point to the tip, with "linked" read as
- * a changed path that some changed spec file names in its text.
+ * a changed path that some changed spec file names in its text. The spec files when it is a spec review, else none.
  */
-async function specReviewAt(git: GitRunner, repoRoot: string, base: string, tip: string): Promise<boolean> {
+async function specFilesAt(git: GitRunner, repoRoot: string, base: string, tip: string): Promise<string[]> {
   const out = await tryGit(git, repoRoot, [
     'diff',
     '--no-color',
@@ -155,22 +157,118 @@ async function specReviewAt(git: GitRunner, repoRoot: string, base: string, tip:
     tip,
     '--',
   ]);
-  if (out === null) return false;
+  if (out === null) return [];
   const changed = out.split('\0').filter((p) => p && isSafeRepoRelativePath(p));
   const specs = changed.filter((p) => /^intent\/[^/]+\.md$/.test(p));
-  if (!specs.length) return false;
+  if (!specs.length) return [];
   const texts: string[] = [];
   for (const path of specs) {
-    const blob = `${tip}:${path}`;
-    const bytes = Number(line((await tryGit(git, repoRoot, ['cat-file', '-s', blob])) ?? ''));
-    if (!Number.isInteger(bytes) || bytes > MAX_REVIEW_DOC_BYTES) continue;
-    texts.push((await tryGit(git, repoRoot, ['cat-file', 'blob', blob])) ?? '');
+    const text = await readBlob(git, repoRoot, tip, path);
+    if (text !== null) texts.push(text);
   }
-  return isSpecReview(
-    changed,
-    changed.filter((p) => texts.some((t) => t.includes(p)))
-  );
+  const linked = changed.filter((p) => texts.some((t) => t.includes(p)));
+  return isSpecReview(changed, linked) ? specs : [];
 }
+
+async function readBlob(git: GitRunner, repoRoot: string, commit: string, path: string): Promise<string | null> {
+  const blob = `${commit}:${path}`;
+  const bytes = Number(line((await tryGit(git, repoRoot, ['cat-file', '-s', blob])) ?? ''));
+  if (!Number.isInteger(bytes) || bytes > MAX_REVIEW_DOC_BYTES) return null;
+  return tryGit(git, repoRoot, ['cat-file', 'blob', blob]);
+}
+
+/**
+ * The spec files a merged review changed, when it was a spec review. Its changes are read from where its head left
+ * the base line the merge was made on (the merge commit's first parent) to that head, which is what was reviewed.
+ * Only a merge commit whose second parent is that head counts: a review Approve found already merged made no commit,
+ * and its `mergedSha` says nothing about what the review changed.
+ */
+async function mergedSpecFiles(git: GitRunner, review: Review): Promise<string[]> {
+  const merged = review.decision?.mergedSha;
+  if (!merged || !SHA.test(merged)) return [];
+  const parent = async (n: number) =>
+    line((await tryGit(git, review.repoRoot, ['rev-parse', '--verify', '--quiet', `${merged}^${n}`])) ?? '');
+  if ((await parent(2)) !== review.headSha) return [];
+  const onto = await parent(1);
+  if (!SHA.test(onto)) return [];
+  const from = line((await tryGit(git, review.repoRoot, ['merge-base', onto, review.headSha])) ?? '');
+  if (!SHA.test(from) || from === review.headSha) return [];
+  return specFilesAt(git, review.repoRoot, from, review.headSha);
+}
+
+/** The approved spec a run's R-3 step checks the work against, read at the commit that merged it. */
+export type RunSpec = { path: string; mergedSha: string; text: string };
+/**
+ * Whether a run must give an R-3 result (I9), and the spec R-3 reads. `required` is I4's predicate: a work review that
+ * is not itself a spec review, attributed to a merged spec review. `spec` is null when R-3 must run but cannot be
+ * given its spec, and `missing` says why; that run's R-3 result is then `unavailable`.
+ */
+export type R3Plan =
+  | { required: false }
+  | { required: true; spec: RunSpec }
+  | { required: true; spec: null; missing: string };
+
+export type AttributionLookup = {
+  /** The `createdFrom` of a canvas work item, or undefined when it has none or cannot be read. */
+  createdFrom(work: WorkRef): number | undefined;
+  reviews(): Review[];
+};
+
+/**
+ * Reads the R-3 plan of a run of `review` at `tip`. Only reviews in the same repository are read as the parent, so git
+ * runs in no repository the caller has not already cleared for this review.
+ */
+export async function readR3Plan(
+  review: Review,
+  tip: string,
+  lookup: AttributionLookup,
+  deps: { git?: GitRunner } = {}
+): Promise<R3Plan> {
+  const git = deps.git ?? runGit;
+  const source = sourceOf(review);
+  if (source.kind !== 'work') return { required: false };
+  const createdFrom = lookup.createdFrom(source.work);
+  if (!createdFrom) return { required: false };
+  const parents = [];
+  for (const r of lookup.reviews()) {
+    const s = sourceOf(r);
+    if (r.repoRoot !== review.repoRoot || s.kind !== 'work' || s.work.workspaceId !== source.work.workspaceId) continue;
+    if (s.work.number !== createdFrom || !r.decision?.mergedSha) continue;
+    parents.push({ review: r, files: await mergedSpecFiles(git, r) });
+  }
+  const parent = attributedSpec(
+    review,
+    { createdFrom },
+    parents.map((p) => ({ review: p.review, spec: p.files.length > 0 }))
+  );
+  if (!parent) return { required: false };
+  const base = SHA.test(tip) ? await forkPoint(git, review.repoRoot, review.base, tip) : null;
+  if (base && (await specFilesAt(git, review.repoRoot, base, tip)).length) return { required: false };
+  const files = parents.find((p) => p.review.id === parent.id)!.files;
+  const mergedSha = parent.decision!.mergedSha!;
+  if (files.length !== 1)
+    return {
+      required: true,
+      spec: null,
+      missing: `The spec review "${parent.title}" changed ${files.length} spec files, so R-3 cannot tell which one this work answers to`,
+    };
+  const path = files[0]!;
+  const text = await readBlob(git, review.repoRoot, mergedSha, path);
+  if (text === null)
+    return { required: true, spec: null, missing: `The spec ${path} could not be read at ${mergedSha.slice(0, 12)}` };
+  return { required: true, spec: { path, mergedSha, text } };
+}
+
+/** Writes a run's copy of its spec into `dir` (outside every worktree, so the worktree stays removable). */
+export async function stageRunSpec(dir: string, runId: string, spec: RunSpec): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, `${runWorktreeName(runId)}.md`);
+  await writeFile(file, spec.text, { mode: 0o600 });
+  return file;
+}
+
+export const removeRunSpec = (dir: string, runId: string): Promise<void> =>
+  rm(join(dir, `${runWorktreeName(runId)}.md`), { force: true });
 
 async function branchCheckedOut(git: GitRunner, repoRoot: string, branch: string): Promise<boolean> {
   const out = await tryGit(git, repoRoot, ['worktree', 'list', '--porcelain', '-z']);

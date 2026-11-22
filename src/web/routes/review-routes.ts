@@ -3,7 +3,7 @@
  * request for changes (`src/reviews/`, `intent/2026-11-16-reviews-page.md`).
  *
  * Endpoints:
- *   GET    /api/reviews                          the queue: waiting, and decided in the last day
+ *   GET    /api/reviews                          the queue: waiting, and decided in the last day; each row has its pr-swarm `swarm` chip
  *   POST   /api/reviews                          an AGENT submits or resubmits { title, walkthrough, base? }
  *   GET    /api/reviews/:id                      one review, with whether its author session still runs
  *   GET    /api/reviews/:id/changes              the files the branch changes against its base
@@ -19,7 +19,7 @@
  *                                                the tip watcher could not read the branch
  *   POST   /api/reviews/:id/swarm                a PERSON starts a pr-swarm run at the branch tip (409 RUNNING: one
  *                                                is queued or running, and the answer carries it)
- *   POST   /api/reviews/:id/swarm/resend         a PERSON sends a finished run's findings again (not built yet: 501)
+ *   POST   /api/reviews/:id/swarm/resend         a PERSON sends the newest run's findings again after their delivery failed
  *   POST   /api/reviews/swarm-runs/:runId/report the run's OWN session hands back its result (`codeman agent swarm
  *                                                report`)
  *
@@ -127,6 +127,7 @@ import {
   type Decision,
   type Refusal,
   type Review,
+  type ReviewSummary,
 } from '../../reviews/review-model.js';
 import {
   changeReview,
@@ -138,15 +139,29 @@ import {
   writeCaptureFile,
   writeReview,
 } from '../../reviews/review-store.js';
-import { closeSessionWork, handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
+import {
+  closeSessionWork,
+  commentReviewWork,
+  escalateReviewWork,
+  escalationHeld,
+  handoverWork,
+  reviewWorkItems,
+  linkSessionToWork,
+  workCreatedFrom,
+  workItemsForSession,
+} from '../../reviews/review-work.js';
 import {
   prepareRun,
+  readR3Plan,
   readRunTip,
+  removeRunSpec,
   removeRunWorktree,
+  stageRunSpec,
   WATCH_READ_TIMEOUT_MS,
   watchTipReader,
 } from '../../reviews/swarm-git.js';
 import { createSwarmRunner, SWARM_TICK_MS, type SwarmRunner } from '../../reviews/swarm-runner.js';
+import { swarmChip } from '../../reviews/swarm-model.js';
 import { readSwarm } from '../../reviews/swarm-store.js';
 import { createSwarmWatcher } from '../../reviews/swarm-watcher.js';
 import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
@@ -503,7 +518,14 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   app.get('/api/reviews', async (req) => {
     await settleDeploys();
     const mine = listReviews().filter((r) => visible(req, r));
-    return { success: true, data: queueOf(mine, Date.now(), workReviews.facts(mine)) };
+    const queue = queueOf(mine, Date.now(), workReviews.facts(mine));
+    // Each row carries its pr-swarm chip, read from the run file beside it; an unreadable file shows no chip.
+    const withChip = (row: ReviewSummary) => {
+      const read = readSwarm(row.id);
+      const chip = read.ok ? swarmChip(read.file) : null;
+      return chip ? { ...row, swarm: chip } : row;
+    };
+    return { success: true, data: { waiting: queue.waiting.map(withChip), decided: queue.decided.map(withChip) } };
   });
 
   app.post('/api/reviews', async (req, reply) => {
@@ -712,46 +734,67 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     }
   };
 
-  /** Who may ask for a deploy, and from which colour. Returns false when it has replied. */
+  /** Who pressed Approve: a person, or pr-swarm's automatic Approve of a run that passed with R-3 (I4). */
+  type Approver = { kind: 'person'; req: FastifyRequest } | { kind: 'swarm'; runId: string; sessionId: string };
+  type Approved =
+    | { ok: true; data: Record<string, unknown> }
+    | { ok: false; status: number; code: ApiErrorCode; message: string };
+  const refused = (status: number, code: ApiErrorCode, message: string): Approved => ({
+    ok: false,
+    status,
+    code,
+    message,
+  });
+
+  /** Who may ask for a deploy, and from which colour. An automatic Approve never deploys in multi-user mode. */
+  const deployRefusal = (by: Approver): Approved | null => {
+    if (isMultiUserMode() && (by.kind === 'swarm' || !isAdmin(by.req)))
+      return refused(
+        403,
+        ApiErrorCode.FORBIDDEN,
+        by.kind === 'swarm'
+          ? 'In multi-user mode only an admin approves a change that deploys Codeman; it waits for one'
+          : 'Only an admin can approve a change that deploys Codeman'
+      );
+    if (!deployRole.allows('requestDeploy'))
+      return refused(409, ApiErrorCode.CONFLICT, 'A deploy can only be requested from the live colour');
+    return null;
+  };
+  /** The same check for a person's request. Returns false when it has replied. */
   const mayDeploy = (req: FastifyRequest, reply: FastifyReply): boolean => {
-    if (isMultiUserMode() && !isAdmin(req)) {
-      void fail(reply, 403, ApiErrorCode.FORBIDDEN, 'Only an admin can approve a change that deploys Codeman');
-      return false;
-    }
-    if (!deployRole.allows('requestDeploy')) {
-      void fail(reply, 409, ApiErrorCode.CONFLICT, 'A deploy can only be requested from the live colour');
-      return false;
-    }
-    return true;
+    const denied = deployRefusal({ kind: 'person', req });
+    if (denied && !denied.ok) void fail(reply, denied.status, denied.code, denied.message);
+    return !denied;
   };
 
   /**
    * Approve. Merges the branch into its base exactly as the reviewer was shown it (`headSha`), and for Codeman's own
    * repository asks the supervisor to deploy the merge, unless the base is not the default branch (`shipsWithBase`).
-   * Nothing here runs without this request, and nothing in it touches a working tree (`review-merge.ts`).
+   * Nothing here runs without a person's press or pr-swarm's automatic Approve (I4), which comes through this same
+   * function so every refusal holds for it, and nothing in it touches a working tree (`review-merge.ts`).
    */
-  app.post<{ Params: { id: string } }>('/api/reviews/:id/approve', async (req, reply) => {
-    if (!personMayWrite(req, reply)) return reply;
-    const read = reviewOf(req, reply);
-    if (!read) return reply;
-    if (read.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
-    const { headSha } = parseBody(ApproveSchema, req.body);
+  const approveReview = async (read: Review, headSha: string, by: Approver): Promise<Approved> => {
+    if (read.decision) return refused(409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
+    const author = by.kind === 'person' ? personAuthor(by.req) : { kind: 'agent' as const, sessionId: by.sessionId };
     // A work review merges what origin has now: a push since the page was read answers MOVED from the merge.
     const synced = await syncWork(read, true);
-    if (synced && 'problem' in synced) return fail(reply, 409, ApiErrorCode.CONFLICT, synced.message);
+    if (synced && 'problem' in synced) return refused(409, ApiErrorCode.CONFLICT, synced.message);
     if (synced && ('unwanted' in synced || synced.review.id !== read.id))
-      return fail(reply, 409, ApiErrorCode.CONFLICT, 'GONE: the work item no longer asks for this review');
+      return refused(409, ApiErrorCode.CONFLICT, 'GONE: the work item no longer asks for this review');
     const review = synced ? synced.review : read;
-    if (review.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
+    if (review.decision) return refused(409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
     const refusal = await gitRefusal(authorSession(review), review.repoRoot);
-    if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
+    if (refusal) return refused(400, ApiErrorCode.INVALID_INPUT, refusal);
     // Who may approve in Codeman's own repository is unchanged. A stacked review merges into its base and records
     // `merged`; settleDeploys marks it deployed once the base ships.
     const selfDeploys = await deploysItself(review.repoRoot);
-    if (selfDeploys && !mayDeploy(req, reply)) return reply;
+    if (selfDeploys) {
+      const denied = deployRefusal(by);
+      if (denied) return denied;
+    }
     const deploys = selfDeploys && !(await shipsWithBase(review));
     if (merging.has(review.repoRoot))
-      return fail(reply, 409, ApiErrorCode.CONFLICT, 'BUSY: another merge is running in this repository');
+      return refused(409, ApiErrorCode.CONFLICT, 'BUSY: another merge is running in this repository');
     merging.add(review.repoRoot);
     let merged: MergeResult;
     try {
@@ -765,22 +808,32 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     } finally {
       merging.delete(review.repoRoot);
     }
-    if (!merged.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, merged.message);
+    if (!merged.ok) return refused(409, ApiErrorCode.CONFLICT, merged.message);
     // The merge exists from here on. It is recorded before the deploy is asked for, so a deploy that cannot be
     // requested leaves a merged review with a failed deploy, never an unrecorded merge.
     const mergedSha = merged.mergedSha;
     const first = changeReview(review.id, (r) => decide(r, { kind: 'merged', at: Date.now(), mergedSha }));
     let latest = first.ok ? first.review : review;
+    // An automatic Approve is said on the review's items, which is where its owner reads what happened to the work.
+    const items = by.kind === 'swarm' ? reviewWorkItems(review) : [];
     // Before any await: once the review reads decided, a second Approve is refused, so nothing would retry this.
     const authorId = authorSessionId(review);
     const linkedWork = authorId
-      ? closeSessionWork(review.owner, authorId, review.id, mergedSha, personAuthor(req))
+      ? closeSessionWork(review.owner, authorId, review.id, mergedSha, author)
       : { closed: [], failed: [] };
     for (const workspaceId of new Set(linkedWork.closed.map((c) => c.workspaceId))) options.announceWork?.(workspaceId);
     for (const f of linkedWork.failed)
       console.warn(`[reviews] Approve of ${review.id} merged, but ${f.key} could not move to Done: ${f.reason}`);
     const closedOthers = await closeSuperseded(review, mergedSha);
-    workReviews.accepted(latest, mergedSha, personAuthor(req));
+    workReviews.accepted(latest, mergedSha, author);
+    if (by.kind === 'swarm')
+      for (const workspaceId of commentReviewWork(
+        items,
+        `Approved automatically by pr-swarm and R-3 (run ${by.runId}): pr-swarm approved ${headSha.slice(0, 7)}, ` +
+          `R-3 passed the same tip against its spec, and the review merged as ${mergedSha.slice(0, 7)}.`,
+        author
+      ))
+        options.announceWork?.(workspaceId);
     if (deploys) {
       const decision = await askForDeploy(mergedSha);
       const second = changeReview(review.id, (r) => decide(r, decision));
@@ -790,8 +843,9 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     announce(latest);
     // A decided review has no preview: the one of the commit that was reviewed is destroyed.
     syncLive({ ...latest, headSha: mergedSha }, review.headSha, false);
+    swarm.clear(review.id);
     return {
-      success: true,
+      ok: true,
       data: {
         review: toView(latest),
         merge: { pushed: merged.pushed, localMoved: merged.localMoved, already: merged.already },
@@ -803,6 +857,17 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         },
       },
     };
+  };
+
+  app.post<{ Params: { id: string } }>('/api/reviews/:id/approve', async (req, reply) => {
+    if (!personMayWrite(req, reply)) return reply;
+    const read = reviewOf(req, reply);
+    if (!read) return reply;
+    if (read.decision) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been approved');
+    const { headSha } = parseBody(ApproveSchema, req.body);
+    const approved = await approveReview(read, headSha, { kind: 'person', req });
+    if (!approved.ok) return fail(reply, approved.status, approved.code, approved.message);
+    return { success: true, data: approved.data };
   });
 
   /**
@@ -840,6 +905,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!changed.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, changed.message);
     changesCache.delete(review.id);
     announce(changed.review);
+    swarm.clear(review.id);
     // No commit is the review's any more, so its preview, if there is one, is the one that goes.
     syncLive({ ...changed.review, headSha: '' }, review.headSha, false);
     return { success: true, data: { review: toView(changed.review) } };
@@ -1061,6 +1127,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     const ids = chosen.map((n) => n.id);
     const stamped = changeReview(review.id, (r) => ({ ok: true as const, review: stampSent(r, ids, Date.now()) }));
     if (stamped.ok) announce(stamped.review);
+    swarm.clear(review.id);
     return {
       success: true,
       data: {
@@ -1117,6 +1184,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       const ids = chosen.map((n) => n.id);
       const stamped = changeReview(review.id, (r) => ({ ok: true as const, review: stampSent(r, ids, Date.now()) }));
       if (stamped.ok) announce(stamped.review);
+      swarm.clear(review.id);
       return {
         success: true,
         data: {
@@ -1265,6 +1333,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       return null;
     }
   };
+  const swarmSpecDir = join(getDataDir(), 'reviews', 'swarm-spec');
   const swarm =
     options.swarm ??
     createSwarmRunner({
@@ -1279,12 +1348,15 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       },
       refusal: swarmRefusal,
       tip: (review) => readRunTip(review),
+      r3Plan: (review, tip) => readR3Plan(review, tip, { createdFrom: workCreatedFrom, reviews: listReviews }),
+      stageSpec: (_review, runId, spec) => stageRunSpec(swarmSpecDir, runId, spec),
       prepare: async (review, runId, tip) => {
         const roots = await swarmDocker();
         if (!roots) return { ok: false, reason: 'The Docker case list could not be read, so no worktree is made' };
         return prepareRun(review, runId, tip, { dockerWorkspaces: roots, agentSkillDirs: registryAgentSkillDirs() });
       },
       removeWorktree: async (review, runId) => {
+        await removeRunSpec(swarmSpecDir, runId).catch(() => undefined);
         const roots = await swarmDocker();
         if (!roots) return;
         const removed = await removeRunWorktree(review, runId, {
@@ -1319,12 +1391,60 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         else console.warn(`[pr-swarm] session ${sessionId} was left running: its owner cannot be acted for`);
       },
       announce: announceSwarm,
+      deliverVerdict: async (review, run, text) => {
+        // A work review's verdict goes on its item, as Request changes does (I5).
+        if (sourceOf(review).kind === 'work') {
+          const sent = workReviews.sendChanges(review, text, { kind: 'agent', sessionId: run.sessionId });
+          return sent.ok ? { ok: true } : { ok: false, reason: sent.message };
+        }
+        const session = authorSession(review);
+        if (!session || session.paneExit) return { ok: false, reason: 'The session that wrote this review has ended' };
+        const pending = approvalInbox.getForSession(session.id);
+        if (pending && pending.kind !== 'idle')
+          return { ok: false, reason: 'That session is waiting on a question; answer it, then send again' };
+        if (sending.has(review.id)) return { ok: false, reason: 'Notes were being sent to that session' };
+        sending.add(review.id);
+        try {
+          const result = await deliver(deliveryDeps(session, text), 'paste', Date.now());
+          // Written but unconfirmed counts as sent: sending again would paste it twice.
+          if (result === 'not-ready') return { ok: false, reason: 'The session was not ready for a prompt' };
+          if (result === 'not-written') return { ok: false, reason: 'The prompt could not be written to the session' };
+          return { ok: true };
+        } finally {
+          sending.delete(review.id);
+        }
+      },
+      escalate: async (review, run, note) => {
+        const items = reviewWorkItems(review);
+        const done = escalateReviewWork(items, note, { kind: 'agent', sessionId: run.sessionId });
+        for (const workspaceId of new Set(done.moved.map((m) => m.workspaceId))) options.announceWork?.(workspaceId);
+        const failed = done.failed.map((f) => `${f.key} (${f.reason})`).join(', ');
+        if (done.moved.length)
+          return `${done.moved.map((m) => m.key).join(', ')} moved to Human required${failed ? `; not ${failed}` : ''}`;
+        // No item to wait in, or none could be moved: the owner hears it another way. In multi-user mode a push with
+        // no session to scope it to would reach every user, so it is not sent; the page still shows the escalation.
+        const scope = authorSessionId(review);
+        if (isMultiUserMode() && !scope)
+          return `no item moved${failed ? ` (${failed})` : ''} and no notification could be scoped to the owner`;
+        ctx.sendPushNotifications(SseEvent.ReviewSwarm, {
+          sessionId: scope ?? '',
+          sessionName: review.title,
+          message: note,
+        });
+        return `a notification went out${failed ? `; no item moved: ${failed}` : ''}`;
+      },
+      escalationHeld: (review, since) => escalationHeld(reviewWorkItems(review), since),
+      approve: async (review, run, tip) => {
+        const approved = await approveReview(review, tip, { kind: 'swarm', runId: run.id, sessionId: run.sessionId });
+        return approved.ok ? { ok: true } : { ok: false, message: approved.message };
+      },
       log: (text) => console.log(text),
       later: (ms, fn) => {
         const timer = setTimeout(fn, ms);
         timer.unref?.();
       },
       skillsDir: join(homedir(), '.claude', 'plugins', 'marketplaces', 'nicholls', 'pr-swarm', 'skills'),
+      potetoSkill: join(homedir(), '.claude', 'skills', 'poteto-mode', 'SKILL.md'),
       ghConfigDir: join(getDataDir(), 'reviews', 'swarm-gh'),
     });
   const watcher = createSwarmWatcher({
@@ -1387,7 +1507,12 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       );
     return {
       success: true,
-      data: { swarm: read.file, live: deployRole.allows('persist'), refusal: watcher.refusalOf(review.id) },
+      data: {
+        swarm: read.file,
+        chip: swarmChip(read.file),
+        live: deployRole.allows('persist'),
+        refusal: watcher.refusalOf(review.id),
+      },
     };
   });
 
@@ -1422,7 +1547,14 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (!personMayWrite(req, reply)) return reply;
     const review = reviewOf(req, reply);
     if (!review) return reply;
-    return fail(reply, 501, ApiErrorCode.OPERATION_FAILED, 'NOT_BUILT: resending findings is not available yet');
+    if (!isOpen(review)) return fail(reply, 409, ApiErrorCode.CONFLICT, 'DECIDED: this review has been decided');
+    if (!limiter.take(review.id, false))
+      return fail(reply, 429, ApiErrorCode.RATE_LIMITED, 'RATE_LIMITED: too many sends for this review; wait a moment');
+    const sent = await swarm.resend(review.id);
+    if (!sent.ok) return fail(reply, 409, ApiErrorCode.CONFLICT, `${sent.code}: ${sent.message}`);
+    const delivered = sent.run.state === 'changes' || sent.run.state === 'blocked' ? sent.run.send : undefined;
+    if (delivered?.state === 'failed') return fail(reply, 409, ApiErrorCode.CONFLICT, `NOT_SENT: ${delivered.reason}`);
+    return { success: true, data: { run: sent.run } };
   });
 
   app.post(

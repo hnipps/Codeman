@@ -1508,6 +1508,9 @@ class CodemanApp {
 
       // Escape - close panels and modals (different logic: no preventDefault, no return)
       if (e.key === 'Escape') {
+        // The capture overlay covers every panel, so its Escape cancels the
+        // capture alone (capture-layer.js; close() does nothing while shut).
+        if (window.CodemanCaptureLayer?.close()) return;
         // An open group menu (or a grouped-rail drag) owns this Escape: close
         // just that, not every panel behind it.
         if (this._tabGroupMenu && this._tabGroupMenuKeydown) {

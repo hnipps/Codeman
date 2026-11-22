@@ -57,7 +57,8 @@ describe('a work item pull request on the Reviews page', () => {
         CreateWorkSchema.parse({
           title: 'Outline sections',
           status: 'in-progress',
-          description: 'Each section of the outline gets a heading.',
+          description:
+            'Each section of the outline gets a heading.\n\n<details open><summary>Tracker notes</summary>\n\nFolded tracker text.\n\n</details>',
           pr: { url: URL1, branch: 'build/w-1-outline' },
         }),
         { author: { kind: 'human', userId: 'admin' }, now: Date.now() }
@@ -115,6 +116,13 @@ describe('a work item pull request on the Reviews page', () => {
     expect(await page.textContent('#rvTabWork')).toBe('Work item W-1');
     expect(await page.getAttribute('#rvTabWork', 'aria-selected')).toBe('false');
     expect(await page.textContent('#rvWorkItem .rv-md')).toContain('Each section of the outline gets a heading.');
+    // Tracker text goes through the default sanitizer: details/summary are stripped and their text kept.
+    expect(await page.locator('#rvWorkItem details, #rvWorkItem summary').count()).toBe(0);
+    expect(await page.textContent('#rvWorkItem .rv-md')).toContain('Tracker notes');
+    expect(await page.textContent('#rvWorkItem .rv-md')).toContain('Folded tracker text.');
+    await page.click('#rvTabWork');
+    await shoot('work-item');
+    await page.click('#rvTabChanges');
     expect(await page.textContent('#rvRequest')).toBe('Send to W-1');
     expect(await page.isDisabled('#rvRequest')).toBe(true);
     expect(await page.getAttribute('#rvApprove', 'title')).toBe(
@@ -232,6 +240,7 @@ describe('a work item pull request on the Reviews page', () => {
     await page.click('#rvWalk details:nth-of-type(1) summary');
     await page.click('#rvWalk details:nth-of-type(2) summary');
     expect(await opened()).toEqual([false, true]);
+    await shoot('walkthrough-details');
 
     await page.click('#rvGeneral');
     await page.fill('#rvComposerText', 'A general note.');

@@ -422,9 +422,9 @@ describe('capabilities.launchDefaults', () => {
     (e.capabilities as Record<string, unknown>).launchDefaults = value;
   };
 
-  it('ships on codex alone, keyed by launch param', () => {
+  it('ships on codex and antigravity, keyed by launch param', () => {
     const declaring = STOCK_CLIS.filter((e) => e.capabilities.launchDefaults !== undefined).map((e) => e.id);
-    expect(declaring).toEqual(['codex']);
+    expect(declaring).toEqual(['codex', 'antigravity']);
     expect(codexWith(() => {})).toBe(true);
   });
 

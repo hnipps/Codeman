@@ -12,6 +12,7 @@ import { dataPath } from '../src/config/instance.js';
 import { deployRole } from '../src/deploy-role.js';
 import { submitReview, type Review } from '../src/reviews/review-model.js';
 import { writeReview } from '../src/reviews/review-store.js';
+import { changeSwarm } from '../src/reviews/swarm-store.js';
 import { emptySwarmFile, type SwarmRun } from '../src/reviews/swarm-model.js';
 import type { SwarmRunner } from '../src/reviews/swarm-runner.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
@@ -29,6 +30,19 @@ const review = (): Review =>
     1000
   );
 const queued: SwarmRun = { id: RUN_ID, trigger: 'manual', requestedAt: 1, state: 'queued', tip: SHA };
+const flagged = (send: 'sent' | 'failed'): SwarmRun => ({
+  id: RUN_ID,
+  trigger: 'manual',
+  requestedAt: 1,
+  sessionId: 'swarm-session',
+  startedAt: 2,
+  endedAt: 3,
+  rounds: 1,
+  reviewedTip: SHA,
+  result: { verdict: 'REQUEST_CHANGES', findings: [], degradations: [] },
+  state: 'changes',
+  send: send === 'sent' ? { state: 'sent', at: 4 } : { state: 'failed', at: 4, reason: 'The session was not ready' },
+});
 
 describe('pr-swarm review routes', () => {
   let harness: RouteTestHarness;
@@ -44,6 +58,8 @@ describe('pr-swarm review routes', () => {
       tipOf: vi.fn(async () => ({ sha: SHA, remote: 'origin' })),
       recover: vi.fn(async () => undefined),
       tick: vi.fn(async () => undefined),
+      resend: vi.fn(async () => ({ ok: true, run: flagged('sent') })),
+      clear: vi.fn(() => undefined),
     };
     harness = await createRouteTestHarness((app, ctx) =>
       registerReviewPageRoutes(app, ctx, {
@@ -67,8 +83,28 @@ describe('pr-swarm review routes', () => {
   it('GET answers the review’s runs', async () => {
     const res = await harness.app.inject({ url: '/api/reviews/aaaaaaaa/swarm' });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data).toEqual({ swarm: emptySwarmFile('aaaaaaaa'), live: true, refusal: null });
+    expect(res.json().data).toEqual({ swarm: emptySwarmFile('aaaaaaaa'), chip: null, live: true, refusal: null });
     expect((await harness.app.inject({ url: '/api/reviews/bbbbbbbb/swarm' })).statusCode).toBe(404);
+  });
+
+  it('GET carries the chip the page shows for the runs', async () => {
+    runner.view.mockReturnValue({ ok: true, file: { ...emptySwarmFile('aaaaaaaa'), runs: [queued] } });
+    const res = await harness.app.inject({ url: '/api/reviews/aaaaaaaa/swarm' });
+    expect(res.json().data.chip).toBe('queued');
+  });
+
+  it('each queue row carries its chip from the run file, and a review with no runs carries none', async () => {
+    const queue = async () => (await harness.app.inject({ url: '/api/reviews' })).json().data;
+    expect((await queue()).waiting[0]).not.toHaveProperty('swarm');
+    changeSwarm('aaaaaaaa', (file) => ({ file: { ...file, runs: [queued] } }));
+    expect((await queue()).waiting[0]).toMatchObject({ id: 'aaaaaaaa', swarm: 'queued' });
+    changeSwarm('aaaaaaaa', (file) => ({ file: { ...file, escalated: { kind: 'streak', at: 1, runIds: [RUN_ID] } } }));
+    expect((await queue()).waiting[0]).toMatchObject({ swarm: 'escalated' });
+    // A run file that does not parse shows no chip and never fails the queue.
+    writeFileSync(dataPath('reviews', 'aaaaaaaa.swarm.json'), '{');
+    const res = await harness.app.inject({ url: '/api/reviews' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.waiting[0]).not.toHaveProperty('swarm');
   });
 
   it('a person starts a run at the branch tip; an agent may not', async () => {
@@ -121,10 +157,33 @@ describe('pr-swarm review routes', () => {
     expect(runner.trigger).not.toHaveBeenCalled();
   });
 
-  it('resend is not built yet', async () => {
-    const res = await harness.app.inject({ method: 'POST', url: '/api/reviews/aaaaaaaa/swarm/resend', payload: {} });
-    expect(res.statusCode).toBe(501);
-    expect(res.json().error).toMatch(/^NOT_BUILT:/);
+  const resend = (headers: Record<string, string> = PERSON) =>
+    harness.app.inject({ method: 'POST', url: '/api/reviews/aaaaaaaa/swarm/resend', headers, payload: {} });
+
+  it('Send again: a person sends the newest run again; an agent may not', async () => {
+    expect((await resend(AGENT)).statusCode).toBe(403);
+    expect(runner.resend).not.toHaveBeenCalled();
+    const ok = await resend();
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().data.run).toMatchObject({ id: RUN_ID, send: { state: 'sent' } });
+    expect(runner.resend).toHaveBeenCalledWith('aaaaaaaa');
+  });
+
+  it('Send again answers 409 with the reason when there is nothing to send or the delivery failed again', async () => {
+    runner.resend.mockResolvedValueOnce({ ok: false, code: 'ESCALATED', message: 'escalated' });
+    const escalated = await resend();
+    expect(escalated.statusCode).toBe(409);
+    expect(escalated.json().error).toMatch(/^ESCALATED:/);
+    runner.resend.mockResolvedValueOnce({ ok: true, run: flagged('failed') });
+    const failed = await resend();
+    expect(failed.statusCode).toBe(409);
+    expect(failed.json().error).toBe('NOT_SENT: The session was not ready');
+  });
+
+  it('I6: closing the review clears its escalation', async () => {
+    const res = await harness.app.inject({ method: 'POST', url: '/api/reviews/aaaaaaaa/close', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(runner.clear).toHaveBeenCalledWith('aaaaaaaa');
   });
 
   it('a report needs the run’s session header and passes the caller’s own session id', async () => {

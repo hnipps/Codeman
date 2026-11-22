@@ -11,6 +11,7 @@
     <script defer src="vendor/marked.min.js"></script>
     <script defer src="vendor/dompurify.min.js"></script>
     <script defer src="sanitize-html.js"></script>
+    <script defer src="reviews-swarm.js"></script>
     <script defer src="reviews.js"></script>
   </head>
   <body>
@@ -20,6 +21,12 @@
       <span class="rv-meta" id="rvMeta"></span>
       <a class="rv-pr" id="rvPr" target="_blank" rel="noopener noreferrer" hidden>PR ↗</a>
       <span class="rv-pill" id="rvState" hidden></span>
+      <div class="rv-swarm" id="rvSwarm" hidden>
+        <span class="rv-pill" id="rvSwarmChip" hidden></span>
+        <span class="rv-swarm-line" id="rvSwarmLine"></span>
+        <a class="rv-swarm-session" id="rvSwarmSession" target="_blank" rel="noopener noreferrer" hidden>Session ↗</a>
+        <button type="button" class="rv-btn rv-btn-sm" id="rvSwarmRun">Run pr-swarm</button>
+      </div>
       <span class="rv-spacer"></span>
       <div class="rv-verdict" id="rvVerdict">
         <button type="button" class="rv-btn rv-btn-close" id="rvClose" hidden>Close</button>
@@ -34,8 +41,13 @@
 
       <section class="rv-doc" id="rvDoc" aria-label="Walkthrough">
         <div class="rv-doc-scroll" id="rvDocScroll">
+          <div class="rv-notice rv-notice-bad" id="rvSwarmEscalation" hidden></div>
           <div class="rv-notice" id="rvNotice" hidden></div>
           <article class="rv-walk" id="rvWalk"></article>
+          <details class="rv-swarm-panel" id="rvSwarmPanel" hidden>
+            <summary id="rvSwarmSummary">pr-swarm</summary>
+            <div class="rv-swarm-body" id="rvSwarmBody"></div>
+          </details>
         </div>
         <aside class="rv-notes" id="rvNotes" aria-label="Notes">
           <div class="rv-notes-head">

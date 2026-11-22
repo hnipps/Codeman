@@ -57,7 +57,9 @@ interface CliEntry {
   //   (where this CLI's own chrome names the model it runs: SessionState.displayModel)
   //   .launchDefaults?: { [launchParam]: settingsKey }
   //   (synced App Settings that seed a LOCAL launch's params the caller left unset;
-  //   codex's model and reasoning effort, via src/web/launch-defaults.ts)
+  //   codex's model, reasoning effort and approvals bypass, antigravity's
+  //   skip-permissions, via src/web/launch-defaults.ts; '' and false mean unset,
+  //   and the multi-user bypass clamp runs after it)
   overlays: CliOverlays; // remote-SSH / Docker pane commands, credential store
 }
 ```

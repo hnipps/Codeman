@@ -311,7 +311,7 @@ describe('Codex quick start settings', () => {
     const html = readFileSync(resolve(import.meta.dirname, '../src/web/public/index.html'), 'utf8');
 
     // The settings modal is one scrolling document: Codex is a GROUP that can be
-    // hidden wholesale, not a tab (see _applyCodexSettingsVisibility).
+    // hidden wholesale, not a tab (see _applyCliSettingsVisibility).
     const clis = html.match(/<section class="set-section" id="settings-clis"([\s\S]*?)<\/section>/);
     expect(clis?.[1]).toBeTruthy();
 
@@ -326,55 +326,75 @@ describe('Codex quick start settings', () => {
     expect(beforeCodex).not.toContain('appSettingsCodexAnimations');
   });
 
-  describe('Codex CLI group visibility', () => {
-    // Both settings in the group are handed to `codex` at launch, so on an
-    // instance where the binary does not resolve the group is a promise nothing
-    // can keep. renderIndexHtml injects window.__codemanCliAvailable; this pins
-    // the client half. Coupled test: it drives the REAL settings-ui.js against a
-    // stub element, so deleting the call in openAppSettings() is what it catches.
-    function loadSettingsUi(codexAvailable: boolean | undefined) {
-      const codexTabBtn = { id: 'appSettingsCodexGroup', style: { display: 'PRISTINE' } };
+  it('renders the Antigravity skip-permissions switch in its own group and loads and saves it by id', () => {
+    const html = readFileSync(resolve(import.meta.dirname, '../src/web/public/index.html'), 'utf8');
+    const clis = html.match(/<section class="set-section" id="settings-clis"([\s\S]*?)<\/section>/)![1];
+    const group = clis.match(/id="appSettingsAntigravityGroup"([\s\S]*?)<div class="set-group"/);
+    expect(group?.[1]).toContain('id="appSettingsAntigravitySkipPermissions"');
+    expect(clis.indexOf('id="appSettingsAntigravityGroup"')).toBeGreaterThan(
+      clis.indexOf('id="appSettingsCodexGroup"')
+    );
+    const src = readFileSync(resolve(import.meta.dirname, '../src/web/public/settings-ui.js'), 'utf8');
+    expect(src).toContain(
+      "antigravitySkipPermissions: document.getElementById('appSettingsAntigravitySkipPermissions').checked"
+    );
+    expect(src).toMatch(
+      /getElementById\('appSettingsAntigravitySkipPermissions'\)\.checked =\s+settings\.antigravitySkipPermissions === true/
+    );
+  });
+
+  describe('CLI settings group visibility', () => {
+    // The settings in each group are handed to that CLI at launch, so on an instance
+    // where the binary does not resolve the group is a promise nothing can keep.
+    // renderIndexHtml injects window.__codemanCliAvailable; this pins the client half.
+    // Coupled test: it drives the REAL settings-ui.js against stub elements, so deleting
+    // the call in openAppSettings() is what it catches.
+    function loadSettingsUi(available: Record<string, boolean> | undefined) {
+      const groups: Record<string, { style: { display: string } }> = {
+        appSettingsCodexGroup: { style: { display: 'PRISTINE' } },
+        appSettingsAntigravityGroup: { style: { display: 'PRISTINE' } },
+      };
       const CodemanApp = function CodemanApp(this: any) {};
       const context: any = vm.createContext({
         CodemanApp,
         MobileDetection: { getDeviceType: () => 'desktop', isTouchDevice: () => false, isHandheldDevice: () => false },
         localStorage: { getItem: () => null, setItem: () => {} },
         document: {
-          getElementById: (id: string) => (id === 'appSettingsCodexGroup' ? codexTabBtn : null),
+          getElementById: (id: string) => groups[id] ?? null,
           querySelector: () => null,
         },
         console,
       });
       context.window = context;
-      if (codexAvailable !== undefined) context.__codemanCliAvailable = { codex: codexAvailable };
+      if (available !== undefined) context.__codemanCliAvailable = available;
       const settingsUi = readFileSync(resolve(import.meta.dirname, '../src/web/public/settings-ui.js'), 'utf8');
       vm.runInContext(settingsUi, context, { filename: 'settings-ui.js' });
-      return { app: new (CodemanApp as any)(), codexTabBtn };
+      const app = new (CodemanApp as any)();
+      app._applyCliSettingsVisibility();
+      return {
+        codex: groups.appSettingsCodexGroup.style.display,
+        antigravity: groups.appSettingsAntigravityGroup.style.display,
+      };
     }
 
-    it('hides the Codex group when the codex binary is not available', () => {
-      const { app, codexTabBtn } = loadSettingsUi(false);
-      app._applyCodexSettingsVisibility();
-      expect(codexTabBtn.style.display).toBe('none');
+    it('hides each group whose CLI is not available', () => {
+      expect(loadSettingsUi({ codex: false, antigravity: false })).toEqual({ codex: 'none', antigravity: 'none' });
     });
 
-    it('hides the Codex group when the availability flag was never injected', () => {
-      const { app, codexTabBtn } = loadSettingsUi(undefined);
-      app._applyCodexSettingsVisibility();
-      expect(codexTabBtn.style.display).toBe('none');
+    it('hides every group when the availability flag was never injected', () => {
+      expect(loadSettingsUi(undefined)).toEqual({ codex: 'none', antigravity: 'none' });
     });
 
-    it('shows the Codex group when codex is available', () => {
-      const { app, codexTabBtn } = loadSettingsUi(true);
-      app._applyCodexSettingsVisibility();
-      expect(codexTabBtn.style.display).toBe('');
+    it('shows each group on its own CLI only', () => {
+      expect(loadSettingsUi({ codex: true, antigravity: false })).toEqual({ codex: '', antigravity: 'none' });
+      expect(loadSettingsUi({ codex: false, antigravity: true })).toEqual({ codex: 'none', antigravity: '' });
     });
 
     it('applies the gating from openAppSettings, not just in isolation', () => {
       const src = readFileSync(resolve(import.meta.dirname, '../src/web/public/settings-ui.js'), 'utf8');
       const open = src.slice(src.indexOf('\n  openAppSettings() {'));
       const body = open.slice(0, open.indexOf('\n  },'));
-      expect(body).toContain('_applyCodexSettingsVisibility()');
+      expect(body).toContain('_applyCliSettingsVisibility()');
     });
   });
 

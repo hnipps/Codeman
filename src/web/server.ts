@@ -3368,6 +3368,9 @@ export class WebServer extends EventEmitter {
     [SseEvent.RespawnBlocked]: { title: 'Respawn Blocked', urgency: 'critical' },
     [SseEvent.SessionRespawnBreakerTripped]: { title: 'Session crash loop stopped', urgency: 'critical' },
     [SseEvent.SessionRalphCompletionDetected]: { title: 'Task Complete', urgency: 'warning' },
+    // Only pr-swarm's escalation of a review with no work item to wait in pushes this event; the SSE broadcast of
+    // the same name never does (review-routes.ts).
+    [SseEvent.ReviewSwarm]: { title: 'Review escalated', urgency: 'critical' },
   };
 
   /**
@@ -3500,6 +3503,9 @@ export class WebServer extends EventEmitter {
     } else if (event === SseEvent.HookPermissionPrompt && data.tool_name) {
       body += body ? ' ' : '';
       body += `Tool: ${String(data.tool_name)}`;
+    } else if (event === SseEvent.ReviewSwarm && data.message) {
+      body += body ? ' ' : '';
+      body += String(data.message).slice(0, 200);
     } else if (event === SseEvent.HookPermissionPrompt && data.source === SCREEN_BLOCKED_SOURCE && data.message) {
       // A dialog read off a hook-less CLI's screen (web/screen-blocked.ts), whose message
       // is built from the CLI's label, never from the screen. Keyed on the source so a

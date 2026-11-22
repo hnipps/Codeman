@@ -177,6 +177,24 @@ export const activeRun = (file: SwarmFile): ActiveRun | undefined => {
   return run && (run.state === 'queued' || run.state === 'running') ? run : undefined;
 };
 
+export type SwarmChip = 'queued' | 'running' | 'approve' | 'changes' | 'escalated';
+
+/**
+ * The one word the Reviews page shows for a review's runs, in its queue row and its top bar. An escalation outranks
+ * everything; then the active run; then the newest verdict. Incomplete and failed runs carry no verdict, so they show
+ * the verdict before them, and a review whose runs never reached a verdict shows nothing.
+ */
+export function swarmChip(file: SwarmFile): SwarmChip | null {
+  if (file.escalated) return 'escalated';
+  const active = activeRun(file);
+  if (active) return active.state;
+  for (const run of file.runs) {
+    if (run.state === 'passed') return 'approve';
+    if (run.state === 'changes' || run.state === 'blocked') return 'changes';
+  }
+  return null;
+}
+
 // --- The agent's report -------------------------------------------------------------------------------------------
 
 const rawText = (max: number) => z.string().max(max);
@@ -295,9 +313,18 @@ export type SwarmEvent =
   | { type: 'started'; runId: string; sessionId: string; tip: string }
   /**
    * The session reported a round. `branchTip` is the branch's tip read just after; `r3Required` is whether the review
-   * is non-spec work attributed to an approved spec. `newRunId` names the run queued when the round cap ends this one.
+   * is non-spec work attributed to an approved spec, and `r3Unavailable` why the run could not give R-3 what it needs.
+   * `newRunId` names the run queued when the round cap ends this one.
    */
-  | { type: 'report'; runId: string; report: SwarmReport; branchTip: string; r3Required: boolean; newRunId: string }
+  | {
+      type: 'report';
+      runId: string;
+      report: SwarmReport;
+      branchTip: string;
+      r3Required: boolean;
+      r3Unavailable?: string;
+      newRunId: string;
+    }
   /** The session died, went silent, or the run could not start. */
   | { type: 'failed'; runId: string; reason: string }
   /** The outcome of delivering a run's verdict. */
@@ -461,7 +488,10 @@ function applyReport(
 
   // I9: R-3 counts only where it must run. Required but missing is `unavailable`, which never merges.
   const r3: R3Result | undefined = event.r3Required
-    ? (report.r3 ?? { verdict: 'unavailable', reason: 'The run reported no R-3 result' })
+    ? (report.r3 ?? {
+        verdict: 'unavailable',
+        reason: cleanLine(event.r3Unavailable ?? 'The run reported no R-3 result', 500),
+      })
     : undefined;
   const verdicted = { ...ran, reviewedTip: report.headSha, result: report.result, ...(r3 ? { r3 } : {}) };
   const stop: SwarmAction = { kind: 'stop', runId: run.id };
@@ -601,6 +631,42 @@ function hasTrailer(message: string): boolean {
     .trim()
     .split(/\n\s*\n/);
   return (blocks[blocks.length - 1] ?? '').split('\n').some((l) => l.trim() === SWARM_TRAILER);
+}
+
+const R3_TRIGGER_TEXT: Readonly<Record<R3Trigger, string>> = {
+  'outcome-changed': 'the work changes an outcome the spec promised',
+  'constraint-broken': 'the work breaks a constraint of the spec',
+  'unspecified-visible-change': 'the work makes a visible change the spec does not ask for',
+  'outgrew-ticket': 'the work outgrew its ticket',
+  'unresolved-disagreement': 'the reviewers and the builder disagree and nothing settled it',
+  unverifiable: 'the work could not be verified',
+  'deploy-fix-failed': 'a fix for a failed deploy failed',
+};
+
+const verdictText = (run: SwarmRun | undefined): string => {
+  if (!run || (run.state !== 'changes' && run.state !== 'blocked')) return 'an earlier verdict';
+  const r3 = run.r3 && run.r3.verdict !== 'pass' && run.r3.verdict !== 'unavailable' ? `, R-3 ${run.r3.verdict}` : '';
+  return `${run.result.verdict}${r3} on ${run.reviewedTip.slice(0, 7)} (run ${run.id})`;
+};
+
+/**
+ * The comment an escalation leaves on each open work item of the review, and the notification's text when it has none
+ * (I6): which review, why, and what the owner has to decide. Nothing was sent to an agent.
+ */
+export function swarmEscalationNote(review: Review, file: SwarmFile, escalation: SwarmEscalation): string {
+  const runOf = (id: string) => file.runs.find((r) => r.id === id);
+  const why =
+    escalation.kind === 'streak'
+      ? `pr-swarm gave two non-approve verdicts in a row: ${escalation.runIds
+          .map((id) => verdictText(runOf(id)))
+          .join('; the one before it, ')}.`
+      : `R-3 escalated because ${R3_TRIGGER_TEXT[escalation.trigger]}: ${verdictText(runOf(escalation.runId))}.`;
+  return [
+    `pr-swarm escalated the review "${review.title}" (branch ${review.branch}, reviews/${review.id}) to you. ${why}`,
+    'Nothing was sent to an agent and nothing merges by itself until you act. Read the findings on the Reviews page,',
+    'then send notes, approve, close the review, or press Run pr-swarm. Moving this item out of Human required also',
+    'clears the escalation.',
+  ].join(' ');
 }
 
 /**

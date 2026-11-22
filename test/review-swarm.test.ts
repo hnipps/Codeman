@@ -28,6 +28,7 @@ import {
   MAX_RUNS_KEPT,
   parseSwarmReport,
   SwarmFileSchema,
+  swarmChip,
   swarmVerdictPrompt,
   SWARM_TRAILER,
   type SwarmAction,
@@ -37,7 +38,7 @@ import {
   type SwarmRun,
   type SwarmVerdict,
 } from '../src/reviews/swarm-model.js';
-import { changeSwarm, readSwarm, writeSwarm } from '../src/reviews/swarm-store.js';
+import { changeSwarm, readSwarm } from '../src/reviews/swarm-store.js';
 import frozenReviewFile from './fixtures/review-file-schema.v1.json' with { type: 'json' };
 
 const sha = (n: number): string => n.toString(16).padStart(40, '0');
@@ -348,6 +349,41 @@ describe('I4 and I9: OnlySpecWorkMergesItself, R3FailsClosed', () => {
     expect(kinds(actions)).toEqual(['stop']);
   });
 
+  it('a required R-3 the run could not be given reads unavailable with the reason, and never merges', () => {
+    const d = driver();
+    d.step({ type: 'trigger', trigger: 'submit', tip, runId: 'run000001' });
+    d.step({ type: 'started', runId: 'run000001', sessionId: 's1', tip });
+    const actions = d.step({
+      type: 'report',
+      runId: 'run000001',
+      report: report(1, tip, 'APPROVE', { r3: r3Pass }),
+      branchTip: tip,
+      r3Required: true,
+      r3Unavailable: 'x'.repeat(900),
+      newRunId: 'next00001',
+    });
+    // A result the run did report wins over the reason; the reason only fills a missing one, capped like the schema.
+    expect(d.file.runs[0]).toMatchObject({ r3: { verdict: 'pass' } });
+    expect(kinds(actions)).toEqual(['stop', 'consider-approve']);
+
+    const e = driver();
+    e.step({ type: 'trigger', trigger: 'submit', tip, runId: 'run000002' });
+    e.step({ type: 'started', runId: 'run000002', sessionId: 's1', tip });
+    const missing = e.step({
+      type: 'report',
+      runId: 'run000002',
+      report: report(1, tip, 'APPROVE'),
+      branchTip: tip,
+      r3Required: true,
+      r3Unavailable: 'x'.repeat(900),
+      newRunId: 'next00002',
+    });
+    const run = e.file.runs[0]!;
+    expect(run).toMatchObject({ state: 'passed', r3: { verdict: 'unavailable' } });
+    expect(run.state === 'passed' && run.r3?.verdict === 'unavailable' && run.r3.reason.length).toBe(500);
+    expect(kinds(missing)).toEqual(['stop']);
+  });
+
   it('a passed run with R-3 pass is offered to the approve check', () => {
     const d = driver();
     expect(kinds(runOnce(d, 'APPROVE', tip, r3Pass))).toEqual(['stop', 'consider-approve']);
@@ -535,6 +571,38 @@ describe('I6 TwoInARowEscalates', () => {
   });
 });
 
+describe('the Reviews page chip', () => {
+  it('shows nothing before a verdict, the active run while one goes, and the newest verdict after', () => {
+    const d = driver();
+    expect(swarmChip(d.file)).toBeNull();
+    d.step({ type: 'trigger', trigger: 'manual', tip: sha(1), runId: newId() });
+    expect(swarmChip(d.file)).toBe('queued');
+    const run = activeRun(d.file)!;
+    d.step({ type: 'started', runId: run.id, sessionId: 's1', tip: sha(1) });
+    expect(swarmChip(d.file)).toBe('running');
+    d.step({ type: 'failed', runId: run.id, reason: 'silent' });
+    expect(swarmChip(d.file)).toBeNull();
+
+    runOnce(d, 'APPROVE_WITH_NITS');
+    expect(swarmChip(d.file)).toBe('approve');
+    // A failed run carries no verdict, so the verdict before it still shows.
+    d.step({ type: 'trigger', trigger: 'manual', tip: sha(2), runId: newId() });
+    d.step({ type: 'failed', runId: activeRun(d.file)!.id, reason: 'silent' });
+    expect(swarmChip(d.file)).toBe('approve');
+    runOnce(d, 'BLOCKED');
+    expect(swarmChip(d.file)).toBe('changes');
+  });
+
+  it('an escalation outranks a run that is going', () => {
+    const d = driver();
+    runOnce(d, 'REQUEST_CHANGES');
+    runOnce(d, 'REQUEST_CHANGES');
+    expect(swarmChip(d.file)).toBe('escalated');
+    d.step({ type: 'trigger', trigger: 'push', tip: sha(3), runId: newId() });
+    expect(swarmChip(d.file)).toBe('escalated');
+  });
+});
+
 describe('I8 RunOwnCommitsNeverStartARun', () => {
   const own = { message: `fix: guard\n\nPR-Swarm-Automated: true\nCo-Authored-By: x <x@y>` };
   const person = { message: 'fix: by hand' };
@@ -600,7 +668,7 @@ describe('I7 ReviewFilesUnchanged', () => {
       const d = driver(emptySwarmFile(review.id));
       runOnce(d, 'REQUEST_CHANGES');
       runOnce(d, 'APPROVE');
-      writeSwarm(d.file);
+      expect(changeSwarm(review.id, () => ({ file: d.file }))).toMatchObject({ ok: true });
     }
 
     const names = readdirSync(dataPath('reviews'));
@@ -631,9 +699,9 @@ describe('I7 ReviewFilesUnchanged', () => {
     const id = 'dddddddddddddddd';
     expect(readSwarm(id)).toEqual({ ok: true, file: emptySwarmFile(id) });
     deployRole.enter('retired');
-    expect(() => writeSwarm(emptySwarmFile(id))).toThrow();
+    expect(() => changeSwarm(id, (file) => ({ file: { ...file, streak: 1 } }))).toThrow();
     deployRole.enter('live');
-    writeSwarm({ ...emptySwarmFile(id), streak: 1 });
+    changeSwarm(id, (file) => ({ file: { ...file, streak: 1 } }));
     expect(readSwarm(id)).toMatchObject({ ok: true, file: { streak: 1 } });
 
     const path = dataPath('reviews', `${id}.swarm.json`);
@@ -643,6 +711,21 @@ describe('I7 ReviewFilesUnchanged', () => {
     const result = changeSwarm(id, (file) => ({ file: { ...file, streak: 5 } }));
     expect(result).toEqual({ ok: false, reason: 'newer' });
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ version: 2 });
+  });
+
+  it('a change whose file fails the schema or names another review answers invalid and leaves the file alone', () => {
+    const id = 'ffffffffffffffff';
+    changeSwarm(id, (file) => ({ file: { ...file, streak: 2 } }));
+    const path = dataPath('reviews', `${id}.swarm.json`);
+    const before = readFileSync(path, 'utf8');
+
+    expect(changeSwarm(id, (file) => ({ file: { ...file, streak: -1 } }))).toEqual({ ok: false, reason: 'invalid' });
+    expect(changeSwarm(id, (file) => ({ file: { ...file, reviewId: 'eeeeeeeeeeeeeeee' } }))).toEqual({
+      ok: false,
+      reason: 'invalid',
+    });
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(readdirSync(dataPath('reviews'))).not.toContain('eeeeeeeeeeeeeeee.swarm.json');
   });
 });
 
