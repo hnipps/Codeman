@@ -152,7 +152,7 @@ export const DecisionSchema = z
     error: z.string().max(500).optional(),
     /**
      * On `closed`: the review that closed this one. Either its Approve made a merge that already holds this review's
-     * head, or it is the work review that adopted this session review (`adoptSessionReview`).
+     * head, or it is the work review that took this session review over (`adoptSessionReviews`).
      */
     closedBy: ReviewIdSchema.optional(),
   })
@@ -421,9 +421,9 @@ export function closeReview(r: Review, at: number, closedBy?: string): Changed |
 }
 
 /**
- * True when `closed` was closed because `by`, a work review, took it over (`adoptSessionReview`): the work review was
- * made in the same write that closed it, so its `createdAt` is the close's `at`. An Approve's close never matches, since
- * the approved review existed before it was approved.
+ * True when `closed` was closed because `by`, a work review, took it over (`adoptSessionReviews`): the work review
+ * was made in the same write that closed it, so its `createdAt` is the close's `at`. An Approve's close never matches,
+ * since the approved review existed before it was approved.
  */
 export const adoptedBy = (closed: Review, by: Review): boolean =>
   closed.decision?.kind === 'closed' &&

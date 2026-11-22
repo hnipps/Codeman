@@ -366,7 +366,12 @@ describe('submitting on a work item branch', () => {
         ...read.review,
         id: 'aaaaaaaaaaaaaaa1',
         walkthrough: 'Older',
-        notes: [{ id: 'note0000older', at: { kind: 'general' }, text: 'An older note', createdAt: 1 }],
+        notes: [
+          { id: 'note0000older', at: { kind: 'general' }, text: 'An older note', createdAt: 1 },
+          // Its own 'outline' loses the name to the newest review's, so this note must not point at that picture.
+          { id: 'note0000clash', at: { kind: 'capture', name: 'outline' }, text: 'Too wide', createdAt: 2 },
+          { id: 'note0000keeps', at: { kind: 'capture', name: 'older-still' }, text: 'Fine', createdAt: 3 },
+        ],
         captures: [still('outline', 9), still('older-still', 2)],
         updatedAt: 1,
       };
@@ -388,7 +393,12 @@ describe('submitting on a work item branch', () => {
 
       const { review } = await page();
       expect(review.authored.walkthrough).toBe('Walkthrough written first');
-      expect(review.notes.map((n: { text: string }) => n.text)).toEqual(['An older note', 'Tighten the outline']);
+      expect(review.notes.map((n: { text: string; at: unknown }) => [n.text, n.at])).toEqual([
+        ['An older note', { kind: 'general' }],
+        ['On still outline: Too wide', { kind: 'general' }],
+        ['Fine', { kind: 'capture', name: 'older-still' }],
+        ['Tighten the outline', { kind: 'capture', name: 'outline' }],
+      ]);
       expect(review.captures).toMatchObject([
         { name: 'outline', width: 4 },
         { name: 'older-still', width: 2 },
@@ -404,6 +414,20 @@ describe('submitting on a work item branch', () => {
       expect(decision(foreign.id)).toBeUndefined();
       expect(decision(elsewhere.id)).toBeUndefined();
       expect(decision(failedDeploy.id)).toMatchObject({ kind: 'deploy-failed' });
+    });
+
+    it('leaves a session review submitted from inside a Docker case workspace alone', async () => {
+      const sessionId = await sessionReviewFirst();
+      setPr();
+      const docker = createWorkReviews({
+        casePath: async () => repo,
+        dockerWorkspaces: async () => [wtDir],
+        announce: () => {},
+      });
+      expect(await docker.sync({ workspaceId, number: 1 })).toMatchObject({ changed: true });
+      const kept = readReview(sessionId);
+      expect(kept.ok && kept.review.decision).toBeUndefined();
+      expect((await page()).review.authored).toBeUndefined();
     });
 
     it('a session review closed by an Approve of the work review does not read as taken over', async () => {

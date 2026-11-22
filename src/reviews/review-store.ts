@@ -168,16 +168,17 @@ export function findCaptureFile(review: Review, name: string): { path: string; s
 
 /**
  * Copies the stills of `from` (newest review first) that have a file into the folder of review `toId`, and returns
- * those copied. A name already taken by a newer review is skipped, and at most `MAX_CAPTURES` are copied. The work
+ * those copied with the id of the review each came from. A name already taken by a newer review is skipped, and at
+ * most `MAX_CAPTURES` are copied. The work
  * review that takes session reviews over gets its stills this way; the session reviews keep their own files.
  */
-export function copyCaptureFiles(from: readonly Review[], toId: string): Capture[] {
+export function copyCaptureFiles(from: readonly Review[], toId: string): { from: string; capture: Capture }[] {
   if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'may write reviews');
   const id = ReviewIdSchema.parse(toId);
-  const copied: Capture[] = [];
+  const copied: { from: string; capture: Capture }[] = [];
   for (const review of from)
     for (const capture of review.captures ?? []) {
-      if (copied.length >= MAX_CAPTURES || copied.some((c) => c.name === capture.name)) continue;
+      if (copied.length >= MAX_CAPTURES || copied.some((c) => c.capture.name === capture.name)) continue;
       const found = findCaptureFile(review, capture.name);
       if (!found) continue;
       const dir = capturesDir(id);
@@ -191,7 +192,7 @@ export function copyCaptureFiles(from: readonly Review[], toId: string): Capture
       } finally {
         rmSync(tmp, { force: true });
       }
-      copied.push(capture);
+      copied.push({ from: review.id, capture });
     }
   return copied;
 }
