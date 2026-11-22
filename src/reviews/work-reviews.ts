@@ -23,7 +23,7 @@ import type { Author } from '../canvas/model.js';
 import { approveWork, findWork, requestChangesOnWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import { changeWork, readWork, subscribeWork } from '../canvas/work-store.js';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
-import { defaultBase, fetchHead, line, resolveHead, tryGit, validRef } from './review-git.js';
+import { defaultBase, fetchHead, line, repoCommonDir, resolveHead, tryGit, validRef } from './review-git.js';
 import {
   isOpen,
   MAX_OPEN_REVIEWS,
@@ -265,8 +265,7 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
         if (item.pr) void sync({ workspaceId, number: item.number }).catch(() => undefined);
     });
 
-  const commonDir = async (cwd: string): Promise<string> =>
-    line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
+  const commonDir = (cwd: string): Promise<string> => repoCommonDir(git, cwd);
 
   const authorFor: WorkReviews['authorFor'] = async (caller, repo, input) => {
     const owner = caller.owner || null;

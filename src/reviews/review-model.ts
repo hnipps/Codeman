@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import { ReviewAnchorSchema, MAX_NOTES_PER_SEND } from '../canvas/review-schema.js';
+import { isValidWorkingDir } from '../web/schemas.js';
 
 export const MAX_TITLE_CHARS = 140;
 export const MAX_WALKTHROUGH_CHARS = 60_000;
@@ -260,7 +261,11 @@ export const isDecided = (r: Review): boolean =>
   r.decision !== undefined && r.decision.kind !== 'deploy-failed' && r.decision.kind !== 'deploying';
 export const isOpen = (r: Review): boolean => r.decision === undefined || r.decision.kind === 'deploy-failed';
 
-/** What an agent sends. The server supplies everything else from the session and the repository. */
+/**
+ * What an agent sends. The server supplies everything else from the session and the repository. `cwd` is the folder
+ * the caller runs in (a subagent shares its parent's session but may work in a worktree); the server reads the branch
+ * there, and only when it is the same repository as the session's folder.
+ */
 export const SubmitSchema = z
   .object({
     title: z
@@ -271,6 +276,11 @@ export const SubmitSchema = z
     base: RefSchema.optional(),
     /** The stills this revision keeps, by name. Absent keeps them all; the rest are dropped with their files. */
     captures: z.array(CaptureNameSchema).max(MAX_CAPTURES).optional(),
+    cwd: z
+      .string()
+      .max(1000)
+      .refine(isValidWorkingDir, { message: 'cwd must be an absolute path with no shell metacharacters or traversal' })
+      .optional(),
   })
   .strict();
 export type Submit = z.infer<typeof SubmitSchema>;

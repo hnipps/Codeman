@@ -101,6 +101,11 @@ export async function defaultBase(git: GitRunner, cwd: string): Promise<string |
 }
 
 /** The branch the session's folder has checked out, and the base it will be compared with. */
+/** The absolute git common directory of the repository `cwd` is in (shared by all its worktrees), or '' outside one. */
+export async function repoCommonDir(git: GitRunner, cwd: string): Promise<string> {
+  return line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
+}
+
 export async function repoFacts(
   cwd: string,
   wantedBase: string | undefined,
