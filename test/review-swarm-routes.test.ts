@@ -12,7 +12,7 @@ import { dataPath } from '../src/config/instance.js';
 import { deployRole } from '../src/deploy-role.js';
 import { submitReview, type Review } from '../src/reviews/review-model.js';
 import { writeReview } from '../src/reviews/review-store.js';
-import { writeSwarm } from '../src/reviews/swarm-store.js';
+import { changeSwarm } from '../src/reviews/swarm-store.js';
 import { emptySwarmFile, type SwarmRun } from '../src/reviews/swarm-model.js';
 import type { SwarmRunner } from '../src/reviews/swarm-runner.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
@@ -96,9 +96,9 @@ describe('pr-swarm review routes', () => {
   it('each queue row carries its chip from the run file, and a review with no runs carries none', async () => {
     const queue = async () => (await harness.app.inject({ url: '/api/reviews' })).json().data;
     expect((await queue()).waiting[0]).not.toHaveProperty('swarm');
-    writeSwarm({ ...emptySwarmFile('aaaaaaaa'), runs: [queued] });
+    changeSwarm('aaaaaaaa', (file) => ({ file: { ...file, runs: [queued] } }));
     expect((await queue()).waiting[0]).toMatchObject({ id: 'aaaaaaaa', swarm: 'queued' });
-    writeSwarm({ ...emptySwarmFile('aaaaaaaa'), escalated: { kind: 'streak', at: 1, runIds: [RUN_ID] } });
+    changeSwarm('aaaaaaaa', (file) => ({ file: { ...file, escalated: { kind: 'streak', at: 1, runIds: [RUN_ID] } } }));
     expect((await queue()).waiting[0]).toMatchObject({ swarm: 'escalated' });
     // A run file that does not parse shows no chip and never fails the queue.
     writeFileSync(dataPath('reviews', 'aaaaaaaa.swarm.json'), '{');
