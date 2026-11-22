@@ -13,6 +13,7 @@ import {
   CreateWorkSchema,
   createWork,
   emptyWorkFile,
+  escalateWork,
   reportWork,
   ReportWorkSchema,
   requestChangesOnWork,
@@ -167,6 +168,33 @@ describe('work item changes a review makes', () => {
     const closed = updateWork(sent.file, 1, UpdateWorkSchema.parse({ status: 'done' }), ctx);
     if (!closed.ok) throw new Error(closed.message);
     expect(requestChangesOnWork(closed.file, 1, { text: 'x', reviewId: 'r', at: 8 }, ctx)).toMatchObject({
+      ok: false,
+      code: 'INVALID_INPUT',
+    });
+  });
+
+  it('pr-swarm escalation: Human required with the note as its question and a comment; never closed or Backlog', () => {
+    const agent = { author: { kind: 'agent' as const, sessionId: 'swarm-session' }, now: 2000 };
+    const moved = escalateWork(itemFile(), 1, 'pr-swarm escalated the review', agent);
+    if (!moved.ok) throw new Error(moved.message);
+    expect(moved.item).toMatchObject({
+      status: 'human-required',
+      needs: { question: 'pr-swarm escalated the review', at: 2000 },
+    });
+    expect(moved.item.comments.at(-1)).toEqual({
+      at: 2000,
+      author: agent.author,
+      text: 'pr-swarm escalated the review',
+    });
+    expect(moved.item.sessions).not.toContain('swarm-session');
+    expect(moved.item.history.map((e) => e.text)).toContain('Escalated to a person by an automated review');
+    const long = escalateWork(moved.file, 1, 'x'.repeat(5000), agent);
+    expect(long.ok && long.item.needs!.question.length).toBe(2000);
+
+    const closed = updateWork(itemFile(), 1, UpdateWorkSchema.parse({ status: 'done' }), ctx);
+    if (!closed.ok) throw new Error(closed.message);
+    expect(escalateWork(closed.file, 1, 'n', agent)).toMatchObject({ ok: false, code: 'INVALID_INPUT' });
+    expect(escalateWork(itemFile({ status: 'backlog' }), 1, 'n', agent)).toMatchObject({
       ok: false,
       code: 'INVALID_INPUT',
     });

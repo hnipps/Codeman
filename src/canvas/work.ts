@@ -850,6 +850,31 @@ export function requestChangesOnWork(
   return { ok: true, file: next, item, filed: [], duplicate: false };
 }
 
+/**
+ * An automated review escalated to the owner (pr-swarm, `intent/2026-11-20-pr-swarm-reviews.md` I6): the item moves to
+ * Human required with `note` as its question, so it shows as Needs you, and as a comment in its thread. Any review
+ * notes it carried stay. A closed item, and one in Backlog, is refused.
+ */
+export function escalateWork(file: WorkFile, number: number, note: string, ctx: WorkContext): WorkChange | WorkRefusal {
+  const refused = unchangeable(file, number, undefined);
+  if (refused) return refused;
+  const current = findWork(file, number)!;
+  if (workClosed(current.status)) return refuse('INVALID_INPUT', `${workKey(number)} is closed`);
+  // Only a person moves an item out of Backlog.
+  if (current.status === 'backlog') return refuse('INVALID_INPUT', `${workKey(number)} is in Backlog`);
+  if (current.comments.length >= MAX_WORK_COMMENTS)
+    return refuse('FULL', `An item holds at most ${MAX_WORK_COMMENTS} comments`);
+  const text = note.slice(0, MAX_WORK_NOTE_CHARS);
+  const next = structuredClone(file);
+  const item = findWork(next, number)!;
+  if (item.status !== 'human-required') setStatus(next, item, 'human-required', ctx);
+  item.needs = { question: text, at: ctx.now };
+  item.comments = [...item.comments, { at: ctx.now, author: ctx.author, text }];
+  log(item, ctx, 'Escalated to a person by an automated review');
+  touch(item, ctx);
+  return { ok: true, file: next, item, filed: [], duplicate: false };
+}
+
 /** Approve merged the item's pull request: the item is done. An item already done is left as it is. */
 export function approveWork(
   file: WorkFile,
