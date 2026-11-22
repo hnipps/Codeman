@@ -63,6 +63,13 @@ type Fake = {
   dead: Set<string>;
   activity: Map<string, number>;
   timers: (() => void)[];
+  verdicts: { reviewId: string; runId: string; text: string }[];
+  deliverOk: boolean;
+  escalated: { reviewId: string; runId: string; note: string }[];
+  /** What `escalationHeld` answers. */
+  held: boolean | null;
+  approved: { reviewId: string; runId: string; tip: string }[];
+  logs: string[];
   flush(): Promise<void>;
 };
 
@@ -83,6 +90,12 @@ function fake(): Fake {
     dead: new Set<string>(),
     activity: new Map<string, number>(),
     timers: [],
+    verdicts: [],
+    deliverOk: true,
+    escalated: [],
+    held: true,
+    approved: [],
+    logs: [],
     async flush() {
       await settle();
       while (f.timers.length) {
@@ -136,7 +149,22 @@ function fake(): Fake {
       f.dead.add(sessionId);
     },
     announce: () => undefined,
-    log: () => undefined,
+    deliverVerdict: async (review, run, text) => {
+      f.verdicts.push({ reviewId: review.id, runId: run.id, text });
+      return f.deliverOk ? { ok: true } : { ok: false, reason: 'The session was not ready for a prompt' };
+    },
+    escalate: async (review, run, note) => {
+      f.escalated.push({ reviewId: review.id, runId: run.id, note });
+      return 'W-1 moved to Human required';
+    },
+    escalationHeld: () => f.held,
+    approve: async (review, run, tip) => {
+      f.approved.push({ reviewId: review.id, runId: run.id, tip });
+      return { ok: true };
+    },
+    log: (line) => {
+      f.logs.push(line);
+    },
     later: (_ms, fn) => {
       f.timers.push(fn);
     },
@@ -624,6 +652,183 @@ describe('swarm runner', () => {
       expect(swarmCommand({ ...base, remote: 'origin', plan: { base: sha(100), reviewOnly: 'spec' }, r3 })).toBe(
         `/pr-swarm --local --base ${sha(100)} --head-sha ${sha(1)} --round 1`
       );
+    });
+  });
+
+  describe('outcomes (ticket t5)', () => {
+    const runIdOf = (reviewId: string): string => {
+      const read = readSwarm(reviewId);
+      return read.ok ? (activeRun(read.file)?.id ?? read.file.runs[0]!.id) : '';
+    };
+    const fileOf = (reviewId: string) => {
+      const read = readSwarm(reviewId);
+      if (!read.ok) throw new Error('unreadable');
+      return read.file;
+    };
+    /** One run of `review` on the current tip, reported with `verdict` and ended. */
+    const runOnce = async (review: Review, verdict: string, extra: object = {}): Promise<string> => {
+      const tip = f.tips.get(review.id)!.sha;
+      await f.runner.trigger(review.id, 'push', tip);
+      await settle();
+      const runId = runIdOf(review.id);
+      const session = f.started.at(-1)!.sessionId;
+      await f.runner.report(runId, session, { ...result(1, tip, verdict), ...extra });
+      await f.flush();
+      return runId;
+    };
+
+    it('I5: a non-approve verdict is delivered once, as swarmVerdictPrompt, and recorded as sent', async () => {
+      const a = addReview(f);
+      const runId = await runOnce(a, 'REQUEST_CHANGES', {
+        findings: [{ file: 'src/a.ts', line: 3, severity: 'HIGH', reviewer: 'security', body: 'Unchecked path.' }],
+      });
+      expect(f.verdicts).toHaveLength(1);
+      expect(f.verdicts[0]).toMatchObject({ reviewId: a.id, runId });
+      expect(f.verdicts[0].text).toContain('Unchecked path.');
+      expect(f.verdicts[0].text).toContain('codeman agent review submit');
+      expect(fileOf(a.id).runs[0]).toMatchObject({ state: 'changes', send: { state: 'sent' } });
+    });
+
+    it('I5: nothing is sent for an approve verdict, an incomplete run or a failed run', async () => {
+      const a = addReview(f);
+      await runOnce(a, 'APPROVE');
+      const b = addReview(f);
+      await f.runner.trigger(b.id, 'submit', sha(1));
+      await settle();
+      f.dead.add(f.started.at(-1)!.sessionId);
+      await f.runner.tick();
+      await f.flush();
+      expect(fileOf(b.id).runs[0].state).toBe('failed');
+      expect(f.verdicts).toEqual([]);
+    });
+
+    it('I5: a failed delivery is recorded with its reason, never retried alone, and Send again sends it', async () => {
+      const a = addReview(f);
+      f.deliverOk = false;
+      const runId = await runOnce(a, 'BLOCKED');
+      expect(fileOf(a.id).runs[0]).toMatchObject({
+        state: 'blocked',
+        send: { state: 'failed', reason: 'The session was not ready for a prompt' },
+      });
+      await f.runner.tick();
+      await f.flush();
+      expect(f.verdicts).toHaveLength(1);
+
+      f.deliverOk = true;
+      expect(await f.runner.resend(a.id)).toMatchObject({ ok: true, run: { id: runId, send: { state: 'sent' } } });
+      expect(f.verdicts).toHaveLength(2);
+      expect(await f.runner.resend(a.id)).toMatchObject({ ok: false, code: 'NOTHING_TO_SEND' });
+      f.live = false;
+      expect(await f.runner.resend(a.id)).toMatchObject({ ok: false, code: 'NOT_LIVE' });
+      expect(f.verdicts).toHaveLength(2);
+    });
+
+    it('I6: the second non-approve verdict in a row escalates once and sends nothing', async () => {
+      const a = addReview(f);
+      const first = await runOnce(a, 'REQUEST_CHANGES');
+      f.tips.set(a.id, { sha: sha(2), remote: 'origin' });
+      const second = await runOnce(a, 'BLOCKED');
+      expect(f.verdicts.map((v) => v.runId)).toEqual([first]);
+      expect(f.escalated).toHaveLength(1);
+      expect(f.escalated[0]).toMatchObject({ reviewId: a.id, runId: second });
+      expect(f.escalated[0].note).toContain(`run ${second}`);
+      expect(f.escalated[0].note).toContain(`run ${first}`);
+      expect(f.escalated[0].note).toContain('send notes, approve, close the review, or press Run pr-swarm');
+      expect(fileOf(a.id)).toMatchObject({ streak: 2, escalated: { kind: 'streak', runIds: [second, first] } });
+
+      // While escalated a third verdict is neither sent nor escalated again, and Send again is refused.
+      f.tips.set(a.id, { sha: sha(3), remote: 'origin' });
+      await runOnce(a, 'REQUEST_CHANGES');
+      expect(f.verdicts).toHaveLength(1);
+      expect(f.escalated).toHaveLength(1);
+      expect(await f.runner.resend(a.id)).toMatchObject({ ok: false, code: 'ESCALATED' });
+    });
+
+    it('I6: R, A, R never escalates', async () => {
+      const a = addReview(f);
+      await runOnce(a, 'REQUEST_CHANGES');
+      f.tips.set(a.id, { sha: sha(2), remote: 'origin' });
+      await runOnce(a, 'APPROVE_WITH_NITS');
+      f.tips.set(a.id, { sha: sha(3), remote: 'origin' });
+      await runOnce(a, 'REQUEST_CHANGES');
+      expect(f.escalated).toEqual([]);
+      expect(f.verdicts).toHaveLength(2);
+      expect(fileOf(a.id)).toMatchObject({ streak: 1, escalated: null });
+    });
+
+    it('I6: a person clears it, and so does the tick once every item has left Human required', async () => {
+      const a = addReview(f);
+      await runOnce(a, 'REQUEST_CHANGES');
+      f.tips.set(a.id, { sha: sha(2), remote: 'origin' });
+      await runOnce(a, 'REQUEST_CHANGES');
+      expect(fileOf(a.id).escalated).not.toBeNull();
+      f.runner.clear(a.id);
+      expect(fileOf(a.id)).toMatchObject({ streak: 0, escalated: null });
+
+      const b = addReview(f);
+      await runOnce(b, 'REQUEST_CHANGES');
+      f.tips.set(b.id, { sha: sha(2), remote: 'origin' });
+      await runOnce(b, 'REQUEST_CHANGES');
+      f.held = true;
+      await f.runner.tick();
+      expect(fileOf(b.id).escalated).not.toBeNull();
+      f.held = null;
+      await f.runner.tick();
+      expect(fileOf(b.id).escalated).not.toBeNull();
+      f.held = false;
+      await f.runner.tick();
+      expect(fileOf(b.id)).toMatchObject({ streak: 0, escalated: null });
+    });
+
+    describe('I4: automatic Approve', () => {
+      const SPEC = { path: 'intent/2026-11-20-x.md', mergedSha: sha(50), text: '# X\n' };
+      const pass = (tip: string) => ({ r3: { verdict: 'pass', findings: [], deviations: [], tip } });
+
+      it('approves spec-attributed work whose pr-swarm approved and R-3 passed the tip the branch is at', async () => {
+        f.r3 = { required: true, spec: SPEC };
+        const a = addReview(f);
+        const runId = await runOnce(a, 'APPROVE', pass(sha(1)));
+        expect(f.approved).toEqual([{ reviewId: a.id, runId, tip: sha(1) }]);
+        expect(f.verdicts).toEqual([]);
+      });
+
+      it('does not approve when R-3 did not pass, the tip moved, the work is not attributed, or it is escalated', async () => {
+        f.r3 = { required: true, spec: SPEC };
+        await runOnce(addReview(f), 'APPROVE', {
+          r3: { verdict: 'changes', findings: ['x'], deviations: [], tip: sha(1) },
+        });
+        await runOnce(addReview(f), 'APPROVE');
+
+        // The branch moved after the report: the fresh read refuses.
+        const moved = addReview(f);
+        f.deps.approve = async () => {
+          throw new Error('must not be called');
+        };
+        const realTip = f.deps.tip;
+        let reads = 0;
+        f.deps.tip = async (review) =>
+          review.id === moved.id && ++reads > 2 ? { sha: sha(9), remote: 'origin' } : realTip(review);
+        await runOnce(moved, 'APPROVE', pass(sha(1)));
+        expect(f.logs.some((l) => l.includes(moved.id) && l.includes('R3_NOT_PASSED'))).toBe(true);
+        f.deps.tip = realTip;
+
+        // Attribution is read again at the decision: gone means no merge.
+        const unattributed = addReview(f);
+        let plans = 0;
+        f.deps.r3Plan = async () => (++plans > 1 ? { required: false } : { required: true, spec: SPEC });
+        await runOnce(unattributed, 'APPROVE', pass(sha(1)));
+        expect(f.logs.some((l) => l.includes(unattributed.id) && l.includes('NOT_ATTRIBUTED'))).toBe(true);
+        expect(f.approved).toEqual([]);
+      });
+
+      it('never on a spec review or unattributed work, which records the approve verdict only', async () => {
+        f.r3 = { required: false };
+        const a = addReview(f);
+        await runOnce(a, 'APPROVE', pass(sha(1)));
+        expect(f.approved).toEqual([]);
+        expect(fileOf(a.id).runs[0]).toMatchObject({ state: 'passed' });
+        expect(fileOf(a.id).runs[0]).not.toHaveProperty('r3');
+      });
     });
   });
 

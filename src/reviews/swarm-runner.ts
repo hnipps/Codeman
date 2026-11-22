@@ -8,8 +8,13 @@
  *
  * Every change to a run goes through `applySwarmEvent()` (`swarm-model.ts`), and this module only carries out the
  * actions it returns: `enqueue`, `round` (the same session reviews the new tip, I2) and `stop` (the session and the
- * worktree go). `send`, `escalate` and `consider-approve` are recorded on the run and logged; the outcomes ticket
- * carries them out. A session that ends, or stays silent for 30 minutes, ends its run `failed`.
+ * worktree go), `send` (the verdict prompt goes to the agent once, I5), `escalate` (the review's open work items go to
+ * Human required, or a notification goes out, I6) and `consider-approve` (every fact is read again and, when
+ * `decideAutoApprove()` allows it, the Approve button's own function runs, I4). A session that ends, or stays silent
+ * for 30 minutes, ends its run `failed`.
+ *
+ * A person clears an escalation (`clear()`): Request changes, Approve and Close call it, the Run button's trigger does
+ * it in the model, and the minute tick clears one whose work items have all left Human required.
  *
  * Rule 6: only the live deploy colour starts runs, writes run state or takes reports. The slot lives in memory, so a
  * colour that becomes live calls `recover()`: queued runs go back in the queue, a running run whose session is still
@@ -20,7 +25,12 @@ import { isOpen, MAX_NOTE_CHARS, type Review } from './review-model.js';
 import {
   activeRun,
   applySwarmEvent,
+  decideAutoApprove,
   parseSwarmReport,
+  swarmEscalationNote,
+  swarmVerdictPrompt,
+  type FlaggedRun,
+  type SwarmEscalation,
   R3_TRIGGERS,
   type R3Trigger,
   type SwarmAction,
@@ -273,6 +283,28 @@ export interface SwarmRunnerDeps {
   session(sessionId: string): SessionLiveness;
   stopSession(review: Review, sessionId: string): Promise<void>;
   announce(review: Review): void;
+  /**
+   * Carries a non-approve verdict to the agent (I5): pasted into the author session of a session review, put on the
+   * item of a work review. Never retried here; a failure is recorded and a person may send again.
+   */
+  deliverVerdict(review: Review, run: FlaggedRun, text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * Escalates to the owner (I6): each open work item of the review moves to Human required with `note` as a comment,
+   * or a notification carries `note` when it has none (or none could be moved). Answers a line for the log.
+   */
+  escalate(review: Review, run: FlaggedRun, note: string): Promise<string>;
+  /**
+   * Whether the review's escalation, made at `since`, still waits in a work item: true while one of the open items it
+   * moved is in Human required, false once all have left it, null when it moved no item that is still open (it went
+   * out as a notification, or every item refused it), so the tick never clears it.
+   */
+  escalationHeld(review: Review, since: number): boolean | null;
+  /** The Approve button's own function, for a run whose automatic Approve `decideAutoApprove()` allowed (I4). */
+  approve(
+    review: Review,
+    run: Extract<SwarmRun, { state: 'passed' }>,
+    tip: string
+  ): Promise<{ ok: true } | { ok: false; message: string }>;
   log(line: string): void;
   later(ms: number, fn: () => void): void;
   skillsDir: string;
@@ -295,6 +327,14 @@ export type SwarmTriggerResult =
 
 type TriggerRefusal = Extract<SwarmTriggerResult, { ok: false }>;
 export type SwarmTipResult = { ok: true; run: SwarmRun | null } | TriggerRefusal;
+
+export type SwarmResendResult =
+  | { ok: true; run: SwarmRun }
+  | {
+      ok: false;
+      code: 'NOT_LIVE' | 'NOT_FOUND' | 'NOTHING_TO_SEND' | 'ESCALATED' | 'SENDING' | 'FILE';
+      message: string;
+    };
 
 export type SwarmReportResult =
   | { ok: true; state: SwarmRun['state']; round?: number; tip?: string; duplicate?: true }
@@ -320,6 +360,10 @@ export interface SwarmRunner {
   report(runId: string, callerSessionId: string, json: unknown): Promise<SwarmReportResult>;
   /** A review's runs, read only. */
   view(reviewId: string): SwarmRead;
+  /** A person sends the newest run's verdict again after its delivery failed (I5's Send again). */
+  resend(reviewId: string): Promise<SwarmResendResult>;
+  /** A person acted on the review (notes sent, approved, closed): the escalation and the streak are cleared (I6). */
+  clear(reviewId: string): void;
   /** The tip a run of this review would review now; null when it cannot be read or git may not run there. */
   tipOf(review: Review): Promise<RunTip | null>;
   /**
@@ -371,12 +415,116 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
         stopRun(reviewId, action.runId);
         return;
       case 'send':
-      case 'escalate':
-      case 'consider-approve':
-        deps.log(
-          `[pr-swarm] review ${reviewId} run ${action.runId}: ${action.kind} is recorded on the run and not carried out by this release`
-        );
+        void sendVerdict(reviewId, action.runId);
         return;
+      case 'escalate':
+        void escalate(reviewId, action.runId, action.escalation);
+        return;
+      case 'consider-approve':
+        void considerApprove(reviewId, action.runId);
+        return;
+    }
+  };
+
+  /** Runs whose verdict is being delivered, so one delivery is never started twice (I5). */
+  const sending = new Set<string>();
+  /** Reviews whose escalation is being written, so the tick does not clear it before the items have moved. */
+  const escalating = new Set<string>();
+
+  const flaggedRun = (reviewId: string, runId: string): { review: Review; run: FlaggedRun } | null => {
+    const review = deps.review(reviewId);
+    const read = readSwarm(reviewId);
+    const run = read.ok ? read.file.runs.find((r) => r.id === runId) : undefined;
+    return review && run && (run.state === 'changes' || run.state === 'blocked') ? { review, run } : null;
+  };
+
+  const sendVerdict = async (reviewId: string, runId: string): Promise<SwarmResendResult> => {
+    const found = flaggedRun(reviewId, runId);
+    if (!found?.run.send) return { ok: false, code: 'NOTHING_TO_SEND', message: 'That run has no verdict to send' };
+    if (sending.has(runId)) return { ok: false, code: 'SENDING', message: 'The verdict is being sent' };
+    sending.add(runId);
+    try {
+      let outcome: { ok: true } | { ok: false; reason: string };
+      try {
+        outcome = await deps.deliverVerdict(found.review, found.run, swarmVerdictPrompt(found.review, found.run));
+      } catch (err) {
+        outcome = { ok: false, reason: err instanceof Error ? err.message : 'The verdict could not be delivered' };
+      }
+      const done = apply(
+        reviewId,
+        outcome.ok ? { type: 'sent', runId, ok: true } : { type: 'sent', runId, ok: false, reason: outcome.reason }
+      );
+      if (!done.ok) return { ok: false, code: 'FILE', message: done.message };
+      if (!outcome.ok)
+        deps.log(`[pr-swarm] review ${reviewId} run ${runId}: the verdict was not sent: ${outcome.reason}`);
+      const run = done.file.runs.find((r) => r.id === runId);
+      return run ? { ok: true, run } : { ok: false, code: 'FILE', message: 'The run is no longer recorded' };
+    } finally {
+      sending.delete(runId);
+    }
+  };
+
+  const escalate = async (reviewId: string, runId: string, escalation: SwarmEscalation): Promise<void> => {
+    const found = flaggedRun(reviewId, runId);
+    const read = readSwarm(reviewId);
+    if (!found || !read.ok) {
+      deps.log(`[pr-swarm] review ${reviewId} run ${runId}: escalated, but the review or its run could not be read`);
+      return;
+    }
+    escalating.add(reviewId);
+    try {
+      const note = swarmEscalationNote(found.review, read.file, escalation);
+      const line = await deps.escalate(found.review, found.run, note);
+      deps.log(`[pr-swarm] review ${reviewId} run ${runId}: escalated: ${line}`);
+    } catch (err) {
+      deps.log(
+        `[pr-swarm] review ${reviewId} run ${runId}: escalated, but it could not be written: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      escalating.delete(reviewId);
+    }
+  };
+
+  /** I4: every fact is read again now; only `decideAutoApprove()`'s yes runs the Approve button's function. */
+  const considerApprove = async (reviewId: string, runId: string): Promise<void> => {
+    const say = (text: string) => deps.log(`[pr-swarm] review ${reviewId} run ${runId}: no automatic Approve: ${text}`);
+    try {
+      if (!deps.mayAct()) return say('this colour is not live');
+      const review = deps.review(reviewId);
+      const read = readSwarm(reviewId);
+      const run = read.ok ? read.file.runs.find((r) => r.id === runId) : undefined;
+      if (!review || !read.ok || !run) return say('the review or its run could not be read');
+      const refused = await deps.refusal(review);
+      if (refused) return say(refused);
+      const tip = await deps.tip(review);
+      if (!tip) return say('the branch tip could not be read');
+      const plan = await deps.r3Plan(review, tip.sha);
+      const decision = decideAutoApprove({
+        run,
+        // The plan needs R-3 exactly when the review is non-spec work attributed to an approved spec.
+        specReview: false,
+        attributed: plan.required,
+        reviewOpen: isOpen(review),
+        escalated: read.file.escalated !== null,
+        branchTip: tip.sha,
+      });
+      if (!decision.approve) return say(decision.refusal);
+      if (run.state !== 'passed') return say('NOT_APPROVED');
+      const approved = await deps.approve(review, run, decision.tip);
+      if (!approved.ok) return say(approved.message);
+      deps.log(`[pr-swarm] review ${reviewId} run ${runId}: approved automatically at ${decision.tip.slice(0, 12)}`);
+    } catch (err) {
+      say(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** The tick's clear: an escalation whose work items have all left Human required was answered by a person. */
+  const clearAnswered = (): void => {
+    for (const review of deps.reviews()) {
+      if (!isOpen(review) || escalating.has(review.id)) continue;
+      const read = readSwarm(review.id);
+      if (!read.ok || !read.file.escalated) continue;
+      if (deps.escalationHeld(review, read.file.escalated.at) === false) apply(review.id, { type: 'clear' });
     }
   };
 
@@ -638,6 +786,29 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
 
     view: (reviewId) => readSwarm(reviewId),
 
+    async resend(reviewId) {
+      if (!deps.mayAct())
+        return { ok: false, code: 'NOT_LIVE', message: 'Only the live colour sends pr-swarm verdicts' };
+      if (!deps.review(reviewId)) return { ok: false, code: 'NOT_FOUND', message: 'Review not found' };
+      const read = readSwarm(reviewId);
+      if (!read.ok) return { ok: false, code: 'FILE', message: `The run file is ${read.reason}` };
+      // I6: while the review is escalated nothing goes to an agent, a person's press included.
+      if (read.file.escalated)
+        return { ok: false, code: 'ESCALATED', message: 'The review is escalated; send notes or approve instead' };
+      const latest = read.file.runs[0];
+      if (!latest || (latest.state !== 'changes' && latest.state !== 'blocked') || latest.send?.state !== 'failed')
+        return { ok: false, code: 'NOTHING_TO_SEND', message: 'The newest run has no failed delivery to send again' };
+      return sendVerdict(reviewId, latest.id);
+    },
+
+    clear(reviewId) {
+      if (!deps.mayAct()) return;
+      const read = readSwarm(reviewId);
+      if (!read.ok || (!read.file.escalated && !read.file.streak)) return;
+      const done = apply(reviewId, { type: 'clear' });
+      if (!done.ok) deps.log(`[pr-swarm] review ${reviewId}: the escalation could not be cleared: ${done.message}`);
+    },
+
     tipOf: async (review) => ((await deps.refusal(review)) ? null : deps.tip(review)),
 
     recover,
@@ -665,6 +836,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
         else if (deps.now() - Math.max(session.lastActivityAt, heardAt) >= SILENCE_LIMIT_MS)
           failRun(reviewId, runId, "The run's session was silent for 30 minutes");
       }
+      clearAnswered();
       await pump();
     },
   };
