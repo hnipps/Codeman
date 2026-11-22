@@ -9,15 +9,17 @@
  * Status select; linked sessions are read for display only. The board, its camera and its selection are untouched.
  *
  * Seven lanes (W-48): on a desktop Done and Not doing share the last column (`.work-closed`), so six columns fit and
- * the rest scrolls sideways; a phone shows one lane behind wrapping tabs. Ready for work is in pickup order: a drag
- * within it, Shift+Up/Down on a card or Move up/down in the detail sets the item's `position`.
+ * the rest scrolls sideways; a phone shows one lane behind wrapping tabs. Deleted (W-22) is an eighth lane, painted in
+ * that column and as a tab only while Show deleted is on; a delete is a move with Undo, and Restore moves it back.
+ * Ready for work is in pickup order: a drag within it, Shift+Up/Down on a card or Move up/down in the detail sets the
+ * item's `position`.
  */
 import { uuid } from './ids.js';
 import { STATE_GLYPHS, STATE_WORDS, parseSessions } from './sessions.js';
 import type { ShellSessionRow } from '../../../src/canvas/shell-sessions.js';
 import {
   isHttpsUrl,
-  NOT_DELETED_STATUSES,
+  WORK_STATUSES,
   WORK_STATUS_NAMES,
   workClosed,
   workKey,
@@ -30,6 +32,8 @@ import {
   assigneeLabel,
   askAgentDraft,
   authorLabel,
+  deletedBy,
+  deletedCount,
   fileSize,
   isImageAttachment,
   itemState,
@@ -38,8 +42,10 @@ import {
   outlineItems,
   parseWork,
   readyStep,
+  restoreStatus,
   sessionLabel,
   stepStatus,
+  visibleStatuses,
   workCounts,
   WORK_FILE_ACCEPT,
   type WorkFilter,
@@ -92,7 +98,7 @@ const EMPTY: Record<WorkStatus, string> = {
   'in-progress': 'Nobody is working on anything',
   done: 'Finished work shows here',
   'not-doing': 'Decided against',
-  deleted: 'Deleted items are hidden',
+  deleted: 'Nothing deleted',
 };
 const OUTCOME_HEADS = {
   done: 'Done and verified',
@@ -121,6 +127,7 @@ const clock = (at: number): string => {
     ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
+const day = (at: number): string => new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const typing = (target: EventTarget | null): boolean =>
   target instanceof Element &&
   !!target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])');
@@ -146,6 +153,8 @@ export class WorkView {
   private commenting = false;
   private phoneLane: WorkStatus = 'in-progress';
   private showAllDone = false;
+  /** Paints the Deleted lane and tab. The page's own, never stored; off again once nothing is deleted. */
+  private showDeleted = false;
   private lanesStale = false;
   private opener: HTMLElement | null = null;
   private asked = 0;
@@ -174,6 +183,7 @@ export class WorkView {
   private view = el('section');
   private total = el('span', 'work-total');
   private search = el('input');
+  private deletedToggle = el('button', 'work-show-deleted');
   private lanes = el('div', 'work-lanes');
   private tabs = el('nav', 'work-tabs');
   private toast = el('div', 'work-toast');
@@ -288,6 +298,13 @@ export class WorkView {
       this.query = this.search.value;
       this.paintLanes();
     };
+    this.deletedToggle.type = 'button';
+    this.deletedToggle.hidden = true;
+    this.deletedToggle.onclick = () => {
+      this.showDeleted = !this.showDeleted;
+      if (this.showDeleted) this.phoneLane = 'deleted';
+      this.paintLanes();
+    };
     const hint = el('span', 'work-hint', 'Drag cards, ⇧← ⇧→ to move, ⇧↑ ⇧↓ to reorder Ready for work');
     const add = btn('primary work-new', 'New item', () => this.startAdding('backlog'));
     add.title = 'New item · N';
@@ -317,11 +334,23 @@ export class WorkView {
       b.dataset.workMode = mode;
       this.modeSeg.append(b);
     }
-    this.itemsOnly = [seg, this.search, hint, add, this.tabs, this.lanes];
-    head.append(outline, h1, this.modeSeg, seg, this.search, el('span', 'work-grow'), hint, add, assistant, close);
+    this.itemsOnly = [seg, this.search, this.deletedToggle, hint, add, this.tabs, this.lanes];
+    head.append(
+      outline,
+      h1,
+      this.modeSeg,
+      seg,
+      this.search,
+      this.deletedToggle,
+      el('span', 'work-grow'),
+      hint,
+      add,
+      assistant,
+      close
+    );
     this.tabs.setAttribute('aria-label', 'Lanes');
     // Built once and relabelled on paint, so a tab keeps the keyboard and a press across a refresh.
-    for (const status of NOT_DELETED_STATUSES) {
+    for (const status of WORK_STATUSES) {
       const b = btn('', WORK_STATUS_NAMES[status], () => {
         this.phoneLane = status;
         this.paintLanes();
@@ -535,10 +564,26 @@ export class WorkView {
       return;
     }
     const from = item.status;
+    const deleting = to === 'deleted';
+    // Deleting the item open here closes its detail; the keyboard goes to the card beside it.
+    const closing = deleting && undoable && this.open === item.number && !this.detail.hidden;
+    const lane = laneItems(this.items, from, this.sessions, this.filter, this.query);
+    const at = lane.findIndex((i) => i.number === item.number);
+    const beside = (lane[at + 1] ?? lane[at - 1])?.number;
     // Shown at once; the server's answer replaces it, a refusal reloads.
     const shown = position !== undefined ? position - 0.5 : 1e9;
-    this.replace({ ...item, status: to, ...(to === 'ready-for-work' ? { position: shown } : {}) });
+    // Until the server's record arrives, a delete keeps the status it left, so Restore names it; a restore drops it.
+    const deleted = deleting
+      ? (item.deleted ?? {
+          at: Date.now(),
+          from: from as NonNullable<WorkRow['deleted']>['from'],
+          author: { kind: 'human' as const, userId: '' },
+        })
+      : undefined;
+    this.replace({ ...item, status: to, deleted, ...(to === 'ready-for-work' ? { position: shown } : {}) });
+    if (closing) this.host.rail(false);
     this.paint();
+    if (closing) requestAnimationFrame(() => this.focusAfterDelete(from, beside));
     const saved = await this.send('PATCH', `/${item.key}`, {
       status: to,
       ...(position !== undefined ? { position } : {}),
@@ -550,10 +595,19 @@ export class WorkView {
     // Entering or leaving Ready for work shifts the positions of the cards around it.
     if (to === 'ready-for-work' || from === 'ready-for-work') void this.load();
     if (undoable)
-      this.notify(`${item.key} moved to ${WORK_STATUS_NAMES[to]}`, () => {
+      this.notify(deleting ? `${item.key} deleted` : `${item.key} moved to ${WORK_STATUS_NAMES[to]}`, () => {
         const now = this.items.find((i) => i.number === item.number);
         if (now && now.status === to) void this.move(now, from, false);
       });
+  }
+  /** The card after the deleted one in its lane, else the one before, else the lane's "+ Add item". */
+  private focusAfterDelete(lane: WorkStatus, beside: number | undefined): void {
+    if (!this.full) return this.host.focusBoard();
+    const target =
+      (beside !== undefined && this.lanes.querySelector<HTMLElement>(`.work-card[data-number="${beside}"]`)) ||
+      this.lanes.querySelector<HTMLElement>(`[data-work-add="${lane}"]`) ||
+      this.view.querySelector<HTMLElement>('.work-new');
+    target?.focus({ preventScroll: false });
   }
   /**
    * Puts a Ready for work item at `position` (1 is the top). Other cards shift, so the lane is read again once the
@@ -770,17 +824,25 @@ export class WorkView {
     const focusCard = active && this.lanes.contains(active) ? active.dataset.number : undefined;
     const focusAdd = active?.dataset.workAdd;
     this.total.textContent = `${openCount(this.items)} open`;
+    const deleted = deletedCount(this.items);
+    if (!deleted) this.showDeleted = false;
+    const shown = visibleStatuses(this.showDeleted);
+    if (!shown.includes(this.phoneLane)) this.phoneLane = 'in-progress';
+    this.deletedToggle.hidden = !deleted;
+    this.deletedToggle.textContent = `Show deleted (${deleted})`;
+    this.deletedToggle.setAttribute('aria-pressed', String(this.showDeleted));
     for (const b of this.view.querySelectorAll<HTMLElement>('[data-work-filter]'))
       b.setAttribute('aria-pressed', String(b.dataset.workFilter === this.filter));
     for (const b of this.tabs.querySelectorAll<HTMLElement>('[data-lane-tab]')) {
       const status = b.dataset.laneTab as WorkStatus;
       b.textContent = `${WORK_STATUS_NAMES[status]} ${this.items.filter((i) => i.status === status).length}`;
       b.setAttribute('aria-pressed', String(this.phoneLane === status));
+      b.hidden = !shown.includes(status);
     }
-    // Done and Not doing share one column on a desktop; a phone shows one lane at a time either way.
+    // The closed lanes share one column on a desktop; a phone shows one lane at a time either way.
     const closed = el('div', 'work-closed');
-    closed.append(this.lane('done'), this.lane('not-doing'));
-    this.lanes.replaceChildren(...NOT_DELETED_STATUSES.filter((s) => !workClosed(s)).map((s) => this.lane(s)), closed);
+    closed.append(...shown.filter((s) => workClosed(s)).map((s) => this.lane(s)));
+    this.lanes.replaceChildren(...shown.filter((s) => !workClosed(s)).map((s) => this.lane(s)), closed);
     if (focusCard)
       this.lanes.querySelector<HTMLElement>(`.work-card[data-number="${focusCard}"]`)?.focus({ preventScroll: true });
     else if (focusAdd) this.lanes.querySelector<HTMLElement>(`[data-work-add="${focusAdd}"]`)?.focus();
@@ -892,14 +954,20 @@ export class WorkView {
   private card(item: WorkRow): HTMLElement {
     const state = itemState(item, this.sessions);
     const quiet = workClosed(item.status);
-    const card = el('div', `work-card${quiet ? ' quiet' : ''}${state === 'needs' ? ' needs' : ''}`);
+    const gone = item.status === 'deleted' ? `Deleted ${item.deleted ? day(item.deleted.at) : ''}`.trim() : '';
+    const card = el(
+      'div',
+      `work-card${quiet ? ' quiet' : ''}${state === 'needs' ? ' needs' : ''}${gone ? ' deleted' : ''}`
+    );
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
     card.dataset.number = String(item.number);
     card.setAttribute('aria-selected', String(this.open === item.number && !this.detail.hidden));
     card.setAttribute(
       'aria-label',
-      `${item.position !== undefined && item.status === 'ready-for-work' ? `Number ${item.position}. ` : ''}${item.key} ${item.title}. ${assigneeLabel(item, this.sessions)}${state ? `, ${STATE_WORDS[state]}` : ''}`
+      gone
+        ? `${item.key} ${item.title}. ${gone}`
+        : `${item.position !== undefined && item.status === 'ready-for-work' ? `Number ${item.position}. ` : ''}${item.key} ${item.title}. ${assigneeLabel(item, this.sessions)}${state ? `, ${STATE_WORDS[state]}` : ''}`
     );
     const top = el('div', 'work-card-top');
     top.append(el('span', 'work-key', item.key), el('span', 'work-card-title', item.title));
@@ -909,6 +977,7 @@ export class WorkView {
       top.prepend(rank);
     }
     card.append(top);
+    if (gone) card.append(el('div', 'work-card-when', gone));
     if (!quiet) {
       const meta = el('div', 'work-card-meta');
       meta.append(this.who(item));
@@ -1137,10 +1206,12 @@ export class WorkView {
       else title.value = item.title;
     });
     parts.push(title);
+    const deleted = item.status === 'deleted';
+    if (deleted) parts.push(this.deletedBanner(item));
 
     const status = el('select');
     status.dataset.workDetail = 'status';
-    for (const s of NOT_DELETED_STATUSES) {
+    for (const s of WORK_STATUSES) {
       const option = el('option', '', WORK_STATUS_NAMES[s]);
       option.value = s;
       option.selected = s === item.status;
@@ -1391,6 +1462,14 @@ export class WorkView {
     }
     const histSec = el('div', 'work-sec');
     histSec.append(el('h3', '', 'History'), hist);
+    if (!deleted) {
+      const remove = btn('line work-delete', 'Delete item', () => void this.move(item, 'deleted'));
+      remove.dataset.workDetail = 'delete';
+      remove.title = 'Hides it in Deleted. Undo from the notice, or restore it from Show deleted.';
+      const actions = el('div', 'work-actions');
+      actions.append(remove);
+      histSec.append(actions);
+    }
     parts.push(histSec);
 
     this.detail.replaceChildren(...parts);
@@ -1398,6 +1477,28 @@ export class WorkView {
       this.detail
         .querySelector<HTMLElement>(`[data-work-detail="${CSS.escape(keep)}"]`)
         ?.focus({ preventScroll: true });
+  }
+
+  /** Who deleted the item and when, the reason, and Restore: the first control after the title. */
+  private deletedBanner(item: WorkRow): HTMLElement {
+    const box = el('div', 'work-box work-deleted');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', 'Deleted');
+    const by = deletedBy(item, this.sessions);
+    const head = by && item.deleted ? `Deleted by ${by} on ${day(item.deleted.at)}` : 'Deleted';
+    box.append(el('div', 'work-box-head', head));
+    if (item.deleted?.reason) box.append(el('p', 'work-box-why', item.deleted.reason));
+    const to = restoreStatus(item);
+    const restore = btn('primary', `Restore to ${WORK_STATUS_NAMES[to]}`, () => {
+      void this.move(item, to);
+      // The banner is gone with the move's first paint; the keyboard stays in the detail.
+      this.detail.querySelector<HTMLElement>('[data-work-detail="status"]')?.focus({ preventScroll: true });
+    });
+    restore.dataset.workDetail = 'restore';
+    const actions = el('div', 'work-actions');
+    actions.append(restore);
+    box.append(actions);
+    return box;
   }
 
   private filesSection(item: WorkRow): HTMLElement {
