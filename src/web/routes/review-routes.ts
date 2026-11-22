@@ -3,7 +3,7 @@
  * request for changes (`src/reviews/`, `intent/2026-11-16-reviews-page.md`).
  *
  * Endpoints:
- *   GET    /api/reviews                          the queue: waiting, and decided in the last day
+ *   GET    /api/reviews                          the queue: waiting, and decided in the last day; each row has its pr-swarm `swarm` chip
  *   POST   /api/reviews                          an AGENT submits or resubmits { title, walkthrough, base? }
  *   GET    /api/reviews/:id                      one review, with whether its author session still runs
  *   GET    /api/reviews/:id/changes              the files the branch changes against its base
@@ -127,6 +127,7 @@ import {
   type Decision,
   type Refusal,
   type Review,
+  type ReviewSummary,
 } from '../../reviews/review-model.js';
 import {
   changeReview,
@@ -147,6 +148,7 @@ import {
   watchTipReader,
 } from '../../reviews/swarm-git.js';
 import { createSwarmRunner, SWARM_TICK_MS, type SwarmRunner } from '../../reviews/swarm-runner.js';
+import { swarmChip } from '../../reviews/swarm-model.js';
 import { readSwarm } from '../../reviews/swarm-store.js';
 import { createSwarmWatcher } from '../../reviews/swarm-watcher.js';
 import { createWorkReviews, type SyncResult, type WorkReviews } from '../../reviews/work-reviews.js';
@@ -503,7 +505,14 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
   app.get('/api/reviews', async (req) => {
     await settleDeploys();
     const mine = listReviews().filter((r) => visible(req, r));
-    return { success: true, data: queueOf(mine, Date.now(), workReviews.facts(mine)) };
+    const queue = queueOf(mine, Date.now(), workReviews.facts(mine));
+    // Each row carries its pr-swarm chip, read from the run file beside it; an unreadable file shows no chip.
+    const withChip = (row: ReviewSummary) => {
+      const read = readSwarm(row.id);
+      const chip = read.ok ? swarmChip(read.file) : null;
+      return chip ? { ...row, swarm: chip } : row;
+    };
+    return { success: true, data: { waiting: queue.waiting.map(withChip), decided: queue.decided.map(withChip) } };
   });
 
   app.post('/api/reviews', async (req, reply) => {
@@ -1387,7 +1396,12 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       );
     return {
       success: true,
-      data: { swarm: read.file, live: deployRole.allows('persist'), refusal: watcher.refusalOf(review.id) },
+      data: {
+        swarm: read.file,
+        chip: swarmChip(read.file),
+        live: deployRole.allows('persist'),
+        refusal: watcher.refusalOf(review.id),
+      },
     };
   });
 
