@@ -213,4 +213,36 @@ describe('capture highlight layer on the dashboard', () => {
     await page.click('.capture-panel button:has-text("Cancel")');
     expect(await page.evaluate(() => window.CodemanCaptureLayer.isOpen())).toBe(false);
   });
+  it('asks a bridged frame what the outline covers, with at most 1024 points, and keeps its answer', async () => {
+    await page.evaluate(() => {
+      const frame = document.createElement('iframe');
+      frame.id = 'cap-bridged';
+      frame.title = 'Bridged page';
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.style.cssText = 'position:fixed;left:700px;top:300px;width:300px;height:200px;border:0;z-index:50';
+      frame.srcdoc =
+        '<body><script>addEventListener("message",function(e){var d=e.data;if(!d||d.type!=="codeman:query-polygon")return;' +
+        'parent.postMessage({type:"codeman:frame-elements",requestId:d.requestId,' +
+        'elements:[{selector:"button.buy",text:"Buy "+d.points.length+" "+d.points[0][0]}]},"*");});<\/script></body>';
+      document.body.appendChild(frame);
+    });
+    await page.waitForTimeout(500);
+    await openFrozen();
+    const ring: Point[] = Array.from({ length: 2000 }, (_, i) => {
+      const a = (i / 2000) * Math.PI * 2;
+      return [850 + Math.cos(a) * 120, 400 + Math.sin(a) * 80];
+    });
+    const under = await page.evaluate(async (path) => {
+      window.CodemanCaptureLayer.drawForTest(path);
+      return (window.CodemanCaptureLayer as unknown as { readUnder(p: Point[]): Promise<unknown[]> }).readUnder(path);
+    }, ring);
+    expect(under).toContainEqual({
+      kind: 'frame',
+      title: 'Bridged page',
+      depth: 1,
+      elements: [{ selector: 'button.buy', text: 'Buy 1024 270' }],
+    });
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => document.getElementById('cap-bridged')!.remove());
+  });
 });

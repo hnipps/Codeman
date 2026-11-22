@@ -12,6 +12,7 @@ type Pure = {
   normalisePath(points: unknown): Point[];
   cropBox(path: Point[], width: number, height: number): { x: number; y: number; width: number; height: number };
   samplePoints(path: Point[], max?: number): Point[];
+  thinPath(path: Point[], max: number): Point[];
   insidePolygon(x: number, y: number, polygon: Point[]): boolean;
   capUnder(entries: unknown[]): Record<string, unknown>[];
   buildCaptureJson(input: Record<string, unknown>): Record<string, unknown>;
@@ -80,6 +81,16 @@ describe('the under sampling grid', () => {
       [600, 0],
     ];
     expect(pure.samplePoints(sliver).length).toBeGreaterThan(0);
+  });
+});
+
+describe('the outline sent to a bridged frame', () => {
+  it("is thinned to the bridge's 1024-point limit, keeping its first point", () => {
+    const long = Array.from({ length: 5000 }, (_, i): Point => [i, i % 7]);
+    const thin = pure.thinPath(long, 1024);
+    expect(thin).toHaveLength(1024);
+    expect(thin[0]).toEqual([0, 0]);
+    expect(pure.thinPath(long.slice(0, 10), 1024)).toHaveLength(10);
   });
 });
 

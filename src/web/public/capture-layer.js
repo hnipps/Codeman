@@ -38,6 +38,8 @@
   /** What the `under` reader keeps, as the frame bridge bounds its own answers (spec: 24 and 2000). */
   const UNDER_LIMITS = { samples: 400, entries: 24, text: 2000, selector: 1024, frameDepth: 2 };
   const FRAME_QUERY_MS = 500;
+  /** The most points the frame bridge takes in `codeman:query-polygon` (its FRAME_LIMITS.maxPoints). */
+  const FRAME_QUERY_POINTS = 1024;
   const MIN_PATH_POINTS = 3;
 
   // ───────────── pure helpers (no DOM) ─────────────
@@ -110,6 +112,14 @@
     if (out.length) return out;
     const every = Math.max(1, Math.ceil(path.length / max));
     return path.filter((_, i) => i % every === 0).slice(0, max);
+  }
+
+  /** At most `max` points of `path`, evenly spaced, keeping its first point. */
+  function thinPath(path, max) {
+    if (path.length <= max) return path;
+    const out = [];
+    for (let i = 0; i < max; i++) out.push(path[Math.floor((i * path.length) / max)]);
+    return out;
   }
 
   const clip = (value, max) => {
@@ -230,8 +240,12 @@
     canvas.width = Math.max(1, Math.round(box.width * ratio));
     canvas.height = Math.max(1, Math.round(box.height * ratio));
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(bitmap, -Math.round(box.x * ratio), -Math.round(box.y * ratio));
-    drawOutline(ctx, path, ratio, box);
+    // The picture and the outline share one whole-device-pixel origin, so a fractional ratio never
+    // shifts one against the other.
+    const dx = Math.round(box.x * ratio);
+    const dy = Math.round(box.y * ratio);
+    ctx.drawImage(bitmap, -dx, -dy);
+    drawOutline(ctx, path, ratio, { x: dx / ratio, y: dy / ratio });
     return toPng(canvas);
   }
 
@@ -441,7 +455,10 @@
     for (const frame of frames.values()) {
       if (frame.depth !== 1 || readableDocument(frame.el)) continue;
       const rect = frame.el.getBoundingClientRect();
-      const local = path.map(([x, y]) => [x - rect.left - frame.el.clientLeft, y - rect.top - frame.el.clientTop]);
+      const local = thinPath(path, FRAME_QUERY_POINTS).map(([x, y]) => [
+        x - rect.left - frame.el.clientLeft,
+        y - rect.top - frame.el.clientTop,
+      ]);
       asks.push(
         queryFrame(frame.el, local).then((answer) => {
           const elements = frameElements(answer);
@@ -765,6 +782,7 @@
       normalisePath,
       cropBox,
       samplePoints,
+      thinPath,
       insidePolygon,
       capUnder,
       buildCaptureJson,
