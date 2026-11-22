@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-22 — The capture highlight layer is its own module and hands Send to a sender (W-95)
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/capture-layer.js`, `src/web/public/app.js`, `src/web/public/index.html`, `src/web/public/styles.css`, `src/web/CLAUDE.md`
+**Why:** Ticket 3 of the ambient capture spec. The spec put the overlay, bundle and filing in `capture.js` and left Send's behaviour before ticket 4 open.
+**Links:** [intent/2026-11-19-ambient-capture.md](../intent/2026-11-19-ambient-capture.md) (I2, I9), Work item W-95
+
+The overlay, the `under` reader and the `capture.json` builder live in `capture-layer.js`, loaded after `capture.js`, so `freeze()` stays the small core tickets 1, 2 and 7 pinned. Send builds the bundle and passes it to a function registered with `CodemanCaptureLayer.setSender()`; ticket 4's filing registers one. With none, or when it throws, the panel says why and keeps the capture, the same shape I7's refusal needs. The outline path is rounded to 0.1 CSS px before anything draws it, so the stored path redraws the marked pictures exactly. `under` keeps the spec's 24 entries and 2000 characters (the bridge's own `maxElements` is 50). Enter on the hint skips the outline, so a keyboard-only person can still file a capture; the marked pictures are then the clean one. The bridge's polygon answer is asked only of bridged frames directly in the top document, because the bridge answers its parent alone.
+
 ## 2026-11-21 — The Chat Graph store vendors SQLite for Linux only and keeps I1 in its schema (W-80)
 
 **Type:** intent-refinement
