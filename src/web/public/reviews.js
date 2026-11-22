@@ -5,7 +5,8 @@
  * Rules this file keeps:
  * - Every string from an agent or from git is written with `textContent`. The walkthrough is the one exception:
  *   it goes through `marked` and then `window.sanitizeWalkthroughHtml` (the dashboard's sanitizer plus
- *   details/summary), and is shown as plain text when either is missing.
+ *   details/summary), and is shown as plain text when either is missing. The Work item tab's tracker text goes
+ *   through `marked` and the default `window.sanitizeMarkdownHtml` the same way, never the walkthrough one.
  * - A preview is a sandboxed frame without `allow-same-origin`, like a preview tab on the dashboard.
  * - Nothing is sent to a session without a press of Request changes (once the author session has ended, that press
  *   starts a new session and hands it the review).
@@ -895,13 +896,15 @@
 
   // ---------------------------------------------------------------- walkthrough
 
-  /** Agent or tracker Markdown, through the one sanitizer, as plain text when either piece is missing. */
-  function markdownBody(text) {
+  /**
+   * Agent or tracker Markdown through the given sanitizer, as plain text when `marked` or that sanitizer is missing.
+   * The caller picks the sanitizer: only the walkthrough passes `sanitizeWalkthroughHtml`, and there is no fallback.
+   */
+  function markdownBody(text, sanitize) {
     const body = el('div', 'rv-md');
     let html = null;
     try {
-      const sanitize = window.sanitizeWalkthroughHtml || window.sanitizeMarkdownHtml;
-      if (window.marked && sanitize) html = sanitize(window.marked.parse(text));
+      if (window.marked && typeof sanitize === 'function') html = sanitize(window.marked.parse(text));
     } catch (_err) {
       html = null;
     }
@@ -946,7 +949,7 @@
       )
     );
     const text = authored ? authored.walkthrough : r.walkthrough;
-    walk.append(markdownBody(text));
+    walk.append(markdownBody(text, window.sanitizeWalkthroughHtml));
     // A note action rebuilds the column; the sections the reader opened stay open unless the text itself changed.
     if (shown && shown.id === state.id && shown.text === text) {
       const sections = walk.querySelectorAll('details');
@@ -977,7 +980,7 @@
     tab.textContent = `Work item ${work ? work.key : r.sessionName}`;
     box.replaceChildren(
       el('div', 'rv-by', 'The item as the tracker has it now. It changes when the item does.'),
-      markdownBody(r.walkthrough)
+      markdownBody(r.walkthrough, window.sanitizeMarkdownHtml)
     );
   }
 

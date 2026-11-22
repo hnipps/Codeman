@@ -29,7 +29,8 @@
  *
  * @globals {function} sanitizeMarkdownHtml - (html:string) => string, sanitized HTML
  * @globals {function} sanitizeWalkthroughHtml - (html:string) => string, the Reviews walkthrough variant
- * @globals {function} createMarkdownSanitizer - (DOMPurify, extras?: {tags?: string[], attr?: string[]}) => sanitizer (for tests)
+ * @globals {function} createMarkdownSanitizer - (DOMPurify, extras?: {tags?: string[], attr?: string[]})
+ *   => sanitizer (for tests)
  * @dependency vendor/dompurify.min.js (provides the global DOMPurify)
  * @loadorder 5.6 of 15 — after input-cjk.js(5.5), before app.js(6) (app.js calls it)
  */
