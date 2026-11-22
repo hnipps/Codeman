@@ -633,6 +633,12 @@ function hasTrailer(message: string): boolean {
   return (blocks[blocks.length - 1] ?? '').split('\n').some((l) => l.trim() === SWARM_TRAILER);
 }
 
+/** Agent text after its marker, every later line indented, so only the prompt's own lines start at column 0. */
+const marked = (marker: string, text: string): string[] => {
+  const [first = '', ...rest] = text.split('\n');
+  return [`${marker}${first}`, ...rest.map((l) => `   ${l}`)];
+};
+
 /**
  * The one prompt that carries a non-approve verdict to the agent (I5): pr-swarm's findings, the triage's deferred
  * items and R-3's findings, labelled as review notes, ending exactly as Request changes ends for that kind of review.
@@ -652,8 +658,10 @@ export function swarmVerdictPrompt(review: Review, run: FlaggedRun): string {
       ? [
           'R-3 checked the work against its spec and asked for changes:',
           '',
-          ...r3.findings.flatMap((f, i) => [`${i + 1}. ${f}`]),
-          ...(r3.deviations.length ? ['', 'Deviations it found:', ...r3.deviations.map((d) => `- ${d}`)] : []),
+          ...r3.findings.flatMap((f, i) => marked(`${i + 1}. `, f)),
+          ...(r3.deviations.length
+            ? ['', 'Deviations it found:', ...r3.deviations.flatMap((d) => marked('- ', d))]
+            : []),
           '',
         ]
       : [];
@@ -663,7 +671,7 @@ export function swarmVerdictPrompt(review: Review, run: FlaggedRun): string {
     '',
     ...(findingLines.length ? ['Findings:', '', ...findingLines] : []),
     ...(deferred.length
-      ? ['Items the triage left for you:', '', ...deferred.map((d) => `- ${d.location}: ${d.reason}`), '']
+      ? ['Items the triage left for you:', '', ...deferred.flatMap((d) => marked(`- ${d.location}: `, d.reason)), '']
       : []),
     ...r3Lines,
     ...requestChangesEnding(review),
