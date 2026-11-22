@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-22 — Capture filing resolves the workspace at Send and leaves the rest to an outbox (W-96)
+
+**Type:** intent-refinement
+**Touches:** `src/web/public/capture-filing.js`, `src/capture-home-case.ts`, `src/web/routes/capture-routes.ts`, `src/web/server.ts`, `src/web/public/app.js`, `packages/canvas/src/entry.ts`, `packages/canvas/src/work-model.ts`
+**Why:** Ticket 4 of the ambient capture spec left a few shapes open: how `NO_HOME_CASE` is spelled on the wire, how the toast opens an item, and what happens when the workspace cannot be resolved at Send.
+**Links:** [intent/2026-11-19-ambient-capture.md](../intent/2026-11-19-ambient-capture.md) (I4, I5, I6, I7), Work item W-96
+
+Filing is its own module, `capture-filing.js`, registered as the capture layer's sender. Send resolves the workspace before the panel closes, so I7's refusal keeps the capture in the panel; a rule that cannot be asked now (offline, 5xx, the other deploy colour) stops the walk and the outbox resolves it later, because a later rule may only apply once an earlier one has said no. `NO_HOME_CASE` is a `reason` field beside `errorCode: NOT_FOUND`, not a new `ApiErrorCode`: error codes are public API under the versioning policy and this route is internal. `/api/v1/capture/*` is kept off the alias in `rewriteApiV1Url()`. The toast opens `canvas/<workspace>?work=W-n`, which the canvas reads once (`workFromSearch()`) and removes from the address. capture.json is written at upload, so its `workspaceRule` names the rule that chose the workspace; a picture re-encoded under the 8 MB cap is listed under `encoded`, with JPEG where the browser has no WebP encoder. The pending count is a `codeman:capture-outbox` event and a `data-capture-pending` attribute, ready for ticket 5's button. Without IndexedDB the warning is a toast, since the panel has already closed by the time a record fails to file.
+
 ## 2026-11-22 — The capture highlight layer is its own module and hands Send to a sender (W-95)
 
 **Type:** intent-refinement

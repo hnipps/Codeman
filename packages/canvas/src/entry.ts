@@ -40,6 +40,7 @@ import { embedOrigin } from './objects/embed.js';
 import { watchPresence } from './presence.js';
 import { PrototypesView } from './prototypes-view.js';
 import { WorkView } from './work-view.js';
+import { workFromSearch } from './work-model.js';
 import { sessionRows } from './sessions.js';
 import { bootReady, pageWorkspaceId, rememberWorkspace, shellOn, shellStale } from './shell.js';
 import { ShellView } from './shell-view.js';
@@ -1604,7 +1605,17 @@ const work = new WorkView({
   },
   selectedObjects: () => [...state.selected],
 });
-void work.load();
+// A filed capture's toast links here with `?work=W-12`: open that item once, then clean the address.
+const linkedWork = workFromSearch(location.search);
+if (linkedWork !== null) {
+  const params = new URLSearchParams(location.search);
+  params.delete('work');
+  const rest = params.toString();
+  window.history.replaceState(window.history.state, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
+}
+void work.load().then(() => {
+  if (linkedWork !== null) work.openItem(linkedWork);
+});
 const prototypes = new PrototypesView({
   url,
   workspace: workspaceId,

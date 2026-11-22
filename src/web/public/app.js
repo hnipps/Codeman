@@ -5434,6 +5434,8 @@ class CodemanApp {
     // Clear the init fallback timer since we got data
     this._clearTimer('_initFallbackTimer');
     const gen = ++this._initGeneration;
+    // An SSE (re)connect is when a capture that could not be filed may go through (capture-filing.js).
+    window.CodemanCaptureFiling?.retry();
 
     // CJK input form: controlled by user setting (with server env as override)
     this._serverCjkOverride = data.inputCjkForm || false;

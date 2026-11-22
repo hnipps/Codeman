@@ -20,6 +20,7 @@ export { registerReadMyMindRoutes } from './readmymind-routes.js';
 export { registerGitStatusRoutes } from './git-status-routes.js';
 export { registerStatusTelemetryRoutes } from './status-telemetry-routes.js';
 export { registerCaseRoutes } from './case-routes.js';
+export { registerCaptureRoutes } from './capture-routes.js';
 export { registerWorktreeRoutes } from './worktree-routes.js';
 export { registerSessionRoutes } from './session-routes.js';
 export { registerRespawnRoutes } from './respawn-routes.js';
