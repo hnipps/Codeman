@@ -321,12 +321,44 @@ describe('filing against the server', () => {
     expect(log.filter((r) => r.method === 'POST')).toEqual([]);
   });
 
-  it('prefers the page`s workspace over the session`s', async () => {
-    const other = workspaceForCase('capture-case').id;
-    const svc = service(memory(), { page: other, session: 'no-such-case' });
+  it('prefers the page`s workspace over a session rule that also applies', async () => {
+    mkdirSync(resolve(resolveCasesDir(), 'page-case'), { recursive: true });
+    const made = await inject({ method: 'POST', url: '/api/canvas/workspaces', payload: { caseName: 'page-case' } });
+    const pageWs = (made.json().data as { workspace: { id: string } }).workspace.id;
+    expect(pageWs).not.toBe(ws);
+    const events: Array<{ kind: string; workspaceId?: string }> = [];
+    const svc = service(memory(), { page: pageWs, session: 'capture-case' }, events);
     await svc.send({ bundle: bundle(), note: 'From the canvas page', facts });
     await until(svc);
-    expect((await items()).some((i) => i.title === 'From the canvas page')).toBe(true);
+    expect(events.find((e) => e.kind === 'filed')?.workspaceId).toBe(pageWs);
+    expect((await items()).some((i) => i.title === 'From the canvas page')).toBe(false);
+  });
+
+  it('files once when a retry arrives while a drain is running', async () => {
+    const events: Array<{ kind: string }> = [];
+    const store = memory();
+    const svc = service(store, { page: null, session: 'capture-case' }, events);
+    await svc.send({ bundle: bundle(), note: 'Retry during drain', facts });
+    await Promise.all([svc.drain(), svc.retry(), svc.retry()]);
+    await until(svc);
+    expect(events.filter((e) => e.kind === 'filed')).toHaveLength(1);
+    expect((await items()).filter((i) => i.title === 'Retry during drain')).toHaveLength(1);
+    expect(await store.all()).toEqual([]);
+  });
+
+  it('queues a capture when a 2xx answer is not the API`s JSON', async () => {
+    const store = memory();
+    const svc = filing.create({
+      fetch: async () => ({ status: 200, ok: true, json: async () => Promise.reject(new SyntaxError('html')) }),
+      store,
+      setTimer: () => 0,
+      facts: () => ({ page: null, session: 'capture-case' }),
+    });
+    await svc.send({ bundle: bundle(), note: 'Behind a proxy page', facts });
+    await svc.drain();
+    const [record] = (await store.all()) as Array<{ attempts: number; blocked: unknown }>;
+    expect(record.attempts).toBeGreaterThan(0);
+    expect(record.blocked).toBeNull();
   });
 
   it('keeps the home-case route off the versioned alias', async () => {

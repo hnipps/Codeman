@@ -47,6 +47,8 @@
   const BACKOFF = { firstMs: 2_000, maxMs: 5 * 60_000 };
   const DB = { name: 'codeman-capture-outbox', store: 'captures', version: 1 };
   const STATUS = 'needs-refinement';
+  /** Time limit for each request, so one that hangs cannot hold the outbox (and its lock) forever. */
+  const REQUEST_TIMEOUT_MS = 60_000;
   const RULES = ['page', 'session', 'home'];
   const WORKSPACE_ID = /^[a-zA-Z0-9_-]{1,128}$/;
   const JSON_NAME = 'capture.json';
@@ -252,25 +254,35 @@
     const publish = deps.publish || (() => {});
     const lock = deps.lock || ((fn) => fn());
     const storeReady = deps.store ? Promise.resolve(deps.store) : (deps.openStore || openStore)();
+    const timeoutMs = deps.timeoutMs || REQUEST_TIMEOUT_MS;
     let draining = null;
     let again = false;
+    let reset = false;
     let timer = null;
     const warnedVolatile = new Set();
 
     async function call(path, init) {
-      let res;
+      const abort = typeof AbortController === 'function' ? new AbortController() : null;
+      const limit = abort ? setTimeout(() => abort.abort(), timeoutMs) : null;
       try {
-        res = await deps.fetch(path, { credentials: 'same-origin', ...init });
-      } catch {
-        throw new Transient('The server cannot be reached');
+        let res;
+        try {
+          res = await deps.fetch(path, { credentials: 'same-origin', ...init, signal: abort?.signal });
+        } catch {
+          throw new Transient('The server cannot be reached');
+        }
+        let body = null;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+        // A 2xx that is not the API's JSON (a proxy's page) is not an answer: try again later.
+        if (res.ok && !body) throw new Transient(`Unexpected answer from the server (${res.status})`);
+        return { status: res.status, ok: res.ok && body.success !== false, body };
+      } finally {
+        if (limit) clearTimeout(limit);
       }
-      let body = null;
-      try {
-        body = await res.json();
-      } catch {
-        body = null;
-      }
-      return { status: res.status, ok: res.ok && body?.success !== false, body };
     }
 
     const json = (method, body) => ({
@@ -373,8 +385,20 @@
 
     async function drainOnce() {
       const store = await storeReady;
-      const records = (await pending(store)).filter((r) => !r.blocked && (r.nextAt || 0) <= now());
-      for (const record of records) {
+      if (reset) {
+        reset = false;
+        for (const r of await store.all()) {
+          r.nextAt = 0;
+          r.blocked = null;
+          await store.put(r);
+        }
+      }
+      const due = (await pending(store)).filter((r) => !r.blocked && (r.nextAt || 0) <= now());
+      for (const { requestId } of due) {
+        // Read again: an earlier record of this pass may have taken a while, and another tab may have
+        // filed this one meanwhile.
+        const record = (await store.all()).find((r) => r.requestId === requestId);
+        if (!record) continue;
         try {
           await fileOne(store, record);
         } catch (err) {
@@ -419,13 +443,8 @@
      * too: the deploy colour, the person's access or the workspace may have changed. Its refusal is not
      * announced twice.
      */
-    async function retry() {
-      const store = await storeReady;
-      for (const r of await store.all()) {
-        r.nextAt = 0;
-        r.blocked = null;
-        await store.put(r);
-      }
+    function retry() {
+      reset = true;
       return drain();
     }
 
@@ -504,6 +523,47 @@
     global.dispatchEvent(new CustomEvent('codeman:capture-outbox', { detail: { pending: count } }));
   }
 
+  /**
+   * One tab at a time without Web Locks (plain HTTP from another machine is not a secure context): a
+   * lease in localStorage, renewed while the drain runs. A tab that finds another tab's live lease
+   * skips this pass and tries again once the lease would have run out.
+   */
+  const LEASE_KEY = 'codeman-capture-outbox-lease';
+  const LEASE_MS = 2 * REQUEST_TIMEOUT_MS;
+  const leaseOwner = Math.random().toString(36).slice(2);
+  async function leaseLock(fn) {
+    const storage = global.localStorage;
+    const read = () => {
+      try {
+        return JSON.parse(storage.getItem(LEASE_KEY) || 'null');
+      } catch {
+        return null;
+      }
+    };
+    const write = () => storage.setItem(LEASE_KEY, JSON.stringify({ owner: leaseOwner, until: Date.now() + LEASE_MS }));
+    try {
+      const held = read();
+      if (held && held.owner !== leaseOwner && held.until > Date.now()) {
+        global.setTimeout(() => service?.drain(), held.until - Date.now() + 1000);
+        return undefined;
+      }
+      write();
+    } catch {
+      return fn();
+    }
+    const renew = global.setInterval(write, LEASE_MS / 4);
+    try {
+      return await fn();
+    } finally {
+      global.clearInterval(renew);
+      try {
+        if (read()?.owner === leaseOwner) storage.removeItem(LEASE_KEY);
+      } catch {
+        // Storage went away; the lease runs out by itself.
+      }
+    }
+  }
+
   const fetchApi = (path, init) => global.fetch(global.CodemanBase?.url ? global.CodemanBase.url(path) : path, init);
 
   let service = null;
@@ -513,7 +573,7 @@
       fetch: fetchApi,
       notify: toast,
       publish: publishPending,
-      lock: (fn) => (global.navigator?.locks?.request ? global.navigator.locks.request(DB.name, fn) : fn()),
+      lock: (fn) => (global.navigator?.locks?.request ? global.navigator.locks.request(DB.name, fn) : leaseLock(fn)),
       facts: (facts) => ({
         page: pageWorkspace(),
         session: facts?.sessionId ? sessionCase(facts.sessionId) : null,

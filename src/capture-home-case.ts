@@ -63,7 +63,12 @@ export async function findHomeCase(deps: HomeCaseDeps): Promise<string | null> {
   const probe = deps.probe ?? ((p: string) => probePathKind(p));
   const timeoutMs = HOME_CASE_GIT_TIMEOUT_MS;
   const foreign = new Set(await deps.foreignNames().catch(() => []));
-  const dockerRoots = await Promise.all((await deps.dockerWorkspaces().catch(() => [])).map(realOrSelf));
+  // realpath only a folder the bounded probe could read, so a stalled mount cannot hold the lookup.
+  const dockerRoots = await Promise.all(
+    (await deps.dockerWorkspaces().catch(() => [])).map(async (p) =>
+      (await probe(p)) === 'directory' ? realOrSelf(p) : p
+    )
+  );
   const sha = deps.buildId && COMMIT_SHA.test(deps.buildId) ? deps.buildId : null;
 
   let installTop: string | null = null;
