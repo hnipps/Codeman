@@ -3,8 +3,9 @@
  * beside the review and never inside it, so the previous release reads every review file unchanged (I7).
  *
  * The rules are `review-store.ts`'s: only the live colour writes, a write is tmp + fsync + rename at mode 0600, a file
- * that does not parse or that a newer release wrote is never overwritten, and a change reads, applies a pure function
- * and writes in one synchronous tick.
+ * that does not parse or that a newer release wrote is never overwritten, and `changeSwarm`, the only writer, reads,
+ * applies a pure function and writes. That read-apply-write is safe only because it runs in one synchronous tick, in one
+ * process, under the live-colour lease.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dataPath } from '../config/instance.js';
@@ -36,18 +37,22 @@ export function readSwarm(rawId: string): SwarmRead {
     : { ok: false, reason: 'unreadable' };
 }
 
-export function writeSwarm(file: SwarmFile): void {
-  writeReviewsFile(swarmPath(file.reviewId), SwarmFileSchema.parse(file));
-}
+type SwarmChangeFailure = Extract<SwarmRead, { ok: false }> | { ok: false; reason: 'invalid' };
 
-/** Applies one pure change and writes it. A change that returns the same file writes nothing. */
+/**
+ * Applies one pure change and writes it. A change that returns the same file writes nothing, and one whose file fails
+ * the schema or names another review writes nothing and answers `invalid`.
+ */
 export function changeSwarm<T extends { file: SwarmFile }>(
   reviewId: string,
   change: (file: SwarmFile) => T
-): ({ ok: true } & T) | Extract<SwarmRead, { ok: false }> {
+): ({ ok: true } & T) | SwarmChangeFailure {
   const read = readSwarm(reviewId);
   if (!read.ok) return read;
   const result = change(read.file);
-  if (result.file !== read.file) writeSwarm(result.file);
+  if (result.file === read.file) return { ok: true, ...result };
+  const parsed = SwarmFileSchema.safeParse(result.file);
+  if (!parsed.success || parsed.data.reviewId !== read.file.reviewId) return { ok: false, reason: 'invalid' };
+  writeReviewsFile(swarmPath(parsed.data.reviewId), parsed.data);
   return { ok: true, ...result };
 }
