@@ -6,11 +6,13 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { submitReview, type Review } from '../src/reviews/review-model.js';
-import type { RunTip } from '../src/reviews/swarm-git.js';
-import { activeRun } from '../src/reviews/swarm-model.js';
+import type { R3Plan, RunTip } from '../src/reviews/swarm-git.js';
+import { activeRun, parseSwarmReport } from '../src/reviews/swarm-model.js';
 import {
   createSwarmRunner,
   FINISH_GRACE_MS,
+  planR3,
+  r3Input,
   reportInput,
   ROUND_DELAY_MS,
   SILENCE_LIMIT_MS,
@@ -56,6 +58,8 @@ type Fake = {
   sent: { sessionId: string; text: string }[];
   stopped: string[];
   removed: string[];
+  staged: string[];
+  r3: R3Plan;
   dead: Set<string>;
   activity: Map<string, number>;
   timers: (() => void)[];
@@ -74,6 +78,8 @@ function fake(): Fake {
     sent: [],
     stopped: [],
     removed: [],
+    staged: [],
+    r3: { required: false },
     dead: new Set<string>(),
     activity: new Map<string, number>(),
     timers: [],
@@ -94,6 +100,11 @@ function fake(): Fake {
     review: (id) => f.reviews.get(id) ?? null,
     refusal: async () => null,
     tip: async (review) => f.tips.get(review.id) ?? null,
+    r3Plan: async () => f.r3,
+    stageSpec: async (_review, runId) => {
+      f.staged.push(runId);
+      return `/data/reviews/swarm-spec/swarm-${runId}.md`;
+    },
     prepare: async (_review, runId) => ({
       ok: true,
       plan: { workingDir: `/r/.claude/worktrees/swarm-${runId}`, base: sha(100), reviewOnly: null },
@@ -130,6 +141,7 @@ function fake(): Fake {
       f.timers.push(fn);
     },
     skillsDir: '/skills',
+    potetoSkill: '/home/u/.claude/skills/poteto-mode/SKILL.md',
     ghConfigDir: '/data/reviews/swarm-gh',
   };
   f.runner = createSwarmRunner(f.deps);
@@ -469,6 +481,152 @@ describe('swarm runner', () => {
     expect(read.ok && read.file.runs[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining('brief') });
   });
 
+  describe('I9: R-3 on spec-attributed work', () => {
+    const SPEC = { path: 'intent/2026-11-20-x.md', mergedSha: sha(50), text: '# X\n' };
+    const runIdOf = (reviewId: string): string => {
+      const read = readSwarm(reviewId);
+      return read.ok ? (activeRun(read.file)?.id ?? read.file.runs[0]!.id) : '';
+    };
+    const approve = (tip = sha(1), extra: object = {}) => ({ ...result(1, tip, 'APPROVE'), ...extra });
+
+    it('passes --spec and --poteto-skill only to an attributed run, and its missing R-3 result reads unavailable', async () => {
+      f.r3 = { required: true, spec: SPEC };
+      const a = addReview(f);
+      await f.runner.trigger(a.id, 'submit', sha(1));
+      await settle();
+      const runId = runIdOf(a.id);
+      expect(f.staged).toEqual([runId]);
+      expect(f.sent[0].text).toContain(
+        `--spec /data/reviews/swarm-spec/swarm-${runId}.md --poteto-skill /home/u/.claude/skills/poteto-mode/SKILL.md`
+      );
+      expect(await f.runner.report(runId, f.started[0].sessionId, approve())).toMatchObject({ state: 'passed' });
+      const read = readSwarm(a.id);
+      expect(read.ok && read.file.runs[0]).toMatchObject({
+        r3: { verdict: 'unavailable', reason: 'The run reported no R-3 result' },
+      });
+    });
+
+    it('records the R-3 result an attributed run reports', async () => {
+      f.r3 = { required: true, spec: SPEC };
+      const a = addReview(f);
+      await f.runner.trigger(a.id, 'submit', sha(1));
+      await settle();
+      const r3 = { verdict: 'pass', findings: [], deviations: ['Kept the old route.'], tip: sha(1) };
+      await f.runner.report(runIdOf(a.id), f.started[0].sessionId, approve(sha(1), { r3 }));
+      const read = readSwarm(a.id);
+      expect(read.ok && read.file.runs[0]).toMatchObject({ state: 'passed', r3 });
+    });
+
+    it('an unattributed run gets no flags, and an R-3 result it reports anyway is not recorded', async () => {
+      const a = addReview(f);
+      await f.runner.trigger(a.id, 'submit', sha(1));
+      await settle();
+      expect(f.sent[0].text).not.toContain('--spec');
+      expect(f.sent[0].text).not.toContain('--poteto-skill');
+      expect(f.staged).toEqual([]);
+      const r3 = { verdict: 'pass', findings: [], deviations: [], tip: sha(1) };
+      await f.runner.report(runIdOf(a.id), f.started[0].sessionId, approve(sha(1), { r3 }));
+      const read = readSwarm(a.id);
+      expect(read.ok && read.file.runs[0]).not.toHaveProperty('r3');
+    });
+
+    it('a spec it cannot give R-3 means no flags and an unavailable result that says why', async () => {
+      f.r3 = { required: true, spec: null, missing: 'The spec intent/x.md could not be read at 000000000000' };
+      const a = addReview(f);
+      await f.runner.trigger(a.id, 'submit', sha(1));
+      await settle();
+      expect(f.sent[0].text).not.toContain('--spec');
+      // A pass the session claims anyway is not believed: no step was given the spec.
+      const r3 = { verdict: 'pass', findings: [], deviations: [], tip: sha(1) };
+      await f.runner.report(runIdOf(a.id), f.started[0].sessionId, approve(sha(1), { r3 }));
+      const read = readSwarm(a.id);
+      expect(read.ok && read.file.runs[0]).toMatchObject({
+        r3: { verdict: 'unavailable', reason: 'The spec intent/x.md could not be read at 000000000000' },
+      });
+    });
+
+    it('a spec copy that cannot be written, or a plan that cannot be read, fails closed', async () => {
+      f.r3 = { required: true, spec: SPEC };
+      f.deps.stageSpec = async () => null;
+      const a = addReview(f);
+      await f.runner.trigger(a.id, 'submit', sha(1));
+      await settle();
+      expect(f.sent[0].text).not.toContain('--spec');
+      await f.runner.report(runIdOf(a.id), f.started[0].sessionId, approve());
+      await f.flush();
+      let read = readSwarm(a.id);
+      expect(read.ok && read.file.runs[0]).toMatchObject({
+        r3: { verdict: 'unavailable', reason: "The run's copy of the spec could not be written" },
+      });
+
+      f.deps.r3Plan = async () => {
+        throw new Error('boom');
+      };
+      const b = addReview(f);
+      await f.runner.trigger(b.id, 'submit', sha(1));
+      await settle();
+      await f.runner.report(runIdOf(b.id), f.started[1].sessionId, approve());
+      read = readSwarm(b.id);
+      expect(read.ok && read.file.runs[0]).toMatchObject({
+        r3: { verdict: 'unavailable', reason: expect.stringContaining('could not be read') },
+      });
+    });
+
+    it('recovery reads the plan again for the run it adopts', async () => {
+      const adopt = async (plan: R3Plan, extra: object = {}) => {
+        const first = fake();
+        first.r3 = { required: true, spec: SPEC };
+        await first.runner.recover();
+        const a = addReview(first);
+        await first.runner.trigger(a.id, 'submit', sha(1));
+        await settle();
+        const sessionId = first.started[0].sessionId;
+        const g = fake();
+        g.r3 = plan;
+        g.activity.set(sessionId, g.now);
+        g.deps.reviews = () => [...first.reviews.values()];
+        g.deps.review = (id) => first.reviews.get(id) ?? null;
+        g.deps.tip = async (review) => first.tips.get(review.id) ?? null;
+        const adopted = createSwarmRunner(g.deps);
+        await adopted.recover();
+        expect(await adopted.report(runIdOf(a.id), sessionId, approve(sha(1), extra))).toMatchObject({ ok: true });
+        const read = readSwarm(a.id);
+        return read.ok ? read.file.runs[0] : undefined;
+      };
+      expect(await adopt({ required: false })).not.toHaveProperty('r3');
+      expect(await adopt({ required: true, spec: SPEC })).toMatchObject({
+        r3: { verdict: 'unavailable', reason: 'The run reported no R-3 result' },
+      });
+      // The brief may have carried the flags, so a result the adopted run reports stands.
+      const r3 = { verdict: 'changes', findings: ['Outcome 2 is missing.'], deviations: [], tip: sha(1) };
+      expect(await adopt({ required: true, spec: SPEC }, { r3 })).toMatchObject({ r3 });
+    });
+
+    it('planR3: a spec review never needs R-3, and a review-only run of attributed work cannot give it', () => {
+      const attributed: R3Plan = { required: true, spec: SPEC };
+      expect(planR3({ required: false }, null)).toEqual({ need: { required: false } });
+      expect(planR3(attributed, 'spec')).toEqual({ need: { required: false } });
+      expect(planR3(attributed, null)).toEqual({ need: { required: true }, spec: SPEC });
+      expect(planR3(attributed, 'checked-out')).toEqual({
+        need: { required: true, unavailable: expect.stringContaining('R-3 did not run') },
+      });
+      expect(planR3({ required: true, spec: null, missing: 'why' }, null)).toEqual({
+        need: { required: true, unavailable: 'why' },
+      });
+    });
+
+    it('builds the command with both flags, after the push flags', () => {
+      const base = { runId: 'run00000001', title: 'T', branch: 'feat/x', tip: sha(1), skillsDir: '/skills' };
+      const r3 = { spec: '/d/spec.md', potetoSkill: '/p/SKILL.md' };
+      expect(swarmCommand({ ...base, remote: '.', plan: { base: sha(100), reviewOnly: null }, r3 })).toBe(
+        `/review-triage --local --base ${sha(100)} --head-sha ${sha(1)} --push-ref HEAD:refs/heads/feat/x --push-remote . --spec /d/spec.md --poteto-skill /p/SKILL.md`
+      );
+      expect(swarmCommand({ ...base, remote: 'origin', plan: { base: sha(100), reviewOnly: 'spec' }, r3 })).toBe(
+        `/pr-swarm --local --base ${sha(100)} --head-sha ${sha(1)} --round 1`
+      );
+    });
+  });
+
   it('exports its grace periods', () => {
     expect(FINISH_GRACE_MS).toBeGreaterThan(0);
     expect(ROUND_DELAY_MS).toBeGreaterThan(0);
@@ -509,6 +667,84 @@ describe('reportInput', () => {
         { location: 'b.ts:2', reason: 'needs a design call' },
         { location: 'f3', reason: 'deferred' },
       ],
+    });
+  });
+
+  describe("/review-triage's r3 block (pr-swarm 0.5.0)", () => {
+    const triage = (r3: object) => ({
+      mode: 'local',
+      verdict: 'APPROVE',
+      pr_swarm_result: result(1, sha(1), 'APPROVE'),
+      commits: [],
+      dispositions: [],
+      r3,
+    });
+    const shaped = {
+      verdict: 'changes',
+      findings: [
+        { ref: 'Outcome 3', location: 'src/a.ts:12', body: 'The flag is never passed.', deferred: false },
+        { ref: null, location: 'general', body: 'Should this be per case?', deferred: true },
+      ],
+      deviations: [{ ref: 'I9', what: 'Reads the spec from a copy.', why: 'The copy is the merged text.' }],
+      tip: sha(1),
+      spec: '/d/spec.md',
+      poteto_skill: '/p/SKILL.md',
+      reason: null,
+    };
+
+    it('parses end to end into the run record shape', () => {
+      const parsed = parseSwarmReport(reportInput(triage(shaped), 1));
+      expect(parsed).toMatchObject({
+        ok: true,
+        report: {
+          r3: {
+            verdict: 'changes',
+            tip: sha(1),
+            findings: ['Outcome 3: The flag is never passed. (src/a.ts:12)', 'Should this be per case? [deferred]'],
+            deviations: ['I9: Reads the spec from a copy. Why it still holds: The copy is the merged text.'],
+          },
+        },
+      });
+    });
+
+    it('an unavailable result with a null tip parses, keeping its reason', () => {
+      const parsed = parseSwarmReport(
+        reportInput(triage({ verdict: 'unavailable', findings: [], deviations: [], tip: null, reason: 'ENOENT /p' }), 1)
+      );
+      expect(parsed).toMatchObject({ ok: true, report: { r3: { verdict: 'unavailable', reason: 'ENOENT /p' } } });
+    });
+
+    it('cuts a long finding or deviation to the note cap rather than refusing the report', () => {
+      const big = 'y'.repeat(20000);
+      const parsed = parseSwarmReport(
+        reportInput(
+          triage({
+            ...shaped,
+            verdict: 'changes',
+            findings: [{ ref: 'O1', location: 'general', body: big, deferred: false }],
+            deviations: [{ ref: 'I9', what: big, why: big }],
+          }),
+          1
+        )
+      );
+      expect(parsed).toMatchObject({ ok: true, report: { r3: { verdict: 'changes' } } });
+    });
+
+    it("maps the skill's trigger ids onto the lifecycle's, and an unknown one to unavailable", () => {
+      const escalate = (trigger: string) => ({ ...shaped, verdict: 'escalate', trigger });
+      expect(r3Input(escalate('undescribed-change'))).toMatchObject({ trigger: 'unspecified-visible-change' });
+      expect(r3Input(escalate('outgrew-ticket'))).toMatchObject({ trigger: 'outgrew-ticket' });
+      expect(r3Input(escalate('vibes'))).toEqual({
+        verdict: 'unavailable',
+        reason: 'R-3 escalated with a trigger Codeman does not know: vibes',
+      });
+      expect(r3Input(escalate('constructor'))).toMatchObject({ verdict: 'unavailable' });
+      const long = r3Input(escalate('x'.repeat(5000))) as { reason: string };
+      expect(long.reason.length).toBeLessThan(300);
+      expect(parseSwarmReport(reportInput(triage(escalate('undescribed-change')), 1))).toMatchObject({
+        ok: true,
+        report: { r3: { verdict: 'escalate', trigger: 'unspecified-visible-change' } },
+      });
     });
   });
 });

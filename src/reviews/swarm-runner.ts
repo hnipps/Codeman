@@ -16,20 +16,23 @@
  * alive is adopted, and any other running run ends `failed`.
  */
 import { SHA } from './review-git.js';
-import { isOpen, type Review } from './review-model.js';
+import { isOpen, MAX_NOTE_CHARS, type Review } from './review-model.js';
 import {
   activeRun,
   applySwarmEvent,
   parseSwarmReport,
+  R3_TRIGGERS,
+  type R3Trigger,
   type SwarmAction,
   type SwarmEvent,
   type SwarmFile,
+  type SwarmReport,
   type SwarmRun,
   type SwarmTrigger,
   type TipChange,
 } from './swarm-model.js';
 import { changeSwarm, readSwarm, type SwarmRead } from './swarm-store.js';
-import type { PushRemote, RunPlan, RunTip } from './swarm-git.js';
+import type { PushRemote, R3Plan, ReviewOnlyReason, RunPlan, RunSpec, RunTip } from './swarm-git.js';
 
 /** A run whose session has written nothing and reported nothing for this long has failed. */
 export const SILENCE_LIMIT_MS = 30 * 60_000;
@@ -61,7 +64,45 @@ export type BriefInput = {
   plan: Pick<RunPlan, 'base' | 'reviewOnly'>;
   /** The plugin's skills folder, for a session where the slash command is missing or older than `--local`. */
   skillsDir: string;
+  /** For a run whose R-3 step can run: the spec file it reads and poteto-mode's SKILL.md. */
+  r3?: { spec: string; potetoSkill: string };
 };
+
+/**
+ * Whether a run's report must carry an R-3 result (I9). `unavailable` says why the run was not given what R-3 needs;
+ * then an R-3 result the session reports anyway is not believed, since no step was given the spec to check against.
+ * `unknown` is a run adopted after a restart, whose brief may or may not have carried the flags: its reported result
+ * stands, and a missing one reads as `unavailable` with that reason.
+ */
+export type R3Need =
+  | { required: false }
+  | { required: true }
+  | { required: true; unavailable: string }
+  | { required: true; unknown: string };
+
+/**
+ * What a run does about R-3, from the attribution read at start and the run's plan. R-3 runs only inside
+ * `/review-triage`, so a review-only run of attributed work cannot give it and its result is `unavailable`.
+ */
+export function planR3(plan: R3Plan, reviewOnly: ReviewOnlyReason | null): { need: R3Need; spec?: RunSpec } {
+  if (!plan.required || reviewOnly === 'spec') return { need: { required: false } };
+  if (reviewOnly === 'checked-out')
+    return {
+      need: {
+        required: true,
+        unavailable: 'The branch is checked out in another folder, so the run could only review it and R-3 did not run',
+      },
+    };
+  if (!plan.spec) return { need: { required: true, unavailable: plan.missing } };
+  return { need: { required: true }, spec: plan.spec };
+}
+
+/** The report as the model may read it: an R-3 result from a run that was not given R-3's inputs is dropped. */
+function given(report: SwarmReport, need: R3Need): SwarmReport {
+  if (!('unavailable' in need) || !report.r3) return report;
+  const { r3: _, ...rest } = report;
+  return rest;
+}
 
 const reportFile = (runId: string): string => `/tmp/pr-swarm-${runId}.json`;
 
@@ -74,6 +115,7 @@ export function swarmCommand(i: BriefInput): string {
     ...shared,
     `--push-ref HEAD:refs/heads/${i.branch}`,
     ...(i.remote === '.' ? ['--push-remote .'] : []),
+    ...(i.r3 ? [`--spec ${i.r3.spec}`, `--poteto-skill ${i.r3.potetoSkill}`] : []),
   ].join(' ');
 }
 
@@ -124,6 +166,54 @@ export function swarmRoundPrompt(i: { runId: string; round: number; tip: string 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown): string => (typeof v === 'string' ? v : '');
 
+/** `/review-triage`'s trigger ids that name one of the lifecycle's under another id. */
+const R3_TRIGGER_ALIASES: Record<string, R3Trigger> = { 'undescribed-change': 'unspecified-visible-change' };
+
+/**
+ * `/review-triage`'s `r3` block (pr-swarm 0.5.0, Step 5b) as the model reads it. Findings (`ref`, `location`, `body`,
+ * `deferred`) and deviations (`ref`, `what`, `why`) become one line each (cut to the note cap, so a long one cannot refuse the whole report), and a `null` tip or reason is left
+ * out. An
+ * escalation whose trigger the lifecycle's list does not hold becomes `unavailable` naming it, so the pr-swarm result
+ * still lands and nothing it would gate merges. Anything else passes through for the model to judge.
+ */
+export function r3Input(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const line = (parts: string[]): string => parts.filter(Boolean).join(' ').slice(0, MAX_NOTE_CHARS);
+  const finding = (f: unknown): unknown => {
+    if (!isRecord(f)) return f;
+    const where = text(f.location) && text(f.location) !== 'general' ? `(${text(f.location)})` : '';
+    return line([text(f.ref) ? `${text(f.ref)}:` : '', text(f.body), where, f.deferred === true ? '[deferred]' : '']);
+  };
+  const deviation = (d: unknown): unknown =>
+    isRecord(d)
+      ? line([
+          text(d.ref) ? `${text(d.ref)}:` : '',
+          text(d.what),
+          text(d.why) ? `Why it still holds: ${text(d.why)}` : '',
+        ])
+      : d;
+  const out: Record<string, unknown> = { verdict: raw.verdict };
+  if (Array.isArray(raw.findings)) out.findings = raw.findings.map(finding);
+  if (Array.isArray(raw.deviations)) out.deviations = raw.deviations.map(deviation);
+  if (raw.tip !== null && raw.tip !== undefined) out.tip = raw.tip;
+  if (raw.reason !== null && raw.reason !== undefined) out.reason = raw.reason;
+  if (raw.verdict === 'escalate') {
+    const id = text(raw.trigger);
+    const trigger = (R3_TRIGGERS as readonly string[]).includes(id)
+      ? (id as R3Trigger)
+      : Object.hasOwn(R3_TRIGGER_ALIASES, id)
+        ? R3_TRIGGER_ALIASES[id]
+        : undefined;
+    if (!trigger)
+      return {
+        verdict: 'unavailable',
+        reason: `R-3 escalated with a trigger Codeman does not know: ${id.slice(0, 200) || 'none'}`,
+      };
+    out.trigger = trigger;
+  }
+  return out;
+}
+
 /**
  * Turns what the session reports into pr-swarm's return contract. pr-swarm's own result passes through. A
  * `/review-triage --local` result carries the last pr-swarm result in `pr_swarm_result`: its pushed fix commits and
@@ -145,7 +235,7 @@ export function reportInput(json: unknown, round: number): unknown {
           reason: text(u.reason) || text(u.gate) || 'deferred',
         })),
     },
-    ...(json.r3 !== undefined ? { r3: json.r3 } : {}),
+    ...(json.r3 !== undefined ? { r3: r3Input(json.r3) } : {}),
   };
 }
 
@@ -164,6 +254,10 @@ export interface SwarmRunnerDeps {
   /** Why git must not run for this review (a remote or Docker case), or null. */
   refusal(review: Review): Promise<string | null>;
   tip(review: Review): Promise<RunTip | null>;
+  /** Whether a run of this review at `tip` must give an R-3 result, and the spec it reads (I9). */
+  r3Plan(review: Review, tip: string): Promise<R3Plan>;
+  /** Writes the run's copy of its spec outside the worktree; its path, or null when it could not be written. */
+  stageSpec(review: Review, runId: string, spec: RunSpec): Promise<string | null>;
   prepare(
     review: Review,
     runId: string,
@@ -182,6 +276,8 @@ export interface SwarmRunnerDeps {
   log(line: string): void;
   later(ms: number, fn: () => void): void;
   skillsDir: string;
+  /** poteto-mode's SKILL.md, which R-3 reads. Passed even when it is missing: the step then reports `unavailable`. */
+  potetoSkill: string;
   ghConfigDir: string;
 }
 
@@ -190,7 +286,7 @@ type QueueEntry = { reviewId: string; runId: string };
 type Slot =
   | { kind: 'idle' }
   | ({ kind: 'starting'; since: number } & QueueEntry)
-  | ({ kind: 'running'; sessionId: string; heardAt: number; lastReport?: string } & QueueEntry)
+  | ({ kind: 'running'; sessionId: string; heardAt: number; r3: R3Need; lastReport?: string } & QueueEntry)
   | ({ kind: 'stopping'; since: number } & QueueEntry);
 
 export type SwarmTriggerResult =
@@ -328,6 +424,12 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
     });
   };
 
+  /** A plan that cannot be read fails closed: R-3 is required and `unavailable`, so nothing it would gate merges. */
+  const readR3Plan = (review: Review, tip: string): Promise<R3Plan> =>
+    deps
+      .r3Plan(review, tip)
+      .catch(() => ({ required: true, spec: null, missing: 'Whether this work answers to a spec could not be read' }));
+
   const start = async ({ reviewId, runId }: QueueEntry): Promise<void> => {
     const read = readSwarm(reviewId);
     const active = read.ok ? activeRun(read.file) : undefined;
@@ -343,6 +445,13 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
     await deps.removeWorktree(review, runId).catch(() => undefined);
     const prepared = await deps.prepare(review, runId, tip);
     if (!prepared.ok) return fail(prepared.reason);
+    const r3 = planR3(await readR3Plan(review, tip.sha), prepared.plan.reviewOnly);
+    let need = r3.need;
+    let specFile: string | null = null;
+    if (r3.spec) {
+      specFile = await deps.stageSpec(review, runId, r3.spec).catch(() => null);
+      if (!specFile) need = { required: true, unavailable: "The run's copy of the spec could not be written" };
+    }
     const started = await deps
       .startSession(review, {
         workingDir: prepared.plan.workingDir,
@@ -361,7 +470,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       await deps.removeWorktree(review, runId).catch(() => undefined);
       return;
     }
-    slot = { kind: 'running', reviewId, runId, sessionId: started.sessionId, heardAt: deps.now() };
+    slot = { kind: 'running', reviewId, runId, sessionId: started.sessionId, heardAt: deps.now(), r3: need };
     const brief = swarmBrief({
       runId,
       title: review.title,
@@ -370,6 +479,7 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       remote: tip.remote,
       plan: prepared.plan,
       skillsDir: deps.skillsDir,
+      ...(specFile ? { r3: { spec: specFile, potetoSkill: deps.potetoSkill } } : {}),
     });
     if (!(await deps.send(started.sessionId, brief)) && slot.kind === 'running' && slot.runId === runId)
       fail("The brief could not be sent to the run's session");
@@ -418,7 +528,24 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       }
       if (slot.kind !== 'idle' && slot.runId === run.id) continue;
       if (slot.kind === 'idle' && deps.session(run.sessionId).state === 'live') {
-        slot = { kind: 'running', reviewId: review.id, runId: run.id, sessionId: run.sessionId, heardAt: deps.now() };
+        const adopted: Extract<Slot, { kind: 'running' }> = {
+          kind: 'running',
+          reviewId: review.id,
+          runId: run.id,
+          sessionId: run.sessionId,
+          heardAt: deps.now(),
+          r3: { required: true, unknown: 'Whether this work answers to a spec was not read again after a restart' },
+        };
+        slot = adopted;
+        // The plan is not stored, so it is read again, after the slot is taken so nothing else starts meanwhile.
+        // Whether the brief carried the flags is not known here; a run not given them reports no R-3 result, which
+        // reads as `unavailable`.
+        if (!(await deps.refusal(review).catch(() => 'refused'))) {
+          const plan = await readR3Plan(review, run.roundTip);
+          adopted.r3 = !plan.required
+            ? { required: false }
+            : { required: true, unknown: plan.spec ? 'The run reported no R-3 result' : plan.missing };
+        }
         continue;
       }
       // The session goes first, so the worktree the failed run's stop removes is no longer in use.
@@ -494,9 +621,11 @@ export function createSwarmRunner(deps: SwarmRunnerDeps): SwarmRunner {
       const done = apply(run.reviewId, {
         type: 'report',
         runId,
-        report: parsed.report,
+        report: given(parsed.report, run.r3),
         branchTip: tip.sha,
-        r3Required: false,
+        r3Required: run.r3.required,
+        ...('unavailable' in run.r3 ? { r3Unavailable: run.r3.unavailable } : {}),
+        ...('unknown' in run.r3 ? { r3Unavailable: run.r3.unknown } : {}),
         newRunId: deps.newRunId(),
       });
       if (!done.ok) return { ok: false, code: 'FILE', message: done.message };

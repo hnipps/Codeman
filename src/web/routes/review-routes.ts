@@ -139,11 +139,20 @@ import {
   writeCaptureFile,
   writeReview,
 } from '../../reviews/review-store.js';
-import { closeSessionWork, handoverWork, linkSessionToWork, workItemsForSession } from '../../reviews/review-work.js';
+import {
+  closeSessionWork,
+  handoverWork,
+  linkSessionToWork,
+  workCreatedFrom,
+  workItemsForSession,
+} from '../../reviews/review-work.js';
 import {
   prepareRun,
+  readR3Plan,
   readRunTip,
+  removeRunSpec,
   removeRunWorktree,
+  stageRunSpec,
   WATCH_READ_TIMEOUT_MS,
   watchTipReader,
 } from '../../reviews/swarm-git.js';
@@ -1274,6 +1283,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       return null;
     }
   };
+  const swarmSpecDir = join(getDataDir(), 'reviews', 'swarm-spec');
   const swarm =
     options.swarm ??
     createSwarmRunner({
@@ -1288,12 +1298,15 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       },
       refusal: swarmRefusal,
       tip: (review) => readRunTip(review),
+      r3Plan: (review, tip) => readR3Plan(review, tip, { createdFrom: workCreatedFrom, reviews: listReviews }),
+      stageSpec: (_review, runId, spec) => stageRunSpec(swarmSpecDir, runId, spec),
       prepare: async (review, runId, tip) => {
         const roots = await swarmDocker();
         if (!roots) return { ok: false, reason: 'The Docker case list could not be read, so no worktree is made' };
         return prepareRun(review, runId, tip, { dockerWorkspaces: roots, agentSkillDirs: registryAgentSkillDirs() });
       },
       removeWorktree: async (review, runId) => {
+        await removeRunSpec(swarmSpecDir, runId).catch(() => undefined);
         const roots = await swarmDocker();
         if (!roots) return;
         const removed = await removeRunWorktree(review, runId, {
@@ -1334,6 +1347,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         timer.unref?.();
       },
       skillsDir: join(homedir(), '.claude', 'plugins', 'marketplaces', 'nicholls', 'pr-swarm', 'skills'),
+      potetoSkill: join(homedir(), '.claude', 'skills', 'poteto-mode', 'SKILL.md'),
       ghConfigDir: join(getDataDir(), 'reviews', 'swarm-gh'),
     });
   const watcher = createSwarmWatcher({

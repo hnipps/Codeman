@@ -19,6 +19,15 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 The bypass rides `capabilities.launchDefaults` like codex's model and effort: codex reads `codexDangerouslyBypassApprovals`, antigravity a new synced `antigravitySkipPermissions` (default off). `false` reads as unset, so a setting only turns a flag on and a value the caller sent always wins. The defaults are filled before the multi-user clamp, which forces them off for a non-granted owner. Rejected: a per-route branch for the two CLIs, which would put CLI ids in the routes.
 
+## 2026-11-21 — pr-swarm passes the approved spec to R-3 (W-131)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/swarm-git.ts`, `src/reviews/swarm-runner.ts`, `src/reviews/swarm-model.ts`, `src/reviews/review-work.ts`, `src/web/routes/review-routes.ts`, `docs/architecture-invariants.md`
+**Why:** t7 part 2 of the pr-swarm spec: `/review-triage` (pr-swarm v0.5.0) takes `--spec` and `--poteto-skill`, and a report was still applied with `r3Required: false`.
+**Links:** [intent/2026-11-20-pr-swarm-reviews.md](../intent/2026-11-20-pr-swarm-reviews.md), Work items W-131, W-115
+
+The spec R-3 reads is a copy of the parent spec review's one `intent/*.md` file at its merge commit, written to the data dir, not the file in the run's worktree: the spec says "read at the merged commit", and the worktree holds whatever master had when the work branched. A parent that changed two spec files gets no spec and an `unavailable` R-3 rather than a guess. Whether a run needs R-3 is kept in memory and read again on recovery, because a new field in the run file would make it unreadable to the previous release (rule 5). The spec's two history triggers ("builder and R-3 still disagree after 2 rounds", "a deploy fix fails") are not built here: R-3 `changes` already counts toward the two-verdict streak escalation, and fixing failed deploys is one of the spec's non-goals.
+
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 
 **Type:** intent-refinement

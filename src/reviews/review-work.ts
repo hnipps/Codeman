@@ -9,10 +9,18 @@
  * reported, never thrown, since the hand-over itself has already happened by then.
  */
 import { changeWork, readWork } from '../canvas/work-store.js';
-import { WORK_STATUS_NAMES, closeLinkedWork, updateWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
+import {
+  WORK_STATUS_NAMES,
+  closeLinkedWork,
+  findWork,
+  updateWork,
+  workClosed,
+  workKey,
+  type WorkItem,
+} from '../canvas/work.js';
 import { readWorkspaces } from '../canvas/workspace-registry.js';
 import type { Author } from '../canvas/model.js';
-import type { HandoverWork } from './review-model.js';
+import type { HandoverWork, WorkRef } from './review-model.js';
 
 export type ReviewWorkItem = { workspaceId: string; number: number; item: WorkItem };
 
@@ -39,6 +47,16 @@ export function workItemsForSession(owner: string | null, sessionId: string): Re
         out.push({ workspaceId: workspace.id, number: item.number, item });
   }
   return out.sort((a, b) => a.item.createdAt - b.item.createdAt);
+}
+
+/** The item a work item was created from, or undefined when it has none or its work file cannot be read. */
+export function workCreatedFrom(work: WorkRef): number | undefined {
+  try {
+    const read = readWork(work.workspaceId);
+    return read.ok ? findWork(read.file, work.number)?.createdFrom : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export const handoverWork = (w: ReviewWorkItem): HandoverWork => ({

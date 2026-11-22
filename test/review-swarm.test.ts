@@ -349,6 +349,41 @@ describe('I4 and I9: OnlySpecWorkMergesItself, R3FailsClosed', () => {
     expect(kinds(actions)).toEqual(['stop']);
   });
 
+  it('a required R-3 the run could not be given reads unavailable with the reason, and never merges', () => {
+    const d = driver();
+    d.step({ type: 'trigger', trigger: 'submit', tip, runId: 'run000001' });
+    d.step({ type: 'started', runId: 'run000001', sessionId: 's1', tip });
+    const actions = d.step({
+      type: 'report',
+      runId: 'run000001',
+      report: report(1, tip, 'APPROVE', { r3: r3Pass }),
+      branchTip: tip,
+      r3Required: true,
+      r3Unavailable: 'x'.repeat(900),
+      newRunId: 'next00001',
+    });
+    // A result the run did report wins over the reason; the reason only fills a missing one, capped like the schema.
+    expect(d.file.runs[0]).toMatchObject({ r3: { verdict: 'pass' } });
+    expect(kinds(actions)).toEqual(['stop', 'consider-approve']);
+
+    const e = driver();
+    e.step({ type: 'trigger', trigger: 'submit', tip, runId: 'run000002' });
+    e.step({ type: 'started', runId: 'run000002', sessionId: 's1', tip });
+    const missing = e.step({
+      type: 'report',
+      runId: 'run000002',
+      report: report(1, tip, 'APPROVE'),
+      branchTip: tip,
+      r3Required: true,
+      r3Unavailable: 'x'.repeat(900),
+      newRunId: 'next00002',
+    });
+    const run = e.file.runs[0]!;
+    expect(run).toMatchObject({ state: 'passed', r3: { verdict: 'unavailable' } });
+    expect(run.state === 'passed' && run.r3?.verdict === 'unavailable' && run.r3.reason.length).toBe(500);
+    expect(kinds(missing)).toEqual(['stop']);
+  });
+
   it('a passed run with R-3 pass is offered to the approve check', () => {
     const d = driver();
     expect(kinds(runOnce(d, 'APPROVE', tip, r3Pass))).toEqual(['stop', 'consider-approve']);
