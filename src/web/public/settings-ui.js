@@ -11,6 +11,12 @@
  * @loadorder 10 of 15 — loaded after ralph-panel.js, before panels-ui.js
  */
 
+// App Settings groups that only apply where their CLI resolves: [group element id, CLI id].
+const CLI_SETTINGS_GROUPS = [
+  ['appSettingsCodexGroup', 'codex'],
+  ['appSettingsAntigravityGroup', 'antigravity'],
+];
+
 Object.assign(CodemanApp.prototype, {
   // Hooks (Claude Code hook events)
   _onHookIdlePrompt(data) {
@@ -710,7 +716,9 @@ Object.assign(CodemanApp.prototype, {
       settings.codexAnimationsEnabled ?? false;
     document.getElementById('appSettingsCodexModel').value = settings.codexModel ?? '';
     document.getElementById('appSettingsCodexReasoningEffort').value = settings.codexReasoningEffort ?? '';
-    this._applyCodexSettingsVisibility();
+    document.getElementById('appSettingsAntigravitySkipPermissions').checked =
+      settings.antigravitySkipPermissions === true;
+    this._applyCliSettingsVisibility();
     // Claude Permissions settings
     document.getElementById('appSettingsAgentTeams').checked = settings.agentTeamsEnabled ?? false;
     document.getElementById('appSettingsAgentSkill').checked = settings.agentSkillEnabled ?? false;
@@ -864,9 +872,13 @@ Object.assign(CodemanApp.prototype, {
    * group. Hiding it costs a user nothing, whereas hiding a run button would
    * leave a working install with nothing to click.
    */
-  _applyCodexSettingsVisibility() {
-    const group = document.getElementById('appSettingsCodexGroup');
-    if (group) group.style.display = window.__codemanCliAvailable?.codex === true ? '' : 'none';
+  // A CLI's settings group is hidden wholesale where its binary does not resolve; the
+  // inputs still load and save, so a missing CLI never wipes another instance's prefs.
+  _applyCliSettingsVisibility() {
+    for (const [groupId, cliId] of CLI_SETTINGS_GROUPS) {
+      const group = document.getElementById(groupId);
+      if (group) group.style.display = window.__codemanCliAvailable?.[cliId] === true ? '' : 'none';
+    }
   },
 
   /**
@@ -3087,6 +3099,8 @@ Object.assign(CodemanApp.prototype, {
       codexReasoningEffort: document.getElementById('appSettingsCodexReasoningEffort').value,
       codexDangerouslyBypassApprovals: document.getElementById('appSettingsCodexDangerouslyBypassApprovals').checked,
       codexAnimationsEnabled: document.getElementById('appSettingsCodexAnimations').checked,
+      // Antigravity CLI settings
+      antigravitySkipPermissions: document.getElementById('appSettingsAntigravitySkipPermissions').checked,
       // Claude Permissions settings
       agentTeamsEnabled: document.getElementById('appSettingsAgentTeams').checked,
       agentSkillEnabled: document.getElementById('appSettingsAgentSkill').checked,

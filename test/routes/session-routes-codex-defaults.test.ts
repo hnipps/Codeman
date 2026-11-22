@@ -100,9 +100,10 @@ describe('Codex launch defaults', () => {
     expect(getCli('codex')!.capabilities.launchDefaults).toEqual({
       model: 'codexModel',
       reasoningEffort: 'codexReasoningEffort',
+      bypassApprovals: 'codexDangerouslyBypassApprovals',
     });
     for (const entry of STOCK_CLIS) {
-      if ((entry.id as string) === 'codex') continue;
+      if (entry.capabilities.launchDefaults !== undefined) continue;
       expect(entry.capabilities.launchDefaults, entry.id).toBeUndefined();
       const configs = { codexConfig: undefined, geminiConfig: { model: 'g' }, piConfig: undefined };
       expect(await applyLaunchDefaults(entry.id, configs), entry.id).toBe(configs);

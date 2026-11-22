@@ -10,6 +10,14 @@ Newest entries first. After an entry is on the default branch, correct it with a
 **Links:** [intent/2026-11-18-chat-graph.md](../intent/2026-11-18-chat-graph.md) (I1, I5, I7), Work item W-80
 
 `modernc.org/sqlite` is pinned at v1.38.2, the newest release that builds on go 1.23; v1.39 and later need go 1.24. A full `go mod vendor` is 229 MB of per-platform generated code, so `scripts/vendor-chat-graph.mjs` keeps linux/amd64 and linux/arm64 only (33 MB) and `build.mjs` skips the sidecar elsewhere, where the supervisor never runs it anyway. Rejected: committing the full 229 MB, and a committed binary. Membership rows gain `removed_by` beside the spec's `removed_at`, so undo knows which rows an op removed and adds fresh copies rather than clearing `removed_at`; triggers enforce append-only for every writer. Topics gain a `retracted` status for a topic whose creating op was undone. Undo writes no op row of its own: its rows carry `undo:<op>`. An undo that a later op has overtaken answers 409 instead of guessing.
+## 2026-11-21 — Agent-started Codex and Antigravity workers take their bypass from App Settings (W-130)
+
+**Type:** intent-refinement
+**Touches:** `src/config/cli-registry/stock.ts`, `src/web/launch-defaults.ts`, `src/web/schemas.ts`, `src/web/public/settings-ui.js`, `src/web/public/index.html`
+**Why:** A worker an agent starts sends no CLI config, so codex and agy stopped at their first approval with nobody to answer.
+**Links:** [intent/2026-11-21-agent-worker-bypass.md](../intent/2026-11-21-agent-worker-bypass.md)
+
+The bypass rides `capabilities.launchDefaults` like codex's model and effort: codex reads `codexDangerouslyBypassApprovals`, antigravity a new synced `antigravitySkipPermissions` (default off). `false` reads as unset, so a setting only turns a flag on and a value the caller sent always wins. The defaults are filled before the multi-user clamp, which forces them off for a non-granted owner. Rejected: a per-route branch for the two CLIs, which would put CLI ids in the routes.
 
 ## 2026-11-21 — The journal merges by union on Approve (W-129)
 

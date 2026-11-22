@@ -3106,7 +3106,7 @@
                   <div class="set-row" data-search="codex bypass approvals sandbox">
                     <div class="set-row-text">
                       <span class="set-row-label">Bypass approvals and sandbox</span>
-                      <span class="set-row-desc">Start new Codex sessions with --dangerously-bypass-approvals-and-sandbox.</span>
+                      <span class="set-row-desc">Start new Codex sessions, including workers agents start, with --dangerously-bypass-approvals-and-sandbox.</span>
                     </div>
                     <label class="switch switch-sm"><input type="checkbox" id="appSettingsCodexDangerouslyBypassApprovals"><span class="slider"></span></label>
                   </div>
@@ -3116,6 +3116,19 @@
                       <span class="set-row-desc">Decorative Codex TUI motion. Leave off to reduce remote and mobile redraws.</span>
                     </div>
                     <label class="switch switch-sm"><input type="checkbox" id="appSettingsCodexAnimations"><span class="slider"></span></label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="set-group" id="appSettingsAntigravityGroup">
+                <div class="set-group-head"><h4>Antigravity</h4><span class="set-scope">synced</span></div>
+                <div class="set-group-body">
+                  <div class="set-row" data-search="antigravity agy skip permissions bypass approvals agent workers">
+                    <div class="set-row-text">
+                      <span class="set-row-label">Skip permissions for agent workers</span>
+                      <span class="set-row-desc">Lets Antigravity workers that agents start run commands without asking (--dangerously-skip-permissions). The Run button always skips.</span>
+                    </div>
+                    <label class="switch switch-sm"><input type="checkbox" id="appSettingsAntigravitySkipPermissions"><span class="slider"></span></label>
                   </div>
                 </div>
               </div>

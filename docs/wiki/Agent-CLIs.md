@@ -185,6 +185,13 @@ Google's successor to the consumer Gemini CLI, invoked as `agy`. It keeps all of
 in `~/.gemini/antigravity-cli/`, so the credential handling that applies to Gemini applies
 to it as well.
 
+- **Run starts it with permissions skipped; an agent's worker follows a setting.** The Run
+  button launches `agy --dangerously-skip-permissions`. A worker an agent starts (`codeman
+  agent spawn`, the MCP `start_session` tool) gets that flag only when **Skip permissions for
+  agent workers** is on (App Settings, Antigravity; off by default), and otherwise stops at
+  its first approval until you answer it. Codex workers follow **Bypass approvals and
+  sandbox** the same way.
+
 - **Work detection reads its spinner row.** While a turn runs, `agy` animates an 8-dot braille
   frame and a label one row above the composer (`⣯  Generating...`; `Working...` and
   `Loading...` too), and its footer reads `esc to cancel`. Codeman matches that row, which is
