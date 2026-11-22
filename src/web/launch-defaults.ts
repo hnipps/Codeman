@@ -1,12 +1,18 @@
 /**
  * @fileoverview Launch-time defaults from synced App Settings, driven by registry data.
  *
- * A CLI entry declares `capabilities.launchDefaults` (launch param -> settings key; today
- * only codex, `{ model: 'codexModel', reasoningEffort: 'codexReasoningEffort' }`), and
+ * A CLI entry declares `capabilities.launchDefaults` (launch param -> settings key; codex's
+ * model, reasoning effort and approvals bypass, antigravity's skip-permissions), and
  * `applyLaunchDefaults()` fills those settings into the entry's `launch.legacyConfigField`
  * object, setting ONLY the fields the caller left unset. Persisted values are re-validated
  * with `SettingsUpdateSchema`, so a hand-edited settings.json can never smuggle an
  * unchecked value onto the command line.
+ *
+ * A setting can only turn a launch param ON: '' and `false` both read as unset, so a
+ * default never switches off something the CLI would otherwise do, and a value the caller
+ * sent (including an explicit `false`) always wins. The bypass defaults are filled BEFORE
+ * the routes' multi-user clamp (`clampExternalCliBypassForOwner`), which forces them off
+ * again for a non-granted owner exactly as it does a sent value.
  *
  * Scope is the caller's decision: the create and quick-start routes apply it to local
  * launches only, never to remote, Docker or custom-endpoint launches. Nothing here writes
@@ -39,7 +45,7 @@ export async function applyLaunchDefaults<T extends object>(
   const defaults: Record<string, unknown> = {};
   for (const [param, settingKey] of Object.entries(declared)) {
     const parsed = SettingsUpdateSchema.shape[settingKey].safeParse(settings[settingKey]);
-    // '' is the settings' "leave it to the CLI" value, the same as unset.
+    // '' and false are the settings' "leave it to the CLI" values, the same as unset.
     const value = parsed.success ? parsed.data || undefined : undefined;
     const wireKey = aliases[param] ?? param;
     if (value !== undefined && (current?.[wireKey] ?? undefined) === undefined) defaults[wireKey] = value;

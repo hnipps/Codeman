@@ -177,6 +177,24 @@ export const activeRun = (file: SwarmFile): ActiveRun | undefined => {
   return run && (run.state === 'queued' || run.state === 'running') ? run : undefined;
 };
 
+export type SwarmChip = 'queued' | 'running' | 'approve' | 'changes' | 'escalated';
+
+/**
+ * The one word the Reviews page shows for a review's runs, in its queue row and its top bar. An escalation outranks
+ * everything; then the active run; then the newest verdict. Incomplete and failed runs carry no verdict, so they show
+ * the verdict before them, and a review whose runs never reached a verdict shows nothing.
+ */
+export function swarmChip(file: SwarmFile): SwarmChip | null {
+  if (file.escalated) return 'escalated';
+  const active = activeRun(file);
+  if (active) return active.state;
+  for (const run of file.runs) {
+    if (run.state === 'passed') return 'approve';
+    if (run.state === 'changes' || run.state === 'blocked') return 'changes';
+  }
+  return null;
+}
+
 // --- The agent's report -------------------------------------------------------------------------------------------
 
 const rawText = (max: number) => z.string().max(max);

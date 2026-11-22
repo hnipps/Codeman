@@ -28,6 +28,7 @@ import {
   MAX_RUNS_KEPT,
   parseSwarmReport,
   SwarmFileSchema,
+  swarmChip,
   swarmVerdictPrompt,
   SWARM_TRAILER,
   type SwarmAction,
@@ -567,6 +568,38 @@ describe('I6 TwoInARowEscalates', () => {
     const actions = runOnce(d, 'APPROVE', sha(1), r3);
     expect(kinds(actions)).toEqual(['stop', 'escalate']);
     expect(d.file.escalated).toMatchObject({ kind: 'r3', trigger: 'outcome-changed' });
+  });
+});
+
+describe('the Reviews page chip', () => {
+  it('shows nothing before a verdict, the active run while one goes, and the newest verdict after', () => {
+    const d = driver();
+    expect(swarmChip(d.file)).toBeNull();
+    d.step({ type: 'trigger', trigger: 'manual', tip: sha(1), runId: newId() });
+    expect(swarmChip(d.file)).toBe('queued');
+    const run = activeRun(d.file)!;
+    d.step({ type: 'started', runId: run.id, sessionId: 's1', tip: sha(1) });
+    expect(swarmChip(d.file)).toBe('running');
+    d.step({ type: 'failed', runId: run.id, reason: 'silent' });
+    expect(swarmChip(d.file)).toBeNull();
+
+    runOnce(d, 'APPROVE_WITH_NITS');
+    expect(swarmChip(d.file)).toBe('approve');
+    // A failed run carries no verdict, so the verdict before it still shows.
+    d.step({ type: 'trigger', trigger: 'manual', tip: sha(2), runId: newId() });
+    d.step({ type: 'failed', runId: activeRun(d.file)!.id, reason: 'silent' });
+    expect(swarmChip(d.file)).toBe('approve');
+    runOnce(d, 'BLOCKED');
+    expect(swarmChip(d.file)).toBe('changes');
+  });
+
+  it('an escalation outranks a run that is going', () => {
+    const d = driver();
+    runOnce(d, 'REQUEST_CHANGES');
+    runOnce(d, 'REQUEST_CHANGES');
+    expect(swarmChip(d.file)).toBe('escalated');
+    d.step({ type: 'trigger', trigger: 'push', tip: sha(3), runId: newId() });
+    expect(swarmChip(d.file)).toBe('escalated');
   });
 });
 

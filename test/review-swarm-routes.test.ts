@@ -12,6 +12,7 @@ import { dataPath } from '../src/config/instance.js';
 import { deployRole } from '../src/deploy-role.js';
 import { submitReview, type Review } from '../src/reviews/review-model.js';
 import { writeReview } from '../src/reviews/review-store.js';
+import { writeSwarm } from '../src/reviews/swarm-store.js';
 import { emptySwarmFile, type SwarmRun } from '../src/reviews/swarm-model.js';
 import type { SwarmRunner } from '../src/reviews/swarm-runner.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
@@ -67,8 +68,28 @@ describe('pr-swarm review routes', () => {
   it('GET answers the review’s runs', async () => {
     const res = await harness.app.inject({ url: '/api/reviews/aaaaaaaa/swarm' });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data).toEqual({ swarm: emptySwarmFile('aaaaaaaa'), live: true, refusal: null });
+    expect(res.json().data).toEqual({ swarm: emptySwarmFile('aaaaaaaa'), chip: null, live: true, refusal: null });
     expect((await harness.app.inject({ url: '/api/reviews/bbbbbbbb/swarm' })).statusCode).toBe(404);
+  });
+
+  it('GET carries the chip the page shows for the runs', async () => {
+    runner.view.mockReturnValue({ ok: true, file: { ...emptySwarmFile('aaaaaaaa'), runs: [queued] } });
+    const res = await harness.app.inject({ url: '/api/reviews/aaaaaaaa/swarm' });
+    expect(res.json().data.chip).toBe('queued');
+  });
+
+  it('each queue row carries its chip from the run file, and a review with no runs carries none', async () => {
+    const queue = async () => (await harness.app.inject({ url: '/api/reviews' })).json().data;
+    expect((await queue()).waiting[0]).not.toHaveProperty('swarm');
+    writeSwarm({ ...emptySwarmFile('aaaaaaaa'), runs: [queued] });
+    expect((await queue()).waiting[0]).toMatchObject({ id: 'aaaaaaaa', swarm: 'queued' });
+    writeSwarm({ ...emptySwarmFile('aaaaaaaa'), escalated: { kind: 'streak', at: 1, runIds: [RUN_ID] } });
+    expect((await queue()).waiting[0]).toMatchObject({ swarm: 'escalated' });
+    // A run file that does not parse shows no chip and never fails the queue.
+    writeFileSync(dataPath('reviews', 'aaaaaaaa.swarm.json'), '{');
+    const res = await harness.app.inject({ url: '/api/reviews' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.waiting[0]).not.toHaveProperty('swarm');
   });
 
   it('a person starts a run at the branch tip; an agent may not', async () => {

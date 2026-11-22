@@ -17,6 +17,7 @@ import {
   MAX_WORK_DESCRIPTION_CHARS,
   WORK_FILE_TYPES,
   NOT_DELETED_STATUSES,
+  WORK_STATUSES,
   workClosed,
   type WorkRow,
   type WorkStatus,
@@ -25,20 +26,17 @@ import {
 export type { WorkRow, WorkStatus };
 export type WorkFilter = 'all' | 'you' | 'agents' | 'none';
 
-const Event = z.object({
-  at: z.number(),
-  author: z.union([
-    z.object({ kind: z.literal('human'), userId: z.string() }),
-    z.object({ kind: z.literal('agent'), sessionId: z.string() }),
-  ]),
-  text: z.string(),
-});
+const Author = z.union([
+  z.object({ kind: z.literal('human'), userId: z.string() }),
+  z.object({ kind: z.literal('agent'), sessionId: z.string() }),
+]);
+const Event = z.object({ at: z.number(), author: Author, text: z.string() });
 const Row = z
   .object({
     key: z.string(),
     number: z.number(),
     title: z.string(),
-    status: z.enum(NOT_DELETED_STATUSES),
+    status: z.enum(WORK_STATUSES),
     position: z.number().int().positive().optional().catch(undefined),
     description: z.string().catch(''),
     assignee: z
@@ -50,10 +48,7 @@ const Row = z
       .catch(null),
     sessions: z.array(z.string()).catch([]),
     createdFrom: z.number().optional().catch(undefined),
-    author: z.union([
-      z.object({ kind: z.literal('human'), userId: z.string() }),
-      z.object({ kind: z.literal('agent'), sessionId: z.string() }),
-    ]),
+    author: Author,
     createdAt: z.number(),
     updatedAt: z.number(),
     revision: z.number(),
@@ -68,6 +63,11 @@ const Row = z
         sessionId: z.string().optional(),
         at: z.number(),
       })
+      .optional()
+      .catch(undefined),
+    // A Deleted row whose record cannot be read still shows: it restores to Backlog (`restoreStatus`).
+    deleted: z
+      .object({ at: z.number(), from: z.enum(NOT_DELETED_STATUSES), author: Author, reason: z.string().optional() })
       .optional()
       .catch(undefined),
     history: z.array(Event).catch([]),
@@ -99,7 +99,8 @@ export function parseWork(body: unknown): { items: WorkRow[]; next: string } | n
 export type WorkState = ShellSessionState;
 /** Needs you while the item holds a question; else the most urgent linked session; none without a linked session. */
 export function itemState(item: WorkRow, sessions: readonly ShellSessionRow[]): WorkState | null {
-  if (item.needs) return 'needs';
+  // A deleted item is hidden, so a question left on it does not call for the person.
+  if (item.needs && item.status !== 'deleted') return 'needs';
   let best: WorkState | null = null;
   for (const id of item.sessions) {
     const state: WorkState = sessions.find((s) => s.id === id)?.state ?? 'done';
@@ -120,7 +121,7 @@ export function matchesFilter(item: WorkRow, filter: WorkFilter, query: string):
 /**
  * One lane's cards. Ready for work is in pickup order (its `position`, top first): priority is position. Other open
  * lanes are urgent first, then oldest first (a new item lands at the end, beside "+ Add item"); closed lanes newest
- * change only.
+ * change first, and Deleted newest deletion first.
  */
 export function laneItems(
   items: readonly WorkRow[],
@@ -136,14 +137,28 @@ export function laneItems(
     .map((item) => ({ item, state: rank(itemState(item, sessions)) }))
     .sort((a, b) =>
       workClosed(status)
-        ? b.item.updatedAt - a.item.updatedAt
+        ? closedAt(b.item) - closedAt(a.item)
         : a.state - b.state || a.item.createdAt - b.item.createdAt || a.item.number - b.item.number
     )
     .map((entry) => entry.item);
 }
 
+const closedAt = (item: WorkRow): number => item.deleted?.at ?? item.updatedAt;
+
+/** The lanes and phone tabs the view paints: every status but Deleted, and Deleted too while Show deleted is on. */
+export const visibleStatuses = (showDeleted: boolean): readonly WorkStatus[] =>
+  showDeleted ? WORK_STATUSES : NOT_DELETED_STATUSES;
+export const deletedCount = (items: readonly WorkRow[]): number => items.filter((i) => i.status === 'deleted').length;
+/** Where Restore and Undo send a Deleted item: the status it left. */
+export const restoreStatus = (item: WorkRow): WorkStatus => item.deleted?.from ?? 'backlog';
+/** Who deleted the item, as the banner says it: "you" or the session's name. Null without a record. */
+export function deletedBy(item: WorkRow, sessions: readonly ShellSessionRow[]): string | null {
+  if (!item.deleted) return null;
+  return item.deleted.author.kind === 'human' ? 'you' : sessionLabel(item.deleted.author.sessionId, sessions);
+}
+
 export type WorkCount = { status: WorkStatus; count: number; unassigned: number };
-/** A count per status; Ready for work also says how many have nobody on them (what a pickup routine may take). */
+/** A count per status but Deleted, which is hidden; Ready for work also says how many have nobody on them (what a pickup routine may take). */
 export function workCounts(items: readonly WorkRow[]): WorkCount[] {
   return NOT_DELETED_STATUSES.map((status) => {
     const inLane = items.filter((i) => i.status === status);

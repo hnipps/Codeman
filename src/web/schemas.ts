@@ -1732,6 +1732,8 @@ export const SettingsUpdateSchema = z
     codexReasoningEffort: z.enum(['', ...CODEX_REASONING_EFFORTS]).optional(),
     codexDangerouslyBypassApprovals: z.boolean().optional(),
     codexAnimationsEnabled: z.boolean().optional(),
+    // Antigravity CLI settings
+    antigravitySkipPermissions: z.boolean().optional(),
     // Terminal history and retention
     terminalScrollbackLines: z
       .number()

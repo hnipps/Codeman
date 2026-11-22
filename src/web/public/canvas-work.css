@@ -172,6 +172,17 @@ body:has(#outline:not([hidden])) #workView {
   background: var(--raised);
   border-color: var(--divider);
 }
+.work-show-deleted {
+  min-height: 32px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--secondary);
+  border-color: var(--divider);
+}
+.work-show-deleted[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--raised);
+}
 .work-search {
   width: 220px;
   min-height: 32px;
@@ -335,6 +346,15 @@ body:has(#outline:not([hidden])) .work-outline,
   background: transparent;
 }
 .work-card.quiet .work-card-title {
+  color: var(--secondary);
+}
+/* A deleted card mutes its frame, never its words: the title keeps the closed lanes' colour. */
+.work-card.deleted {
+  border-style: dashed;
+}
+.work-card-when {
+  margin-top: 4px;
+  font-size: 11px;
   color: var(--secondary);
 }
 .work-card.dragging {
@@ -828,7 +848,10 @@ body:has(#outline:not([hidden])) .work-outline,
   .work-active-row,
   .work-add,
   .work-unlink,
-  .work-all {
+  .work-all,
+  .work-show-deleted,
+  .work-delete,
+  .work-deleted button {
     min-height: 44px;
   }
   /* Seven tabs wrap onto two rows at phone width, so every lane is one tap away. */
