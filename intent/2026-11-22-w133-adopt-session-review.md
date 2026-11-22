@@ -8,7 +8,7 @@ An agent that runs `codeman agent review submit` before it sets the Work item's 
 
 ## Proposed outcome
 
-At most one open review per repository and branch, whichever order the agent uses. When `sync` makes a new work review, it takes over the owner's open session reviews of the same branch in the same repository (matched by git common dir, since a session review records its worktree). The newest one's walkthrough becomes `authored`, and its notes, Request changes stamp and stills come across. Every match closes with `closedBy` naming the work review, and the closed review's page says where it went.
+At most one open review per repository and branch, whichever order the agent uses. When `sync` makes a new work review, it takes over the owner's undecided session reviews of the same branch in the same repository (matched by git common dir, since a session review records its worktree). The newest one's walkthrough becomes `authored` and its Request changes stamp comes across; the notes and stills of every match come across. Every match closes with `closedBy` naming the work review, and the closed review's page says where it went.
 
 ## Affected users and systems
 

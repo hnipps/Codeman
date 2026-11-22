@@ -14,6 +14,7 @@ import {
   cleanLine,
   cleanText,
   keepCaptures,
+  MAX_NOTES_PER_REVIEW,
   MAX_TITLE_CHARS,
   MAX_WALKTHROUGH_CHARS,
   storedSource,
@@ -112,25 +113,32 @@ export function authorWorkReview(
 }
 
 /**
- * A new work review that takes over an open session review of the same branch, written before the item had its pull
- * request. The session's walkthrough becomes `authored`, as if the agent had submitted it to the work review, and its
- * notes, its stills (those whose files were copied: `captures`) and its Request changes stamp come across. Only for a
- * work review with nothing of its own yet: the one `syncedReview` just made.
+ * A new work review that takes over the open session reviews of the same branch, written before the item had its pull
+ * request. `sessions` is newest first. The newest one's walkthrough becomes `authored`, as if the agent had submitted it
+ * to the work review, and its Request changes stamp comes across with its `updatedAt`, so the review reads as it did.
+ * Every one's notes come across, oldest first, so none is left only on a closed review; `captures` are the stills whose
+ * files were copied. Only for a work review with nothing of its own yet: the one `syncedReview` just made.
  */
-export function adoptSessionReview(review: Review, session: Review, captures: Capture[]): Review {
+export function adoptSessionReviews(review: Review, sessions: readonly Review[], captures: Capture[]): Review {
+  const newest = sessions[0];
+  if (!newest) return review;
   const { captures: _none, ...rest } = review;
+  const notes = sessions
+    .flatMap((s) => s.notes)
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(-MAX_NOTES_PER_REVIEW);
   return {
     ...rest,
     ...(captures.length ? { captures } : {}),
     authored: {
-      sessionId: session.sessionId,
-      sessionName: session.sessionName,
-      walkthrough: session.walkthrough,
-      headSha: session.headSha,
-      at: session.updatedAt,
+      sessionId: newest.sessionId,
+      sessionName: newest.sessionName,
+      walkthrough: newest.walkthrough,
+      headSha: newest.headSha,
+      at: newest.updatedAt,
     },
-    notes: session.notes,
-    ...(session.requestedAt !== undefined ? { requestedAt: session.requestedAt } : {}),
+    notes,
+    ...(newest.requestedAt !== undefined ? { requestedAt: newest.requestedAt, updatedAt: newest.updatedAt } : {}),
   };
 }
 

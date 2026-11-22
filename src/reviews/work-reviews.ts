@@ -8,8 +8,9 @@
  * when a work review's page is read, before Approve, and once after boot for items that have no review yet. Never on a
  * timer, and never for the polled queue read.
  *
- * A new work review takes over the owner's open session reviews of the same branch (an agent that submitted before it
- * set the item's pull request): the newest gives it its walkthrough, notes and stills, and every one closes, naming it.
+ * A new work review takes over the owner's undecided session reviews of the same branch (an agent that submitted before
+ * it set the item's pull request): the newest gives it its walkthrough, all of them their notes and stills, and every
+ * one closes, naming it.
  *
  * Git runs in the repository of the workspace's case, and never for a remote or Docker case or for a repository at or
  * inside a Docker case workspace. The head is read from `origin` only (`headOf`). Only the live deploy colour writes,
@@ -40,7 +41,7 @@ import {
 } from './review-model.js';
 import { changeReview, copyCaptureFiles, listReviews, readReview, writeReview } from './review-store.js';
 import {
-  adoptSessionReview,
+  adoptSessionReviews,
   authorWorkReview,
   syncedReview,
   walkthroughOf,
@@ -126,22 +127,30 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
   const commonDir = async (cwd: string): Promise<string> =>
     line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
 
+  /** A session review nothing was decided on: the only kind a work review takes over (a failed deploy is decided). */
+  const adoptable = (r: Review): boolean => r.decision === undefined && sourceOf(r).kind === 'session';
+
   /**
-   * Ids of the owner's open session reviews of `branch` in the repository at `repoRoot`. A session review records the
-   * top level of the folder it was submitted from, often a worktree, so the repository is matched by its common git
-   * directory, as `authorFor` matches it, never by the path.
+   * Ids of the owner's undecided session reviews of `branch` in the repository at `repoRoot`. A session review records
+   * the top level of the folder it was submitted from, often a worktree, so the repository is matched by its common git
+   * directory, as `authorFor` matches it, never by the path. Git runs in none at or inside a Docker case workspace.
    */
   const sessionReviewsOf = async (owner: string | null, repoRoot: string, branch: string): Promise<string[]> => {
-    const found = listReviews().filter(
-      (r) => isOpen(r) && sourceOf(r).kind === 'session' && r.owner === owner && r.branch === branch
-    );
+    const found = listReviews().filter((r) => adoptable(r) && r.owner === owner && r.branch === branch);
     if (!found.length) return [];
     const mine = await commonDir(repoRoot);
     if (!mine) return [];
+    let roots: string[];
+    try {
+      roots = await deps.dockerWorkspaces();
+    } catch {
+      return [];
+    }
     const dirs = new Map<string, string>();
     const ids: string[] = [];
     for (const r of found) {
-      if (!dirs.has(r.repoRoot)) dirs.set(r.repoRoot, await commonDir(r.repoRoot));
+      if (!dirs.has(r.repoRoot))
+        dirs.set(r.repoRoot, (await isInsideAny(r.repoRoot, roots)) ? '' : await commonDir(r.repoRoot));
       if (dirs.get(r.repoRoot) === mine) ids.push(r.id);
     }
     return ids;
@@ -215,7 +224,7 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     if (!base || !(await validRef(git, repoRoot, base)) || base === branch)
       return problem('NO_BASE', `no base branch to compare ${branch} with`);
     const owner = workspace.owner ?? null;
-    const adoptable = existing ? [] : await sessionReviewsOf(owner, repoRoot, branch);
+    const candidates = existing ? [] : await sessionReviewsOf(owner, repoRoot, branch);
 
     // No await from here: the item and the review are read again and written in one tick.
     const fresh = itemOf(work);
@@ -224,14 +233,17 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     const open = againRead.ok ? againRead.review : undefined;
     if (!againRead.ok && againRead.reason !== 'missing')
       return problem('REFUSED', 'the review file could not be read; nothing was changed');
-    // A session review of this branch, submitted before the item had its pull request, is the same work: the new work
-    // review takes it over (the newest, when there are several) and every one of them closes, naming the work review.
+    // Session reviews of this branch, submitted before the item had its pull request, are the same work: the new work
+    // review takes them over (the newest gives the walkthrough) and every one of them closes, naming the work review.
+    const newer = (a: Review, b: Review) => b.updatedAt - a.updatedAt || (a.id > b.id ? -1 : 1);
     const adopted = open
       ? []
-      : adoptable.flatMap((rid) => {
-          const read = readReview(rid);
-          return read.ok && isOpen(read.review) && sourceOf(read.review).kind === 'session' ? [read.review] : [];
-        });
+      : candidates
+          .flatMap((rid) => {
+            const read = readReview(rid);
+            return read.ok && adoptable(read.review) ? [read.review] : [];
+          })
+          .sort(newer);
     if (
       !open &&
       !adopted.length &&
@@ -257,11 +269,7 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     );
     if (next === open) return { review: next, changed: false };
     if (!deployRole.allows('persist')) return problem('NOT_LIVE', 'only the live colour writes reviews');
-    const newest = adopted.reduce<Review | undefined>(
-      (a, r) => (!a || r.updatedAt > a.updatedAt || (r.updatedAt === a.updatedAt && r.id > a.id) ? r : a),
-      undefined
-    );
-    const written = newest ? adoptSessionReview(next, newest, copyCaptureFiles(newest, id)) : next;
+    const written = adopted.length ? adoptSessionReviews(next, adopted, copyCaptureFiles(adopted, id)) : next;
     writeReview(written);
     deps.announce(written);
     for (const r of adopted) {

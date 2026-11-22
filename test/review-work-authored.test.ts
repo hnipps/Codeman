@@ -17,7 +17,7 @@ import { createWork, CreateWorkSchema, updateWork, UpdateWorkSchema } from '../s
 import { changeWork } from '../src/canvas/work-store.js';
 import { workspaceForCase } from '../src/canvas/workspace-registry.js';
 import { putCapture, type Review } from '../src/reviews/review-model.js';
-import { readReview, writeReview } from '../src/reviews/review-store.js';
+import { readReview, writeCaptureFile, writeReview } from '../src/reviews/review-store.js';
 import { authorWorkReview, syncedReview, workReviewId } from '../src/reviews/work-review-model.js';
 import { createWorkReviews } from '../src/reviews/work-reviews.js';
 import { registerReviewPageRoutes } from '../src/web/routes/review-routes.js';
@@ -349,19 +349,52 @@ describe('submitting on a work item branch', () => {
       expect((await page()).review.authored.walkthrough).toBe('Walkthrough written first');
     });
 
-    it('takes the newest of several, closes every one, and leaves another owner and branch alone', async () => {
+    it('takes every undecided one: the newest walkthrough, all notes and stills; leaves the rest alone', async () => {
       const newest = await sessionReviewFirst();
       const read = readReview(newest);
       if (!read.ok) throw new Error('missing');
-      const { captures: _c, ...plain } = read.review;
-      const older = { ...plain, id: 'aaaaaaaaaaaaaaa1', walkthrough: 'Older', notes: [], updatedAt: 1 };
-      const foreign = { ...older, id: 'aaaaaaaaaaaaaaa2', owner: 'someone-else' };
-      const elsewhere = { ...older, id: 'aaaaaaaaaaaaaaa3', branch: 'build/w-2' };
-      for (const r of [older, foreign, elsewhere]) writeReview(r);
+      const still = (name: string, width: number) => ({
+        name,
+        ext: '.png' as const,
+        width,
+        height: width,
+        bytes: 33,
+        label: '',
+        at: 1,
+      });
+      const older: Review = {
+        ...read.review,
+        id: 'aaaaaaaaaaaaaaa1',
+        walkthrough: 'Older',
+        notes: [{ id: 'note0000older', at: { kind: 'general' }, text: 'An older note', createdAt: 1 }],
+        captures: [still('outline', 9), still('older-still', 2)],
+        updatedAt: 1,
+      };
+      writeReview(older);
+      writeCaptureFile(older.id, still('outline', 9), png(9, 9));
+      writeCaptureFile(older.id, still('older-still', 2), png(2, 2));
+      const { captures: _c, ...plain } = older;
+      const foreign = { ...plain, id: 'aaaaaaaaaaaaaaa2', owner: 'someone-else' };
+      const elsewhere = { ...plain, id: 'aaaaaaaaaaaaaaa3', branch: 'build/w-2' };
+      const failedDeploy: Review = {
+        ...plain,
+        id: 'aaaaaaaaaaaaaaa5',
+        decision: { kind: 'deploy-failed', at: 2, mergedSha: '5'.repeat(40), error: 'The deploy failed' },
+        updatedAt: 9_999_999_999_999,
+      };
+      for (const r of [foreign, elsewhere, failedDeploy]) writeReview(r);
       setPr();
       await workReviews.sync({ workspaceId, number: 1 });
 
-      expect((await page()).review.authored.walkthrough).toBe('Walkthrough written first');
+      const { review } = await page();
+      expect(review.authored.walkthrough).toBe('Walkthrough written first');
+      expect(review.notes.map((n: { text: string }) => n.text)).toEqual(['An older note', 'Tighten the outline']);
+      expect(review.captures).toMatchObject([
+        { name: 'outline', width: 4 },
+        { name: 'older-still', width: 2 },
+      ]);
+      const outline = await harness.app.inject({ url: `/api/reviews/${id()}/captures/outline` });
+      expect(outline.rawPayload.equals(png(4, 3))).toBe(true);
       const decision = (rid: string) => {
         const r = readReview(rid);
         return r.ok ? r.review.decision : 'missing';
@@ -370,6 +403,7 @@ describe('submitting on a work item branch', () => {
       expect(decision(older.id)).toMatchObject({ kind: 'closed', closedBy: id() });
       expect(decision(foreign.id)).toBeUndefined();
       expect(decision(elsewhere.id)).toBeUndefined();
+      expect(decision(failedDeploy.id)).toMatchObject({ kind: 'deploy-failed' });
     });
 
     it('a session review closed by an Approve of the work review does not read as taken over', async () => {

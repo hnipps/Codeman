@@ -626,7 +626,7 @@
       const p = el('p', '', 'Closed when ');
       const a = el('a', '', "the work item's review of this branch");
       a.href = `reviews/${encodeURIComponent(d.closedBy)}`;
-      p.append(a, ' took it over. That review carries this walkthrough, its stills and its notes.');
+      p.append(a, ' took it over, with its notes and stills.');
       lines.push(p);
     } else if (d && d.kind === 'closed' && d.closedBy) {
       // A link, built from an id the server checked: the review whose Approve made this one a duplicate.
