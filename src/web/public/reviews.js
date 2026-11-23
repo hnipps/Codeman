@@ -56,6 +56,8 @@
     work: undefined,
     /** What Approve will do for this review: `{ deploys }`. */
     approve: null,
+    /** True when the work item's review took this closed session review over. */
+    adopted: false,
     /** The review's live preview as the server describes it, or null when it has none. */
     live: null,
     liveBusy: false,
@@ -295,6 +297,7 @@
     state.sessionLive = data.sessionLive;
     state.work = data.work;
     state.approve = data.approve || null;
+    state.adopted = data.adopted === true;
     setLive(data.live);
     renderReview();
     liveSay('open');
@@ -322,6 +325,7 @@
     state.sessionLive = data.sessionLive;
     state.work = data.work;
     state.approve = data.approve || null;
+    state.adopted = data.adopted === true;
     setLive(data.live);
     if (before && before.state === 'deploying' && data.review.state === 'deployed')
       toast('Deployed. The new build is live.', 'ok');
@@ -617,7 +621,14 @@
     else if (d && d.kind === 'deploying')
       lines.push(`Merged as ${shortSha(d.mergedSha)}. The deploy is running; this page follows it.`);
     else if (d && d.kind === 'deployed') lines.push(`Merged as ${shortSha(d.mergedSha)} and deployed.`);
-    else if (d && d.kind === 'closed' && d.closedBy) {
+    else if (d && d.kind === 'closed' && d.closedBy && state.adopted) {
+      // The work item's review took this one over; the server checked that, and the link is an id it checked.
+      const p = el('p', '', 'Closed when ');
+      const a = el('a', '', "the work item's review of this branch");
+      a.href = `reviews/${encodeURIComponent(d.closedBy)}`;
+      p.append(a, ' took it over, with its notes and stills.');
+      lines.push(p);
+    } else if (d && d.kind === 'closed' && d.closedBy) {
       // A link, built from an id the server checked: the review whose Approve made this one a duplicate.
       const p = el('p', '', 'Closed when ');
       const a = el('a', '', 'another review of this branch');

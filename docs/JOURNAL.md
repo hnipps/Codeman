@@ -2,6 +2,15 @@
 
 Newest entries first. After an entry is on the default branch, correct it with a new entry. The types are `propagated-discovery`, `intent-refinement`, `drift`, `retraction`, and `status-transition`.
 
+## 2026-11-22 — A new work review takes over a session review of its branch, and says so with `closedBy` alone (W-133)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/work-reviews.ts`, `src/reviews/work-review-model.ts`, `src/reviews/review-store.ts`, `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.js`, `docs/architecture-invariants.md`
+**Why:** W-120 had two open reviews of one branch because its agent submitted before it set `pr`. The item suggested the `sameWork` predicate, which compares `repoRoot` strings.
+**Links:** [intent/2026-11-22-w133-adopt-session-review.md](../intent/2026-11-22-w133-adopt-session-review.md), Work item W-133
+
+A session review records the top level of the folder it was submitted from, which for a routine is a worktree, so the match goes by git common dir, as `authorFor` already does; `sameWork` would have missed the W-120 case. The closed session review records only the existing `closedBy`, since a new decision key would make the previous release skip the file. A takeover is told apart from an Approve's close because the work review is created in the same write, so its `createdAt` equals the close's `at` (`adoptedBy()`). Only undecided session reviews are taken over, since a `deploy-failed` one counts as open but cannot be closed. Every match's notes come across, not only the newest's, so the page can say the notes went with it. Only a newly made work review takes a session review over; one that already exists does not, which leaves the reverse race (a submit that read the items before `pr` was set) open.
+
 ## 2026-11-22 — The capture highlight layer is its own module and hands Send to a sender (W-95)
 
 **Type:** intent-refinement

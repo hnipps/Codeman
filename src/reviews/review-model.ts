@@ -150,7 +150,10 @@ export const DecisionSchema = z
     mergedSha: Sha.optional(),
     deployRequestId: z.string().max(100).optional(),
     error: z.string().max(500).optional(),
-    /** On `closed`: the review whose Approve closed this one, because the merge already holds this review's head. */
+    /**
+     * On `closed`: the review that closed this one. Either its Approve made a merge that already holds this review's
+     * head, or it is the work review that took this session review over (`adoptSessionReviews`).
+     */
     closedBy: ReviewIdSchema.optional(),
   })
   .strict();
@@ -416,6 +419,17 @@ export function closeReview(r: Review, at: number, closedBy?: string): Changed |
   if (r.decision) return refuse('DECIDED', 'DECIDED: this review has been decided');
   return { ok: true, review: { ...r, decision: { kind: 'closed', at, ...(closedBy ? { closedBy } : {}) } } };
 }
+
+/**
+ * True when `closed` was closed because `by`, a work review, took it over (`adoptSessionReviews`): the work review
+ * was made in the same write that closed it, so its `createdAt` is the close's `at`. An Approve's close never matches,
+ * since the approved review existed before it was approved.
+ */
+export const adoptedBy = (closed: Review, by: Review): boolean =>
+  closed.decision?.kind === 'closed' &&
+  closed.decision.closedBy === by.id &&
+  sourceOf(by).kind === 'work' &&
+  by.createdAt === closed.decision.at;
 
 /** Undo a close: the review waits again, with its notes as they were. Only a closed review; a merge stays decided. */
 export function reopenReview(r: Review): Changed | Refusal {
