@@ -10,9 +10,13 @@
 import { createHash } from 'node:crypto';
 import { workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import {
+  type Capture,
+  type Note,
   cleanLine,
   cleanText,
   keepCaptures,
+  MAX_NOTE_CHARS,
+  MAX_NOTES_PER_REVIEW,
   MAX_TITLE_CHARS,
   MAX_WALKTHROUGH_CHARS,
   storedSource,
@@ -107,6 +111,50 @@ export function authorWorkReview(
       at: now,
     },
     updatedAt: Math.max(now, review.updatedAt + 1),
+  };
+}
+
+/**
+ * A new work review that takes over the undecided session reviews of the same branch, written before the item had
+ * its pull request. `sessions` is newest first. The newest one's walkthrough becomes `authored`, as if the agent had
+ * submitted it to the work review, and its Request changes stamp comes across with its `updatedAt`, so the review
+ * reads as it did. Every one's notes come across, oldest first, so none is left only on a closed review; `copied` are
+ * the stills whose files were copied, with the review each came from. A note on a still that did not come across from
+ * its own review (no file, past the cap, or a newer review's still has its name) becomes a general note that names the
+ * still, so it never points at nothing or at another review's picture. Only for a work review with nothing of its own
+ * yet: the one `syncedReview` just made.
+ */
+export function adoptSessionReviews(
+  review: Review,
+  sessions: readonly Review[],
+  copied: readonly { from: string; capture: Capture }[]
+): Review {
+  const newest = sessions[0];
+  if (!newest) return review;
+  const { captures: _none, ...rest } = review;
+  const captures = copied.map((c) => c.capture);
+  const anchored = (s: Review, note: Note): Note => {
+    if (note.at.kind !== 'capture') return note;
+    const name = note.at.name;
+    if (copied.some((c) => c.from === s.id && c.capture.name === name)) return note;
+    return { ...note, at: { kind: 'general' }, text: cleanText(`On still ${name}: ${note.text}`, MAX_NOTE_CHARS) };
+  };
+  const notes = sessions
+    .flatMap((s) => s.notes.map((n) => anchored(s, n)))
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(-MAX_NOTES_PER_REVIEW);
+  return {
+    ...rest,
+    ...(captures.length ? { captures } : {}),
+    authored: {
+      sessionId: newest.sessionId,
+      sessionName: newest.sessionName,
+      walkthrough: newest.walkthrough,
+      headSha: newest.headSha,
+      at: newest.updatedAt,
+    },
+    notes,
+    ...(newest.requestedAt !== undefined ? { requestedAt: newest.requestedAt, updatedAt: newest.updatedAt } : {}),
   };
 }
 

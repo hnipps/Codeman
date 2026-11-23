@@ -36,7 +36,13 @@ import {
 } from '../src/reviews/review-model.js';
 import { readReview } from '../src/reviews/review-store.js';
 import { escalationHeld } from '../src/reviews/review-work.js';
-import { syncedReview, walkthroughOf, wanted, workReviewId } from '../src/reviews/work-review-model.js';
+import {
+  adoptSessionReviews,
+  syncedReview,
+  walkthroughOf,
+  wanted,
+  workReviewId,
+} from '../src/reviews/work-review-model.js';
 import { createWorkReviews } from '../src/reviews/work-reviews.js';
 
 const person = { kind: 'human' as const, userId: 'admin' };
@@ -114,6 +120,25 @@ describe('work review rules', () => {
 
     const merged: Review = { ...pushed, decision: { kind: 'merged', at: 4000, mergedSha: SHA2 } };
     expect(syncedReview(merged, facts(SHA1), work, id, 5000)).toBe(merged);
+  });
+
+  it('a takeover keeps the state the session review read: Request changes sent and not answered', () => {
+    const id = workReviewId(work, URL1);
+    const made = syncedReview(undefined, facts(), work, id, 5000);
+    const session: Review = {
+      ...made,
+      id: 'aaaaaaaaaaaaaaaa',
+      ...storedSource({ kind: 'session', sessionId: 's-1', sessionName: 'w1' }),
+      walkthrough: 'Mine',
+      requestedAt: 3000,
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    expect(reviewState(session)).toBe('changes-requested');
+    const taken = adoptSessionReviews(made, [session], []);
+    expect(reviewState(taken)).toBe('changes-requested');
+    expect(taken).toMatchObject({ createdAt: 5000, authored: { sessionId: 's-1', walkthrough: 'Mine', at: 2000 } });
+    expect(ReviewFileSchema.safeParse({ version: 1, review: taken }).success).toBe(true);
   });
 
   it('writes a work review the previous release reads: no key its strict schema does not know', () => {

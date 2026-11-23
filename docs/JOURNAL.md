@@ -11,6 +11,15 @@ Newest entries first. After an entry is on the default branch, correct it with a
 
 Unsorted is one topic with the fixed id `unsorted`, created by the first message filed there; when it is archived or merged, a message gets its own `unsorted-<id>` topic rather than reviving it (I3). The fallback is a fourth route body, `{"unsorted":true}`, so the sidecar decides it and records `source: unsorted` in the op. The deadline is in memory in the sidecar and seeded from unrouted messages at start, so a restart gives each a fresh 20 s; rejected: deriving it from the message's `ts`, which a later bootstrap replay (ticket 9) sets in the past. The routing call sees the retriever's candidates topped up with the most recently active live topics and the last 4 messages kept in Codeman's memory, because "ok do that" shares no words with its topic. Helpers move onto Codeman's socket under a `helper-` prefix, since boot reconcile adopts every `codeman-*` session there; the predictor's copy of the spawn code is deleted in favour of the one runner. Model and timeout are constants (Haiku, 15 s), not a setting yet.
 
+## 2026-11-22 — A new work review takes over a session review of its branch, and says so with `closedBy` alone (W-133)
+
+**Type:** intent-refinement
+**Touches:** `src/reviews/work-reviews.ts`, `src/reviews/work-review-model.ts`, `src/reviews/review-store.ts`, `src/reviews/review-model.ts`, `src/web/routes/review-routes.ts`, `src/web/public/reviews.js`, `docs/architecture-invariants.md`
+**Why:** W-120 had two open reviews of one branch because its agent submitted before it set `pr`. The item suggested the `sameWork` predicate, which compares `repoRoot` strings.
+**Links:** [intent/2026-11-22-w133-adopt-session-review.md](../intent/2026-11-22-w133-adopt-session-review.md), Work item W-133
+
+A session review records the top level of the folder it was submitted from, which for a routine is a worktree, so the match goes by git common dir, as `authorFor` already does; `sameWork` would have missed the W-120 case. The closed session review records only the existing `closedBy`, since a new decision key would make the previous release skip the file. A takeover is told apart from an Approve's close because the work review is created in the same write, so its `createdAt` equals the close's `at` (`adoptedBy()`). Only undecided session reviews are taken over, since a `deploy-failed` one counts as open but cannot be closed. Every match's notes come across, not only the newest's, so the page can say the notes went with it. Only a newly made work review takes a session review over; one that already exists does not, which leaves the reverse race (a submit that read the items before `pr` was set) open.
+
 ## 2026-11-22 — The capture highlight layer is its own module and hands Send to a sender (W-95)
 
 **Type:** intent-refinement
