@@ -263,7 +263,12 @@ export const isDecided = (r: Review): boolean =>
   r.decision !== undefined && r.decision.kind !== 'deploy-failed' && r.decision.kind !== 'deploying';
 export const isOpen = (r: Review): boolean => r.decision === undefined || r.decision.kind === 'deploy-failed';
 
-/** What an agent sends. The server supplies everything else from the session and the repository. */
+/**
+ * What an agent sends. The server supplies everything else from the session and the repository. `cwd` is the folder
+ * the caller runs in (a subagent shares its parent's session but may work in a worktree); the server reads the branch
+ * there, and only when it is the same repository as the session's folder. Git takes it as an argument, never through
+ * a shell, so any folder name is accepted; this module is in the canvas browser bundle and imports no server module.
+ */
 export const SubmitSchema = z
   .object({
     title: z
@@ -274,6 +279,13 @@ export const SubmitSchema = z
     base: RefSchema.optional(),
     /** The stills this revision keeps, by name. Absent keeps them all; the rest are dropped with their files. */
     captures: z.array(CaptureNameSchema).max(MAX_CAPTURES).optional(),
+    cwd: z
+      .string()
+      .max(1000)
+      .refine((p) => p.startsWith('/') && !/[\0\r\n]/.test(p) && !p.split('/').includes('..'), {
+        message: 'cwd must be an absolute path with no .. segment',
+      })
+      .optional(),
   })
   .strict();
 export type Submit = z.infer<typeof SubmitSchema>;

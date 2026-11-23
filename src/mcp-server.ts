@@ -526,6 +526,13 @@ export function buildToolDefinitions(modes: readonly string[]): ToolDefinition[]
             type: 'string',
             description: "The branch this work merges into. Default: the repository's main branch.",
           },
+          cwd: {
+            type: 'string',
+            description:
+              'The absolute folder whose checked-out branch is reviewed, when you work somewhere other than the ' +
+              "session's folder (a subagent in its own git worktree). It must be in the same repository. Default: " +
+              "the session's folder.",
+          },
           captures: {
             type: 'array',
             maxItems: 24,
@@ -1305,7 +1312,8 @@ export function createToolRunner(deps: ToolRunnerDeps) {
         }
         continue;
       }
-      if (key !== 'title' && key !== 'walkthrough' && key !== 'base') throw new ToolError(`Unknown field ${key}`);
+      if (key !== 'title' && key !== 'walkthrough' && key !== 'base' && key !== 'cwd')
+        throw new ToolError(`Unknown field ${key}`);
       if (typeof value !== 'string') throw new ToolError(`${key} must be a string`);
       body[key] = value;
     }

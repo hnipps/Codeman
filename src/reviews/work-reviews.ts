@@ -27,7 +27,7 @@ import type { Author } from '../canvas/model.js';
 import { approveWork, findWork, requestChangesOnWork, workClosed, workKey, type WorkItem } from '../canvas/work.js';
 import { changeWork, readWork, subscribeWork } from '../canvas/work-store.js';
 import { readWorkspaces, type Workspace } from '../canvas/workspace-registry.js';
-import { defaultBase, fetchHead, line, resolveHead, tryGit, validRef } from './review-git.js';
+import { defaultBase, fetchHead, line, repoCommonDir, resolveHead, tryGit, validRef } from './review-git.js';
 import {
   closeReview,
   isOpen,
@@ -124,8 +124,7 @@ export function createWorkReviews(deps: WorkReviewDeps): WorkReviews {
     return running;
   };
 
-  const commonDir = async (cwd: string): Promise<string> =>
-    line((await tryGit(git, cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) ?? '');
+  const commonDir = (cwd: string): Promise<string> => repoCommonDir(git, cwd);
 
   /** A session review nothing was decided on: the only kind a work review takes over (a failed deploy is decided). */
   const adoptable = (r: Review): boolean => r.decision === undefined && sourceOf(r).kind === 'session';

@@ -4,7 +4,7 @@
  *
  * Endpoints:
  *   GET    /api/reviews                          the queue: waiting, and decided in the last day; each row has its pr-swarm `swarm` chip
- *   POST   /api/reviews                          an AGENT submits or resubmits { title, walkthrough, base? }
+ *   POST   /api/reviews                          an AGENT submits or resubmits { title, walkthrough, base?, cwd? }
  *   GET    /api/reviews/:id                      one review, with whether its author session still runs
  *   GET    /api/reviews/:id/changes              the files the branch changes against its base
  *   GET    /api/reviews/:id/diff?path=           one of those files' diff
@@ -25,7 +25,11 @@
  *
  * Who may do what:
  * - Submitting is the agent's act: the request must carry `X-Codeman-Parent-Session`, and the review is made for
- *   THAT session's checked-out branch. Nothing in the body names a repository or a session. When that branch is the
+ *   the branch checked out in the caller's folder: `cwd` when the body carries it, else that session's folder. A
+ *   `cwd` must be a readable folder outside every Docker workspace and in the SAME repository as the session's folder
+ *   (one git common directory, so a worktree of it qualifies); anything else is a 400 and nothing is written. That is
+ *   how a subagent working in its own worktree, which shares its parent's session, reviews its own branch. Nothing in
+ *   the body names a session, and `cwd` cannot leave the session's repository. When that branch is the
  *   pull request of an open Work item linked to the session, the walkthrough goes onto the item's work review instead
  *   (`WorkReviews.authorFor`).
  * - Notes, resolving and Request changes are a person's acts: a request that carries the agent header is refused.
@@ -71,6 +75,7 @@ import {
   defaultBase,
   line,
   ReviewGitRefusal,
+  repoCommonDir,
   repoFacts,
   reviewChanges,
   reviewFileDiff,
@@ -169,6 +174,7 @@ import { createWorkReviews, type SyncResult, type WorkReviews } from '../../revi
 import type { Session } from '../../session.js';
 import { ApiErrorCode, createErrorResponse } from '../../types.js';
 import { CleanupManager } from '../../utils/index.js';
+import { describeUnknownPath, probePathKind } from '../../utils/bounded-path-probe.js';
 import { webviewCapabilities } from '../../webview-capabilities.js';
 import { readWebviews } from '../../webview-store.js';
 import { approvalInbox } from '../approval-inbox.js';
@@ -343,6 +349,25 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
       return 'The Docker case list could not be read, so no repository is inspected';
     }
     return (await isInsideAny(repoRoot, roots)) ? 'A repository inside a Docker case cannot be reviewed here' : null;
+  };
+
+  /**
+   * The caller's own folder, once it is known to be a readable folder outside every Docker workspace and in the same
+   * repository as the session's folder (one git common directory, so any worktree of it). Throws a refusal otherwise.
+   */
+  const callerFolder = async (session: Session, cwd: string): Promise<string> => {
+    const kind = await probePathKind(cwd, { pastCap: true });
+    if (kind === 'unknown') throw new ReviewGitRefusal(describeUnknownPath('cwd', cwd, { pastCap: true }));
+    if (kind !== 'directory') throw new ReviewGitRefusal(`NOT_A_FOLDER: cwd is not a folder: ${cwd}`);
+    const refusal = await gitRefusal(session, cwd);
+    if (refusal) throw new ReviewGitRefusal(refusal);
+    const [theirs, ours] = await Promise.all([repoCommonDir(runGit, cwd), repoCommonDir(runGit, session.workingDir)]);
+    if (!theirs || theirs !== ours)
+      throw new ReviewGitRefusal(
+        `NOT_THIS_REPO: ${cwd} (repository ${theirs || 'none'}) is not in the repository of this session's folder ` +
+          `${session.workingDir} (repository ${ours || 'none'})`
+      );
+    return cwd;
   };
 
   const deploy = options.deploy ?? {
@@ -539,7 +564,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     if (refusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, refusal);
     let facts;
     try {
-      facts = await repoFacts(session.workingDir, input.base);
+      facts = await repoFacts(input.cwd ? await callerFolder(session, input.cwd) : session.workingDir, input.base);
     } catch (err) {
       if (err instanceof ReviewGitRefusal) return fail(reply, 400, ApiErrorCode.INVALID_INPUT, err.message);
       throw err;

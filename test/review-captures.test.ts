@@ -291,7 +291,7 @@ describe('what the CLI reads before it submits', () => {
       ['POST', '/api/v1/reviews'],
       ['PUT', '/api/v1/reviews/abcdef0123456789/captures/a'],
     ]);
-    expect(calls[0].body).toEqual({ title: 'T', walkthrough: 'W', captures: ['a'] });
+    expect(calls[0].body).toEqual({ title: 'T', walkthrough: 'W', captures: ['a'], cwd: process.cwd() });
     expect(calls[1].rawBody?.contentType).toBe('image/png');
     expect(calls[1].rawBody?.data.equals(png(4, 4))).toBe(true);
   });
@@ -316,7 +316,7 @@ describe('what the CLI reads before it submits', () => {
     const { deps, calls } = fakeDeps(() => answered({ id: 'abcdef0123456789', revision: 2, state: 'ready', url: 'x' }));
     await agentReviewSubmit(deps, { title: 'T', walkthrough: 'W' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].body).toEqual({ title: 'T', walkthrough: 'W' });
+    expect(calls[0].body).toEqual({ title: 'T', walkthrough: 'W', cwd: process.cwd() });
   });
 
   it('refuses the whole set for one bad entry', async () => {

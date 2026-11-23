@@ -444,6 +444,67 @@ describe('review routes', () => {
     expect((await harness.app.inject({ url: `/api/reviews/zzzzzzzz/changes` })).statusCode).toBe(404);
   });
 
+  it('reviews the branch of the caller’s folder when it is a worktree of the session’s repository, and nothing else', async () => {
+    const tree = join(realpathSync(mkdtempSync(join(tmpdir(), 'review-tree-'))), 'wt (copy)');
+    const other = makeRepo();
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        'git',
+        ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args],
+        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+      ).trim();
+    try {
+      git(repo, 'worktree', 'add', '-q', '-b', 'feat/y', tree, 'main');
+      writeFileSync(join(tree, 'y.txt'), 'y\n');
+      git(tree, 'add', 'y.txt');
+      git(tree, 'commit', '-q', '-m', 'y');
+      const treeHead = git(tree, 'rev-parse', 'HEAD');
+      const send = (cwd?: string) =>
+        harness.app.inject({
+          method: 'POST',
+          url: '/api/reviews',
+          headers: AGENT,
+          payload: { title: 'Work', walkthrough: 'W', ...(cwd ? { cwd } : {}) },
+        });
+      const reviewOf = async (res: Awaited<ReturnType<typeof send>>) => {
+        const read = readReview(res.json().data.id as string);
+        if (!read.ok) throw new Error('expected a stored review');
+        return read.review;
+      };
+
+      const fromTree = await send(tree);
+      expect(fromTree.statusCode).toBe(201);
+      expect(await reviewOf(fromTree)).toMatchObject({ branch: 'feat/y', headSha: treeHead, repoRoot: tree });
+
+      const unrelated = await send(other);
+      expect(unrelated.statusCode).toBe(400);
+      expect(unrelated.json().error).toContain('NOT_THIS_REPO');
+      for (const bad of [join(tree, 'nope'), join(tree, 'y.txt'), 'relative/path', `${tree}/../wt (copy)`]) {
+        const res = await send(bad);
+        expect(res.statusCode, bad).toBe(400);
+      }
+
+      const fromSession = await send();
+      expect(fromSession.statusCode).toBe(201);
+      expect(await reviewOf(fromSession)).toMatchObject({ branch: 'feat/x', repoRoot: repo });
+      const stored = readdirSync(dataPath('reviews')).filter((n) => n.endsWith('.json') && !n.endsWith('.swarm.json'));
+      expect(stored).toHaveLength(2);
+
+      await harness.app.close();
+      harness = await createRouteTestHarness((app, ctx) =>
+        registerReviewPageRoutes(app, ctx, { dockerWorkspaces: async () => [tree] })
+      );
+      harness.ctx.sessions.get('test-session-1')!.workingDir = repo;
+      const docker = await send(tree);
+      expect(docker.statusCode).toBe(400);
+      expect(docker.json().error).toContain('Docker');
+    } finally {
+      git(repo, 'worktree', 'remove', '--force', tree);
+      rmSync(join(tree, '..'), { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a submit from a repository inside a Docker case, and when the Docker list is unreadable', async () => {
     await harness.app.close();
     harness = await createRouteTestHarness((app, ctx) =>
