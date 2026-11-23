@@ -10,7 +10,10 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
+  constants as fsConstants,
+  copyFileSync,
   existsSync,
   lstatSync,
   fsyncSync,
@@ -27,6 +30,7 @@ import { deployRole, DeployRoleRefusal } from '../deploy-role.js';
 import {
   CaptureNameSchema,
   captureFile,
+  MAX_CAPTURES,
   ReviewFileSchema,
   ReviewIdSchema,
   type Capture,
@@ -160,6 +164,37 @@ export function findCaptureFile(review: Review, name: string): { path: string; s
   } catch {
     return null;
   }
+}
+
+/**
+ * Copies the stills of `from` (newest review first) that have a file into the folder of review `toId`, and returns
+ * those copied with the id of the review each came from. A name already taken by a newer review is skipped, and at
+ * most `MAX_CAPTURES` are copied. The work review that takes session reviews over gets its stills this way; the
+ * session reviews keep their own files.
+ */
+export function copyCaptureFiles(from: readonly Review[], toId: string): { from: string; capture: Capture }[] {
+  if (!deployRole.allows('persist')) throw new DeployRoleRefusal(deployRole.current, 'may write reviews');
+  const id = ReviewIdSchema.parse(toId);
+  const copied: { from: string; capture: Capture }[] = [];
+  for (const review of from)
+    for (const capture of review.captures ?? []) {
+      if (copied.length >= MAX_CAPTURES || copied.some((c) => c.capture.name === capture.name)) continue;
+      const found = findCaptureFile(review, capture.name);
+      if (!found) continue;
+      const dir = capturesDir(id);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const path = `${dir}/${captureFile(capture)}`;
+      const tmp = `${path}.${randomUUID()}.tmp`;
+      try {
+        copyFileSync(found.path, tmp, fsConstants.COPYFILE_EXCL);
+        chmodSync(tmp, 0o600);
+        renameSync(tmp, path);
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+      copied.push({ from: review.id, capture });
+    }
+  return copied;
 }
 
 /** Removes every still file the review's record no longer names. With no record left, the folder goes too. */

@@ -120,6 +120,7 @@ import {
   queueOf,
   removeNote,
   requestChangesPrompt,
+  adoptedBy,
   sameWork,
   settledDeploy,
   stampSent,
@@ -642,6 +643,13 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
     return { deploys: !merged && !stacked && (await deploysItself(review.repoRoot)), shipsWithBase: stacked };
   };
 
+  /** True when a work review took this closed session review over, so the page can say where it went. */
+  const adoptedInto = (review: Review): boolean => {
+    const by = review.decision?.closedBy;
+    const read = by ? readReview(by) : null;
+    return !!read?.ok && adoptedBy(review, read.review);
+  };
+
   app.get<{ Params: { id: string } }>('/api/reviews/:id', async (req, reply) => {
     await settleDeploys();
     const read = reviewOf(req, reply);
@@ -657,6 +665,7 @@ export function registerReviewPageRoutes(app: FastifyInstance, ctx: Ctx, options
         review: toView(review),
         ...(sourceOf(review).kind === 'work' ? { work: workReviews.facts([review]).get(review.id) ?? null } : {}),
         approve: await approveFacts(review),
+        adopted: adoptedInto(review),
         live: await liveOf(review),
         sessionLive: !!session && canAccessOwned(getAuthUser(req), session.owner) && !session.paneExit,
       },
