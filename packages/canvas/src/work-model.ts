@@ -234,3 +234,9 @@ export function fileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/** The item a `?work=W-12` address asks to open (a filed capture's toast links to one), or null. */
+export function workFromSearch(search: string): number | null {
+  const m = /^W-([1-9][0-9]{0,8})$/.exec(new URLSearchParams(search).get('work') ?? '');
+  return m ? Number(m[1]) : null;
+}

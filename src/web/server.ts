@@ -182,6 +182,8 @@ const { version: APP_VERSION } = require('../../package.json');
  */
 function rewriteApiV1Url(url: string): string {
   if (url === '/api/v1') return '/api';
+  // Internal routes stay off the versioned alias: `/api/v1/capture/...` is left as is and answers 404.
+  if (url.startsWith('/api/v1/capture/') || url.startsWith('/api/v1/capture?')) return url;
   if (url.startsWith('/api/v1/')) return '/api/' + url.slice('/api/v1/'.length);
   return url;
 }
@@ -257,6 +259,7 @@ import {
   registerStatusTelemetryRoutes,
   registerSystemRoutes,
   registerCaseRoutes,
+  registerCaptureRoutes,
   registerWorktreeRoutes,
   registerSessionRoutes,
   registerAgentSessionRoutes,
@@ -1541,6 +1544,7 @@ export class WebServer extends EventEmitter {
     registerStatusTelemetryRoutes(this.app, ctx);
     registerSystemRoutes(this.app, ctx);
     registerCaseRoutes(this.app, ctx);
+    registerCaptureRoutes(this.app);
     registerCanvasRoutes(this.app, canvasPort);
     registerWorktreeRoutes(this.app, ctx);
     // The registry's lifetime is the server's: it drops per-session wake state on every
