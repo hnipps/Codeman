@@ -58,7 +58,8 @@ var kinds = map[Kind]struct {
 type Route struct {
 	MessageID string       `json:"messageId"`
 	Topics    []RouteTopic `json:"topics"`
-	// Source is "" for the router, else the explicit signal: reply, quote or chip.
+	// Source is "" for the router, "unsorted" for the fallback when routing
+	// failed or timed out, else the explicit signal: reply, quote or chip.
 	Source       string `json:"source,omitempty"`
 	ResolvedText string `json:"resolvedText,omitempty"`
 	// Reactivate is the archived topic the new topic's chip offers back.
@@ -66,7 +67,7 @@ type Route struct {
 	Reactivate string `json:"reactivate,omitempty"`
 }
 
-var routeSources = map[string]bool{"": true, "reply": true, "quote": true, "chip": true}
+var routeSources = map[string]bool{"": true, "unsorted": true, "reply": true, "quote": true, "chip": true}
 
 type RouteTopic struct {
 	TopicID    string   `json:"topicId"`

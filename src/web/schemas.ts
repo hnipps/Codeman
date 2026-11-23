@@ -2570,3 +2570,34 @@ export const SwarmRunIdSchema = z.string().regex(/^[a-z0-9]{8,40}$/);
 export const SwarmStartSchema = z.object({}).strict();
 /** `POST /api/reviews/swarm-runs/:runId/report`: what the run's session hands back, checked by the runner. */
 export const SwarmReportBodySchema = z.object({ report: z.record(z.string(), z.unknown()) }).strict();
+
+// ========== Chat Graph (src/web/routes/chat-graph-routes.ts) ==========
+
+/** A Chat Graph message, topic or op id: the sidecar's id alphabet. */
+export const ChatGraphIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/, 'Invalid Chat Graph id');
+
+/** Body of POST /api/chat-graph/messages. A text starting with `>` is a capture. */
+export const ChatGraphMessageSchema = z
+  .object({
+    text: z.string().min(1).max(16_000),
+    signal: z
+      .discriminatedUnion('kind', [
+        z.object({ kind: z.enum(['reply', 'quote']), messageId: ChatGraphIdSchema }).strict(),
+        z.object({ kind: z.literal('chip'), topicId: ChatGraphIdSchema }).strict(),
+      ])
+      .optional(),
+  })
+  .strict();
+
+/** Body of POST /api/chat-graph/messages/:id/reassign: a move needs `from`; `add` files to a second topic instead. */
+export const ChatGraphReassignSchema = z
+  .object({
+    to: ChatGraphIdSchema,
+    from: ChatGraphIdSchema.optional(),
+    add: z.boolean().optional(),
+    opId: ChatGraphIdSchema.optional(),
+  })
+  .strict()
+  .refine((b) => b.add === true || b.from !== undefined, {
+    message: 'A move needs from; set add to file to a second topic',
+  });

@@ -70,3 +70,29 @@ func (s *Store) AddMessage(m Message) error {
 	}
 	return tx.Commit()
 }
+
+// UnroutedMessages returns the ids of stored messages with no route op. A
+// route op's id is its message id.
+func (s *Store) UnroutedMessages() ([]string, error) {
+	rows, err := s.db.Query(`SELECT m.id FROM messages m LEFT JOIN ops o ON o.id = m.id AND o.kind = 'route' WHERE o.id IS NULL ORDER BY m.ts, m.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// Routed reports whether a route op is stored for messageID.
+func (s *Store) Routed(messageID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT count(*) FROM ops WHERE id = ? AND kind = 'route'`, messageID).Scan(&n)
+	return n > 0, err
+}

@@ -47,6 +47,8 @@ export enum ApiErrorCode {
   USER_NOT_FOUND = 'USER_NOT_FOUND',
   /** Refusing to demote/disable/delete the last enabled admin (multi-user) */
   LAST_ADMIN = 'LAST_ADMIN',
+  /** Chat Graph's sidecar is not running on this Codeman, or did not answer */
+  CHAT_GRAPH_UNAVAILABLE = 'CHAT_GRAPH_UNAVAILABLE',
   /** Internal server error */
   INTERNAL_ERROR = 'INTERNAL_ERROR',
 }
@@ -68,6 +70,7 @@ const ErrorMessages: Record<ApiErrorCode, string> = {
   [ApiErrorCode.USER_EXISTS]: 'A user with that name already exists',
   [ApiErrorCode.USER_NOT_FOUND]: 'No such user',
   [ApiErrorCode.LAST_ADMIN]: 'Cannot remove the last enabled admin',
+  [ApiErrorCode.CHAT_GRAPH_UNAVAILABLE]: 'Chat Graph is not available',
   [ApiErrorCode.INTERNAL_ERROR]: 'An internal error occurred',
 };
 
@@ -90,6 +93,7 @@ const ErrorStatus: Record<ApiErrorCode, number> = {
   [ApiErrorCode.USER_NOT_FOUND]: 404,
   [ApiErrorCode.LAST_ADMIN]: 409,
   [ApiErrorCode.RATE_LIMITED]: 429,
+  [ApiErrorCode.CHAT_GRAPH_UNAVAILABLE]: 503,
   [ApiErrorCode.INTERNAL_ERROR]: 500,
 };
 

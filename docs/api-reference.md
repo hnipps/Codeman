@@ -90,6 +90,7 @@ the HTTP status.
 | `OPERATION_FAILED` | 422 | Well-formed but could not be completed |
 | `RATE_LIMITED` | 429 | Too many requests |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
+| `CHAT_GRAPH_UNAVAILABLE` | 503 | Chat Graph's sidecar is not running on this Codeman (a candidate or retired colour, or a failed start), or did not answer |
 
 Adding a new error code is non-breaking; removing or renaming one is a major change.
 
@@ -1659,6 +1660,16 @@ The bundled frontend reads responses through `_apiJson()`
 (`src/web/public/api-client.js`), which unwraps `{success:true,data}` → `data` and
 returns `null` on a non-2xx / `{success:false}` response. External clients should
 do the same: check the HTTP status (or `body.success`), then read `body.data`.
+
+## Chat Graph (`/api/v1/chat-graph`)
+
+Experimental (spec `intent/2026-11-18-chat-graph.md`). Every route answers 503 `CHAT_GRAPH_UNAVAILABLE` while the sidecar is not running on this Codeman, and 403 `FORBIDDEN` in multi-user mode.
+
+- `POST /chat-graph/messages` `{ text, signal? }` stores one message and files it to topics. `text` starting with `>` is a capture: it is filed, answered with `ack` (e.g. `"Filed to Budget"`) and never sent to an agent. `signal` is `{ kind: 'reply' | 'quote', messageId }` or `{ kind: 'chip', topicId }` and skips the model call. The answer is `{ messageId, kind, ts, routing, chips, ack? }`, where `routing` is `routed`, `explicit`, `unsorted` (the model call failed; the message is in Unsorted) or `pending` (the sidecar went away mid-turn and files it itself within 20 s), and each chip is `{ topicId, title, band, confidence, reactivate? }` with `band` one of `quiet`, `prominent`, `explicit`, `new`, `unsorted`. Routing takes about 5 s.
+- `POST /chat-graph/messages/:id/reassign` `{ to, from?, add?, opId? }` moves the message from `from` to `to` (logged as a correction), or with `add: true` also files it to `to`. A repeated `opId` changes nothing.
+- `GET /chat-graph/topics`, `GET /chat-graph/topics/:id`, `GET /chat-graph/corrections?limit=` (1 to 500).
+
+The SSE event `chat-graph:routed` carries `{ messageId, kind, routing, chips }`, never the message text.
 
 ## Canvas structured commands
 

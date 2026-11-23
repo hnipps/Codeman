@@ -36,6 +36,8 @@ const HEALTH_TIMEOUT_MS = 1_000;
 const KILL_GRACE_MS = 3_000;
 const OUTPUT_CAP = 16_384;
 const HEALTH_BODY_CAP = 1_024;
+const CALL_TIMEOUT_MS = 10_000;
+const CALL_BODY_CAP = 2 * 1024 * 1024;
 /** `sun_path` holds 108 bytes on Linux, its terminating NUL included. */
 const MAX_SOCKET_PATH_BYTES = 107;
 
@@ -43,6 +45,19 @@ export interface ProcIdentity {
   pid: number;
   /** Field 22 of `/proc/<pid>/stat`. */
   startTicks: number;
+}
+
+/** The sidecar is not running here, or did not answer: Chat Graph routes answer 503 for it. */
+export class ChatGraphUnavailable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ChatGraphUnavailable';
+  }
+}
+
+export interface SidecarAnswer {
+  status: number;
+  body: unknown;
 }
 
 type SidecarState = { kind: 'stopped' } | { kind: 'running'; child: ChildProcess; identity: ProcIdentity };
@@ -159,6 +174,55 @@ export class ChatGraphSupervisor {
       req.on('timeout', () => req.destroy());
       req.on('error', () => resolve(false));
       req.end();
+    });
+  }
+
+  /**
+   * Sends one JSON request to this supervisor's own child and resolves with its status and parsed body.
+   * Rejects with {@link ChatGraphUnavailable} when no child runs, when a write is asked of a colour that may not
+   * persist (I6), or when the socket fails or times out. A non-2xx answer resolves: the caller reads it.
+   */
+  call(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = CALL_TIMEOUT_MS): Promise<SidecarAnswer> {
+    if (this.state.kind !== 'running')
+      return Promise.reject(new ChatGraphUnavailable('the Chat Graph sidecar is not running'));
+    if (method !== 'GET' && !this.options.mayPersist()) {
+      return Promise.reject(new ChatGraphUnavailable('only the live colour writes to Chat Graph'));
+    }
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    return new Promise((resolve, reject) => {
+      const req = request(
+        {
+          socketPath: this.socketPath,
+          path,
+          method,
+          timeout: timeoutMs,
+          headers:
+            payload === undefined
+              ? {}
+              : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        },
+        (res) => {
+          let text = '';
+          res.setEncoding('utf-8');
+          res.on('data', (chunk: string) => {
+            text += chunk;
+            if (text.length > CALL_BODY_CAP) req.destroy(new Error('answer too large'));
+          });
+          res.on('end', () => {
+            try {
+              resolve({ status: res.statusCode ?? 0, body: text ? (JSON.parse(text) as unknown) : null });
+            } catch {
+              reject(new ChatGraphUnavailable('the Chat Graph sidecar answered non-JSON'));
+            }
+          });
+          res.on('error', (err) => reject(new ChatGraphUnavailable(getErrorMessage(err))));
+        }
+      );
+      req.on('timeout', () => req.destroy(new Error(`no answer within ${timeoutMs}ms`)));
+      req.on('error', (err) =>
+        reject(new ChatGraphUnavailable(`the Chat Graph sidecar did not answer: ${getErrorMessage(err)}`))
+      );
+      req.end(payload);
     });
   }
 
