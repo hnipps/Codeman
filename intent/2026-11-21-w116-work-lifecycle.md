@@ -6,6 +6,8 @@
 
 **Supersedes:** W-70 I1, its first bullet only ("A person who moves an unassigned item into In progress becomes its assignee"). Replaced by I9 below. `intent/2026-11-18-w70-in-progress-owner.md`.
 
+**Supersedes:** W-70 I1, its owner definition and its finding F3. W-70 counts only open tickets as an owner ("no assignee and no open tickets"), so a parent's last ticket closing leaves it unowned until the next tick. Here an item is owned by its tickets whatever their status ("has tickets", I1 below), so that write no longer leaves it unowned and F3 does not arise. W-70 I3's owner "open tickets" is unchanged: a parent whose tickets are all closed is owned under I1 but is never released; it follows its tickets under I7.
+
 **Supersedes:** W-70 I3, the owner "a person" only. No person can hold In progress any more (I9), so the clause has nothing to protect. The other three owners stay.
 
 **Supersedes:** W-70 I4, the clause "every release after the first goes to Human required" only. The stay release of a parent its open tickets own does not ask (I4 below). The bound on claims stands.
@@ -32,13 +34,21 @@ The board has five lifecycle stalls, each seen on it this week.
 
 W-68 adds a sixth. Approving a spec does not file its tickets. The approving person, or a briefing session, files them by hand from the spec's Tickets list, and forgets the order they depend on.
 
-## Outcomes
+## Proposed outcome
 
 1. An item that waits on other items is in its own lane, Blocked. It lists what it waits on, and it moves to Ready for work by itself once all of those are Done and merged. If one of them is given up, it asks a person.
 2. Only an explicit marker makes an item a ticket. A follow-up never holds its parent. A parent closes when its tickets do, from any open lane except Backlog and Human required. The board shows each parent with its tickets' progress.
 3. Only a session, or a parent's own open tickets, holds In progress. A person's work on an item is visible through Human required or a linked session, never as an In progress card nobody can release.
 4. A Ready for work item never stays held by a session that has ended.
 5. Approving a spec files its tickets in one write, in dependency order, and the spec's item then waits on them.
+
+## Affected users and systems
+
+- People using the Work board: a new Blocked lane, and a parent shown with its tickets. They can no longer hold an item In progress.
+- Agents writing items through `canvas_work`: new `dependsOn` and `ticketOf` fields, and new refusals (I9, I13, I15).
+- Routines and the routine runner's tick (`src/web/routine-runner.ts`, `src/canvas/routines.ts`): the tick gains the Blocked release, the Ready release, the parent close from every open lane and the I9 migration. Claims skip parents.
+- The Reviews page's Approve (`src/reviews/`): the open-ticket guard, `merged`, and spec filing (W-68).
+- `work.json` (`src/canvas/work.ts`, `work-store.ts`), which the previous release must still read (Data, Rollback).
 
 ## Lifecycle
 
@@ -55,13 +65,18 @@ stateDiagram-v2
   InProgress --> HumanRequired: tick, second release, PR waiting, or person holds it (I9)
   InProgress --> Done: report, Approve, or parent close (I7)
   Ready --> Ready: tick, ended assignee cleared (I10)
+  Ready --> HumanRequired: tick, second release in a row (I10, I4)
   HumanRequired --> NeedsRefinement: question answered
   NeedsRefinement --> Done: tick, parent close
   Ready --> Done: tick, parent close
   Blocked --> Done: tick, parent close
+  NeedsRefinement --> HumanRequired: tick, parent close asks (I7)
+  Ready --> HumanRequired: tick, parent close asks (I7)
+  Blocked --> HumanRequired: tick, parent close asks (I7)
+  NeedsRefinement --> InProgress: Approve files its tickets (W-68)
 ```
 
-The diagram leaves out moves a person makes by hand, and Not doing and Deleted. Those are unchanged.
+The diagram draws one edge for several families. A release (I2) goes back to the lane the item entered In progress from (Backlog, Needs refinement, Human required or Ready for work), or to Needs refinement, and the diagram draws it as Ready. W-68 filing moves the parent into In progress from any open lane, and the diagram draws it from Needs refinement. In progress also reaches Human required by the parent close asking (I7). The diagram leaves out moves a person makes by hand, and Not doing and Deleted. Those are unchanged.
 
 ## Data
 
@@ -71,7 +86,7 @@ All new keys ride the item's passthrough schema, so the release before this one 
 |---|---|---|
 | `todoStatus: "blocked"` | on a stored `status: "todo"` | the new lane, stored as W-48's Todo split stores its three lanes |
 | `dependsOn` | `number[]`, unique, at most 20 | item numbers this item waits on |
-| `ticketOf` | `number` | the parent this item is a ticket of; always a lower number |
+| `ticketOf` | `number` | the parent this item is a ticket of; always a lower number. Set once: changing or removing it is not part of this spec, and the model refuses a second `SetTicketOf` |
 | `merged` | `{ sha?: string, at: string }` | a merge of this item's work is recorded |
 | `filed` | `{ spec: string, at: string }` | this item's spec tickets were filed (W-68) |
 | `followed` | `true`, or absent | a parent already followed its tickets since one was last open (I7) |
@@ -89,19 +104,19 @@ Each is testable on its own and each is mirrored by a lemma in `intent/2026-11-2
 ### Kept from W-70, restated over the whole board
 
 - **I1. In progress always has an owner** [`I1_InProgressHasAnOwner`, `I1_AgentMoveAssignsItself`]. An In progress item is held by a session, or has tickets (`ticketOf` points at it). No write breaks this, including a ticket closing: having tickets is not taken away by a ticket's status, so W-70's finding F3 no longer arises. An agent that moves an unowned item into In progress becomes its assignee, as before.
-- **I2. An ended session's item is released** [`I2_EndedSessionReleases`]. Unchanged, including F1: a release never closes an item.
+- **I2. An ended session's item is released** [`I2_EndedSessionReleases`]. Unchanged, including F1: a release never closes an item. A parent close is not a release. If an In progress parent's session has ended and all its tickets are closed, the parent follows them under I7 (to Done, or to Human required with a question), and I7 is decided before I2.
 - **I3. A live or unknown session is never released** [`I3_LiveOrUnknownIsNeverReleased`], in any lane. Unknown counts as live.
 - **I4. Repeated releases ask** [`I4_ClaimKeepsBound`, `I4_TickKeepsBound`, `I4_ClaimRefusedAfterTwoReleases`, `I4_LaterReleasesAsk`]. The Ready release (I10) counts toward the same `Released:` run. The one release that does not ask is the stay release of a parent whose open tickets own it; a parent is never claimed (I14), so no run can follow it.
 - **I5. The release settles each item** [`I5_TickIsSettledPerItem`]. What the tick writes on an item, the next tick leaves alone, if nothing else changed. W-70 stated I5 for the whole board. That no longer holds exactly: a parent that closes can be a ticket of a grandparent, which follows on the next tick. One tick per level.
 - **I6. Entering Ready for work clears the assignee** [`I6_EnteringReadyClearsAssignee`, `I6_RequestChangesUnassigns`], unless the same write names a session. Naming the person is refused. Sessions stay linked.
-- **I7. A parent follows its tickets** [`I7_ParentFollowsItsTickets`]. A parent is an item some other item's `ticketOf` names. When none of its tickets is open, and nobody live holds it, the tick moves it from Needs refinement, Ready for work, Blocked or In progress to Done (if every ticket is Done; `merged` is set if every ticket's is) or to Human required asking whether it is done. Backlog and Human required are left alone: a person parked it there. The rule fires once each time the tickets all close: the close sets `followed`, and only a tick that sees a ticket open again clears it (no history line). So answering the parent's question, which moves it to Needs refinement, or a person moving it back to Ready for work, is never undone by the next tick [`I7_AnswerIsNotUndone`, `I7_PersonMoveIsNotUndone`, `I7_OpenTicketRearms`]. In progress is the exception: a person cannot put a parent there without an open ticket (I9), so an In progress parent with none always settles, mark or not.
+- **I7. A parent follows its tickets** [`I7_ParentFollowsItsTickets`]. A parent is an item some other item's `ticketOf` names. When none of its tickets is open, and nobody live holds it, the tick moves it from Needs refinement, Ready for work, Blocked or In progress to Done (if every ticket is Done; `merged` is set if every ticket's is) or to Human required asking whether it is done. Backlog and Human required are left alone: a person parked it there. The rule fires once each time the tickets all close: the close sets `followed`, and only a tick that sees a ticket open again clears it (no history line). So answering the parent's question, which moves it to Needs refinement, or a person moving it back to Ready for work, is never undone by the next tick [`I7_AnswerIsNotUndone`, `I7_PersonMoveIsNotUndone`, `I7_OpenTicketRearms`]. In progress is the exception: a person cannot put a parent there without an open ticket (I9), so an In progress parent with none always settles, mark or not. A Blocked parent follows its tickets before its own `dependsOn` is checked. Its tickets decide, so it goes to Done, or asks, even while one of its dependencies is unmet.
 - **I8. Approve closes work waiting on a session review** [`I8_ApproveClosesWaitingWork`, `I8_TickSignsAsServerOrTheEndedSession`, `I8_TickKeepsWaitingWork`]. Revision 2 stands, with one guard added: an item with an open ticket is never closed by it [`I8_NeverClosesAnOwnedParent`]. The tick writes only as the server or as the ended session it releases. Work that waits on a review keeps waiting, is closed, or asks a person.
 
 ### New
 
 - **I9. No person in In progress** [`I9_NoPersonInProgress`, `I9_PersonMoveIntoInProgressRefused`, `I9_TickMigratesAnyBoard`, `I9_TickLeavesNoPersonInProgress`].
   - `create` and `update` refuse a person as the assignee of an In progress item (`INVALID_INPUT`, naming Human required as the lane for work a person is doing).
-  - A person's move of an unowned item into In progress is refused. It is not redirected. A person who wants an agent on it moves it to Ready for work, or names a session in the same write.
+  - A person's move of an unowned item into In progress is refused. It is not redirected. A person who wants an agent on it moves it to Ready for work, or names a session in the same write. The one exception is W-68 filing. Its write moves the parent into In progress and also files the tickets that own it, and I1 and I9 are checked on the board after that whole write (W-68 below).
   - `report` by a person never leaves an item In progress and unowned.
   - The migration: on its first tick, every In progress item held by the person moves to Human required, keeping the person as assignee, written as the server. Its question: "A person cannot hold In progress any more (W-116). Move it to Ready for work for an agent, or answer to keep it with you."
 - **I10. A Ready item never keeps an ended session** [`I10_EndedReadyAssigneeCleared`, `I10_ReadyReleaseNeverMakesWorkWait`, `I8_ReadyReleaseNeverTakesWaitingWork`]. The tick clears a Ready for work item's session assignee once that session has ended. It does not unlink the session. It writes `Released: session S ended without a report` as the server, not as S, so W-70 I8 (which closes work whose newest line is S's own) can never close an item that was only queued. A Ready item holding a session never has a release line, so this release never takes work that waits on a review. It counts toward I4, so the second release in a row asks. "As the server" means as the canvas owner, as every tick write is today; the Ready release writes only its `Released:` line and no `Moved from` line, so `releasesInARowOf()` counts it and does not read it as a person's move. The item keeps its place in Ready for work. Revision 2's case (c) is decided by the line's author, never its text: a test writes a server-authored `Released: session S` line and checks that Approve of S's review leaves the item alone.
@@ -149,6 +164,12 @@ Each of these says it today, with W-70's exceptions. Each gains the new ones (Bl
 4. `src/mcp-server.ts:230`, the `canvas_work` tool description an agent reads.
 5. `src/canvas/work.ts`, the `@fileoverview` (line 14).
 6. The `canvas_capabilities` document. It is at its 60 KB cap, so the ticket that edits it must cut an equal amount, not raise the cap.
+
+The same change must also update every other statement of a rule this spec changes, not only the "Nothing moves" sentences:
+
+7. `docs/architecture-invariants.md`, **In progress always has an owner (W-70)**. It defines the owner as "the items created from it that are not closed" and says a ticket closing leaves the parent unowned. Both change under I1 and I14. The paragraph also covers the person as an assignee (I9), I3's owner list, I4's count, and I7's source lanes, `followed` mark and `ticketOf`.
+8. `docs/architecture-invariants.md`, **The status contract (W-48)**. It gains the Blocked lane and its entry rules (I15), and Request changes clearing the assignee generalises to every move into Ready for work (I6).
+9. `CLAUDE.md` and `docs/subsystem-rules.md`, **Canvas work**: the statements that a parent closes when its tickets do, and which items Approve moves (I7, I8's open-ticket guard, I14).
 
 ## Migration
 
@@ -216,7 +237,7 @@ The model and the review found four things that changed this spec while it was w
 
 M11 survives because the rule is redundant in the model: a claim is an agent's move out of Blocked, which I15 already refuses without the person's words. Keeping Blocked out of the routine statuses is still required, for a different reason the model does not cover: `routines.json` must stay readable by the previous release. Two earlier runs also found a vacuous lemma: with M6 applied, `I7_ParentFollowsItsTickets` still passed, because its precondition used the predicate the mutant narrowed. It now states its precondition directly, and M6 fails it.
 
-The model leaves out history text (only the newest line's author and whether it is a release line), ready-queue order, revisions and `expectedRevision` races, requested changes, comment text, the 50-line history cap, and the parse of the `work-tickets` block (a filing is given as already parsed). Liveness is a function the tick is handed, as `sessionState` is. It does not model routines beyond `claim()`.
+The model leaves out history text (only the newest line's author and whether it is a release line), ready-queue order, revisions and `expectedRevision` races, requested changes, comment text, the 50-line history cap, and the parse of the `work-tickets` block (a filing is given as already parsed). It also leaves out the text of a question. The I9 migration's question is stated in the prose only: the model moves the item to Human required without setting `needs`, and `Inv` does not require Human required to carry a question. Liveness is a function the tick is handed, as `sessionState` is. It does not model routines beyond `claim()`.
 
 ## Audit
 
@@ -255,6 +276,12 @@ One fresh agent was given the goal and the files (this spec, the model, the two 
 | 11 | Low | Filed tickets cannot depend on existing items | named as a limit of the format; added afterwards with `update` |
 
 The reviewer also confirmed that no lemma was vacuous, that the `todoStatus` rollback path reads as Needs refinement, and that `routines.json` stays readable. After the fixes the model was verified again and the mutation check re-run on the final file; the reviewer has not seen the fixed version.
+
+On 2026-11-23 the pr-swarm review of this branch (run bf3e007ef3875747) re-ran `dafny verify` on the final file independently: 189 verified, 0 errors, no `assume` and no axiom. It did not re-run the mutation table.
+
+## Open questions
+
+The design decisions still open are the Decisions for Harry below.
 
 ## Decisions for Harry
 
