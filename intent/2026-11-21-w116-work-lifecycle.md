@@ -107,7 +107,7 @@ Each is testable on its own and each is mirrored by a lemma in `intent/2026-11-2
 
 - **I1. In progress always has an owner** [`I1_InProgressHasAnOwner`, `I1_AgentMoveAssignsItself`]. An In progress item is held by a session, or has tickets (`ticketOf` points at it). No write breaks this, including a ticket closing: having tickets is not taken away by a ticket's status, so W-70's finding F3 no longer arises. An agent that moves an unowned item into In progress becomes its assignee, as before.
 - **I2. An ended session's item is released** [`I2_EndedSessionReleases`]. Unchanged, including F1: a release never closes an item. A parent close is not a release. If an In progress parent's session has ended and all its tickets are closed, the parent follows them under I7 (to Done, or to Human required with a question), and I7 is decided before I2.
-- **I3. A live or unknown session is never released** [`I3_LiveOrUnknownIsNeverReleased`], in any lane. Unknown counts as live.
+- **I3. A live or unknown session is never released** [`I3_LiveOrUnknownIsNeverReleased`], in any lane. Unknown counts as live. W-70 I3's other owners stand unchanged: a run whose task is queued, running or waiting, and open tickets. Runs are outside the model, whose liveness input is a session's only, so the run case is checked by W-70's tests, not by a lemma. That case is a run whose task ended, which W-70 I2 releases even while its session is live.
 - **I4. Repeated releases ask** [`I4_ClaimKeepsBound`, `I4_TickKeepsBound`, `I4_ClaimRefusedAfterTwoReleases`, `I4_LaterReleasesAsk`]. The Ready release (I10) counts toward the same `Released:` run. The one release that does not ask is the stay release of a parent whose open tickets own it; a parent is never claimed (I14), so no run can follow it.
 - **I5. The release settles each item** [`I5_TickIsSettledPerItem`]. What the tick writes on an item, the next tick leaves alone, if nothing else changed. W-70 stated I5 for the whole board. That no longer holds exactly: a parent that closes can be a ticket of a grandparent, which follows on the next tick. One tick per level.
 - **I6. Entering Ready for work clears the assignee** [`I6_EnteringReadyClearsAssignee`, `I6_RequestChangesUnassigns`], unless the same write names a session. Naming the person is refused. Sessions stay linked.
@@ -152,6 +152,8 @@ The example above is fenced as `json` so that this spec's own Tickets block is i
 - Each ticket's `requestId` is a uuidv5 of the spec path and the ticket id, so a retry files nothing twice. A parent with `filed` set is never filed again [`W68_FilingHappensOnce`].
 - Filing runs before `closeLinkedWork()`, so that same Approve never closes the parent [`W68_FilingKeepsTheParentOpen`]: the filing write is the parent's newest line and is the person's, so I8 does not match it, and the open-ticket guard [`I8_NeverClosesAnOwnedParent`] would refuse it anyway. The resync after a crash between merge and write files too.
 - The write is authored as the approving person. I1 and I9 are checked on the board after the whole write, which already holds the tickets that own the parent.
+- The parent is the first `W-n` on the `**Work item:**` line.
+- The block is checked against `create`'s limits before the write (title and description lengths, at most 20 `dependsOn`, the item cap). Any violation files nothing, and the Approve answer says why. The filing write is all or nothing.
 - A block that does not parse, or a missing W-n, files nothing. The Approve still merges, and its answer says why nothing was filed.
 
 Telling a spec review from a branch review is out of scope: any merged intent file with both markers files.
@@ -177,6 +179,10 @@ The same change must also update every other statement of a rule this spec chang
 10. The header comments of `src/web/routine-runner.ts` and `src/canvas/routines.ts`, which describe the tick's release.
 11. `packages/canvas/src/work-model.ts` and `work-view.ts`, which read `createdFrom` to show a parent and its children. Ticket 5 moves them to `ticketOf`.
 12. `docs/api-reference.md`, the `POST /api/v1/reviews/:id/approve` row, which gains filing and the open-ticket guard.
+13. `src/canvas/work-store.ts`, the `@fileoverview`, which lists the lanes a stored Todo item decodes into. Blocked is added.
+14. `docs/architecture-invariants.md`, **Deleted (W-22)**: a deleted Blocked item records `from: "needs-refinement"`, and the "items created from it" wording changes under I14.
+15. `src/web/CLAUDE.md`, **Canvas work**, which describes the lanes and how the view groups parents.
+16. `packages/canvas/src/work-view.ts`, the `@fileoverview` ("seven lanes").
 
 ## Migration
 
@@ -199,6 +205,7 @@ Approving this spec approves these one-off writes, quoting this section as the i
 - The tick reads `work.json` once per pass and decides every item from that snapshot. `release()` returns early today when no item is In progress; that gate goes, or the Blocked release, the Ready release and parent closing never run on such a board.
 - Blocked is not a routine status: `RoutineStatusSchema` stays `NotDeletedStatusSchema` minus Blocked, so `routines.json` stays readable by the previous release.
 - `dueWorkItem()` and `claim()` skip an item with tickets.
+- `applyRelease()` today puts a released item at the top of Ready for work (`place(…, 1)`, with a `Moved to position 1` line). The Ready release keeps the item's place and writes only its `Released:` line (I10), and the Blocked release goes to the bottom (I11). So tickets 3 and 4 change that placement for their releases, and their tests assert the position.
 - No new SSE event. The board learns of every change from `canvas:changed` with `work: true`.
 
 ## Non-goals
