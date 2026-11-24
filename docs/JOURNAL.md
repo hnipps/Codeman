@@ -22,7 +22,7 @@ The `route` op gains three `omitempty` fields (`source`, `resolvedText`, `reacti
 ## 2026-11-21 — Work items wait in Blocked, tickets are marked, and only a session holds In progress (W-116, spec)
 
 **Type:** intent-refinement
-**Touches:** `src/canvas/work.ts`, `src/web/routine-runner.ts`, `src/canvas/routines.ts`, `src/reviews/` (Approve), `docs/architecture-invariants.md`, `CLAUDE.md`, `docs/subsystem-rules.md`, `src/mcp-server.ts`
+**Touches:** `src/canvas/work.ts`, `src/web/routine-runner.ts`, `src/canvas/routines.ts`, `src/reviews/` (Approve), `docs/architecture-invariants.md`, `CLAUDE.md`, `docs/subsystem-rules.md`, `src/mcp-server.ts`, and the rest of the spec's update list
 **Why:** Chains of items sat in Needs refinement with "blocked by W-n" in prose that nothing could read; a follow-up held W-70 open because I7 counted every item created from it; a person's In progress card could never be released; and Approve of a spec left its tickets to be filed by hand (W-68).
 **Links:** [intent/2026-11-21-w116-work-lifecycle.md](../intent/2026-11-21-w116-work-lifecycle.md), Work items W-116 and W-68
 
